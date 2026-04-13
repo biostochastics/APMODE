@@ -1,0 +1,58 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+"""Pandera DataFrameModel for canonical PK data schema (PRD §4.2.0).
+
+All ingested data (NONMEM CSV, nlmixr2 eventTable, CDISC ADaM) normalize to
+this canonical schema. Validation uses lazy=True to surface all violations.
+"""
+
+from __future__ import annotations
+
+import pandas as pd  # type: ignore[import-untyped]  # noqa: TC002 — runtime use by Pandera
+import pandera as pa
+from pandera.typing import Series  # noqa: TC002 — runtime use in field annotations
+
+
+class CanonicalPKSchema(pa.DataFrameModel):
+    """Canonical internal PK data representation.
+
+    Required columns: NMID, TIME, DV, MDV, EVID, AMT, CMT.
+    Optional columns: RATE, DUR, BLQ_FLAG, LLOQ, OCCASION, STUDY_ID,
+                      OBS_TYPE, plus covariates.
+    """
+
+    NMID: Series[int] = pa.Field(description="Subject identifier")
+    TIME: Series[float] = pa.Field(ge=0.0, description="Time relative to first dose")
+    DV: Series[float] = pa.Field(description="Dependent variable (observation value)")
+    MDV: Series[int] = pa.Field(isin=[0, 1], description="Missing DV flag")
+    EVID: Series[int] = pa.Field(
+        isin=[0, 1, 2, 3, 4],
+        description="Event ID (0=obs, 1=dose, 2=other, 3=reset, 4=reset+dose)",
+    )
+    AMT: Series[float] = pa.Field(ge=0.0, description="Dose amount")
+    CMT: Series[int] = pa.Field(ge=1, description="Compartment number")
+
+    # Optional columns — validated only when present
+    RATE: Series[float] | None = pa.Field(ge=0.0, nullable=True)
+    DUR: Series[float] | None = pa.Field(ge=0.0, nullable=True)
+    BLQ_FLAG: Series[int] | None = pa.Field(isin=[0, 1])
+    LLOQ: Series[float] | None = pa.Field(ge=0.0, nullable=True)
+    OCCASION: Series[int] | None = pa.Field(ge=0)
+    STUDY_ID: Series[str] | None = pa.Field()
+    OBS_TYPE: Series[str] | None = pa.Field(
+        description="Observation type (e.g., parent, metabolite)"
+    )
+
+    # Cross-column checks (dataframe-level)
+    @pa.dataframe_check
+    def dose_amt_positive_when_evid_1(cls, df: pd.DataFrame) -> Series[bool]:  # type: ignore[misc]
+        """When EVID=1 (dose), AMT must be > 0."""
+        return ~((df["EVID"] == 1) & (df["AMT"] <= 0))  # type: ignore[no-any-return]
+
+    @pa.dataframe_check
+    def obs_amt_zero_when_evid_0(cls, df: pd.DataFrame) -> Series[bool]:  # type: ignore[misc]
+        """When EVID=0 (observation), AMT should be 0."""
+        return ~((df["EVID"] == 0) & (df["AMT"] != 0))  # type: ignore[no-any-return]
+
+    class Config:
+        strict = False  # allow extra covariate columns
+        coerce = True

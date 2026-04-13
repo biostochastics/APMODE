@@ -1,0 +1,105 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// PK DSL Grammar — EBNF for Lark (PRD §4.2.5)
+// Parse-only: no lowering or semantic validation at this stage.
+// Semantic validation (dim ceilings, constraint enforcement) deferred to Phase 1.
+
+start: model
+
+model: "model" "{" absorption distribution elimination variability_block observation "}"
+
+// --- Absorption Module ---
+absorption: "absorption:" absorption_type
+
+absorption_type: first_order
+              | zero_order
+              | lagged_first_order
+              | transit
+              | mixed_first_zero
+              | node_absorption
+
+first_order: "FirstOrder" "(" "ka" "=" NUMBER ")"
+zero_order: "ZeroOrder" "(" "dur" "=" NUMBER ")"
+lagged_first_order: "LaggedFirstOrder" "(" "ka" "=" NUMBER "," "tlag" "=" NUMBER ")"
+transit: "Transit" "(" "n" "=" INT "," "ktr" "=" NUMBER "," "ka" "=" NUMBER ")"
+mixed_first_zero: "MixedFirstZero" "(" "ka" "=" NUMBER "," "dur" "=" NUMBER "," "frac" "=" NUMBER ")"
+node_absorption: "NODE_Absorption" "(" "dim" "=" INT "," "constraint_template" "=" CONSTRAINT_TEMPLATE ")"
+
+// --- Distribution Module ---
+distribution: "distribution:" distribution_type
+
+distribution_type: one_cmt
+                 | two_cmt
+                 | three_cmt
+                 | tmdd_core
+                 | tmdd_qss
+
+one_cmt: "OneCmt" "(" "V" "=" NUMBER ")"
+two_cmt: "TwoCmt" "(" "V1" "=" NUMBER "," "V2" "=" NUMBER "," "Q" "=" NUMBER ")"
+three_cmt: "ThreeCmt" "(" "V1" "=" NUMBER "," "V2" "=" NUMBER "," "V3" "=" NUMBER "," "Q2" "=" NUMBER "," "Q3" "=" NUMBER ")"
+tmdd_core: "TMDD_Core" "(" "V" "=" NUMBER "," "R0" "=" NUMBER "," "kon" "=" NUMBER "," "koff" "=" NUMBER "," "kint" "=" NUMBER ")"
+tmdd_qss: "TMDD_QSS" "(" "V" "=" NUMBER "," "R0" "=" NUMBER "," "KD" "=" NUMBER "," "kint" "=" NUMBER ")"
+
+// --- Elimination Module ---
+elimination: "elimination:" elimination_type
+
+elimination_type: linear_elim
+                | michaelis_menten
+                | parallel_linear_mm
+                | time_varying_elim
+                | node_elimination
+
+linear_elim: "Linear" "(" "CL" "=" NUMBER ")"
+michaelis_menten: "MichaelisMenten" "(" "Vmax" "=" NUMBER "," "Km" "=" NUMBER ")"
+parallel_linear_mm: "ParallelLinearMM" "(" "CL" "=" NUMBER "," "Vmax" "=" NUMBER "," "Km" "=" NUMBER ")"
+time_varying_elim: "TimeVarying" "(" "CL" "=" NUMBER "," "decay_fn" "=" DECAY_FN ")"
+node_elimination: "NODE_Elimination" "(" "dim" "=" INT "," "constraint_template" "=" CONSTRAINT_TEMPLATE ")"
+
+// --- Variability Module (supports multiple components) ---
+variability_block: "variability:" "{" variability_item+ "}"
+                 | "variability:" variability_item
+
+variability_item: iiv | iov | covariate_link
+
+iiv: "IIV" "(" "params" "=" param_list "," "structure" "=" STRUCTURE ")"
+iov: "IOV" "(" "params" "=" param_list "," "occasions" "=" occasion_spec ")"
+covariate_link: "CovariateLink" "(" "param" "=" NAME "," "covariate" "=" NAME "," "form" "=" COVARIATE_FORM ")"
+
+param_list: "[" NAME ("," NAME)* "]"
+
+occasion_spec: occasion_by_study
+             | occasion_by_visit
+             | occasion_by_dose_epoch
+             | occasion_custom
+
+occasion_by_study: "ByStudy"
+occasion_by_visit: "ByVisit" "(" NAME ")"
+occasion_by_dose_epoch: "ByDoseEpoch" "(" NAME ")"
+occasion_custom: "Custom" "(" NAME ")"
+
+// --- Observation Module ---
+observation: "observation:" observation_type
+
+observation_type: proportional_obs
+                | additive_obs
+                | combined_obs
+                | blq_m3
+                | blq_m4
+
+proportional_obs: "Proportional" "(" "sigma_prop" "=" NUMBER ")"
+additive_obs: "Additive" "(" "sigma_add" "=" NUMBER ")"
+combined_obs: "Combined" "(" "sigma_prop" "=" NUMBER "," "sigma_add" "=" NUMBER ")"
+blq_m3: "BLQ_M3" "(" "loq_value" "=" NUMBER ")"
+blq_m4: "BLQ_M4" "(" "loq_value" "=" NUMBER ")"
+
+// --- Terminals ---
+STRUCTURE: "diagonal" | "block"
+CONSTRAINT_TEMPLATE: "monotone_increasing" | "monotone_decreasing" | "bounded_positive" | "saturable" | "unconstrained_smooth"
+COVARIATE_FORM: "power" | "exponential" | "linear" | "categorical" | "maturation"
+DECAY_FN: "exponential" | "half_life" | "linear"
+INT: /[0-9]+/
+NUMBER: /[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?/
+
+%import common.CNAME -> NAME
+%import common.WS
+%ignore WS
+%ignore /\/\/.*/

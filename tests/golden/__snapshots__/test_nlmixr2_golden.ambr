@@ -1,0 +1,817 @@
+# serializer version: 1
+# name: TestGoldenMaster1CmtOral.test_1cmt_fo_linear_additive
+  '''
+  # APMODE generated model: golden_test_model_id_0
+  function() {
+    ini({
+      # Structural parameters
+      lka <- log(1.0)
+      lV <- log(70.0)
+      lCL <- log(5.0)
+      
+      # Inter-individual variability
+      eta.CL ~ 0.1
+      eta.V ~ 0.1
+      
+      # Residual error
+      add.sd <- 1.0
+    })
+    model({
+      # Back-transform parameters
+      ka <- exp(lka)
+      V <- exp(lV + eta.V)
+      CL <- exp(lCL + eta.CL)
+      
+      # Compartment dynamics
+      cp <- linCmt()
+      
+      # Observation model
+      cp ~ add(add.sd)
+    })
+  }
+  '''
+# ---
+# name: TestGoldenMaster1CmtOral.test_1cmt_fo_linear_combined
+  '''
+  # APMODE generated model: golden_test_model_id_0
+  function() {
+    ini({
+      # Structural parameters
+      lka <- log(1.0)
+      lV <- log(70.0)
+      lCL <- log(5.0)
+      
+      # Inter-individual variability
+      eta.CL ~ 0.1
+      eta.V ~ 0.1
+      
+      # Residual error
+      prop.sd <- 0.1
+      add.sd <- 0.5
+    })
+    model({
+      # Back-transform parameters
+      ka <- exp(lka)
+      V <- exp(lV + eta.V)
+      CL <- exp(lCL + eta.CL)
+      
+      # Compartment dynamics
+      cp <- linCmt()
+      
+      # Observation model
+      cp ~ prop(prop.sd) + add(add.sd)
+    })
+  }
+  '''
+# ---
+# name: TestGoldenMaster1CmtOral.test_1cmt_fo_linear_prop
+  '''
+  # APMODE generated model: golden_test_model_id_0
+  function() {
+    ini({
+      # Structural parameters
+      lka <- log(1.0)
+      lV <- log(70.0)
+      lCL <- log(5.0)
+      
+      # Inter-individual variability
+      eta.CL ~ 0.1
+      eta.V ~ 0.1
+      
+      # Residual error
+      prop.sd <- 0.1
+    })
+    model({
+      # Back-transform parameters
+      ka <- exp(lka)
+      V <- exp(lV + eta.V)
+      CL <- exp(lCL + eta.CL)
+      
+      # Compartment dynamics
+      cp <- linCmt()
+      
+      # Observation model
+      cp ~ prop(prop.sd)
+    })
+  }
+  '''
+# ---
+# name: TestGoldenMasterAbsorptionVariants.test_lagged_first_order
+  '''
+  # APMODE generated model: golden_test_model_id_0
+  function() {
+    ini({
+      # Structural parameters
+      lka <- log(1.5)
+      ltlag <- log(0.3)
+      lV <- log(70.0)
+      lCL <- log(5.0)
+      
+      # Inter-individual variability
+      eta.CL ~ 0.1
+      eta.V ~ 0.1
+      
+      # Residual error
+      prop.sd <- 0.1
+    })
+    model({
+      # Back-transform parameters
+      ka <- exp(lka)
+      tlag <- exp(ltlag)
+      V <- exp(lV + eta.V)
+      CL <- exp(lCL + eta.CL)
+      
+      # Compartment dynamics
+      alag(depot) <- tlag
+      cp <- linCmt()
+      
+      # Observation model
+      cp ~ prop(prop.sd)
+    })
+  }
+  '''
+# ---
+# name: TestGoldenMasterAbsorptionVariants.test_mixed_first_zero
+  '''
+  # APMODE generated model: golden_test_model_id_0
+  function() {
+    ini({
+      # Structural parameters
+      lka <- log(1.0)
+      ldur <- log(0.5)
+      logit_frac <- log(0.6 / (1 - 0.6))
+      lV <- log(70.0)
+      lCL <- log(5.0)
+      
+      # Inter-individual variability
+      eta.CL ~ 0.1
+      eta.V ~ 0.1
+      
+      # Residual error
+      prop.sd <- 0.1
+    })
+    model({
+      # Back-transform parameters
+      ka <- exp(lka)
+      dur <- exp(ldur)
+      frac <- 1 / (1 + exp(-(logit_frac)))
+      V <- exp(lV + eta.V)
+      CL <- exp(lCL + eta.CL)
+      
+      # Compartment dynamics
+      d/dt(depot_fo) <- -ka * depot_fo
+      dur(depot_zo) <- dur
+      d/dt(depot_zo) <- -depot_zo
+      f(depot_fo) <- frac
+      f(depot_zo) <- 1 - frac
+      d/dt(centr) <- ka * depot_fo + depot_zo - CL / V * centr
+      cp <- centr / V
+      
+      # Observation model
+      cp ~ prop(prop.sd)
+    })
+  }
+  '''
+# ---
+# name: TestGoldenMasterAbsorptionVariants.test_transit
+  '''
+  # APMODE generated model: golden_test_model_id_0
+  function() {
+    ini({
+      # Structural parameters
+      lka <- log(1.0)
+      lktr <- log(2.0)
+      ln <- log(4)
+      lV <- log(70.0)
+      lCL <- log(5.0)
+      
+      # Inter-individual variability
+      eta.CL ~ 0.1
+      eta.V ~ 0.1
+      
+      # Residual error
+      prop.sd <- 0.1
+    })
+    model({
+      # Back-transform parameters
+      ka <- exp(lka)
+      ktr <- exp(lktr)
+      n <- exp(ln)
+      mtt <- (n + 1) / ktr  # mean transit time for rxode2
+      V <- exp(lV + eta.V)
+      CL <- exp(lCL + eta.CL)
+      
+      # Compartment dynamics
+      d/dt(depot) <- transit(n, mtt) - ka * depot
+      d/dt(centr) <- ka * depot - CL / V * centr
+      cp <- centr / V
+      
+      # Observation model
+      cp ~ prop(prop.sd)
+    })
+  }
+  '''
+# ---
+# name: TestGoldenMasterAbsorptionVariants.test_zero_order
+  '''
+  # APMODE generated model: golden_test_model_id_0
+  function() {
+    ini({
+      # Structural parameters
+      ldur <- log(0.5)
+      lV <- log(70.0)
+      lCL <- log(5.0)
+      
+      # Inter-individual variability
+      eta.CL ~ 0.1
+      eta.V ~ 0.1
+      
+      # Residual error
+      prop.sd <- 0.1
+    })
+    model({
+      # Back-transform parameters
+      dur <- exp(ldur)
+      V <- exp(lV + eta.V)
+      CL <- exp(lCL + eta.CL)
+      
+      # Compartment dynamics
+      dur(centr) <- dur
+      d/dt(centr) <- -CL / V * centr
+      cp <- centr / V
+      
+      # Observation model
+      cp ~ prop(prop.sd)
+    })
+  }
+  '''
+# ---
+# name: TestGoldenMasterBLQ.test_blq_m3
+  '''
+  # APMODE generated model: golden_test_model_id_0
+  function() {
+    ini({
+      # Structural parameters
+      lka <- log(1.0)
+      lV <- log(70.0)
+      lCL <- log(5.0)
+      
+      # Inter-individual variability
+      eta.CL ~ 0.1
+      eta.V ~ 0.1
+      
+      # Residual error
+      prop.sd <- 0.1
+    })
+    model({
+      # Back-transform parameters
+      ka <- exp(lka)
+      V <- exp(lV + eta.V)
+      CL <- exp(lCL + eta.CL)
+      
+      # Compartment dynamics
+      cp <- linCmt()
+      
+      # Observation model
+      # BLQ M3: set CENS=1 and DV=LLOQ=0.1 in data for BLQ obs
+      cp ~ prop(prop.sd)
+    })
+  }
+  '''
+# ---
+# name: TestGoldenMasterBLQ.test_blq_m4
+  '''
+  # APMODE generated model: golden_test_model_id_0
+  function() {
+    ini({
+      # Structural parameters
+      lka <- log(1.0)
+      lV <- log(70.0)
+      lCL <- log(5.0)
+      
+      # Inter-individual variability
+      eta.CL ~ 0.1
+      eta.V ~ 0.1
+      
+      # Residual error
+      prop.sd <- 0.1
+    })
+    model({
+      # Back-transform parameters
+      ka <- exp(lka)
+      V <- exp(lV + eta.V)
+      CL <- exp(lCL + eta.CL)
+      
+      # Compartment dynamics
+      cp <- linCmt()
+      
+      # Observation model
+      # BLQ M4: set CENS=1, DV=LLOQ=0.5, LIMIT=0 in data
+      cp ~ prop(prop.sd)
+    })
+  }
+  '''
+# ---
+# name: TestGoldenMasterComplex.test_2cmt_mm_block_covariate
+  '''
+  # APMODE generated model: golden_test_model_id_0
+  function() {
+    ini({
+      # Structural parameters
+      lka <- log(1.5)
+      ltlag <- log(0.3)
+      lV1 <- log(30.0)
+      lV2 <- log(40.0)
+      lQ <- log(5.0)
+      lCL <- log(2.0)
+      lVmax <- log(50.0)
+      lKm <- log(5.0)
+      
+      # Covariate coefficients
+      beta_CL_WT <- 0.75
+      beta_V1_WT <- 0.75
+      
+      # Inter-individual variability
+      eta.CL + eta.V1 + eta.ka ~ c(
+        0.1, 0.01, 0.1, 0.01, 0.01, 0.1
+      )
+      
+      # Residual error
+      prop.sd <- 0.1
+      add.sd <- 0.5
+    })
+    model({
+      # Back-transform parameters
+      ka <- exp(lka + eta.ka)
+      tlag <- exp(ltlag)
+      V1 <- exp(lV1 + eta.V1 + beta_V1_WT * log(WT / 70))
+      V2 <- exp(lV2)
+      Q <- exp(lQ)
+      CL <- exp(lCL + eta.CL + beta_CL_WT * log(WT / 70))
+      Vmax <- exp(lVmax)
+      Km <- exp(lKm)
+      
+      # Compartment dynamics
+      alag(depot) <- tlag
+      d/dt(depot) <- -ka * depot
+      d/dt(centr) <- ka * depot - (CL / V1 * centr + Vmax * (centr/V1) / (Km + centr/V1)) - Q / V1 * centr + Q / V2 * periph
+      d/dt(periph) <- Q / V1 * centr - Q / V2 * periph
+      cp <- centr / V1
+      
+      # Observation model
+      cp ~ prop(prop.sd) + add(add.sd)
+    })
+  }
+  '''
+# ---
+# name: TestGoldenMasterComplex.test_3cmt_transit_blq
+  '''
+  # APMODE generated model: golden_test_model_id_0
+  function() {
+    ini({
+      # Structural parameters
+      lka <- log(1.5)
+      lktr <- log(3.0)
+      ln <- log(5)
+      lV1 <- log(15.0)
+      lV2 <- log(25.0)
+      lV3 <- log(8.0)
+      lQ2 <- log(4.0)
+      lQ3 <- log(1.5)
+      lCL <- log(3.5)
+      
+      # Inter-individual variability
+      eta.CL ~ 0.1
+      eta.V1 ~ 0.1
+      eta.ktr ~ 0.1
+      
+      # Residual error
+      prop.sd <- 0.1
+    })
+    model({
+      # Back-transform parameters
+      ka <- exp(lka)
+      ktr <- exp(lktr + eta.ktr)
+      n <- exp(ln)
+      mtt <- (n + 1) / ktr  # mean transit time for rxode2
+      V1 <- exp(lV1 + eta.V1)
+      V2 <- exp(lV2)
+      V3 <- exp(lV3)
+      Q2 <- exp(lQ2)
+      Q3 <- exp(lQ3)
+      CL <- exp(lCL + eta.CL)
+      
+      # Compartment dynamics
+      d/dt(depot) <- transit(n, mtt) - ka * depot
+      d/dt(centr) <- ka * depot - CL / V1 * centr - Q2 / V1 * centr + Q2 / V2 * periph1 - Q3 / V1 * centr + Q3 / V3 * periph2
+      d/dt(periph1) <- Q2 / V1 * centr - Q2 / V2 * periph1
+      d/dt(periph2) <- Q3 / V1 * centr - Q3 / V3 * periph2
+      cp <- centr / V1
+      
+      # Observation model
+      # BLQ M3: set CENS=1 and DV=LLOQ=0.05 in data for BLQ obs
+      cp ~ prop(prop.sd)
+    })
+  }
+  '''
+# ---
+# name: TestGoldenMasterDistributionVariants.test_2cmt
+  '''
+  # APMODE generated model: golden_test_model_id_0
+  function() {
+    ini({
+      # Structural parameters
+      lka <- log(1.0)
+      lV1 <- log(10.0)
+      lV2 <- log(20.0)
+      lQ <- log(3.0)
+      lCL <- log(5.0)
+      
+      # Inter-individual variability
+      eta.CL ~ 0.1
+      eta.V ~ 0.1
+      
+      # Residual error
+      prop.sd <- 0.1
+    })
+    model({
+      # Back-transform parameters
+      ka <- exp(lka)
+      V1 <- exp(lV1)
+      V2 <- exp(lV2)
+      Q <- exp(lQ)
+      CL <- exp(lCL + eta.CL)
+      
+      # Compartment dynamics
+      cp <- linCmt()
+      
+      # Observation model
+      cp ~ prop(prop.sd)
+    })
+  }
+  '''
+# ---
+# name: TestGoldenMasterDistributionVariants.test_3cmt
+  '''
+  # APMODE generated model: golden_test_model_id_0
+  function() {
+    ini({
+      # Structural parameters
+      lka <- log(1.0)
+      lV1 <- log(10.0)
+      lV2 <- log(20.0)
+      lV3 <- log(5.0)
+      lQ2 <- log(3.0)
+      lQ3 <- log(1.0)
+      lCL <- log(5.0)
+      
+      # Inter-individual variability
+      eta.CL ~ 0.1
+      eta.V ~ 0.1
+      
+      # Residual error
+      prop.sd <- 0.1
+    })
+    model({
+      # Back-transform parameters
+      ka <- exp(lka)
+      V1 <- exp(lV1)
+      V2 <- exp(lV2)
+      V3 <- exp(lV3)
+      Q2 <- exp(lQ2)
+      Q3 <- exp(lQ3)
+      CL <- exp(lCL + eta.CL)
+      
+      # Compartment dynamics
+      cp <- linCmt()
+      
+      # Observation model
+      cp ~ prop(prop.sd)
+    })
+  }
+  '''
+# ---
+# name: TestGoldenMasterDistributionVariants.test_tmdd_core
+  '''
+  # APMODE generated model: golden_test_model_id_0
+  function() {
+    ini({
+      # Structural parameters
+      lka <- log(1.0)
+      lV <- log(50.0)
+      lR0 <- log(10.0)
+      lkon <- log(0.1)
+      lkoff <- log(0.01)
+      lkint <- log(0.05)
+      lCL <- log(5.0)
+      
+      # Inter-individual variability
+      eta.CL ~ 0.1
+      eta.V ~ 0.1
+      
+      # Residual error
+      prop.sd <- 0.1
+    })
+    model({
+      # Back-transform parameters
+      ka <- exp(lka)
+      V <- exp(lV + eta.V)
+      R0 <- exp(lR0)
+      kon <- exp(lkon)
+      koff <- exp(lkoff)
+      kint <- exp(lkint)
+      kdeg <- koff  # receptor degradation ~ koff initial estimate
+      ksyn <- kdeg * R0  # receptor synthesis at baseline
+      kel <- CL / V  # elimination rate constant
+      CL <- exp(lCL + eta.CL)
+      
+      # Compartment dynamics
+      d/dt(depot) <- -ka * depot
+      # TMDD full binding model (Mager & Jusko 2001)
+      L <- centr / V  # drug concentration
+      d/dt(centr) <- ka * depot - kel * centr - kon * L * R * V + koff * RC * V
+      d/dt(R) <- ksyn - kdeg * R - kon * L * R + koff * RC
+      d/dt(RC) <- kon * L * R - koff * RC - kint * RC
+      R(0) <- R0
+      cp <- centr / V
+      
+      # Observation model
+      cp ~ prop(prop.sd)
+    })
+  }
+  '''
+# ---
+# name: TestGoldenMasterDistributionVariants.test_tmdd_qss
+  '''
+  # APMODE generated model: golden_test_model_id_0
+  function() {
+    ini({
+      # Structural parameters
+      lka <- log(1.0)
+      lV <- log(50.0)
+      lR0 <- log(10.0)
+      lKD <- log(0.5)
+      lkint <- log(0.05)
+      lCL <- log(5.0)
+      
+      # Inter-individual variability
+      eta.CL ~ 0.1
+      eta.V ~ 0.1
+      
+      # Residual error
+      prop.sd <- 0.1
+    })
+    model({
+      # Back-transform parameters
+      ka <- exp(lka)
+      V <- exp(lV + eta.V)
+      R0 <- exp(lR0)
+      KD <- exp(lKD)
+      kint <- exp(lkint)
+      kdeg <- kint  # receptor degradation initial estimate
+      ksyn <- kdeg * R0
+      kel <- CL / V  # elimination rate constant
+      CL <- exp(lCL + eta.CL)
+      
+      # Compartment dynamics
+      d/dt(depot) <- -ka * depot
+      # TMDD quasi-steady-state (Gibiansky et al. 2008)
+      # KSS = (koff + kint)/kon; KD = koff/kon.
+      # When kint << koff, KSS ≈ KD. When kint is significant,
+      # KSS > KD; using KD underestimates KSS, which can
+      # overestimate complex formation and target-mediated elimination.
+      # The TMDDQSS DSL module estimates KD directly; to use the
+      # full KSS, convert to TMDDCore (kon, koff, kint) instead.
+      KSS <- KD  # QSS approximation: KSS ≈ KD
+      # Convert total drug amount to concentration
+      Ctot <- Atot / V
+      # Algebraic QSS: solve for free concentrations
+      Cfree <- 0.5 * ((Ctot - Rtot - KSS) + sqrt((Ctot - Rtot - KSS)^2 + 4 * KSS * Ctot))
+      Rfree <- Rtot * KSS / (KSS + Cfree)
+      RC <- Ctot - Cfree
+      d/dt(Atot) <- ka * depot - kel * Cfree * V - kint * RC * V
+      d/dt(Rtot) <- ksyn - kdeg * Rfree - kint * RC
+      Atot(0) <- 0
+      Rtot(0) <- R0
+      cp <- Cfree
+      
+      # Observation model
+      cp ~ prop(prop.sd)
+    })
+  }
+  '''
+# ---
+# name: TestGoldenMasterEliminationVariants.test_michaelis_menten
+  '''
+  # APMODE generated model: golden_test_model_id_0
+  function() {
+    ini({
+      # Structural parameters
+      lka <- log(1.0)
+      lV <- log(70.0)
+      lVmax <- log(100.0)
+      lKm <- log(10.0)
+      
+      # Inter-individual variability
+      eta.CL ~ 0.1
+      eta.V ~ 0.1
+      
+      # Residual error
+      prop.sd <- 0.1
+    })
+    model({
+      # Back-transform parameters
+      ka <- exp(lka)
+      V <- exp(lV + eta.V)
+      Vmax <- exp(lVmax)
+      Km <- exp(lKm)
+      
+      # Compartment dynamics
+      d/dt(depot) <- -ka * depot
+      d/dt(centr) <- ka * depot - Vmax * (centr/V) / (Km + centr/V)
+      cp <- centr / V
+      
+      # Observation model
+      cp ~ prop(prop.sd)
+    })
+  }
+  '''
+# ---
+# name: TestGoldenMasterEliminationVariants.test_parallel_linear_mm
+  '''
+  # APMODE generated model: golden_test_model_id_0
+  function() {
+    ini({
+      # Structural parameters
+      lka <- log(1.0)
+      lV <- log(70.0)
+      lCL <- log(2.0)
+      lVmax <- log(50.0)
+      lKm <- log(5.0)
+      
+      # Inter-individual variability
+      eta.CL ~ 0.1
+      eta.V ~ 0.1
+      
+      # Residual error
+      prop.sd <- 0.1
+    })
+    model({
+      # Back-transform parameters
+      ka <- exp(lka)
+      V <- exp(lV + eta.V)
+      CL <- exp(lCL + eta.CL)
+      Vmax <- exp(lVmax)
+      Km <- exp(lKm)
+      
+      # Compartment dynamics
+      d/dt(depot) <- -ka * depot
+      d/dt(centr) <- ka * depot - (CL / V * centr + Vmax * (centr/V) / (Km + centr/V))
+      cp <- centr / V
+      
+      # Observation model
+      cp ~ prop(prop.sd)
+    })
+  }
+  '''
+# ---
+# name: TestGoldenMasterEliminationVariants.test_time_varying
+  '''
+  # APMODE generated model: golden_test_model_id_0
+  function() {
+    ini({
+      # Structural parameters
+      lka <- log(1.0)
+      lV <- log(70.0)
+      lCL <- log(5.0)
+      lkdecay <- log(0.1)  # decay rate initial estimate
+      
+      # Inter-individual variability
+      eta.CL ~ 0.1
+      eta.V ~ 0.1
+      
+      # Residual error
+      prop.sd <- 0.1
+    })
+    model({
+      # Back-transform parameters
+      ka <- exp(lka)
+      V <- exp(lV + eta.V)
+      CL <- exp(lCL + eta.CL)
+      kdecay <- exp(lkdecay)
+      
+      # Compartment dynamics
+      d/dt(depot) <- -ka * depot
+      d/dt(centr) <- ka * depot - CL * exp(-kdecay * t) / V * centr
+      cp <- centr / V
+      
+      # Observation model
+      cp ~ prop(prop.sd)
+    })
+  }
+  '''
+# ---
+# name: TestGoldenMasterVariability.test_block_iiv
+  '''
+  # APMODE generated model: golden_test_model_id_0
+  function() {
+    ini({
+      # Structural parameters
+      lka <- log(1.0)
+      lV <- log(70.0)
+      lCL <- log(5.0)
+      
+      # Inter-individual variability
+      eta.CL + eta.V ~ c(
+        0.1, 0.01, 0.1
+      )
+      
+      # Residual error
+      prop.sd <- 0.1
+    })
+    model({
+      # Back-transform parameters
+      ka <- exp(lka)
+      V <- exp(lV + eta.V)
+      CL <- exp(lCL + eta.CL)
+      
+      # Compartment dynamics
+      cp <- linCmt()
+      
+      # Observation model
+      cp ~ prop(prop.sd)
+    })
+  }
+  '''
+# ---
+# name: TestGoldenMasterVariability.test_covariate_power
+  '''
+  # APMODE generated model: golden_test_model_id_0
+  function() {
+    ini({
+      # Structural parameters
+      lka <- log(1.0)
+      lV <- log(70.0)
+      lCL <- log(5.0)
+      
+      # Covariate coefficients
+      beta_CL_WT <- 0.75
+      beta_V_WT <- 0.75
+      
+      # Inter-individual variability
+      eta.CL ~ 0.1
+      eta.V ~ 0.1
+      
+      # Residual error
+      prop.sd <- 0.1
+    })
+    model({
+      # Back-transform parameters
+      ka <- exp(lka)
+      V <- exp(lV + eta.V + beta_V_WT * log(WT / 70))
+      CL <- exp(lCL + eta.CL + beta_CL_WT * log(WT / 70))
+      
+      # Compartment dynamics
+      cp <- linCmt()
+      
+      # Observation model
+      cp ~ prop(prop.sd)
+    })
+  }
+  '''
+# ---
+# name: TestGoldenMasterVariability.test_iov
+  '''
+  # APMODE generated model: golden_test_model_id_0
+  function() {
+    ini({
+      # Structural parameters
+      lka <- log(1.0)
+      lV <- log(70.0)
+      lCL <- log(5.0)
+      
+      # Inter-individual variability
+      eta.CL ~ 0.1
+      eta.V ~ 0.1
+      eta.iov.CL ~ 0.05 | occ(STUDY_ID)
+      
+      # Residual error
+      prop.sd <- 0.1
+    })
+    model({
+      # IOV bound to occasion column: STUDY_ID (specified in ini block)
+      
+      # Back-transform parameters
+      ka <- exp(lka)
+      V <- exp(lV + eta.V)
+      CL <- exp(lCL + eta.CL + eta.iov.CL)
+      
+      # Compartment dynamics
+      cp <- linCmt()
+      
+      # Observation model
+      cp ~ prop(prop.sd)
+    })
+  }
+  '''
+# ---

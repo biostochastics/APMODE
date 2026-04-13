@@ -1,0 +1,20 @@
+{
+  "policy_version": "0.1.0",
+  "lane": "submission",
+  "gate1": {
+    "convergence_required": true,
+    "cwres_mean_max": 0.1,
+    "outlier_fraction_max": 0.05,
+    "vpc_coverage_lower": 0.85,
+    "vpc_coverage_upper": 0.995,
+    "seed_stability_n": 3
+  },
+  "gate2": {
+    "interpretable_parameterization": "required",
+    "reproducible_estimation": "required",
+    "shrinkage_max": 0.30,
+    "identifiability_required": true,
+    "node_eligible": false,
+    "loro_required": false
+  }
+}
