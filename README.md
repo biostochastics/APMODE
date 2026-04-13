@@ -61,8 +61,11 @@ This compiles to a typed AST, validates against the constraint table (including 
 ## Setup
 
 ```bash
-# Requires Python 3.12+
+# Requires Python 3.12+, uv
 uv sync --all-extras
+
+# Optional: R 4.4+ with nlmixr2/rxode2 for real estimation
+# (mock R subprocess tests work without R)
 ```
 
 ## Testing
@@ -70,38 +73,70 @@ uv sync --all-extras
 ```bash
 uv run pytest tests/ -q                    # all 554 tests
 uv run pytest tests/unit/ -q               # unit tests only
+uv run pytest tests/integration/ -q        # end-to-end mock R pipeline
 uv run pytest tests/property/ -q           # Hypothesis property-based
 uv run pytest tests/golden/ -q             # syrupy golden master snapshots
 uv run pytest tests/ --snapshot-update     # update snapshots after emitter changes
-uv run mypy src/apmode/ --strict           # type checking (should be 0 errors)
-uv run ruff check src/apmode/ tests/       # linting
+uv run mypy src/apmode/ --strict           # type checking (0 errors)
+uv run ruff check src/apmode/ tests/       # linting (0 errors)
+uv run ruff format src/apmode/ tests/      # formatting
 ```
+
+## Benchmark Suite A
+
+Simulated PK datasets with known ground truth for structure/parameter recovery (PRD §5).
+
+```bash
+# Requires R 4.4+ with rxode2, jsonlite, lotri
+Rscript benchmarks/suite_a/simulate_all.R [output_dir]
+```
+
+| Scenario | Model | Key Test |
+|----------|-------|----------|
+| A1 | 1-cmt oral, first-order abs, linear elim | Structure identification |
+| A2 | 2-cmt IV, parallel linear+MM elim | Compartment count + nonlinear CL |
+| A3 | Transit (n=3), 1-cmt, linear elim | Transit chain detection |
+| A4 | 1-cmt oral, MM elimination | Nonlinear clearance detection |
 
 ## Architecture
 
 See `ARCHITECTURE.md` for the full technical architecture and `PRD_APMODE_v0.3.md` for the product requirements.
 
-### Compiler pipeline
+### System pipeline
 
 ```
-DSL text → Lark parser → parse tree → DSLTransformer → Pydantic AST (DSLSpec)
-                                                            ↓
-                                                    Semantic validator
-                                                            ↓
-                                                    nlmixr2 emitter → R code
-                                                            ↓
-                                                    Bundle emitter → JSON + .R files
+NONMEM CSV ──→ ingest_nonmem_csv() ──→ CanonicalPKSchema (Pandera)
+                                              │
+                                    ┌─────────┴──────────┐
+                                    ↓                    ↓
+                            DataManifest          profile_data()
+                            (SHA-256,             (Evidence Manifest:
+                             covariates)           richness, route,
+                                                   clearance, BLQ)
+                                    │                    │
+                                    ↓                    ↓
+                            NCAEstimator         SearchSpace.from_manifest()
+                            (CL, V, ka)          (dispatch constraints)
+                                    │                    │
+                                    ↓                    ↓
+DSL text ──→ Lark parser ──→ DSLSpec ──→ emit_nlmixr2() ──→ R code
+                                │                              │
+                        Semantic validator            Nlmixr2Runner.run()
+                                │                     (async subprocess)
+                        split_subjects()                       │
+                        (k-fold, LORO)               BackendResult (Pydantic)
+                                                               │
+                                                    BundleEmitter → JSON + .R
 ```
 
 ### Pharmacometric references
 
-The nlmixr2 emitter implements ODE formulations from:
-
 - **TMDD full binding**: Mager & Jusko (2001), J Pharmacokinet Pharmacodyn 28:507-532
 - **TMDD QSS**: Gibiansky et al. (2008), J Pharmacokinet Pharmacodyn 35:573-591
 - **Transit compartments**: Savic et al. (2007), J Pharmacokinet Pharmacodyn 34:711-726
-- **Allometric scaling**: Anderson & Holford (2008), Clin Pharmacokinet 47:455-467 (reference weight 70 kg)
+- **Allometric scaling**: Anderson & Holford (2008), Clin Pharmacokinet 47:455-467 (70 kg reference)
 - **BLQ M3/M4**: nlmixr2 censoring via CENS/LIMIT data columns
+- **NCA**: linear trapezoidal AUC, terminal log-linear kel, CL=Dose/AUC_inf
 
 ## Phasing
 
@@ -111,6 +146,15 @@ The nlmixr2 emitter implements ODE formulations from:
 - **Phase 1 Month 3-4** (in progress): Data profiler, NCA estimates, automated search, data splitting
 - **Phase 1 Month 4-5**: Governance layer (Gate 1, Gate 2)
 - **Phase 1 Month 5-6**: Orchestrator, CLI, full Benchmark Suite A
+
+## Code Review Provenance
+
+Two rounds of multi-model code review have been conducted:
+
+| Date | Models | Focus | Key Fixes |
+|------|--------|-------|-----------|
+| 2026-04-13 (R1) | codex, gemini, droid, crush | DSL compiler, emitter, bundle models | IOV syntax, TMDD QSS KD/KSS, BLQ composition |
+| 2026-04-13 (R2) | codex, gemini, GLM-5, MiniMax, droid | Data pipeline, NCA, search, profiler, security | A2 CMT bug, NCA terminal slope, NaN/Inf guards, route certainty, Spearman ties |
 
 ## Known Limitations (Phase 1)
 
