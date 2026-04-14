@@ -17,6 +17,7 @@ from apmode.backends.node_init import (
     _target_fn_value,
     get_weight_library,
     pretrain_node_weights,
+    reset_weight_library,
     select_reference_profile,
     transfer_from_classical,
 )
@@ -155,6 +156,20 @@ class TestWeightLibrary:
     def test_module_singleton(self) -> None:
         lib = get_weight_library()
         assert isinstance(lib, WeightLibrary)
+
+    def test_reset_clears_cache(self) -> None:
+        lib = WeightLibrary()
+        lib.get("1cmt_linear_elim", hidden_dim=3, seed=0)
+        assert len(lib._cache) > 0
+        lib.reset()
+        assert len(lib._cache) == 0
+
+    def test_reset_module_library(self) -> None:
+        lib = get_weight_library()
+        lib.get("1cmt_linear_elim", hidden_dim=3, seed=99)
+        assert len(lib._cache) > 0
+        reset_weight_library()
+        assert len(lib._cache) == 0
 
 
 # ---------------------------------------------------------------------------

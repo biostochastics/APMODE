@@ -313,6 +313,9 @@ class NodeBackendRunner:
         params["ka"] = ParameterEstimate(
             name="ka", estimate=float(model.ka), category="structural"
         )
+        params["CL"] = ParameterEstimate(
+            name="CL", estimate=float(model.CL), category="structural"
+        )
         params["V"] = ParameterEstimate(name="V", estimate=float(model.V), category="structural")
 
         if model.n_cmt == 2:

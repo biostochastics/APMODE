@@ -1,71 +1,82 @@
-# APMODE
+<div align="center">
 
-**Adaptive Pharmacokinetic Model Discovery Engine** — a governed meta-system that composes four PK modeling paradigms (classical NLME, automated structural search, agentic LLM model construction, and hybrid mechanistic-NODE) into a single workflow for population PK model discovery.
+  # APMODE
 
-Licensed under GPL-2.0-or-later.
+  **Adaptive Pharmacokinetic Model Discovery Engine**
 
-## Status
+  [![Phase](https://img.shields.io/badge/phase-2%20(85%25)-blue)](PRD_APMODE_v0.3.md)
+  [![Tests](https://img.shields.io/badge/tests-940%20passing-success)]()
+  [![License](https://img.shields.io/badge/license-GPL--2.0--or--later-green)](LICENSE)
+  [![Python](https://img.shields.io/badge/python-3.12%2B-yellow)]()
+  [![mypy](https://img.shields.io/badge/mypy-strict%20%E2%9C%93-blue)]()
 
-**Phase 2 — IN PROGRESS (~85%).** 940 tests passing. `mypy --strict` clean (48 files). `ruff` clean.
+</div>
 
-Phase 1 complete (679 tests). Phase 2 NODE backend + governance + multi-backend dispatch + benchmarks + Stan codegen + NODE init strategy implemented (261 new tests). Seven rounds of multi-model code review completed; all critical and high-severity issues fixed.
+---
 
-### What exists
+## What is APMODE?
 
-| Component | Path | Description |
-|-----------|------|-------------|
-| **PK DSL grammar** | `src/apmode/dsl/pk_grammar.lark` | Full Lark EBNF grammar for PK model specifications |
-| **AST models** | `src/apmode/dsl/ast_models.py` | Typed Pydantic nodes: Absorption (6), Distribution (5+V), Elimination (5), Variability (3), Observation (5+BLQ composition) |
-| **Semantic validator** | `src/apmode/dsl/validator.py` | Constraint table enforcement (PRD §4.2.5) |
-| **nlmixr2 emitter** | `src/apmode/dsl/nlmixr2_emitter.py` | DSL AST → R code strings for nlmixr2/rxode2 |
-| **Stan emitter** | `src/apmode/dsl/stan_emitter.py` | DSL AST → Stan program for probabilistic inference |
-| **Nlmixr2Runner** | `src/apmode/backends/nlmixr2_runner.py` | Async subprocess backend with file-based IPC |
-| **R harness** | `src/apmode/r/harness.R` | R-side nlmixr2 SAEM/FOCEI estimation harness |
-| **Data ingestion** | `src/apmode/data/ingest.py` | NONMEM CSV → Pandera validation → DataManifest |
-| **Data profiler** | `src/apmode/data/profiler.py` | Evidence Manifest with AMT-based nonlinear CL detection |
-| **NCA estimator** | `src/apmode/data/initial_estimates.py` | NCA with multi-dose AUC_tau, extrapolation fraction check |
-| **Data splitter** | `src/apmode/data/splitter.py` | Subject-level splitting, k-fold, LORO-CV |
-| **Search candidates** | `src/apmode/search/candidates.py` | Automated search space, candidate generation, SearchDAG |
-| **Search engine** | `src/apmode/search/engine.py` | Multi-backend candidate dispatch (nlmixr2 + jax_node), BIC scoring, Pareto frontier |
-| **Gate 1 evaluator** | `src/apmode/governance/gates.py` | Technical Validity: 7 checks (convergence, plausibility, CWRES, VPC, seed stability) |
-| **Gate 2 evaluator** | `src/apmode/governance/gates.py` | Lane Admissibility: 6 checks (interpretability, shrinkage, identifiability, NODE exclusion) |
-| **Gate 2.5 evaluator** | `src/apmode/governance/gates.py` | Credibility Qualification (ICH M15): 5 checks (COU, data adequacy, ML transparency) |
-| **Gate 3 ranking** | `src/apmode/governance/gates.py` | Within-paradigm BIC + cross-paradigm simulation-based composite ranking |
-| **Cross-paradigm ranking** | `src/apmode/governance/ranking.py` | VPC concordance, NPE, composite score for mixed-backend ranking |
-| **NODE constraints** | `src/apmode/backends/node_constraints.py` | 5 enumerated constraint templates (monotone, bounded, saturable, smooth) |
-| **NODE sub-model** | `src/apmode/backends/node_model.py` | Bram-style MLP with RE on input-layer weights |
-| **Hybrid ODE** | `src/apmode/backends/node_ode.py` | Mechanistic PK skeleton + NODE sub-function, Diffrax Tsit5 solver |
-| **NODE trainer** | `src/apmode/backends/node_trainer.py` | Optax Adam training loop with early stopping, log-space params |
-| **NodeBackendRunner** | `src/apmode/backends/node_runner.py` | BackendRunner protocol impl for JAX/Diffrax NODE backend |
-| **NODE init strategy** | `src/apmode/backends/node_init.py` | Pre-trained weight library + transfer learning from classical fits |
-| **Functional distillation** | `src/apmode/backends/node_distillation.py` | Sub-function visualization, parametric surrogate fitting, AUC/Cmax BE fidelity |
-| **Credibility report** | `src/apmode/report/credibility.py` | ICH M15-aligned credibility assessment per candidate |
-| **Lane Router** | `src/apmode/routing.py` | Dispatch decisions by lane + evidence manifest constraints |
-| **Orchestrator** | `src/apmode/orchestrator/__init__.py` | Full pipeline: ingest → profile → NCA → split → search (multi-backend) → gates 1/2/2.5/3 → bundle |
-| **Bundle emitter** | `src/apmode/bundle/emitter.py` | All reproducibility bundle artifacts per §5 |
-| **Bundle models** | `src/apmode/bundle/models.py` | All Pydantic schemas (BackendResult, EvidenceManifest, etc.) |
-| **Gate policies** | `src/apmode/governance/policy.py` | Gate 1, 2, 2.5 policy file schemas |
-| **Lane policies** | `policies/*.json` | Default gate thresholds per lane |
-| **CLI** | `src/apmode/cli.py` | Typer CLI: `apmode run`, `apmode validate`, `apmode inspect` |
-| **Structured logging** | `src/apmode/logging.py` | structlog JSON configuration, context-bound loggers |
-| **Benchmark Suite A** | `benchmarks/suite_a/`, `src/apmode/benchmarks/suite_a.py` | 7 recovery scenarios (A1-A7): classical, TMDD, covariates, NODE absorption |
-| **Benchmark Suite B** | `src/apmode/benchmarks/suite_b.py` | NODE-specific validation: absorption recovery (B1), sparse data dispatch (B2), cross-paradigm ranking (B3) |
+APMODE is a **governed meta-system** that composes four population PK modeling paradigms into a single discovery workflow — so pharmacometricians can evaluate classical, automated, neural, and hybrid approaches under one roof with consistent evidence standards.
 
-### Test suite
+**Four paradigms, one pipeline.** Classical NLME (nlmixr2), automated structural search, hybrid mechanistic-NODE (JAX/Diffrax), and agentic LLM model construction (Phase 3) — each dispatched, evaluated, and ranked through a unified governance funnel.
 
-| Suite | Count | Description |
-|-------|-------|-------------|
-| Unit tests | ~690 | All modules: DSL, data, backends (nlmixr2 + NODE), search, governance, gates, routing, bundle, benchmarks (A+B), distillation, credibility, Stan emitter, NODE init |
-| NODE backend tests | 101 | Constraints (32), sub-model (16), ODE (11), trainer (6), runner (6), distillation (13), init strategy (27) |
-| Stan codegen + lowering | 43 | Stan emitter (25), cross-backend lowering validation (18) |
-| Gate 2.5 + cross-paradigm | 27 | ICH M15 credibility (11), cross-paradigm ranking (16) |
-| Integration tests | 30 | Mock R pipeline (3), Discovery lane dispatch (12), Suite B NODE validation (15) |
-| Suite A benchmark tests | 48 | Classical scenarios A1-A4 (24), TMDD/covariate/NODE scenarios A5-A7 (15), property tests (9) |
-| Golden masters | 21 | Syrupy snapshots for pharmacometrician-validated R output |
-| R syntax validation | 168 | Balanced delimiters, eta/param consistency |
-| Property-based | ~30 | Hypothesis: roundtrip, JSON, NODE constraints |
+**Evidence gates, not vibes.** Every candidate passes Gate 1 (technical validity), Gate 2 (lane admissibility), Gate 2.5 (ICH M15 credibility), and Gate 3 (cross-paradigm ranking) before it can be recommended. NODE models are never eligible for regulatory submission — this is a hard rule, not a tunable weight.
 
-### DSL example
+**Reproducibility is the unit of output.** Every run emits a versioned JSON bundle — data manifest, search trajectory, gate decisions, candidate lineage DAG, compiled specs — so any result can be audited or replayed.
+
+**A typed PK DSL is the control surface.** Models are specified in a structured grammar (`Absorption x Distribution x Elimination x Variability x Observation`), compiled to a typed AST, validated against pharmacometric constraints, and lowered to backend-specific code. The agentic LLM backend (Phase 3) operates exclusively through DSL transforms — it cannot emit raw code.
+
+> **Status**: Phase 2 in progress (~85%). 940 tests passing. `mypy --strict` clean. `ruff` clean. Seven rounds of multi-model code review completed; all critical and high-severity issues fixed.
+
+---
+
+## Quick Start
+
+### Prerequisites
+
+- **Python**: 3.12+
+- **Package manager**: [uv](https://docs.astral.sh/uv/)
+- **Optional**: R 4.4+ with `nlmixr2`, `rxode2`, `jsonlite`, `lotri` for real estimation (mock R subprocess tests work without R)
+
+### Installation
+
+```bash
+git clone https://github.com/biostochastics/apmode.git
+cd apmode
+
+# Install all dependencies
+uv sync --all-extras
+
+# Verify
+uv run apmode --help
+```
+
+### Run a Discovery Pipeline
+
+```bash
+# Validate a NONMEM-format dataset
+uv run apmode validate <dataset.csv>
+
+# Run the full pipeline (ingest → profile → NCA → search → gates → bundle)
+uv run apmode run <dataset.csv> --lane submission
+
+# Inspect a reproducibility bundle
+uv run apmode inspect <bundle_dir>
+```
+
+### Run the Test Suite
+
+```bash
+uv run pytest tests/ -q                    # all 940 tests
+uv run mypy src/apmode/ --strict           # type checking (0 errors)
+uv run ruff check src/apmode/ tests/       # linting (0 errors)
+```
+
+---
+
+## The PK DSL
+
+APMODE's typed domain-specific language is the single source of truth for model specification. It compiles to a validated AST and lowers to nlmixr2 R code or Stan programs.
 
 ```
 model {
@@ -80,38 +91,109 @@ model {
 }
 ```
 
-This compiles to a typed AST, validates against the constraint table (including param cross-references), and lowers to a complete nlmixr2 R model function.
+| DSL Axis | Supported Forms |
+|----------|----------------|
+| **Absorption** | FirstOrder, ZeroOrder, Transit(n), Sequential, Mixed, WeibullAbs |
+| **Distribution** | OneCmt, TwoCmt, ThreeCmt, EffectCmt, VirtualPeripheral |
+| **Elimination** | Linear, MichaelisMenten, ParallelLinearMM, InductionInhibition, TimeVaryingElim |
+| **Variability** | IIV (diagonal/block), IOV, CovariateLink (power/exponential/linear/step) |
+| **Observation** | Proportional, Additive, Combined, LogNormal, BLQ (M1/M3/M4 composition) |
 
-## Setup
+---
 
-```bash
-# Requires Python 3.12+, uv
-uv sync --all-extras
+## Architecture
 
-# Optional: R 4.4+ with nlmixr2/rxode2 for real estimation
-# (mock R subprocess tests work without R)
+```
+NONMEM CSV ──→ Ingest + Validate ──→ Canonical PK Schema (Pandera)
+                                            │
+                                  ┌─────────┴──────────┐
+                                  ↓                    ↓
+                          Data Manifest          Evidence Manifest
+                          (SHA-256,              (richness, route,
+                           covariates)            CL linearity, BLQ)
+                                  │                    │
+                                  ↓                    ↓
+                          NCA Estimator          Search Space
+                          (CL, V, ka,            (dispatch constraints)
+                           multi-dose)                 │
+                                  │                    ↓
+DSL text ──→ Lark parser ──→ AST ──→        Search Engine
+                          │                  ├─ Candidate generation
+                  Semantic validator         ├─ Multi-backend dispatch
+                          │                  │   ├─ Classical → nlmixr2
+                  split_subjects()           │   └─ NODE     → JAX/Diffrax
+                  (k-fold, LORO)             └─ Pareto frontier + BIC scoring
+                                                       │
+                                          ┌────────────┼────────────┐
+                                          ↓            ↓            ↓
+                                    Gate 1:       Gate 2:      Gate 2.5:
+                                    Technical     Lane         ICH M15
+                                    Validity      Admissibility Credibility
+                                    (7 checks)    (6 checks)   (5 checks)
+                                          └────────────┴────────────┘
+                                                       │
+                                                  Gate 3: Ranking
+                                            (within-paradigm BIC or
+                                             cross-paradigm VPC/NPE)
+                                                       │
+                                                       ↓
+                                        Reproducibility Bundle (JSON/JSONL)
 ```
 
-## Testing
+### Key Components
+
+| Component | Path | Role |
+|-----------|------|------|
+| PK DSL grammar | `src/apmode/dsl/pk_grammar.lark` | Full Lark EBNF for PK model specs |
+| AST models | `src/apmode/dsl/ast_models.py` | Typed Pydantic nodes for all DSL axes |
+| Semantic validator | `src/apmode/dsl/validator.py` | Constraint table enforcement (PRD §4.2.5) |
+| nlmixr2 emitter | `src/apmode/dsl/nlmixr2_emitter.py` | DSL AST → R code for nlmixr2/rxode2 |
+| Stan emitter | `src/apmode/dsl/stan_emitter.py` | DSL AST → Stan program |
+| Data pipeline | `src/apmode/data/` | Ingestion, profiling, NCA estimates, splitting |
+| Classical backend | `src/apmode/backends/nlmixr2_runner.py` | Async subprocess runner with file-based IPC |
+| NODE backend | `src/apmode/backends/node_*.py` | Bram-style hybrid MLP, Diffrax ODE, Optax training |
+| Governance | `src/apmode/governance/` | Gates 1/2/2.5/3, cross-paradigm ranking, policy files |
+| Search engine | `src/apmode/search/engine.py` | Multi-backend dispatch, BIC scoring, Pareto frontier |
+| Orchestrator | `src/apmode/orchestrator/` | Full pipeline: ingest → gates → bundle |
+| Bundle emitter | `src/apmode/bundle/` | All reproducibility bundle artifacts per PRD §5 |
+| CLI | `src/apmode/cli.py` | Typer CLI: `run`, `validate`, `inspect` |
+
+---
+
+## Governance Funnel
+
+APMODE enforces a **gated funnel** — not a weighted sum. Each gate is disqualifying; only survivors advance.
+
+| Gate | Purpose | Checks |
+|------|---------|--------|
+| **Gate 1** | Technical Validity | Convergence, parameter plausibility, CWRES normality, VPC coverage, condition number, seed stability, split integrity |
+| **Gate 2** | Lane Admissibility | Interpretability, shrinkage, identifiability (profile-likelihood CI), NODE exclusion (Submission lane) |
+| **Gate 2.5** | Credibility Qualification | ICH M15 context-of-use, data adequacy, ML transparency, limitation-risk mapping, operational qualification |
+| **Gate 3** | Ranking | Within-paradigm BIC; cross-paradigm VPC concordance + NPE + composite score |
+
+Gate thresholds are **versioned policy artifacts** in `policies/*.json` — not hard-coded constants.
+
+---
+
+## Three Operating Lanes
+
+APMODE routes work through separate pipelines with different admissible backends and evidence standards:
+
+| Lane | Purpose | Admissible Backends | NODE Eligible? |
+|------|---------|-------------------|----------------|
+| **Submission** | Regulatory-grade models | Classical NLME only | No (hard rule) |
+| **Discovery** | Broad exploration | Classical + NODE | Yes (Gate 2.5 required) |
+| **Translational Optimization** | LORO-CV prediction (Phase 3) | All backends | Yes |
+
+---
+
+## Benchmark Suites
+
+### Suite A — Structure and Parameter Recovery
+
+Simulated PK datasets with known ground truth (PRD §5). Requires R 4.4+ with `rxode2`.
 
 ```bash
-uv run pytest tests/ -q                    # all 940 tests
-uv run pytest tests/unit/ -q               # unit tests only
-uv run pytest tests/integration/ -q        # end-to-end mock R pipeline
-uv run pytest tests/property/ -q           # Hypothesis property-based
-uv run pytest tests/golden/ -q             # syrupy golden master snapshots
-uv run pytest tests/ --snapshot-update     # update snapshots after emitter changes
-uv run mypy src/apmode/ --strict           # type checking (0 errors)
-uv run ruff check src/apmode/ tests/       # linting (0 errors)
-uv run ruff format src/apmode/ tests/      # formatting
-```
-
-## Benchmark Suite A
-
-Simulated PK datasets with known ground truth for structure/parameter recovery (PRD §5).
-
-```bash
-# Requires R 4.4+ with rxode2, jsonlite, lotri
 Rscript benchmarks/suite_a/simulate_all.R [output_dir]
 ```
 
@@ -125,118 +207,117 @@ Rscript benchmarks/suite_a/simulate_all.R [output_dir]
 | A6 | 1-cmt oral + allometric WT + renal covariate | Covariate structure recovery |
 | A7 | 2-cmt + NODE saturable absorption | NODE shape recovery + surrogate fidelity |
 
-## Benchmark Suite B
+### Suite B — NODE-Specific Validation
 
-NODE-specific validation (Phase 2).
-
-| Scenario | Test | Key Assertion |
-|----------|------|---------------|
-| B1 | NODE absorption recovery | Mock NODE fit passes Gate 1+2 discovery |
+| Scenario | Test | Assertion |
+|----------|------|-----------|
+| B1 | NODE absorption recovery | Mock NODE fit passes Gate 1+2 Discovery |
 | B2 | Sparse data + NODE dispatch | Lane Router blocks NODE when data insufficient |
 | B3 | Cross-paradigm ranking | Gate 3 correctly ranks mixed nlmixr2 + jax_node candidates |
 
-## Architecture
+---
 
-See `ARCHITECTURE.md` for the full technical architecture and `PRD_APMODE_v0.3.md` for the product requirements.
+## Test Suite
 
-### System pipeline
+940 tests across multiple strategies:
 
-```
-NONMEM CSV ──→ ingest_nonmem_csv() ──→ CanonicalPKSchema (Pandera)
-                                              │
-                                    ┌─────────┴──────────┐
-                                    ↓                    ↓
-                            DataManifest          profile_data()
-                            (SHA-256,             (Evidence Manifest:
-                             covariates)           richness, route,
-                                                   clearance, BLQ)
-                                    │                    │
-                                    ↓                    ↓
-                            NCAEstimator         SearchSpace.from_manifest()
-                            (CL, V, ka,          (dispatch constraints)
-                             multi-dose              │
-                             AUC_tau)                 ↓
-                                    │          SearchEngine.run()
-                                    ↓           ├─ Root candidates
-DSL text ──→ Lark parser ──→ DSLSpec  ──→       ├─ Warm-start children
-                                │               ├─ Pareto frontier
-                        Semantic validator      └─ BIC scoring
-                                │                      │
-                        split_subjects()               ↓
-                        (k-fold, LORO)     SearchEngine._select_runner()
-                                            ├─ Classical → Nlmixr2Runner
-                                            └─ NODE     → NodeBackendRunner
-                                                       │
-                                               BackendResult
-                                                       │
-                                          ┌────────────┼────────────┐
-                                          ↓            ↓            ↓
-                                    Gate 1:       Gate 2:      Gate 2.5:
-                                    Technical     Lane         Credibility
-                                    Validity      Admissibility (ICH M15)
-                                    (7 checks)    (6 checks)   (5 checks)
-                                          │            │            │
-                                          └────────────┴────────────┘
-                                                       │
-                                                  Gate 3:
-                                                  Ranking
-                                            (within-paradigm BIC
-                                             or cross-paradigm
-                                             VPC/NPE composite)
-                                                       │
-                                                       ↓
-                                    BundleEmitter → JSON/JSONL artifacts
-                                    (evidence_manifest, initial_estimates,
-                                     gate_decisions, search_trajectory,
-                                     failed_candidates, candidate_lineage,
-                                     ranking, credibility_report)
+```bash
+uv run pytest tests/unit/ -q               # ~690 unit tests
+uv run pytest tests/integration/ -q         # 30 integration tests (mock R pipeline + Discovery lane)
+uv run pytest tests/property/ -q            # ~30 Hypothesis property-based tests
+uv run pytest tests/golden/ -q              # 21 syrupy golden master snapshots
+uv run pytest tests/ --snapshot-update      # update snapshots after emitter changes
 ```
 
-### Pharmacometric references
+| Category | Count | Coverage |
+|----------|-------|----------|
+| Unit tests | ~690 | All modules: DSL, data, backends, search, governance, routing, bundle, benchmarks |
+| NODE backend | 101 | Constraints, sub-model, ODE, trainer, runner, distillation, init strategy |
+| Stan codegen | 43 | Stan emitter + cross-backend lowering validation |
+| Gate 2.5 + ranking | 27 | ICH M15 credibility + cross-paradigm ranking |
+| Integration | 30 | Mock R pipeline, Discovery lane dispatch, Suite B NODE validation |
+| Suite A benchmarks | 48 | All 7 scenarios (A1-A7) with property tests |
+| Golden masters | 21 | Syrupy snapshots for pharmacometrician-validated R output |
+| R syntax validation | 168 | Balanced delimiters, eta/param consistency |
+
+---
+
+## Phasing
+
+| Phase | Scope | Status |
+|-------|-------|--------|
+| **Phase 0** | Schemas, protocols, grammar, error taxonomy, sparkid integration | Complete |
+| **Phase 1** (6 months) | DSL + compiler, classical NLME backend, automated search, Gates 1-3, reproducibility bundle, CLI, Suite A | Complete (679 tests) |
+| **Phase 2** (4 months) | Hybrid NODE backend, functional distillation, Discovery lane, cross-paradigm ranking, Suite B, Stan codegen | In progress (~85%, 261 new tests) |
+| **Phase 3** (4 months) | Agentic LLM backend (DSL transforms only), Optimization lane + LORO-CV, report generator, Suite C, API | Planned |
+
+---
+
+## Pharmacometric References
 
 - **TMDD full binding**: Mager & Jusko (2001), J Pharmacokinet Pharmacodyn 28:507-532
 - **TMDD QSS**: Gibiansky et al. (2008), J Pharmacokinet Pharmacodyn 35:573-591
 - **Transit compartments**: Savic et al. (2007), J Pharmacokinet Pharmacodyn 34:711-726
-- **Allometric scaling**: Anderson & Holford (2008), Clin Pharmacokinet 47:455-467 (70 kg reference)
+- **Allometric scaling**: Anderson & Holford (2008), Clin Pharmacokinet 47:455-467
 - **BLQ M3/M4**: nlmixr2 censoring via CENS/LIMIT data columns
-- **NCA**: linear trapezoidal AUC, terminal log-linear kel, CL=Dose/AUC_inf
+- **NCA**: Linear trapezoidal AUC, terminal log-linear kel, CL = Dose / AUC_inf
 
-## Phasing
+---
 
-- **Phase 0** (complete): Schemas, protocols, grammar, error taxonomy, sparkid integration
-- **Phase 1 Month 1-2** (complete): DSL compiler, nlmixr2 lowering, bundle scaffolding
-- **Phase 1 Month 2-3** (complete): Classical NLME backend, R harness, data ingestion, benchmarks
-- **Phase 1 Month 3-4** (complete): Data profiler, NCA estimates, automated search, data splitting
-- **Phase 1 Month 4-5** (complete): Governance gates (1+2+3), orchestrator, dispatch constraints, seed stability
-- **Phase 1 Month 5-6** (complete): CLI (Typer), structlog, Lane Router + dispatch wiring, seed stability (top-k, configurable CV), ranking persistence, boundary estimate check, multi-signal state trajectory, split integrity (SplitGOFMetrics), Phase 2 prep models, Benchmark Suite A CI + integration assertions
-- **Phase 2** (in progress ~85%): Hybrid NODE backend (JAX/Diffrax/Equinox), Bram-style MLP with RE on input-layer weights, 5 constraint templates, log-space mechanistic params, functional distillation (scipy curve_fit surrogate fitting + AUC/Cmax BE fidelity), Gate 2.5 ICH M15 credibility (5 checks), Gate 3 cross-paradigm ranking (VPC concordance + NPE + composite, configurable target), credibility report generator, policy gate2_5 thresholds, execution_mode config, **SearchEngine multi-backend dispatch** (classical → nlmixr2, NODE → jax_node), **Discovery lane end-to-end** with both backends, **NODE initial estimate strategy** (pre-trained weight library + transfer learning from classical fits), **Stan codegen emitter** (DSL → Stan program + per-backend lowering tests), **Benchmark Suite A complete** (A1-A7 all CSV fixtures generated via rxode2), **Benchmark Suite B** (B1-B3 NODE validation)
+## Documentation
+
+| Document | Purpose |
+|----------|---------|
+| [`PRD_APMODE_v0.3.md`](PRD_APMODE_v0.3.md) | Product requirements (current source of truth) |
+| [`ARCHITECTURE.md`](ARCHITECTURE.md) | Technical architecture (v0.2) |
+| [`CLAUDE.md`](CLAUDE.md) | Contributor/AI guidance |
+| [`policies/*.json`](policies/) | Gate threshold policy files per lane |
+
+---
+
+## Known Limitations
+
+- **NODE training**: Pooled population NLL (no per-subject RE); Laplace approximation deferred to Phase 3
+- **NODE scaling**: Python-list subject loop (not vmap); scales to ~50 subjects, not 500+
+- **Stan codegen**: Does not yet support IOV or BLQ M3/M4 (Phase 3)
+- **TMDD QSS**: Uses KD as approximation for KSS; when kint >> koff, this can overestimate complex formation
+- **TimeVaryingElim**: Only `exponential` decay supported; `half_life` and `linear` rejected by validator
+- **Context of use**: Orchestrator auto-generates COU for Gate 2.5; production use needs user-provided COU via CLI or config
+- **Agentic LLM backend**: Phase 3 scope
+
+See the full list in [`PRD_APMODE_v0.3.md` §10](PRD_APMODE_v0.3.md).
+
+---
 
 ## Code Review Provenance
 
-Six rounds of multi-model code review have been conducted:
+Seven rounds of multi-model code review completed:
 
-| Date | Models | Focus | Key Fixes |
-|------|--------|-------|-----------|
-| 2026-04-13 (R1) | codex, gemini, droid, crush | DSL compiler, emitter, bundle models | IOV syntax, TMDD QSS KD/KSS, BLQ composition |
-| 2026-04-13 (R2) | codex, gemini, GLM-5, MiniMax, droid | Data pipeline, NCA, search, profiler, security | A2 CMT bug, NCA terminal slope, NaN/Inf guards, route certainty, Spearman ties |
-| 2026-04-13 (R3) | codex, gemini, crush, opencode, droid | Gates, search engine, orchestrator, bundle emitter | Gate pass-on-missing→fail, NaN OFV filtering, Pareto tie-handling, lane validation, broad exception catch |
-| 2026-04-13 (R4) | codex, gemini, crush, opencode, droid | Lane Router, Gate 3, Gate 2.5, CLI, dispatch constraints | Warm-start constraint propagation, submission NODE exclusion validator, lane validation, CLI policy path check |
-| 2026-04-13 (R5) | codex, gemini, crush, opencode, droid | Orchestrator wiring, seed stability, ranking, Phase 2 models | CV ddof=1, non-positive param plausibility, NaN-safe BIC sort, path traversal guard, seed_stability_n=1, Ranking cross-validation |
-| 2026-04-13 (R6) | gemini-3.1-pro | Phase 2 NODE backend, Gate 2.5, cross-paradigm ranking | Log-space mechanistic params, trainable Saturable scale, ss_tot unbound fix, ParameterEstimate type restoration, pooled NLL docstring |
+| Round | Models | Focus |
+|-------|--------|-------|
+| R1 | codex, gemini, droid, crush | DSL compiler, emitter, bundle models |
+| R2 | codex, gemini, GLM-5, MiniMax, droid | Data pipeline, NCA, search, profiler, security |
+| R3 | codex, gemini, crush, opencode, droid | Gates, search engine, orchestrator, bundle emitter |
+| R4 | codex, gemini, crush, opencode, droid | Lane Router, Gate 3, Gate 2.5, CLI, dispatch constraints |
+| R5 | codex, gemini, crush, opencode, droid | Orchestrator wiring, seed stability, ranking |
+| R6 | gemini-3.1-pro | Phase 2 NODE backend, Gate 2.5, cross-paradigm ranking |
+| R7 | multi-model consensus | Full Phase 2 review; all critical/high-severity issues fixed |
 
-## Known Limitations (Phase 1)
+---
 
-- `TimeVaryingElim.decay_fn`: only `exponential` supported; `half_life` and `linear` rejected by validator
-- TMDD QSS uses `KD` as approximation for `KSS = (koff + kint)/kon`; when `kint >> koff`, KD underestimates KSS and can overestimate complex formation
-- `kdeg` in TMDD models is a heuristic initial estimate (`koff` for Core, `kint` for QSS), not a separately estimable parameter
-- Zero-order absorption uses `dur(centr)` modeled-duration pattern; requires compatible dose event coding (CMT=central, modeled duration flag)
-- NCA initial estimates: per-subject terminal-phase log-linear regression (last 3 post-Tmax points); multi-dose uses AUC_tau but requires sorted dose records
-- Route certainty assessment is conservative: CMT=1 without RATE/DUR is classified as "inferred" not "confirmed"
-- Gate 1 split integrity: checks train/test CWRES divergence via `SplitGOFMetrics`; `split_manifest` is passed from orchestrator to runner for all estimation and seed stability calls
-- Automated search warm-start explores error model + IIV structure variants; structural/covariate expansion deferred
-- SearchEngine multi-backend dispatch implemented; Discovery lane dispatches to both nlmixr2 and jax_node based on spec type
-- NODE training uses pooled population NLL (no per-subject RE); Laplace approximation deferred to Phase 3
-- NODE subject loop in trainer is Python-list based (not vmap); scales to ~50 subjects, not 500+
-- Orchestrator auto-generates context_of_use for Gate 2.5; real usage needs user-provided COU statement via CLI or config
-- Stan codegen does not yet support IOV or BLQ M3/M4 (marked Phase 3)
-- Agentic LLM backend is Phase 3
+## License
+
+Licensed under [GPL-2.0-or-later](LICENSE).
+
+The primary engine is nlmixr2 (R), which is GPL-2 licensed. This license choice is deliberate and affects build structure from Phase 1.
+
+---
+
+<div align="center">
+
+**[Quick Start](#quick-start)** &bull;
+**[DSL Reference](#the-pk-dsl)** &bull;
+**[Architecture](#architecture)** &bull;
+**[PRD](PRD_APMODE_v0.3.md)**
+
+</div>

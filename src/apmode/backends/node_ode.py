@@ -55,6 +55,7 @@ class HybridPKODE(eqx.Module):
     node: NODESubModel
     # Mechanistic params in log-space for positivity during optimization
     log_ka: jax.Array
+    log_CL: jax.Array
     log_V: jax.Array
     log_V2: jax.Array
     log_Q: jax.Array
@@ -80,6 +81,7 @@ class HybridPKODE(eqx.Module):
         # Mechanistic parameters stored in log-space to ensure positivity
         # during optimization (CL, V, ka must all be > 0).
         self.log_ka = jnp.log(jnp.array(params.get("ka", 1.0)))
+        self.log_CL = jnp.log(jnp.array(params.get("CL", 2.0)))
         self.log_V = jnp.log(jnp.array(params.get("V", 30.0)))
         self.log_V2 = jnp.log(jnp.array(params.get("V2", 40.0)))
         self.log_Q = jnp.log(jnp.array(params.get("Q", 5.0)))
@@ -87,6 +89,10 @@ class HybridPKODE(eqx.Module):
     @property
     def ka(self) -> jax.Array:
         return jnp.exp(self.log_ka)
+
+    @property
+    def CL(self) -> jax.Array:
+        return jnp.exp(self.log_CL)
 
     @property
     def V(self) -> jax.Array:
@@ -113,9 +119,9 @@ class HybridPKODE(eqx.Module):
         node_input = jnp.array([conc, t])
 
         if self.node_position == "absorption":
-            # NODE replaces absorption rate
+            # NODE replaces absorption rate; elimination is mechanistic CL/V
             abs_rate = self.node(node_input).squeeze() * a_depot
-            elim_rate = (self.ka * a_central) / self.V  # use ka as CL proxy
+            elim_rate = self.CL / self.V * a_central
             da_depot = -abs_rate
             da_central = abs_rate - elim_rate
         else:
@@ -137,7 +143,7 @@ class HybridPKODE(eqx.Module):
 
         if self.node_position == "absorption":
             abs_rate = self.node(node_input).squeeze() * a_depot
-            elim_rate = (self.ka * a_central) / self.V
+            elim_rate = self.CL / self.V * a_central
             da_depot = -abs_rate
             da_central = abs_rate - elim_rate - flow
         else:

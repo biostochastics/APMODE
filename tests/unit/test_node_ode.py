@@ -115,6 +115,49 @@ class TestHybridODESolve1Cmt:
         assert jnp.all(jnp.isfinite(sol))
         assert sol.shape == (49, 2)
 
+    def test_has_independent_cl_parameter(self) -> None:
+        """CL should be an independent parameter, not aliased to ka."""
+        ode = HybridPKODE(
+            config=ODEConfig(
+                n_cmt=1,
+                node_position="absorption",
+                constraint_template="bounded_positive",
+                node_dim=3,
+                mechanistic_params={"ka": 1.0, "CL": 5.0, "V": 30.0},
+            ),
+            key=jax.random.PRNGKey(0),
+        )
+        assert float(ode.ka) == pytest.approx(1.0)
+        assert float(ode.CL) == pytest.approx(5.0)
+        assert float(ode.ka) != pytest.approx(float(ode.CL))
+
+    def test_absorption_mode_cl_affects_elimination(self) -> None:
+        """Changing CL should change elimination rate in absorption-NODE mode."""
+        key = jax.random.PRNGKey(42)
+        times = jnp.linspace(0.5, 24.0, 12)
+        y0 = jnp.array([100.0, 0.0])
+
+        ode_low_cl = HybridPKODE(
+            config=ODEConfig(
+                n_cmt=1,
+                node_position="absorption",
+                mechanistic_params={"CL": 1.0, "V": 30.0},
+            ),
+            key=key,
+        )
+        ode_high_cl = HybridPKODE(
+            config=ODEConfig(
+                n_cmt=1,
+                node_position="absorption",
+                mechanistic_params={"CL": 10.0, "V": 30.0},
+            ),
+            key=key,
+        )
+        sol_low = ode_low_cl.solve(y0, times)
+        sol_high = ode_high_cl.solve(y0, times)
+        # Higher CL means faster elimination → lower central amounts at late times
+        assert float(sol_high[-1, 1]) < float(sol_low[-1, 1])
+
 
 class TestHybridODESolve2Cmt:
     """2-compartment ODE integration."""

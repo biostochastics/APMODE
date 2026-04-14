@@ -248,17 +248,88 @@ class TestStanEmitterErrors:
                 )
             )
 
-    def test_rejects_iov(self) -> None:
-        with pytest.raises(NotImplementedError, match="IOV"):
+    def test_rejects_maturation_covariate(self) -> None:
+        with pytest.raises(NotImplementedError, match=r"[Mm]aturation"):
             emit_stan(
                 _make_spec(
-                    variability=[IOV(params=["CL"], occasions=OccasionByStudy())]  # type: ignore[list-item]
+                    variability=[
+                        CovariateLink(  # type: ignore[list-item]
+                            param="CL", covariate="AGE", form="maturation"
+                        )
+                    ]
                 )
             )
 
-    def test_rejects_blq(self) -> None:
-        with pytest.raises(NotImplementedError, match="BLQ"):
-            emit_stan(_make_spec(observation=BLQM3(loq_value=0.1)))
+
+# ---------------------------------------------------------------------------
+# IOV emission
+# ---------------------------------------------------------------------------
+
+
+class TestIOVEmission:
+    def test_iov_produces_valid_stan(self) -> None:
+        code = emit_stan(
+            _make_spec(
+                variability=[IOV(params=["CL"], occasions=OccasionByStudy())]  # type: ignore[list-item]
+            )
+        )
+        assert "N_occ" in code
+        assert "occ" in code
+        assert "omega_iov_CL" in code
+        assert "eta_iov_raw" in code
+
+    def test_iov_with_iiv(self) -> None:
+        code = emit_stan(
+            _make_spec(
+                variability=[
+                    IIV(params=["CL", "V"], structure="diagonal"),  # type: ignore[list-item]
+                    IOV(params=["CL"], occasions=OccasionByStudy()),  # type: ignore[list-item]
+                ]
+            )
+        )
+        assert "omega_CL" in code
+        assert "omega_iov_CL" in code
+        assert "eta_raw" in code
+        assert "eta_iov_raw" in code
+
+
+# ---------------------------------------------------------------------------
+# BLQ emission
+# ---------------------------------------------------------------------------
+
+
+class TestBLQEmission:
+    def test_blq_m3_produces_valid_stan(self) -> None:
+        code = emit_stan(_make_spec(observation=BLQM3(loq_value=0.1)))
+        assert "cens" in code
+        assert "loq" in code
+        assert "normal_lcdf" in code
+        assert "target +=" in code
+
+    def test_blq_m4_produces_valid_stan(self) -> None:
+        from apmode.dsl.ast_models import BLQM4
+
+        code = emit_stan(_make_spec(observation=BLQM4(loq_value=0.05)))
+        assert "cens" in code
+        assert "log_diff_exp" in code
+
+    def test_blq_m3_combined_error(self) -> None:
+        code = emit_stan(
+            _make_spec(
+                observation=BLQM3(
+                    loq_value=0.1,
+                    error_model="combined",
+                    sigma_prop=0.1,
+                    sigma_add=0.5,
+                )
+            )
+        )
+        assert "sigma_prop" in code
+        assert "sigma_add" in code
+
+    def test_blq_log_lik_has_censoring(self) -> None:
+        code = emit_stan(_make_spec(observation=BLQM3(loq_value=0.1)))
+        assert "cens[n] == 0" in code
 
 
 # ---------------------------------------------------------------------------

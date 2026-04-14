@@ -204,9 +204,16 @@ def pretrain_node_weights(
 
 @dataclass
 class WeightLibrary:
-    """Cache of pre-trained NODE sub-models keyed by profile name + config."""
+    """Cache of pre-trained NODE sub-models keyed by profile name + config.
+
+    Use reset() to clear the cache for test isolation.
+    """
 
     _cache: dict[str, NODESubModel] = field(default_factory=dict)
+
+    def reset(self) -> None:
+        """Clear all cached pre-trained models."""
+        self._cache.clear()
 
     def get(
         self,
@@ -242,6 +249,14 @@ _weight_library = WeightLibrary()
 def get_weight_library() -> WeightLibrary:
     """Return the module-level WeightLibrary singleton."""
     return _weight_library
+
+
+def reset_weight_library() -> None:
+    """Clear the module-level WeightLibrary cache.
+
+    Call between test runs or pipeline runs to ensure reproducibility.
+    """
+    _weight_library.reset()
 
 
 # ---------------------------------------------------------------------------

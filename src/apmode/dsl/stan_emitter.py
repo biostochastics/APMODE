@@ -69,12 +69,7 @@ def emit_stan(
             "NODE backends use the JAX/Diffrax emitter."
         )
 
-    for v in spec.variability:
-        if isinstance(v, IOV):
-            raise NotImplementedError("IOV is not yet supported in Stan codegen.")
-
-    if isinstance(spec.observation, (BLQM3, BLQM4)):
-        raise NotImplementedError("BLQ M3/M4 is not yet supported in Stan codegen.")
+    # IOV and BLQ M3/M4 are now supported
 
     blocks: list[str] = []
     blocks.append(f"// APMODE generated Stan model: {spec.model_id}")
@@ -156,6 +151,20 @@ def _emit_data_block(spec: DSLSpec) -> str:
     lines.append("  vector<lower=0>[N] dv;       // observed concentrations")
     lines.append("  vector<lower=0>[N_subjects] dose;  // dose per subject")
 
+    # IOV: occasion index per observation
+    if _has_iov(spec):
+        lines.append("  int<lower=1> N_occ;          // number of occasions")
+        lines.append("  array[N] int<lower=1,upper=N_occ> occ;  // occasion index")
+
+    # BLQ: censoring indicator (1 = below LOQ)
+    if _is_blq(spec):
+        lines.append("  array[N] int<lower=0,upper=1> cens;  // censoring indicator")
+        obs = spec.observation
+        if isinstance(obs, (BLQM3, BLQM4)):
+            lines.append(
+                f"  real<lower=0> loq;           // limit of quantification ({obs.loq_value})"
+            )
+
     # Covariates
     cov_links = [v for v in spec.variability if isinstance(v, CovariateLink)]
     cov_names = sorted({c.covariate for c in cov_links})
@@ -200,8 +209,15 @@ def _emit_parameters_block(spec: DSLSpec) -> str:
     if iiv_params:
         lines.append(f"  matrix[N_subjects, {len(iiv_params)}] eta_raw;")
 
+    # IOV omega + etas
+    iov_params = _iov_params(spec)
+    for p in iov_params:
+        lines.append(f"  real<lower=0> omega_iov_{p};")
+    if iov_params and _has_iov(spec):
+        lines.append(f"  matrix[N_subjects * N_occ, {len(iov_params)}] eta_iov_raw;")
+
     # Residual error
-    lines.extend(_emit_sigma_params(spec))
+    lines.extend(_emit_sigma_params(spec, _is_blq(spec)))
 
     # Covariate coefficients
     cov_links = [v for v in spec.variability if isinstance(v, CovariateLink)]
@@ -281,6 +297,13 @@ def _emit_model_block(
     if iiv_params:
         lines.append("  to_vector(eta_raw) ~ std_normal();")
 
+    # IOV priors
+    iov_params = _iov_params(spec)
+    for p in iov_params:
+        lines.append(f"  omega_iov_{p} ~ cauchy(0, 0.5);")
+    if iov_params and _has_iov(spec):
+        lines.append("  to_vector(eta_iov_raw) ~ std_normal();")
+
     lines.append("")
 
     # Priors on covariate coefficients
@@ -355,6 +378,33 @@ def _iiv_params(spec: DSLSpec) -> list[str]:
     return params
 
 
+def _iov_params(spec: DSLSpec) -> list[str]:
+    """Collect IOV parameter names in order."""
+    params: list[str] = []
+    for v in spec.variability:
+        if isinstance(v, IOV):
+            for p in v.params:
+                if p not in params:
+                    params.append(p)
+    return params
+
+
+def _has_iov(spec: DSLSpec) -> bool:
+    return any(isinstance(v, IOV) for v in spec.variability)
+
+
+def _is_blq(spec: DSLSpec) -> bool:
+    return isinstance(spec.observation, (BLQM3, BLQM4))
+
+
+def _blq_sigma_value(spec: DSLSpec) -> tuple[str, float]:
+    """Return (error_model, sigma_init) for BLQ observation models."""
+    obs = spec.observation
+    if isinstance(obs, (BLQM3, BLQM4)):
+        return obs.error_model, obs.sigma_prop
+    return "proportional", 0.1
+
+
 def _log(x: float) -> float:
     import math
 
@@ -381,8 +431,14 @@ def _covariate_expr(spec: DSLSpec, param: str, idx_var: str) -> str:
     return "".join(parts)
 
 
-def _emit_sigma_params(spec: DSLSpec) -> list[str]:
+def _emit_sigma_params(spec: DSLSpec, is_blq: bool = False) -> list[str]:
     obs = spec.observation
+    if isinstance(obs, (BLQM3, BLQM4)):
+        if obs.error_model == "additive":
+            return ["  real<lower=0> sigma_add;"]
+        if obs.error_model == "combined":
+            return ["  real<lower=0> sigma_prop;", "  real<lower=0> sigma_add;"]
+        return ["  real<lower=0> sigma_prop;"]
     if isinstance(obs, Proportional):
         return ["  real<lower=0> sigma_prop;"]
     if isinstance(obs, Additive):
@@ -394,6 +450,15 @@ def _emit_sigma_params(spec: DSLSpec) -> list[str]:
 
 def _emit_sigma_priors(spec: DSLSpec) -> list[str]:
     obs = spec.observation
+    if isinstance(obs, (BLQM3, BLQM4)):
+        if obs.error_model == "additive":
+            return [f"  sigma_add ~ cauchy(0, {obs.sigma_add});"]
+        if obs.error_model == "combined":
+            return [
+                f"  sigma_prop ~ cauchy(0, {obs.sigma_prop});",
+                f"  sigma_add ~ cauchy(0, {obs.sigma_add});",
+            ]
+        return [f"  sigma_prop ~ cauchy(0, {obs.sigma_prop});"]
     if isinstance(obs, Proportional):
         return [f"  sigma_prop ~ cauchy(0, {obs.sigma_prop});"]
     if isinstance(obs, Additive):
@@ -408,6 +473,8 @@ def _emit_sigma_priors(spec: DSLSpec) -> list[str]:
 
 def _emit_likelihood(spec: DSLSpec) -> list[str]:
     obs = spec.observation
+    if isinstance(obs, (BLQM3, BLQM4)):
+        return _emit_blq_likelihood(spec)
     if isinstance(obs, Proportional):
         return ["  dv ~ lognormal(log(f), sigma_prop);"]
     if isinstance(obs, Additive):
@@ -420,9 +487,51 @@ def _emit_likelihood(spec: DSLSpec) -> list[str]:
     return ["  dv ~ lognormal(log(f), sigma_prop);"]
 
 
+def _emit_blq_likelihood(spec: DSLSpec) -> list[str]:
+    """Emit BLQ M3/M4 censored likelihood.
+
+    M3: Left-censoring at LOQ.
+      - Observed (cens=0): normal_lpdf(dv | f, sigma)
+      - Censored (cens=1): normal_lcdf(loq | f, sigma)  [P(Y < LOQ)]
+
+    M4: Censoring with positivity constraint (interval censoring 0..LOQ).
+      - Censored: log_diff_exp(normal_lcdf(loq | f, sigma), normal_lcdf(0 | f, sigma))
+    """
+    obs = spec.observation
+    is_m4 = isinstance(obs, BLQM4)
+
+    # Determine sigma expression
+    assert isinstance(obs, (BLQM3, BLQM4))
+    if obs.error_model == "additive":
+        sigma_expr = "sigma_add"
+    elif obs.error_model == "combined":
+        sigma_expr = "sqrt(square(sigma_prop * f[n]) + square(sigma_add))"
+    else:
+        sigma_expr = "sigma_prop * f[n]"  # proportional on natural scale
+
+    lines: list[str] = []
+    lines.append("  for (n in 1:N) {")
+    lines.append("    if (cens[n] == 0) {")
+    lines.append(f"      target += normal_lpdf(dv[n] | f[n], {sigma_expr});")
+    lines.append("    } else {")
+    if is_m4:
+        lines.append(
+            f"      target += log_diff_exp("
+            f"normal_lcdf(loq | f[n], {sigma_expr}), "
+            f"normal_lcdf(0 | f[n], {sigma_expr}));"
+        )
+    else:
+        lines.append(f"      target += normal_lcdf(loq | f[n], {sigma_expr});")
+    lines.append("    }")
+    lines.append("  }")
+    return lines
+
+
 def _emit_log_lik(spec: DSLSpec, indent: int = 4) -> list[str]:
     pad = " " * indent
     obs = spec.observation
+    if isinstance(obs, (BLQM3, BLQM4)):
+        return _emit_blq_log_lik(spec, indent)
     if isinstance(obs, Proportional):
         return [f"{pad}log_lik[n] = lognormal_lpdf(dv[n] | log(f[n]), sigma_prop);"]
     if isinstance(obs, Additive):
@@ -433,6 +542,36 @@ def _emit_log_lik(spec: DSLSpec, indent: int = 4) -> list[str]:
             f"sqrt(square(sigma_prop * f[n]) + square(sigma_add)));"
         ]
     return [f"{pad}log_lik[n] = lognormal_lpdf(dv[n] | log(f[n]), sigma_prop);"]
+
+
+def _emit_blq_log_lik(spec: DSLSpec, indent: int = 4) -> list[str]:
+    """Emit per-observation log-likelihood for BLQ models."""
+    pad = " " * indent
+    obs = spec.observation
+    assert isinstance(obs, (BLQM3, BLQM4))
+    is_m4 = isinstance(obs, BLQM4)
+
+    if obs.error_model == "additive":
+        sigma_expr = "sigma_add"
+    elif obs.error_model == "combined":
+        sigma_expr = "sqrt(square(sigma_prop * f[n]) + square(sigma_add))"
+    else:
+        sigma_expr = "sigma_prop * f[n]"
+
+    lines: list[str] = []
+    lines.append(f"{pad}if (cens[n] == 0) {{")
+    lines.append(f"{pad}  log_lik[n] = normal_lpdf(dv[n] | f[n], {sigma_expr});")
+    lines.append(f"{pad}}} else {{")
+    if is_m4:
+        lines.append(
+            f"{pad}  log_lik[n] = log_diff_exp("
+            f"normal_lcdf(loq | f[n], {sigma_expr}), "
+            f"normal_lcdf(0 | f[n], {sigma_expr}));"
+        )
+    else:
+        lines.append(f"{pad}  log_lik[n] = normal_lcdf(loq | f[n], {sigma_expr});")
+    lines.append(f"{pad}}}")
+    return lines
 
 
 def _emit_theta_unpack(spec: DSLSpec, indent: int = 4) -> list[str]:

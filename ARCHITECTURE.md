@@ -264,6 +264,44 @@ Phase 0 checklist item: full license compatibility audit with legal review.
                    +--------------------+
 ```
 
+### 3.1 Component Inventory
+
+| Component | Path | Description |
+|-----------|------|-------------|
+| **PK DSL grammar** | `src/apmode/dsl/pk_grammar.lark` | Full Lark EBNF grammar for PK model specifications |
+| **AST models** | `src/apmode/dsl/ast_models.py` | Typed Pydantic nodes: Absorption (6), Distribution (5+V), Elimination (5), Variability (3), Observation (5+BLQ composition) |
+| **Semantic validator** | `src/apmode/dsl/validator.py` | Constraint table enforcement (PRD §4.2.5) |
+| **nlmixr2 emitter** | `src/apmode/dsl/nlmixr2_emitter.py` | DSL AST → R code strings for nlmixr2/rxode2 |
+| **Stan emitter** | `src/apmode/dsl/stan_emitter.py` | DSL AST → Stan program for probabilistic inference |
+| **Nlmixr2Runner** | `src/apmode/backends/nlmixr2_runner.py` | Async subprocess backend with file-based IPC |
+| **R harness** | `src/apmode/r/harness.R` | R-side nlmixr2 SAEM/FOCEI estimation harness |
+| **Data ingestion** | `src/apmode/data/ingest.py` | NONMEM CSV → Pandera validation → DataManifest |
+| **Data profiler** | `src/apmode/data/profiler.py` | Evidence Manifest with AMT-based nonlinear CL detection |
+| **NCA estimator** | `src/apmode/data/initial_estimates.py` | NCA with multi-dose AUC_tau, extrapolation fraction check |
+| **Data splitter** | `src/apmode/data/splitter.py` | Subject-level splitting, k-fold, LORO-CV |
+| **Search candidates** | `src/apmode/search/candidates.py` | Automated search space, candidate generation, SearchDAG |
+| **Search engine** | `src/apmode/search/engine.py` | Multi-backend candidate dispatch (nlmixr2 + jax_node), BIC scoring, Pareto frontier |
+| **Gate evaluators** | `src/apmode/governance/gates.py` | Gates 1 (technical validity, 7 checks), 2 (lane admissibility, 6 checks), 2.5 (ICH M15 credibility, 5 checks), 3 (ranking) |
+| **Cross-paradigm ranking** | `src/apmode/governance/ranking.py` | VPC concordance, NPE, composite score for mixed-backend ranking |
+| **NODE constraints** | `src/apmode/backends/node_constraints.py` | 5 enumerated constraint templates (monotone, bounded, saturable, smooth) |
+| **NODE sub-model** | `src/apmode/backends/node_model.py` | Bram-style MLP with RE on input-layer weights |
+| **Hybrid ODE** | `src/apmode/backends/node_ode.py` | Mechanistic PK skeleton + NODE sub-function, Diffrax Tsit5 solver |
+| **NODE trainer** | `src/apmode/backends/node_trainer.py` | Optax Adam training loop with early stopping, log-space params |
+| **NodeBackendRunner** | `src/apmode/backends/node_runner.py` | BackendRunner protocol impl for JAX/Diffrax NODE backend |
+| **NODE init strategy** | `src/apmode/backends/node_init.py` | Pre-trained weight library + transfer learning from classical fits |
+| **Functional distillation** | `src/apmode/backends/node_distillation.py` | Sub-function visualization, parametric surrogate fitting, AUC/Cmax BE fidelity |
+| **Credibility report** | `src/apmode/report/credibility.py` | ICH M15-aligned credibility assessment per candidate |
+| **Lane Router** | `src/apmode/routing.py` | Dispatch decisions by lane + evidence manifest constraints |
+| **Orchestrator** | `src/apmode/orchestrator/__init__.py` | Full pipeline: ingest → profile → NCA → split → search → gates → bundle |
+| **Bundle emitter** | `src/apmode/bundle/emitter.py` | All reproducibility bundle artifacts per §5 |
+| **Bundle models** | `src/apmode/bundle/models.py` | All Pydantic schemas (BackendResult, EvidenceManifest, etc.) |
+| **Gate policies** | `src/apmode/governance/policy.py` | Gate 1, 2, 2.5 policy file schemas |
+| **Lane policies** | `policies/*.json` | Default gate thresholds per lane |
+| **CLI** | `src/apmode/cli.py` | Typer CLI: `apmode run`, `apmode validate`, `apmode inspect` |
+| **Structured logging** | `src/apmode/logging.py` | structlog JSON configuration, context-bound loggers |
+| **Benchmark Suite A** | `benchmarks/suite_a/`, `src/apmode/benchmarks/suite_a.py` | 7 recovery scenarios (A1-A7): classical, TMDD, covariates, NODE absorption |
+| **Benchmark Suite B** | `src/apmode/benchmarks/suite_b.py` | NODE-specific validation: absorption recovery (B1), sparse data dispatch (B2), cross-paradigm ranking (B3) |
+
 **Dispatch constraint flow:** Evidence Manifest fields directly constrain Lane Router dispatch per PRD §4.2.1. Examples: `richness_category=sparse` + inadequate absorption coverage -> NODE not dispatched; `nonlinear_clearance_signature=true` -> automated search includes MM candidates; `blq_burden > 0.20` -> all backends must use BLQ-aware likelihood.
 
 ---
