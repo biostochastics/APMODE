@@ -8,12 +8,93 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- **Agentic LLM backend wired to CLI** (Phase 3, PRD §4.2.6)
+- **Comprehensive benchmark suite expansion** (Phase 3, PRD §5/§9)
+  - **Benchmark infrastructure** (`benchmarks/models.py`): Pydantic v2 models for
+    `DatasetCard`, `BenchmarkCase`, `BenchmarkScore`, `PerturbationRecipe`,
+    `SuiteSummary`, `SuiteReport`; `SuiteName` Literal type alias; `AccessTier`
+    enum (open/scripted/credentialed) for CI eligibility
+  - **Suite A-External** (`suite_a_external.py`): Schoemaker 2019 / ACOP 2016 grid
+    integration — 12 nlmixr2data datasets (bolus/infusion/oral x 1-cmt/2-cmt x
+    linear/MM), weekly cadence with nightly and CI smoke subsets
+  - **Suite B Extended** (`suite_b_extended.py`): 7 real-data benchmark cases:
+    B4 theophylline NODE anchor (Bram 2023 continuity), B5 mavoglurant BLQ 25%/40%,
+    B6 mavoglurant 5% outlier injection, B7 mavoglurant sparse absorption,
+    B8 mavoglurant null covariate FPR (5 random covariates), B9 gentamicin IOV
+  - **Suite C** (`suite_c.py`): Expert head-to-head framework — mavoglurant,
+    gentamicin IOV (DDMoRe CC0), Eleveld propofol (OpenTCI); 5-fold subject-level
+    CV, NPE primary metric, 2% win margin, pre-registered evaluation protocol;
+    published models as reference anchors, blinded expert panel as primary baseline
+  - **7 perturbation types** (`perturbations.py`): inject_blq (M3-style CENS/LLOQ),
+    remove_absorption_samples, add_null_covariates, inject_outliers (additive
+    fallback for near-zero DV), sparsify, add_protocol_pooling (STUDY_ID +
+    optional sampling/LLOQ variation per protocol), add_occasion_labels (vectorized)
+  - **Scoring harness** (`scoring.py`): structure recovery (DSLSpec-wired), parameter
+    bias (NaN for missing estimates), parameter coverage (None for missing CI per
+    GPT-5.2-pro: unscorable, not free pass), NPE, prediction interval calibration,
+    expert comparison (empty-list guard), dispatch assertion checking, convergence
+    taxonomy; `SuiteName`-typed `aggregate_suite()`
+  - **Dataset cards and prepare scripts** for 7 public PK datasets:
+    nlmixr2data Schoemaker grid (prepare.R), theophylline (prepare.R),
+    warfarin PK/PD (prepare.R), mavoglurant (prepare.R), DDMoRe gentamicin IOV
+    (prepare.py, CC0), Eleveld propofol (prepare.R, OpenTCI), MIMIC-IV vancomycin
+    (README + access instructions, Tier 2 credentialed)
+  - **Dataset registry** (`benchmarks/datasets/registry.yaml`): master index of all
+    datasets with access tiers, suite assignments, and prepare script references
+  - 77 new integration tests covering all three suites, all 7 perturbation types,
+    scoring harness, expert comparison methodology, recipe validation, and
+    protocol pooling; total test count: 1232 passing
+- **PerturbationRecipe cross-field validators**: Pydantic model_validator enforces
+  required fields per perturbation type (blq_fraction for BLQ, outlier_fraction
+  for outliers, target_obs_per_subject for sparsify, etc.); Field constraints
+  (blq_fraction in [0,1], outlier_magnitude > 1, target_obs_per_subject >= 1)
+- **SuiteSummary n_passed <= n_cases constraint**: model_validator prevents
+  impossible summary states
+- `__all__` exports on all benchmark modules for explicit public API
+
+### Changed
+- **BLQ perturbation uses M3-style censoring**: DV set to LLOQ (not 0.0) with
+  CENS=1 column per nlmixr2/NONMEM M3 convention; DV=0 was ambiguous and biased
+  M3 likelihood (GPT-5.2-pro + Gemini 3.1 Pro consensus)
+- **Observation identification uses (EVID==0) & (MDV==0)**: all perturbation
+  functions now exclude EVID=0/MDV=1 rows (missing samples) per NONMEM convention;
+  prevents corrupting missingness semantics in M3/M4 handling
+- **score_parameter_coverage returns None (not True) for missing CI**: SAEM
+  covariance failures are unscorable, not free passes; aggregators decide policy
+- **score_structure_recovery wired to DSLSpec**: compares discovered spec's
+  absorption/distribution/elimination types against ExpectedStructure; returns
+  None when no spec available (unscorable) instead of always True
+- **score_parameter_bias flags missing estimates with NaN**: reference params
+  absent from BackendResult get bias=NaN, not silent skip
+- **Occasion labeling vectorized**: replaced O(n*m) row loop with groupby+cumsum;
+  sorts by (NMID, TIME, EVID) before labeling to handle unsorted input
+- **PublishedModel defined before DatasetCard**: eliminates forward-reference
+  risk in Pydantic v2 schema generation
+- **aggregate_suite accepts SuiteName Literal** (was str): removes noqa/type-ignore
+- Added `pandas.*` to mypy ignore_missing_imports (no stubs installed)
+
+### Fixed
+- Mock convergence test: `_mock_result(converged=False)` now sets
+  `minimization_status="terminated"` (was "successful" — tautological assertion)
+- Outlier injection handles near-zero DV: uses additive offset instead of
+  multiplicative 0*magnitude=0
+
+### Reviewed by
+- 5-agent multi-model code review (droid, crush, gemini, codex, opencode)
+- GPT-5.2-pro and Gemini 3.1 Pro consultation on PK-domain fixes
+- All 15 identified issues addressed
+
+### Added
+- **Agentic LLM backend wired to CLI and orchestrator** (Phase 3, PRD §4.2.6)
   - `--agentic/--no-agentic` flag on `apmode run` (default: on)
   - `--provider` (anthropic/openai/gemini/ollama/openrouter), `--model`, `--max-iterations`
   - Auto-activates in discovery/optimization lanes when API key found; gracefully
     disables with warning when unavailable
   - Submission lane hard-blocks agentic (PRD §3 rule enforced in lane router)
+  - **Post-search agentic stage** in orchestrator with two modes:
+    - **Refine mode**: takes best classical candidate, LLM proposes targeted transforms
+    - **Independent mode**: starts from minimal 1-cmt oral spec, LLM builds from scratch
+  - Both modes feed results back into gate funnel alongside classical candidates
+  - In discovery/optimization lanes, LLM can also propose NODE transforms
 - **Multi-turn conversation history in agentic loop**: LLM now sees full history
   across iterations (prior diagnostics, its own proposals, validation outcomes)
   instead of stateless per-iteration prompts
@@ -28,6 +109,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   installs anthropic, openai, google-genai, ollama, litellm
 
 ### Fixed
+- **R harness compatibility with nlmixr2 5.0**: fit$time (data.frame not vector),
+  fit$conditionNumberCov (renamed from conditionNumber), fit$shrink (data.frame
+  replacing fit$shrinkage), CWRES fallback to IWRES (SAEM doesn't compute CWRES
+  by default), OFV/AIC/BIC via Gaussian quadrature, empty-list-to-dict JSON
+  serialization for profile_likelihood_ci and diagnostic_plots
 - **Gemini client multi-turn**: replaced string concatenation with proper
   `types.Content` objects preserving multi-turn conversation structure
 - **OpenRouter auth**: client now reads `OPENROUTER_API_KEY` directly instead

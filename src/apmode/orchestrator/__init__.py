@@ -45,7 +45,7 @@ from apmode.governance.policy import GatePolicy
 from apmode.routing import route
 
 if TYPE_CHECKING:
-    import pandas as pd  # type: ignore[import-untyped]
+    import pandas as pd
 
     from apmode.backends.nlmixr2_runner import Nlmixr2Runner
     from apmode.backends.protocol import BackendRunner
@@ -217,6 +217,26 @@ class Orchestrator:
         outcome.search_outcome = search_outcome
         # Build candidate→spec mapping for LORO-CV spec lookup
         self._spec_map = {sr.candidate_id: sr.spec for sr in search_outcome.results}
+
+        # --- Stage 5b: Agentic LLM Refinement (Phase 3, PRD §4.2.6) ---
+        # The agentic runner operates as a post-search refinement loop:
+        #   Mode 1 (refine): take best classical candidate, improve via transforms
+        #   Mode 2 (independent): start from a base spec, LLM builds from scratch
+        # In discovery/optimization lanes, the LLM can also propose NODE transforms.
+        if self._agentic_runner is not None and "agentic_llm" in dispatch.backends:
+            agentic_results = await self._run_agentic_stage(
+                search_outcome=search_outcome,
+                manifest=manifest,
+                data_path=data_path,
+                nca_estimates=nca_estimates,
+                split_manifest_dict=split_manifest_dict,
+                evidence=evidence,
+            )
+            # Merge agentic results into search outcome
+            for ar in agentic_results:
+                search_outcome.results.append(ar)
+                if ar.spec is not None:
+                    self._spec_map[ar.candidate_id] = ar.spec
 
         # Write candidate lineage
         lineage_entries = [
@@ -468,6 +488,133 @@ class Orchestrator:
         )
 
         return outcome
+
+    async def _run_agentic_stage(
+        self,
+        search_outcome: SearchOutcome,
+        manifest: DataManifest,
+        data_path: Path,
+        nca_estimates: dict[str, float],
+        split_manifest_dict: dict[str, object],
+        evidence: EvidenceManifest,
+    ) -> list[SearchResult]:
+        """Run the agentic LLM refinement stage (PRD §4.2.6).
+
+        Two modes:
+          1. Refine: take the best converged classical candidate and improve it
+          2. Independent: start from a base spec and let the LLM build from scratch
+
+        In discovery/optimization lanes the LLM may also propose NODE transforms.
+
+        Returns new SearchResult entries to merge into search_outcome.
+        """
+        assert self._agentic_runner is not None
+
+        from apmode.search.engine import SearchResult as SR
+
+        results: list[SR] = []
+
+        # --- Mode 1: Refine best classical candidate ---
+        converged_srs = sorted(
+            [sr for sr in search_outcome.results if sr.converged and sr.result is not None],
+            key=lambda r: r.bic if r.bic is not None else float("inf"),
+        )
+        if converged_srs:
+            best_sr = converged_srs[0]
+            assert best_sr.result is not None
+            best_estimates = {
+                name: pe.estimate
+                for name, pe in best_sr.result.parameter_estimates.items()
+                if pe.category == "structural"
+            }
+            logger.info(
+                "Agentic refine: starting from %s (BIC=%.1f)",
+                best_sr.candidate_id,
+                best_sr.bic or 0,
+            )
+            try:
+                agentic_result = await self._agentic_runner.run(
+                    spec=best_sr.spec,
+                    data_manifest=manifest,
+                    initial_estimates=best_estimates,
+                    seed=self._config.seed,
+                    timeout_seconds=self._config.timeout_seconds,
+                    data_path=data_path,
+                    split_manifest=split_manifest_dict,
+                )
+                results.append(
+                    SR(
+                        candidate_id=agentic_result.model_id,
+                        spec=best_sr.spec,  # original spec (transforms tracked in lineage)
+                        result=agentic_result,
+                        converged=agentic_result.converged,
+                        bic=agentic_result.bic,
+                        aic=agentic_result.aic,
+                    )
+                )
+                logger.info(
+                    "Agentic refine complete: %s BIC=%.1f (was %.1f)",
+                    agentic_result.model_id,
+                    agentic_result.bic or 0,
+                    best_sr.bic or 0,
+                )
+            except Exception as e:
+                logger.warning("Agentic refine failed: %s", e)
+
+        # --- Mode 2: Independent — start from a minimal base spec ---
+        from apmode.dsl.ast_models import (
+            IIV,
+            DSLSpec,
+            FirstOrder,
+            LinearElim,
+            OneCmt,
+            Proportional,
+        )
+        from apmode.ids import generate_candidate_id
+
+        base_spec = DSLSpec(
+            model_id=generate_candidate_id(),
+            absorption=FirstOrder(ka=nca_estimates.get("ka", 1.0)),
+            distribution=OneCmt(V=nca_estimates.get("V", 50.0)),
+            elimination=LinearElim(CL=nca_estimates.get("CL", 3.0)),
+            variability=[IIV(params=["CL", "V"], structure="diagonal")],
+            observation=Proportional(sigma_prop=0.15),
+        )
+        base_estimates = {
+            "ka": nca_estimates.get("ka", 1.0),
+            "V": nca_estimates.get("V", 50.0),
+            "CL": nca_estimates.get("CL", 3.0),
+        }
+        logger.info("Agentic independent: starting from base 1-cmt oral spec")
+        try:
+            independent_result = await self._agentic_runner.run(
+                spec=base_spec,
+                data_manifest=manifest,
+                initial_estimates=base_estimates,
+                seed=self._config.seed + 1000,  # different seed from refine
+                timeout_seconds=self._config.timeout_seconds,
+                data_path=data_path,
+                split_manifest=split_manifest_dict,
+            )
+            results.append(
+                SR(
+                    candidate_id=independent_result.model_id,
+                    spec=base_spec,
+                    result=independent_result,
+                    converged=independent_result.converged,
+                    bic=independent_result.bic,
+                    aic=independent_result.aic,
+                )
+            )
+            logger.info(
+                "Agentic independent complete: %s BIC=%.1f",
+                independent_result.model_id,
+                independent_result.bic or 0,
+            )
+        except Exception as e:
+            logger.warning("Agentic independent failed: %s", e)
+
+        return results
 
     async def _run_loro_cv(
         self,
