@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Per-mode agentic trace inspection in CLI**: `apmode trace` gained a
+  `--mode {refine|independent}` flag to filter which agentic mode's history
+  is shown. Cost aggregation via `--cost` now reports per-mode breakdowns
+  and a grand total when multiple modes are present. New helper
+  `_discover_agentic_mode_dirs()` transparently supports both the new
+  subdirectory layout (`agentic_trace/refine/`, `agentic_trace/independent/`)
+  and legacy flat layouts (`agentic_trace/iter_*.json`) for backward
+  compatibility with pre-fix bundles. `apmode lineage` and `apmode inspect`
+  also updated.
+- **Agentic candidates surfaced in `candidate_lineage.json`**: previously
+  only the search DAG drove the lineage file, so agentic candidates (which
+  bypass the classical search engine) were missing from the reproducibility
+  bundle's top-level lineage. They now appear with `transform="agentic_llm"`
+  and `parent_id=None`; the full iteration-level chain remains in
+  `agentic_trace/<mode>/agentic_lineage.json`.
+
+### Fixed (multi-model review sweep: droid + crush + gemini)
+- **Agentic trace collision between refine and independent modes**: both
+  modes wrote to the same `agentic_trace/iter_*.json` files, silently
+  overwriting each other. Each mode now writes to its own subdirectory
+  (`agentic_trace/refine/`, `agentic_trace/independent/`).
+- **`_trace_dir` restoration leak**: the original restore-in-`finally` only
+  wrapped the independent mode; an uncaught exception in refine mode would
+  leave the runner's `_trace_dir` mutated. The whole two-mode block is now
+  wrapped in a single outer `try/finally` so the base path is always
+  restored, even on uncaught exceptions.
+- **Unbounded conversation history in the agentic loop**: the LLM received
+  the full iteration history every turn. With up to 25 iterations and
+  dense diagnostic markdown, this could quadratically bloat tokens and
+  exceed the provider's context window. A sliding window (last 24
+  messages ≈ 12 iterations) is now applied at message-construction time;
+  full history is still captured in trace files.
+- **Prompt-injection defense for relayed backend errors**: nlmixr2 or R
+  error messages are now passed through `_sanitize_for_prompt()` before
+  being embedded in LLM user turns. The helper strips code fences,
+  collapses role markers, and truncates to 500 chars. Prevents a crafted
+  R error from manipulating the LLM's behavior or audit trail.
+- **Redaction gate now covers `summarize_for_llm`**: the allow-list filter
+  was applied only to the dict stored in trace files, not the markdown text
+  actually sent to the LLM. The allow-list is now enforced on every field
+  reaching a third-party LLM (PRD §10 aggregate-only invariant).
+
 ### Fixed (code review sweep)
 - **Orchestrator:** replaced `if "ranking" in dir()` sentinel with explicit
   `Ranking | None` initialization (C1). The prior pattern was fragile under

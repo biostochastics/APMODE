@@ -246,7 +246,11 @@ class Orchestrator:
                 if ar.spec is not None:
                     self._spec_map[ar.candidate_id] = ar.spec
 
-        # Write candidate lineage
+        # Write candidate lineage — classical entries come from the search DAG,
+        # agentic entries from the _run_agentic_stage results (the DAG's
+        # SearchNode requires a full DSLSpec that matches the final candidate
+        # id, which we don't have post-agentic; recording them here keeps the
+        # reproducibility bundle consistent without polluting the DAG type).
         lineage_entries = [
             CandidateLineageEntry(
                 candidate_id=e["candidate_id"],
@@ -255,6 +259,18 @@ class Orchestrator:
             )
             for e in search_outcome.dag.to_lineage_entries()
         ]
+        dag_ids = {e.candidate_id for e in lineage_entries}
+        for ar in search_outcome.results:
+            if ar.result and ar.result.backend == "agentic_llm" and ar.candidate_id not in dag_ids:
+                lineage_entries.append(
+                    CandidateLineageEntry(
+                        candidate_id=ar.candidate_id,
+                        # Full chain is in agentic_trace/<mode>/agentic_lineage.json
+                        parent_id=None,
+                        transform="agentic_llm",
+                    )
+                )
+                dag_ids.add(ar.candidate_id)
         emitter.write_candidate_lineage(CandidateLineage(entries=lineage_entries))
 
         # --- Stage 6: Governance Gates ---
@@ -542,115 +558,114 @@ class Orchestrator:
         results: list[SR] = []
 
         # Preserve the base trace_dir so we can redirect each mode to its own
-        # subdirectory (refine/ and independent/). Otherwise both modes
-        # overwrite each other's iter_*.json files.
+        # subdirectory (refine/ and independent/). The outer try/finally
+        # guarantees restoration even if an uncaught exception propagates
+        # from either mode.
         base_trace_dir = agentic._trace_dir
-
-        # --- Mode 1: Refine best classical candidate ---
-        converged_srs = sorted(
-            [sr for sr in search_outcome.results if sr.converged and sr.result is not None],
-            key=lambda r: r.bic if r.bic is not None else float("inf"),
-        )
-        if converged_srs:
-            best_sr = converged_srs[0]
-            assert best_sr.result is not None
-            best_estimates = {
-                name: pe.estimate
-                for name, pe in best_sr.result.parameter_estimates.items()
-                if pe.category == "structural"
-            }
-            logger.info(
-                "Agentic refine: starting from %s (BIC=%.1f)",
-                best_sr.candidate_id,
-                best_sr.bic or 0,
+        try:
+            # --- Mode 1: Refine best classical candidate ---
+            converged_srs = sorted(
+                [sr for sr in search_outcome.results if sr.converged and sr.result is not None],
+                key=lambda r: r.bic if r.bic is not None else float("inf"),
             )
-            agentic._trace_dir = base_trace_dir / "refine"
+            if converged_srs:
+                best_sr = converged_srs[0]
+                assert best_sr.result is not None
+                best_estimates = {
+                    name: pe.estimate
+                    for name, pe in best_sr.result.parameter_estimates.items()
+                    if pe.category == "structural"
+                }
+                logger.info(
+                    "Agentic refine: starting from %s (BIC=%.1f)",
+                    best_sr.candidate_id,
+                    best_sr.bic or 0,
+                )
+                agentic._trace_dir = base_trace_dir / "refine"
+                try:
+                    agentic_result = await self._agentic_runner.run(
+                        spec=best_sr.spec,
+                        data_manifest=manifest,
+                        initial_estimates=best_estimates,
+                        seed=self._config.seed,
+                        timeout_seconds=self._config.timeout_seconds,
+                        data_path=data_path,
+                        split_manifest=split_manifest_dict,
+                    )
+                    results.append(
+                        SR(
+                            candidate_id=agentic_result.model_id,
+                            spec=best_sr.spec,
+                            result=agentic_result,
+                            converged=agentic_result.converged,
+                            bic=agentic_result.bic,
+                            aic=agentic_result.aic,
+                        )
+                    )
+                    logger.info(
+                        "Agentic refine complete: %s BIC=%.1f (was %.1f)",
+                        agentic_result.model_id,
+                        agentic_result.bic or 0,
+                        best_sr.bic or 0,
+                    )
+                except (BackendError, RuntimeError) as e:
+                    logger.warning("Agentic refine failed: %s", e)
+
+            # --- Mode 2: Independent — start from a minimal base spec ---
+            from apmode.dsl.ast_models import (
+                IIV,
+                DSLSpec,
+                FirstOrder,
+                LinearElim,
+                OneCmt,
+                Proportional,
+            )
+            from apmode.ids import generate_candidate_id
+
+            base_spec = DSLSpec(
+                model_id=generate_candidate_id(),
+                absorption=FirstOrder(ka=nca_estimates.get("ka", 1.0)),
+                distribution=OneCmt(V=nca_estimates.get("V", 50.0)),
+                elimination=LinearElim(CL=nca_estimates.get("CL", 3.0)),
+                variability=[IIV(params=["CL", "V"], structure="diagonal")],
+                observation=Proportional(sigma_prop=0.15),
+            )
+            base_estimates = {
+                "ka": nca_estimates.get("ka", 1.0),
+                "V": nca_estimates.get("V", 50.0),
+                "CL": nca_estimates.get("CL", 3.0),
+            }
+            logger.info("Agentic independent: starting from base 1-cmt oral spec")
+            agentic._trace_dir = base_trace_dir / "independent"
             try:
-                agentic_result = await self._agentic_runner.run(
-                    spec=best_sr.spec,
+                independent_result = await self._agentic_runner.run(
+                    spec=base_spec,
                     data_manifest=manifest,
-                    initial_estimates=best_estimates,
-                    seed=self._config.seed,
+                    initial_estimates=base_estimates,
+                    seed=self._config.seed + 1000,
                     timeout_seconds=self._config.timeout_seconds,
                     data_path=data_path,
                     split_manifest=split_manifest_dict,
                 )
                 results.append(
                     SR(
-                        candidate_id=agentic_result.model_id,
-                        spec=best_sr.spec,  # original spec (transforms tracked in lineage)
-                        result=agentic_result,
-                        converged=agentic_result.converged,
-                        bic=agentic_result.bic,
-                        aic=agentic_result.aic,
+                        candidate_id=independent_result.model_id,
+                        spec=base_spec,
+                        result=independent_result,
+                        converged=independent_result.converged,
+                        bic=independent_result.bic,
+                        aic=independent_result.aic,
                     )
                 )
                 logger.info(
-                    "Agentic refine complete: %s BIC=%.1f (was %.1f)",
-                    agentic_result.model_id,
-                    agentic_result.bic or 0,
-                    best_sr.bic or 0,
+                    "Agentic independent complete: %s BIC=%.1f",
+                    independent_result.model_id,
+                    independent_result.bic or 0,
                 )
             except (BackendError, RuntimeError) as e:
-                # BackendError: inner runner failed; RuntimeError: agentic loop
-                # exhausted iterations without a converged result.
-                logger.warning("Agentic refine failed: %s", e)
-
-        # --- Mode 2: Independent — start from a minimal base spec ---
-        from apmode.dsl.ast_models import (
-            IIV,
-            DSLSpec,
-            FirstOrder,
-            LinearElim,
-            OneCmt,
-            Proportional,
-        )
-        from apmode.ids import generate_candidate_id
-
-        base_spec = DSLSpec(
-            model_id=generate_candidate_id(),
-            absorption=FirstOrder(ka=nca_estimates.get("ka", 1.0)),
-            distribution=OneCmt(V=nca_estimates.get("V", 50.0)),
-            elimination=LinearElim(CL=nca_estimates.get("CL", 3.0)),
-            variability=[IIV(params=["CL", "V"], structure="diagonal")],
-            observation=Proportional(sigma_prop=0.15),
-        )
-        base_estimates = {
-            "ka": nca_estimates.get("ka", 1.0),
-            "V": nca_estimates.get("V", 50.0),
-            "CL": nca_estimates.get("CL", 3.0),
-        }
-        logger.info("Agentic independent: starting from base 1-cmt oral spec")
-        agentic._trace_dir = base_trace_dir / "independent"
-        try:
-            independent_result = await self._agentic_runner.run(
-                spec=base_spec,
-                data_manifest=manifest,
-                initial_estimates=base_estimates,
-                seed=self._config.seed + 1000,  # different seed from refine
-                timeout_seconds=self._config.timeout_seconds,
-                data_path=data_path,
-                split_manifest=split_manifest_dict,
-            )
-            results.append(
-                SR(
-                    candidate_id=independent_result.model_id,
-                    spec=base_spec,
-                    result=independent_result,
-                    converged=independent_result.converged,
-                    bic=independent_result.bic,
-                    aic=independent_result.aic,
-                )
-            )
-            logger.info(
-                "Agentic independent complete: %s BIC=%.1f",
-                independent_result.model_id,
-                independent_result.bic or 0,
-            )
-        except (BackendError, RuntimeError) as e:
-            logger.warning("Agentic independent failed: %s", e)
+                logger.warning("Agentic independent failed: %s", e)
         finally:
-            # Restore original trace_dir in case the runner is reused
+            # Always restore original trace_dir, even on uncaught exceptions
             agentic._trace_dir = base_trace_dir
 
         return results

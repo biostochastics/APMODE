@@ -45,6 +45,28 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
+def _sanitize_for_prompt(text: str, max_len: int = 500) -> str:
+    """Strip patterns that could manipulate the LLM via injected error text.
+
+    Backend error messages (e.g., from R or nlmixr2) are embedded as user
+    content when relaying failures to the LLM. A hostile or unusual error
+    message could contain markdown code fences or JSON-like sequences that
+    the LLM would interpret as instructions. This helper truncates the
+    message and escapes obvious code-fence / system-prompt sequences.
+    """
+    import re
+
+    if not text:
+        return ""
+    # Remove triple backticks (code fences) that could terminate our own fence
+    cleaned = text.replace("```", "\u2063``\u2063`\u2063")
+    # Collapse any lines that look like role markers
+    cleaned = re.sub(r"(?im)^(?:system|user|assistant)\s*:\s*", "", cleaned)
+    if len(cleaned) > max_len:
+        cleaned = cleaned[:max_len] + f"\u2026 [truncated, {len(text) - max_len} chars]"
+    return cleaned
+
+
 @runtime_checkable
 class LLMClientProtocol(Protocol):
     """Protocol for LLM clients (real or replay)."""
@@ -158,8 +180,16 @@ class AgenticRunner:
         lineage_entries: list[dict[str, str | None]] = []
 
         # Conversation history preserves multi-turn context across iterations
-        # so the LLM knows what it tried before and what happened.
+        # so the LLM knows what it tried before and what happened. A sliding
+        # window is applied at message-construction time to prevent
+        # unbounded token growth over 25 iterations (full history still
+        # captured in trace files).
         conversation_history: list[dict[str, str]] = []
+        # Keep the system prompt + last N*2 messages (N iterations worth of
+        # user + assistant pairs). 12 iterations x 2 = 24 messages fits
+        # comfortably within 128K-token context windows even with verbose
+        # diagnostics and multi-turn validation feedback.
+        max_history_messages = 24
 
         for iteration in range(1, self._config.max_iterations + 1):
             iter_id = f"iter_{iteration:03d}"
@@ -185,17 +215,19 @@ class AgenticRunner:
 
             # If runner failed, relay error to LLM so it can propose a fix
             if result is None:
+                safe_err = _sanitize_for_prompt(runner_error or "unknown")
                 error_msg = (
                     f"## Iteration {iteration}/{self._config.max_iterations}\n\n"
-                    f"**Backend execution failed:** {runner_error}\n\n"
+                    f"**Backend execution failed:** {safe_err}\n\n"
                     f"The current model spec could not be evaluated. "
                     f"Please propose transforms to address this failure, "
                     f"or signal stop if no recovery is possible."
                 )
                 conversation_history.append({"role": "user", "content": error_msg})
+                trimmed = conversation_history[-max_history_messages:]
                 messages = [
                     {"role": "system", "content": system_prompt},
-                    *conversation_history,
+                    *trimmed,
                 ]
                 prompt_hash = hashlib.sha256(
                     json.dumps(messages, sort_keys=True).encode()
@@ -338,11 +370,12 @@ class AgenticRunner:
             # process to the LLM provider (PRD §10, ARCHITECTURE.md §11).
             diag_summary = redact_for_llm(summarize_diagnostics(result))
 
-            # 3. Build messages with conversation history
+            # 3. Build messages with conversation history (sliding window)
             conversation_history.append({"role": "user", "content": diag_text})
+            trimmed = conversation_history[-max_history_messages:]
             messages = [
                 {"role": "system", "content": system_prompt},
-                *conversation_history,
+                *trimmed,
             ]
 
             # 4. Write trace input

@@ -117,8 +117,12 @@ def summarize_for_llm(
 
     Highlights actionable signals: high CWRES bias, non-convergence,
     high shrinkage, VPC deficiencies.
+
+    The summary is routed through ``redact_for_llm`` before formatting to
+    enforce the PRD §10 aggregate-only allow-list on every field that
+    reaches a third-party LLM provider.
     """
-    s = summarize_diagnostics(result)
+    s = redact_for_llm(summarize_diagnostics(result))
     lines: list[str] = []
 
     lines.append(f"## Iteration {iteration}/{max_iterations}")
