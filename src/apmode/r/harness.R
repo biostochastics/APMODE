@@ -70,22 +70,50 @@ response_path <- args[2]
     )
   }
 
-  # ETA shrinkage
+  # ETA shrinkage — nlmixr2 5.0 uses fit$shrink (data.frame) instead of
+  # fit$shrinkage (named list). Extract SD shrinkage row for eta.* columns.
   shrinkage <- tryCatch({
-    s <- fit$shrinkage
-    if (is.null(s)) list() else as.list(s)
+    s <- fit$shrink
+    if (is.data.frame(s) && "var" %in% rownames(s)) {
+      # shrink df has rows: mean, var, sd, kurtosis, skewness
+      # columns: eta.CL, eta.V, ... , IWRES
+      eta_cols <- grep("^eta\\.", colnames(s), value = TRUE)
+      vals <- as.list(s["var", eta_cols, drop = FALSE])
+      # Rename eta.CL -> CL etc for downstream compatibility
+      names(vals) <- sub("^eta\\.", "", names(vals))
+      # Convert variance shrinkage to SD shrinkage percentage
+      # SD shrinkage = (1 - sqrt(1 - var_shrinkage)) * 100
+      lapply(vals, function(v) {
+        if (is.numeric(v) && !is.na(v)) round((1 - sqrt(pmax(0, 1 - v))) * 100, 2)
+        else NULL
+      })
+    } else if (!is.null(fit$shrinkage)) {
+      as.list(fit$shrinkage)
+    } else {
+      list()
+    }
   }, error = function(e) list())
 
   # Convergence info — check multiple indicators for robustness across
-  # SAEM/FOCEI/nlme methods (fit$message text varies by method)
+  # SAEM/FOCEI/nlme methods. In nlmixr2 5.0, fit$message may be empty
+  # and fit$objDf$OBJF may be NA for SAEM. Use AIC(fit) as fallback.
   converged <- tryCatch({
-    msg_ok <- !is.null(fit$message) && grepl("successful|converge", fit$message,
-                                              ignore.case = TRUE)
-    # Also check if objective function is finite (non-converged fits may have Inf)
+    msg_ok <- !is.null(fit$message) && nchar(fit$message) > 0 &&
+              grepl("successful|converge", fit$message, ignore.case = TRUE)
+    # Check if OFV is finite
     ofv_ok <- tryCatch(!is.null(fit$objDf$OBJF[1]) && is.finite(fit$objDf$OBJF[1]),
                        error = function(e) FALSE)
-    msg_ok || ofv_ok
+    # Fallback: AIC is finite (nlmixr2 5.0 SAEM computes via Gaussian quadrature)
+    aic_ok <- tryCatch(is.finite(AIC(fit)), error = function(e) FALSE)
+    msg_ok || ofv_ok || aic_ok
   }, error = function(e) FALSE)
+
+  # Wall time: nlmixr2 5.0 returns fit$time as data.frame, not named vector
+  wall_secs <- tryCatch({
+    t <- fit$time
+    if (is.data.frame(t)) sum(as.numeric(unlist(t)), na.rm = TRUE)
+    else as.numeric(t["elapsed"], units = "secs")
+  }, error = function(e) 0.0)
 
   conv_meta <- list(
     method = method,
@@ -93,27 +121,34 @@ response_path <- args[2]
     iterations = if (!is.null(fit$niter)) as.integer(sum(fit$niter)) else 0L,
     gradient_norm = NULL,
     minimization_status = if (converged) "successful" else "terminated",
-    wall_time_seconds = as.numeric(fit$time["elapsed"], units = "secs")
+    wall_time_seconds = wall_secs
   )
 
-  # GOF metrics
+  # GOF metrics — nlmixr2 5.0 SAEM may not compute CWRES by default;
+  # fall back to IWRES (individual weighted residuals) which is always present
   gof <- tryCatch({
-    cwres <- fit$CWRES
-    list(
-      cwres_mean = mean(cwres, na.rm = TRUE),
-      cwres_sd = sd(cwres, na.rm = TRUE),
-      outlier_fraction = mean(abs(cwres) > 4, na.rm = TRUE),
-      obs_vs_pred_r2 = cor(fit$DV, fit$PRED, use = "complete.obs")^2
-    )
+    wres <- if ("CWRES" %in% names(fit)) fit$CWRES else fit$IWRES
+    if (is.null(wres) || length(wres) == 0) {
+      list(cwres_mean = 0, cwres_sd = 1, outlier_fraction = 0, obs_vs_pred_r2 = NULL)
+    } else {
+      list(
+        cwres_mean = mean(wres, na.rm = TRUE),
+        cwres_sd = sd(wres, na.rm = TRUE),
+        outlier_fraction = mean(abs(wres) > 4, na.rm = TRUE),
+        obs_vs_pred_r2 = tryCatch(cor(fit$DV, fit$PRED, use = "complete.obs")^2,
+                                   error = function(e) NULL)
+      )
+    }
   }, error = function(e) {
     list(cwres_mean = 0, cwres_sd = 1, outlier_fraction = 0, obs_vs_pred_r2 = NULL)
   })
 
-  # Split GOF metrics — partition CWRES by train/test if split manifest provided
+  # Split GOF metrics — partition residuals by train/test if split manifest provided
   split_gof <- NULL
   if (!is.null(req$split_manifest) && length(req$split_manifest$assignments) > 0) {
     tryCatch({
-      cwres <- fit$CWRES
+      cwres <- if ("CWRES" %in% names(fit)) fit$CWRES else fit$IWRES
+      if (is.null(cwres) || length(cwres) == 0) stop("no residuals available")
       fit_ids <- as.character(fit$ID)
       assignments <- req$split_manifest$assignments
 
@@ -141,11 +176,17 @@ response_path <- args[2]
     })
   }
 
-  # Condition number
-  cond_num <- tryCatch(fit$conditionNumber, error = function(e) NULL)
+  # Condition number — nlmixr2 5.0 renamed to conditionNumberCov/Cor
+  cond_num <- tryCatch(fit$conditionNumberCov, error = function(e) {
+    tryCatch(fit$conditionNumber, error = function(e2) NULL)
+  })
 
-  # OFV, AIC, BIC
-  ofv_val <- tryCatch(fit$objDf$OBJF[1], error = function(e) NULL)
+  # OFV, AIC, BIC — nlmixr2 5.0 SAEM may have NA in objDf$OBJF;
+  # AIC()/BIC() compute via Gaussian quadrature as fallback
+  ofv_val <- tryCatch({
+    v <- fit$objDf$OBJF[1]
+    if (is.na(v)) NULL else v
+  }, error = function(e) NULL)
   aic_val <- tryCatch(AIC(fit), error = function(e) NULL)
   bic_val <- tryCatch(BIC(fit), error = function(e) NULL)
 
@@ -165,13 +206,13 @@ response_path <- args[2]
       vpc = NULL,
       identifiability = list(
         condition_number = cond_num,
-        profile_likelihood_ci = list(),
+        profile_likelihood_ci = setNames(list(), character(0)),
         ill_conditioned = !is.null(cond_num) && cond_num > 1e6
       ),
       blq = list(method = "none", lloq = NULL, n_blq = 0L, blq_fraction = 0.0),
-      diagnostic_plots = list()
+      diagnostic_plots = setNames(list(), character(0))
     ),
-    wall_time_seconds = conv_meta$wall_time_seconds,
+    wall_time_seconds = wall_secs,
     backend_versions = list(
       nlmixr2 = as.character(packageVersion("nlmixr2")),
       R = paste0(R.version$major, ".", R.version$minor)

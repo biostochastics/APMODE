@@ -8,6 +8,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Agentic LLM backend wired to CLI** (Phase 3, PRD §4.2.6)
+  - `--agentic/--no-agentic` flag on `apmode run` (default: on)
+  - `--provider` (anthropic/openai/gemini/ollama/openrouter), `--model`, `--max-iterations`
+  - Auto-activates in discovery/optimization lanes when API key found; gracefully
+    disables with warning when unavailable
+  - Submission lane hard-blocks agentic (PRD §3 rule enforced in lane router)
+- **Multi-turn conversation history in agentic loop**: LLM now sees full history
+  across iterations (prior diagnostics, its own proposals, validation outcomes)
+  instead of stateless per-iteration prompts
+- **Validation feedback to LLM**: transform validation failures, parse errors, and
+  DSL semantic violations are fed back as structured user messages so the LLM can
+  correct rejected proposals (was silently swallowed with `continue`)
+- **Live LLM provider integration tests** (`test_llm_providers_live.py`):
+  8 tests across Anthropic, OpenAI, OpenRouter, Ollama, and full agentic loop;
+  `@_skip_on_billing` decorator for graceful skip on quota/auth errors;
+  `live` pytest marker (`-m live` to run, excluded from default suite)
+- **`llm` optional dependency group** in pyproject.toml: `uv sync --extra llm`
+  installs anthropic, openai, google-genai, ollama, litellm
+
+### Fixed
+- **Gemini client multi-turn**: replaced string concatenation with proper
+  `types.Content` objects preserving multi-turn conversation structure
+- **OpenRouter auth**: client now reads `OPENROUTER_API_KEY` directly instead
+  of requiring users to alias it as `OPENAI_API_KEY`
+
+### Added
 - **Full multi-dose support across all backends (ADDL/II/SS)**
   - **Data schema**: Added optional ADDL (additional doses), II (inter-dose interval),
     SS (steady-state flag) columns to CanonicalPKSchema with cross-column validation
