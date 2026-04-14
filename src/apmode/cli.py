@@ -616,3 +616,96 @@ def _mini_bar(passed: int, total: int, width: int = 20) -> str:
         return ""
     filled = min(width, round(passed / total * width))
     return f"[green]{'|' * filled}[/][dim]{'|' * (width - filled)}[/]"
+
+
+# ---------------------------------------------------------------------------
+# Dataset discovery and download
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def datasets(
+    fetch: Annotated[
+        str | None,
+        typer.Argument(help="Dataset name to download (omit to list all)."),
+    ] = None,
+    output: Annotated[
+        Path,
+        typer.Option("--output", "-o", help="Output directory for downloaded CSVs."),
+    ] = Path("datasets"),
+    route: Annotated[
+        str | None,
+        typer.Option(help="Filter by route: oral, iv_bolus, iv_infusion."),
+    ] = None,
+    elimination: Annotated[
+        str | None,
+        typer.Option(help="Filter by elimination: linear, michaelis_menten."),
+    ] = None,
+) -> None:
+    """Discover and download public PK datasets.
+
+    List available datasets:   apmode datasets
+    Download one:              apmode datasets theo_sd
+    Download with filter:      apmode datasets --route oral -o ./data
+    """
+    from apmode.data.datasets import (
+        DATASET_REGISTRY,
+        fetch_dataset,
+        list_datasets,
+    )
+
+    if fetch is not None:
+        # Download a specific dataset
+        if fetch not in DATASET_REGISTRY:
+            available = ", ".join(sorted(DATASET_REGISTRY.keys()))
+            err_console.print(
+                f"[red bold]Error:[/] Unknown dataset '{escape(fetch)}'. Available: {available}"
+            )
+            raise typer.Exit(code=1)
+
+        with console.status(f"[bold cyan]Fetching {fetch}...[/]", spinner="dots"):
+            try:
+                path = fetch_dataset(fetch, output)
+            except RuntimeError as e:
+                err_console.print(f"[red bold]Error:[/] {escape(str(e))}")
+                raise typer.Exit(code=1) from e
+
+        info = DATASET_REGISTRY[fetch]
+        console.print(f"\n[green bold]Downloaded:[/] {path}")
+        console.print(f"  {info.n_subjects} subjects, {info.n_rows} rows")
+        console.print(f"  Route: {info.route}, Elimination: {info.elimination}")
+        console.print(f"\n  Run: [bold]apmode run {path} --lane discovery[/]")
+        return
+
+    # List available datasets
+    results = list_datasets(route=route, elimination=elimination)
+    if not results:
+        console.print("[yellow]No datasets match the given filters.[/]")
+        return
+
+    table = Table(title="Public PK Datasets", show_lines=False)
+    table.add_column("Name", style="bold cyan", no_wrap=True)
+    table.add_column("Subj", justify="right")
+    table.add_column("Route", style="dim")
+    table.add_column("Elimination")
+    table.add_column("Cmt", justify="center")
+    table.add_column("Covariates", style="dim")
+    table.add_column("Description", max_width=45)
+
+    for info in results:
+        covs = ", ".join(info.covariates) if info.covariates else "-"
+        desc = info.description[:45] + "..." if len(info.description) > 45 else info.description
+        table.add_row(
+            info.name,
+            str(info.n_subjects),
+            info.route,
+            info.elimination,
+            str(info.compartments),
+            covs,
+            desc,
+        )
+
+    console.print()
+    console.print(table)
+    console.print("\n[dim]Download:[/] [bold]apmode datasets <name> -o ./data[/]")
+    console.print("[dim]Filter:[/]   [bold]apmode datasets --route oral --elimination linear[/]")
