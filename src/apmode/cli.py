@@ -60,6 +60,100 @@ app = typer.Typer(
 _COPYRIGHT = "(C) 2026 Biostochastics. For Research Use Only."
 _GITHUB = "https://github.com/biostochastics/APMODE"
 
+# Default model per provider for the agentic backend
+_DEFAULT_MODELS: dict[str, str] = {
+    "anthropic": "claude-sonnet-4-20250514",
+    "openai": "gpt-4o",
+    "gemini": "gemini-2.5-flash",
+    "ollama": "qwen3:4b",
+    "openrouter": "anthropic/claude-sonnet-4-20250514",
+}
+
+# Env var names to check per provider for auto-detection
+_PROVIDER_ENV_KEYS: dict[str, list[str]] = {
+    "anthropic": ["ANTHROPIC_API_KEY"],
+    "openai": ["OPENAI_API_KEY"],
+    "gemini": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+    "ollama": [],  # no key needed
+    "openrouter": ["OPENROUTER_API_KEY"],
+}
+
+
+def _try_build_agentic_runner(
+    inner_runner: Any,
+    provider: str,
+    model_name: str | None,
+    max_iterations: int,
+    lane: str,
+    trace_dir: Path,
+    quiet: bool,
+) -> Any | None:
+    """Try to build an AgenticRunner. Returns None if provider unavailable."""
+    import os
+
+    from apmode.backends.agentic_runner import AgenticConfig, AgenticRunner
+    from apmode.backends.llm_client import LLMConfig
+    from apmode.backends.llm_providers import available_providers, create_llm_client
+
+    # Check if provider is valid
+    known = available_providers()
+    if provider not in known:
+        if not quiet:
+            err_console.print(
+                f"[yellow]Warning:[/] unknown LLM provider '{provider}'. "
+                f"Available: {', '.join(known)}. Agentic backend disabled."
+            )
+        return None
+
+    # Check for API key (ollama needs none)
+    env_keys = _PROVIDER_ENV_KEYS.get(provider, [])
+    if env_keys and not any(os.environ.get(k) for k in env_keys):
+        if not quiet:
+            err_console.print(
+                f"[yellow]Warning:[/] no API key found for provider '{provider}' "
+                f"(checked: {', '.join(env_keys)}). Agentic backend disabled."
+            )
+        return None
+
+    # Resolve model name
+    resolved_model = model_name or _DEFAULT_MODELS.get(provider, "")
+    if not resolved_model:
+        if not quiet:
+            err_console.print(
+                f"[yellow]Warning:[/] no default model for provider '{provider}'. "
+                "Use --model to specify one. Agentic backend disabled."
+            )
+        return None
+
+    try:
+        llm_config = LLMConfig(model=resolved_model, provider=provider)
+        llm_client = create_llm_client(llm_config)
+    except Exception as e:
+        if not quiet:
+            err_console.print(
+                f"[yellow]Warning:[/] failed to create LLM client: {e}. Agentic backend disabled."
+            )
+        return None
+
+    agentic_config = AgenticConfig(
+        max_iterations=max_iterations,
+        lane=lane,
+    )
+
+    if not quiet:
+        console.print(
+            f"  [bold green]Agentic LLM[/] enabled: "
+            f"provider={provider}, model={resolved_model}, "
+            f"max_iterations={max_iterations}"
+        )
+
+    return AgenticRunner(
+        inner_runner=inner_runner,
+        llm_client=llm_client,
+        config=agentic_config,
+        trace_dir=trace_dir,
+    )
+
 
 def _version_callback(value: bool) -> None:
     if value:
@@ -144,6 +238,46 @@ def run(
         Path,
         typer.Option(help="Bundle output directory."),
     ] = Path("runs"),
+    agentic: Annotated[
+        bool,
+        typer.Option(
+            "--agentic",
+            help=(
+                "Enable the agentic LLM backend (Phase 3). "
+                "Auto-activates in discovery/optimization lanes when an API key is found. "
+                "Use --no-agentic to disable."
+            ),
+        ),
+    ] = True,
+    provider: Annotated[
+        str,
+        typer.Option(
+            help=(
+                "LLM provider for the agentic backend. "
+                "[dim]anthropic[/dim], [dim]openai[/dim], [dim]gemini[/dim], "
+                "[dim]ollama[/dim], [dim]openrouter[/dim]."
+            ),
+        ),
+    ] = "anthropic",
+    model: Annotated[
+        str | None,
+        typer.Option(
+            help=(
+                "LLM model name. Defaults per provider: "
+                "anthropic=claude-sonnet-4-20250514, openai=gpt-4o, "
+                "gemini=gemini-2.5-flash, ollama=qwen3:4b."
+            ),
+        ),
+    ] = None,
+    max_iterations: Annotated[
+        int,
+        typer.Option(
+            "--max-iterations",
+            help="Max agentic LLM iterations per run (PRD §4.2.6: cap=25).",
+            min=1,
+            max=25,
+        ),
+    ] = 10,
     verbose: Annotated[
         bool,
         typer.Option("--verbose", "-v", help="Show detailed pipeline logs."),
@@ -228,7 +362,21 @@ def run(
     )
 
     runner = Nlmixr2Runner(work_dir=output / "_work", estimation=["saem"])
-    orchestrator = Orchestrator(runner, output, config)
+
+    # --- Agentic LLM backend (Phase 3) ---
+    agentic_runner_instance = None
+    if agentic and lane.value in ("discovery", "optimization"):
+        agentic_runner_instance = _try_build_agentic_runner(
+            inner_runner=runner,
+            provider=provider,
+            model_name=model,
+            max_iterations=max_iterations,
+            lane=lane.value,
+            trace_dir=output / "agentic_trace",
+            quiet=quiet,
+        )
+
+    orchestrator = Orchestrator(runner, output, config, agentic_runner=agentic_runner_instance)
 
     # --- Pipeline execution ---
     try:
