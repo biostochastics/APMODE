@@ -51,7 +51,8 @@ elimination_type: linear_elim
 linear_elim: "Linear" "(" "CL" "=" NUMBER ")"
 michaelis_menten: "MichaelisMenten" "(" "Vmax" "=" NUMBER "," "Km" "=" NUMBER ")"
 parallel_linear_mm: "ParallelLinearMM" "(" "CL" "=" NUMBER "," "Vmax" "=" NUMBER "," "Km" "=" NUMBER ")"
-time_varying_elim: "TimeVarying" "(" "CL" "=" NUMBER "," "decay_fn" "=" DECAY_FN ")"
+time_varying_elim: "TimeVarying" "(" "CL" "=" NUMBER "," "kdecay" "=" NUMBER "," "decay_fn" "=" DECAY_FN ")"
+                 | "TimeVarying" "(" "CL" "=" NUMBER "," "decay_fn" "=" DECAY_FN ")"
 node_elimination: "NODE_Elimination" "(" "dim" "=" INT "," "constraint_template" "=" CONSTRAINT_TEMPLATE ")"
 
 // --- Variability Module (supports multiple components) ---
@@ -88,14 +89,17 @@ observation_type: proportional_obs
 proportional_obs: "Proportional" "(" "sigma_prop" "=" NUMBER ")"
 additive_obs: "Additive" "(" "sigma_add" "=" NUMBER ")"
 combined_obs: "Combined" "(" "sigma_prop" "=" NUMBER "," "sigma_add" "=" NUMBER ")"
-blq_m3: "BLQ_M3" "(" "loq_value" "=" NUMBER ")"
-blq_m4: "BLQ_M4" "(" "loq_value" "=" NUMBER ")"
+blq_m3: "BLQ_M3" "(" "loq_value" "=" NUMBER "," "error_model" "=" ERROR_MODEL "," "sigma_prop" "=" NUMBER "," "sigma_add" "=" NUMBER ")"
+      | "BLQ_M3" "(" "loq_value" "=" NUMBER ")"
+blq_m4: "BLQ_M4" "(" "loq_value" "=" NUMBER "," "error_model" "=" ERROR_MODEL "," "sigma_prop" "=" NUMBER "," "sigma_add" "=" NUMBER ")"
+      | "BLQ_M4" "(" "loq_value" "=" NUMBER ")"
 
 // --- Terminals ---
 STRUCTURE: "diagonal" | "block"
 CONSTRAINT_TEMPLATE: "monotone_increasing" | "monotone_decreasing" | "bounded_positive" | "saturable" | "unconstrained_smooth"
 COVARIATE_FORM: "power" | "exponential" | "linear" | "categorical" | "maturation"
 DECAY_FN: "exponential" | "half_life" | "linear"
+ERROR_MODEL: "proportional" | "additive" | "combined"
 INT: /[0-9]+/
 NUMBER: /[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?/
 

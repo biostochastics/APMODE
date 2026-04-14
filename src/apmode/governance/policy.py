@@ -50,6 +50,13 @@ class Gate2Config(BaseModel):
     identifiability_required: bool
     node_eligible: bool
     loro_required: bool
+    # LORO-CV thresholds (Phase 3 — Optimization lane)
+    loro_npde_mean_max: float = Field(default=0.3, gt=0.0)
+    loro_npde_variance_min: float = Field(default=0.5, gt=0.0)
+    loro_npde_variance_max: float = Field(default=1.5, gt=0.0)
+    loro_vpc_coverage_min: float = Field(default=0.80, ge=0.0, le=1.0)
+    loro_min_folds: int = Field(default=3, ge=2)
+    loro_budget_top_n: int | None = None
 
 
 class Gate25Config(BaseModel):

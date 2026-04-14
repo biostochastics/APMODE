@@ -4,8 +4,8 @@
 
   **Adaptive Pharmacokinetic Model Discovery Engine**
 
-  [![Phase](https://img.shields.io/badge/phase-2%20(90%25)-blue)](PRD_APMODE_v0.3.md)
-  [![Tests](https://img.shields.io/badge/tests-949%20passing-success)]()
+  [![Phase](https://img.shields.io/badge/phase-3%20(P3.B)-blue)](PRD_APMODE_v0.3.md)
+  [![Tests](https://img.shields.io/badge/tests-1145%20passing-success)]()
   [![License](https://img.shields.io/badge/license-GPL--2.0--or--later-green)](LICENSE)
   [![Python](https://img.shields.io/badge/python-3.12%2B-yellow)]()
   [![mypy](https://img.shields.io/badge/mypy-strict%20%E2%9C%93-blue)]()
@@ -26,7 +26,7 @@ APMODE is a **governed meta-system** that composes four population PK modeling p
 
 **A typed PK DSL is the control surface.** Models are specified in a structured grammar (`Absorption x Distribution x Elimination x Variability x Observation`), compiled to a typed AST, validated against pharmacometric constraints, and lowered to backend-specific code. The agentic LLM backend (Phase 3) operates exclusively through DSL transforms — it cannot emit raw code.
 
-> **Status**: Phase 2 in progress (~90%). 949 tests passing. `mypy --strict` clean (49 files). `ruff` clean. Eight rounds of multi-model code review completed.
+> **Status**: Phase 3 in progress (P3.B LORO-CV complete). 1145 tests passing. `mypy --strict` clean (62 files). `ruff` clean. Multi-model reviewed (Codex, Gemini, GPT-5.2-Pro, GLM-5, Droid).
 
 ---
 
@@ -96,7 +96,7 @@ uv run apmode diff ./runs/run_a ./runs/run_b
 ### Run the Test Suite
 
 ```bash
-uv run pytest tests/ -q                    # all 949 tests
+uv run pytest tests/ -q                    # all 1145 tests
 uv run mypy src/apmode/ --strict           # type checking (0 errors)
 uv run ruff check src/apmode/ tests/       # linting (0 errors)
 ```
@@ -122,11 +122,11 @@ model {
 
 | DSL Axis | Supported Forms |
 |----------|----------------|
-| **Absorption** | FirstOrder, ZeroOrder, Transit(n), Sequential, Mixed, WeibullAbs |
-| **Distribution** | OneCmt, TwoCmt, ThreeCmt, EffectCmt, VirtualPeripheral |
-| **Elimination** | Linear, MichaelisMenten, ParallelLinearMM, InductionInhibition, TimeVaryingElim |
-| **Variability** | IIV (diagonal/block), IOV, CovariateLink (power/exponential/linear/step) |
-| **Observation** | Proportional, Additive, Combined, LogNormal, BLQ (M1/M3/M4 composition) |
+| **Absorption** | FirstOrder, ZeroOrder, LaggedFirstOrder, Transit(n), MixedFirstZero, NODE_Absorption |
+| **Distribution** | OneCmt, TwoCmt, ThreeCmt, TMDD_Core, TMDD_QSS |
+| **Elimination** | Linear, MichaelisMenten, ParallelLinearMM, TimeVarying(kdecay, decay_fn), NODE_Elimination |
+| **Variability** | IIV (diagonal/block), IOV (ByStudy/ByVisit/ByDoseEpoch/Custom), CovariateLink (power/exponential/linear/categorical/maturation) |
+| **Observation** | Proportional, Additive, Combined, BLQ_M3, BLQ_M4 (with composable error_model) |
 
 ---
 
@@ -249,7 +249,7 @@ Rscript benchmarks/suite_a/simulate_all.R [output_dir]
 
 ## Test Suite
 
-949 tests across multiple strategies:
+1145+ tests across multiple strategies:
 
 ```bash
 uv run pytest tests/unit/ -q               # ~700 unit tests
@@ -262,10 +262,10 @@ uv run pytest tests/ --snapshot-update      # update snapshots after emitter cha
 | Category | Count | Coverage |
 |----------|-------|----------|
 | Unit tests | ~700 | All modules: DSL, data, backends, search, governance, routing, bundle, benchmarks |
-| NODE backend | 103 | Constraints, sub-model, ODE (incl. CL independence), trainer, runner, distillation, init strategy |
+| NODE backend | 180 | Constraints, sub-model, ODE, trainer, runner, distillation, init strategy, real-data (theo_sd) |
 | Stan codegen | 48 | Stan emitter (incl. IOV + BLQ M3/M4) + cross-backend lowering validation |
 | Gate 2.5 + ranking | 27 | ICH M15 credibility + cross-paradigm ranking |
-| Integration | 30 | Mock R pipeline, Discovery lane dispatch, Suite B NODE validation |
+| Integration | 42 | Mock R pipeline, Discovery lane, Suite B NODE, real-data NODE (theo_sd, Oral_2CPT) |
 | Suite A benchmarks | 48 | All 7 scenarios (A1-A7) with property tests |
 | Golden masters | 21 | Syrupy snapshots for pharmacometrician-validated R output |
 | R syntax validation | 168 | Balanced delimiters, eta/param consistency |
@@ -278,8 +278,8 @@ uv run pytest tests/ --snapshot-update      # update snapshots after emitter cha
 |-------|-------|--------|
 | **Phase 0** | Schemas, protocols, grammar, error taxonomy, sparkid integration | Complete |
 | **Phase 1** (6 months) | DSL + compiler, classical NLME backend, automated search, Gates 1-3, reproducibility bundle, CLI, Suite A | Complete (679 tests) |
-| **Phase 2** (4 months) | Hybrid NODE backend, functional distillation, Discovery lane, cross-paradigm ranking, Suite B, Stan codegen (IOV + BLQ), NODE init strategy, dataset registry, interactive CLI | In progress (~90%, 270 new tests) |
-| **Phase 3** (4 months) | Agentic LLM backend (DSL transforms only), Optimization lane + LORO-CV, report generator, Suite C, API | Planned |
+| **Phase 2** (4 months) | Hybrid NODE backend, functional distillation, Discovery lane, cross-paradigm ranking, Suite B, Stan codegen (IOV + BLQ), NODE init strategy, dataset registry, interactive CLI | Complete |
+| **Phase 3** (4 months) | Agentic LLM backend (DSL transforms only), Optimization lane + LORO-CV, report generator, Suite C, API | In progress |
 
 ---
 
@@ -349,23 +349,6 @@ Plus 9 simulated ground-truth datasets (1/2-cmt, oral/IV/infusion, linear/MM).
 - **Agentic LLM backend**: Phase 3 scope
 
 See the full list in [`PRD_APMODE_v0.3.md` §10](PRD_APMODE_v0.3.md).
-
----
-
-## Code Review Provenance
-
-Eight rounds of multi-model code review completed:
-
-| Round | Models | Focus |
-|-------|--------|-------|
-| R1 | codex, gemini, droid, crush | DSL compiler, emitter, bundle models |
-| R2 | codex, gemini, GLM-5, MiniMax, droid | Data pipeline, NCA, search, profiler, security |
-| R3 | codex, gemini, crush, opencode, droid | Gates, search engine, orchestrator, bundle emitter |
-| R4 | codex, gemini, crush, opencode, droid | Lane Router, Gate 3, Gate 2.5, CLI, dispatch constraints |
-| R5 | codex, gemini, crush, opencode, droid | Orchestrator wiring, seed stability, ranking |
-| R6 | gemini-3.1-pro | Phase 2 NODE backend, Gate 2.5, cross-paradigm ranking |
-| R7 | multi-model consensus | Phase 2 NODE init, Stan codegen, limitation fixes |
-| R8 | mimo consensus | CLI enhancement prioritization (Tier 1-3 implementation) |
 
 ---
 

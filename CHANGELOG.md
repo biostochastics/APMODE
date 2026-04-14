@@ -7,7 +7,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **NODE backend: 14 fixes from multi-model code review** (droid, crush, gemini, codex)
+  - **[Critical]** 2-cmt y0 dimension: runner now builds 3-element state vector for
+    2-compartment models (was always 2-element, causing shape crash)
+  - **[Critical]** BIC/AIC parameter count: uses actual trainable param count from model
+    tree (~25 for typical NODE) instead of `len(param_estimates)` (~5), which severely
+    underpenalized NODE in Gate 3 cross-paradigm ranking
+  - **[High]** NLL missing log(2π): added `0.5*n*log(2π)` constant for cross-backend
+    comparability with nlmixr2 (was ~1.84/obs offset)
+  - **[High]** Monotone constraint semantics: renamed/documented that MonotoneIncreasing
+    guarantees positive output, not input-output monotonicity; MonotoneDecreasing now
+    returns positive bounded output via `1/(1+sum(softplus))` (was returning negative)
+  - **[High]** Multi-dose rejection: NODE runner raises `InvalidSpecError` for subjects
+    with >1 dose event (was silently using only the first dose)
+  - **[High]** ODE integration start: `solve()` now integrates from `t0=0.0` (dose time)
+    instead of `times[0]` (first observation), preventing time-shift errors
+  - **[High]** Saturable constraint: MM-like `Vmax*s/(Km+s)` form with learned log-space
+    parameters replaces bounded sigmoid (which didn't model rate saturation)
+  - **[High]** Convergence semantics: patience exhaustion no longer unconditionally marks
+    `converged=True`; returns granular `minimization_status` (successful/plateau/nan/max)
+  - **[High]** V/V2 volume scaling: trainer uses V2 for peripheral compartment observations
+    instead of always dividing by V
+  - **[Medium]** WeightLibrary thread safety: added `threading.Lock` for concurrent async runs
+  - **[Medium]** Time sorting: CSV loader sorts observations by time before Diffrax solve
+  - **[Low]** Numerical stability: replaced `log1p(exp(x))` with `jax.nn.softplus(x)`
+  - **[Low]** Documented GMR direction in `FidelityResult` (surrogate=test, NODE=reference)
+
 ### Added
+- Real-data NODE integration tests (12 tests):
+  - theo_sd (12 subjects, 1-cmt): CSV load, train convergence, distillation, full E2E runner
+  - Oral_2CPT: multi-dose rejection guard verified
+  - 2-cmt mock mode: correct y0 shape, training without crash
+  - All 5 constraint templates trained on real data without NaN
+- GPU-not-required note in README prerequisites
+- **Phase 3 P3.B: LORO-CV for Optimization lane** (PRD §3.3)
+  - `LOROFoldResult`, `LOROMetrics`, `LOROCVResult` Pydantic models in bundle/models.py
+  - `loro_cv_splits()` fold generation with regimen-signature grouping (modal dose
+    per subject, not total AMT — per GPT-5.2-Pro pharmacometrics review)
+  - Gate 2 `_check_loro_requirement` now evaluates real LORO thresholds:
+    pooled NPDE mean/variance, VPC coverage concordance, minimum fold count
+  - LORO policy fields in `Gate2Config`: `loro_npde_mean_max`, `loro_npde_variance_min/max`,
+    `loro_vpc_coverage_min`, `loro_min_folds`, `loro_budget_top_n`
+  - `evaluate_loro_cv()` execution engine with per-fold fitting, metric aggregation,
+    law of total variance for pooled variance (E[Var] + Var[E])
+  - `write_loro_cv_result()` emitter writing to `loro_cv/{candidate_id}.json`
+  - New `src/apmode/evaluation/` package for cross-validation and predictive performance
+  - Evidence-grounded design: Khandokar (2025 Uppsala) CV for PK model selection,
+    Comets et al. (2008) NPDE, Bergstrand et al. (2011) pcVPC
+  - Multi-model reviewed: Codex GPT-5.3, Gemini 3.1 Pro, GPT-5.2-Pro, GLM-5, Droid
+  - 31 new tests: fold generation (13), Gate 2 LORO (11), execution engine (7)
+- `TimeVaryingElim.kdecay` as first-class AST field (was phantom parameter
+  with hardcoded initial estimate); grammar accepts optional `kdecay=` syntax
+- BLQ grammar extended: `BLQ_M3`/`BLQ_M4` now accept optional `error_model`,
+  `sigma_prop`, `sigma_add` parameters in DSL text (not just programmatically)
+- Semantic validation: TMDD distribution requires LinearElim (prevents
+  undefined `CL` in emitted code)
+- Semantic validation: duplicate IIV parameters across blocks rejected
+- Semantic validation: duplicate CovariateLinks (same param+covariate) rejected
+- Semantic validation: Transit `n` cannot have IIV/IOV/CovariateLink (emitters
+  don't apply eta to its back-transform)
+- IOV pruning after module swap transforms (was only IIV + CovariateLink)
+- Stan emitter: TMDD_QSS prediction now uses Cfree (algebraic QSS solve),
+  not Ctot (was scientific correctness bug)
+- Stan emitter: TMDD Core/QSS receptor ODE uses explicit kdeg derivation,
+  consistent with nlmixr2 emitter
+- Stan emitter guardrails: ZeroOrder/MixedFirstZero absorption and IOV
+  raise NotImplementedError instead of emitting broken code
+- Lark parser cached via `lru_cache` (was re-instantiated per parse call)
+- Formular docs: semantic validation rules table (docs/FORMULAR.md)
+
+### Previously added
 - `apmode explore` interactive wizard: step-by-step dataset exploration
   (fetch -> ingest -> profile -> NCA -> search space -> optional pipeline launch)
   with `--non-interactive` flag for CI

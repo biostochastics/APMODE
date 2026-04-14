@@ -25,7 +25,7 @@ Lane = Literal["submission", "discovery", "optimization"]
 # Backends available per lane (Phase 1: only nlmixr2 implemented)
 _LANE_BACKENDS: dict[str, list[str]] = {
     "submission": ["nlmixr2"],
-    "discovery": ["nlmixr2", "jax_node"],
+    "discovery": ["nlmixr2", "jax_node", "agentic_llm"],
     "optimization": ["nlmixr2", "jax_node", "agentic_llm"],
 }
 

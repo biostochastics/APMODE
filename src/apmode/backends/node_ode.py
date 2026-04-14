@@ -158,14 +158,16 @@ class HybridPKODE(eqx.Module):
         y0: jax.Array,
         times: jax.Array,
         *,
+        t0: float = 0.0,
         solver: diffrax.AbstractSolver | None = None,  # type: ignore[type-arg]
         max_steps: int = 4096,
     ) -> jax.Array:
         """Integrate the ODE and return state at requested times.
 
         Args:
-            y0: Initial state vector.
+            y0: Initial state vector (post-dose).
             times: Sorted time points to evaluate at.
+            t0: Integration start time (dose time). Defaults to 0.0.
             solver: Diffrax solver (default: Tsit5).
             max_steps: Maximum solver steps.
 
@@ -177,10 +179,13 @@ class HybridPKODE(eqx.Module):
         saveat = diffrax.SaveAt(ts=times)
         stepsize_controller = diffrax.PIDController(rtol=1e-5, atol=1e-7)
 
+        # Integrate from dose time (t0), not first observation time
+        t_start = jnp.minimum(jnp.array(t0), times[0])
+
         sol = diffrax.diffeqsolve(
             term,
             solver,
-            t0=times[0],
+            t0=t_start,
             t1=times[-1],
             dt0=None,
             y0=y0,

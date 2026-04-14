@@ -17,6 +17,7 @@ Two strategies for faster NODE convergence:
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -206,14 +207,17 @@ def pretrain_node_weights(
 class WeightLibrary:
     """Cache of pre-trained NODE sub-models keyed by profile name + config.
 
+    Thread-safe for concurrent async NODE runs.
     Use reset() to clear the cache for test isolation.
     """
 
     _cache: dict[str, NODESubModel] = field(default_factory=dict)
+    _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def reset(self) -> None:
         """Clear all cached pre-trained models."""
-        self._cache.clear()
+        with self._lock:
+            self._cache.clear()
 
     def get(
         self,
@@ -231,15 +235,16 @@ class WeightLibrary:
             return None
 
         cache_key = f"{profile_name}:{constraint_template}:{hidden_dim}:{seed}"
-        if cache_key not in self._cache:
-            profile = REFERENCE_PROFILES[profile_name]
-            self._cache[cache_key] = pretrain_node_weights(
-                profile,
-                constraint_template=constraint_template,
-                hidden_dim=hidden_dim,
-                seed=seed,
-            )
-        return self._cache[cache_key]
+        with self._lock:
+            if cache_key not in self._cache:
+                profile = REFERENCE_PROFILES[profile_name]
+                self._cache[cache_key] = pretrain_node_weights(
+                    profile,
+                    constraint_template=constraint_template,
+                    hidden_dim=hidden_dim,
+                    seed=seed,
+                )
+            return self._cache[cache_key]
 
 
 # Module-level singleton

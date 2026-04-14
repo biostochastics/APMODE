@@ -11,6 +11,7 @@ import time
 from pathlib import Path  # noqa: TC003 — used at runtime in run()
 from typing import TYPE_CHECKING, Literal
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -112,7 +113,12 @@ class NodeBackendRunner:
         )
 
         # Load and prepare data for training
-        subjects = self._prepare_subjects(data_path, data_manifest, initial_estimates)
+        subjects = self._prepare_subjects(
+            data_path,
+            data_manifest,
+            initial_estimates,
+            n_cmt=ode_config.n_cmt,
+        )
 
         # Train
         result = train_node(hybrid_model, subjects, self.training_config)
@@ -124,14 +130,20 @@ class NodeBackendRunner:
             result.trained_model, result.trained_sigma, spec
         )
 
+        # Count actual trainable parameters (MLP weights+biases + mechanistic log-params)
+        n_trainable = sum(
+            x.size for x in jax.tree.leaves(eqx.filter(result.trained_model, eqx.is_array))
+        )
+        n_trainable += 1  # log_sigma
+        n_obs_total = sum(len(s["observations"]) for s in subjects)
+
         return BackendResult(
             model_id=spec.model_id,
             backend="jax_node",
             converged=result.converged,
             ofv=result.final_loss * 2,  # -2LL
-            aic=result.final_loss * 2 + 2 * len(param_estimates),
-            bic=result.final_loss * 2
-            + np.log(sum(len(s["observations"]) for s in subjects)) * len(param_estimates),
+            aic=result.final_loss * 2 + 2 * n_trainable,
+            bic=result.final_loss * 2 + np.log(n_obs_total) * n_trainable,
             parameter_estimates=param_estimates,
             eta_shrinkage={},
             convergence_metadata=ConvergenceMetadata(
@@ -139,7 +151,7 @@ class NodeBackendRunner:
                 converged=result.converged,
                 iterations=result.n_epochs,
                 gradient_norm=None,
-                minimization_status="successful" if result.converged else "max_evaluations",
+                minimization_status=result.minimization_status,
                 wall_time_seconds=result.wall_time_seconds,
             ),
             diagnostics=DiagnosticBundle(
@@ -219,6 +231,8 @@ class NodeBackendRunner:
         data_path: Path | None,
         data_manifest: DataManifest,
         initial_estimates: dict[str, float],
+        *,
+        n_cmt: int = 1,
     ) -> list[dict[str, jax.Array]]:
         """Prepare subject data for training.
 
@@ -226,36 +240,107 @@ class NodeBackendRunner:
         (for testing / mock mode).
         """
         if data_path is not None and data_path.exists():
-            return self._load_subjects_from_csv(data_path, data_manifest)
+            return self._load_subjects_from_csv(data_path, data_manifest, n_cmt=n_cmt)
 
         # Mock mode: create synthetic subjects from initial estimates
-        return self._make_mock_subjects(data_manifest, initial_estimates)
+        return self._make_mock_subjects(data_manifest, initial_estimates, n_cmt=n_cmt)
 
     def _load_subjects_from_csv(
         self,
         data_path: Path,
         data_manifest: DataManifest,
+        *,
+        n_cmt: int = 1,
     ) -> list[dict[str, jax.Array]]:
-        """Load subject data from CSV file."""
+        """Load subject data from CSV with multi-dose event support."""
         import pandas as pd  # type: ignore[import-untyped]
+
+        from apmode.data.dosing import build_event_table
 
         df = pd.read_csv(data_path)
         cm = data_manifest.column_mapping
+
+        # Expand ADDL/II into explicit dose rows
+        event_df = build_event_table(
+            df,
+            col_time=cm.time,
+            col_id=cm.subject_id,
+            col_evid=cm.evid,
+            col_addl=cm.addl or "ADDL",
+            col_ii=cm.ii or "II",
+            col_amt=cm.amt,
+            col_rate=cm.rate or "RATE",
+            col_dur=cm.dur or "DUR",
+        )
+
         subjects: list[dict[str, jax.Array]] = []
 
-        for _sid, sdf in df.groupby(cm.subject_id):
-            obs_rows = sdf[sdf[cm.evid] == 0]
-            dose_rows = sdf[sdf[cm.evid] == 1]
+        for _sid, sdf in event_df.groupby(cm.subject_id):
+            obs_rows = sdf[sdf[cm.evid] == 0].sort_values(cm.time)
+            dose_rows = sdf[sdf[cm.evid].isin([1, 4])].sort_values(cm.time)
 
             if len(obs_rows) == 0:
                 continue
 
             times = jnp.array(obs_rows[cm.time].values, dtype=jnp.float32)
             observations = jnp.array(obs_rows[cm.dv].values, dtype=jnp.float32)
+            n_states = 3 if n_cmt == 2 else 2
 
-            # Initial dose
-            dose = float(dose_rows[cm.amt].iloc[0]) if len(dose_rows) > 0 else 100.0
-            y0 = jnp.array([dose, 0.0])
+            if len(dose_rows) == 0:
+                # No doses — zero initial state
+                y0 = jnp.zeros(n_states, dtype=jnp.float32)
+            elif len(dose_rows) == 1:
+                # Single dose — legacy path (dose in y0, JIT-compatible)
+                dose_amt = float(dose_rows[cm.amt].iloc[0])
+                cmt_col = cm.cmt or "CMT"
+                dose_cmt = int(dose_rows[cmt_col].iloc[0]) if cmt_col in dose_rows.columns else 1
+                y0 = jnp.zeros(n_states, dtype=jnp.float32)
+                cmt_idx = max(0, min(dose_cmt - 1, n_states - 1))
+                y0 = y0.at[cmt_idx].set(dose_amt)
+            else:
+                # Multi-dose — store dose events for piecewise integration
+                # Pre-apply doses at t=0, store remaining for event-driven path
+                y0 = jnp.zeros(n_states, dtype=jnp.float32)
+                dose_times_list = dose_rows[cm.time].values.tolist()
+                dose_amts_list = dose_rows[cm.amt].values.tolist()
+                cmt_col = cm.cmt or "CMT"
+                dose_cmts_list = (
+                    dose_rows[cmt_col].values.tolist()
+                    if cmt_col in dose_rows.columns
+                    else [1] * len(dose_rows)
+                )
+                dose_evids_list = dose_rows[cm.evid].values.tolist()
+
+                # Apply initial doses (at t <= first obs time) into y0
+                first_obs_time = float(times[0])
+                remaining_doses: list[tuple[float, float, int, int]] = []
+                for dt, da, dc, de in zip(
+                    dose_times_list,
+                    dose_amts_list,
+                    dose_cmts_list,
+                    dose_evids_list,
+                    strict=True,
+                ):
+                    if float(dt) <= first_obs_time and float(dt) == 0.0:
+                        cmt_idx = max(0, min(int(dc) - 1, n_states - 1))
+                        if int(de) in (3, 4):
+                            y0 = jnp.zeros(n_states, dtype=jnp.float32)
+                        if int(de) in (1, 4):
+                            y0 = y0.at[cmt_idx].add(float(da))
+                    else:
+                        remaining_doses.append((float(dt), float(da), int(dc), int(de)))
+
+                if remaining_doses:
+                    # Store as Python lists (not JAX arrays) for non-JIT access
+                    subj_dict: dict[str, object] = {
+                        "times": times,
+                        "observations": observations,
+                        "y0": y0,
+                        "obs_cmt": jnp.array(1),
+                        "dose_events": remaining_doses,  # Python list of tuples
+                    }
+                    subjects.append(subj_dict)  # type: ignore[arg-type]
+                    continue
 
             subjects.append(
                 {
@@ -272,6 +357,8 @@ class NodeBackendRunner:
         self,
         data_manifest: DataManifest,
         initial_estimates: dict[str, float],
+        *,
+        n_cmt: int = 1,
     ) -> list[dict[str, jax.Array]]:
         """Create synthetic subjects for mock/test mode."""
         n_subj = min(data_manifest.n_subjects, 10)
@@ -289,11 +376,13 @@ class NodeBackendRunner:
             conc = jnp.maximum(conc, 0.01)
             noise = 0.1 * conc * jax.random.normal(subkey, shape=times.shape)
             obs = jnp.maximum(conc + noise, 0.001)
+            # Legacy single-dose: dose in y0[0] (compatible with JIT training)
+            y0 = jnp.array([dose, 0.0, 0.0]) if n_cmt == 2 else jnp.array([dose, 0.0])
             subjects.append(
                 {
                     "times": times,
                     "observations": obs,
-                    "y0": jnp.array([dose, 0.0]),
+                    "y0": y0,
                     "obs_cmt": jnp.array(1),
                 }
             )

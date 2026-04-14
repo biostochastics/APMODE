@@ -137,7 +137,12 @@ class BackendResult(BaseModel):
 
 
 class ColumnMapping(BaseModel):
-    """Maps source columns to canonical schema fields."""
+    """Maps source columns to canonical schema fields.
+
+    Each field name is a semantic key (snake_case), and each value is
+    the canonical NONMEM column name (UPPERCASE).  Use ``to_canonical()``
+    and ``to_semantic()`` for bidirectional lookup.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -150,10 +155,21 @@ class ColumnMapping(BaseModel):
     cmt: str | None = None
     rate: str | None = None
     dur: str | None = None
+    addl: str | None = None
+    ii: str | None = None
+    ss: str | None = None
     blq_flag: str | None = None
     lloq: str | None = None
     occasion: str | None = None
     study_id: str | None = None
+
+    def to_canonical(self) -> dict[str, str]:
+        """Return semantic -> canonical mapping (only non-None entries)."""
+        return {k: v for k, v in self.model_dump().items() if v is not None}
+
+    def to_semantic(self) -> dict[str, str]:
+        """Return canonical -> semantic mapping (only non-None entries)."""
+        return {v: k for k, v in self.model_dump().items() if v is not None}
 
 
 class CovariateMetadata(BaseModel):
@@ -175,6 +191,8 @@ class DataManifest(BaseModel):
     n_subjects: int = Field(gt=0)
     n_observations: int = Field(gt=0)
     n_doses: int = Field(gt=0)
+    has_multidose: bool = False
+    has_steady_state: bool = False
     blq_coding: str | None = None
     covariates: list[CovariateMetadata] = Field(default_factory=list)
 
@@ -486,6 +504,8 @@ class AgenticTraceMeta(BaseModel):
     cost_usd: float = Field(ge=0.0)
     temperature: float = 0.0
     wall_time_seconds: float = Field(ge=0.0)
+    request_payload_hash: str = ""
+    agentic_reproducibility: Literal["full", "best-effort"] = "full"
 
 
 class RunLineage(BaseModel):
@@ -495,6 +515,66 @@ class RunLineage(BaseModel):
     parent_run_ids: list[str] = Field(default_factory=list)
     lineage_type: Literal["independent", "continuation", "refinement"] = "independent"
     notes: str | None = None
+
+
+# --- LORO-CV Results (Phase 3 — Optimization lane) ---
+
+
+class LOROFoldResult(BaseModel):
+    """Per-fold result from leave-one-regimen-out cross-validation.
+
+    Each fold holds out one regimen group and trains on the rest.
+    CWRES on the test fold is used as a proxy for NPDE (true NPDE
+    requires Monte Carlo simulation of the predictive distribution).
+    """
+
+    fold_index: int = Field(ge=0)
+    regimen_group: str
+    n_train_subjects: int = Field(gt=0)
+    n_test_subjects: int = Field(gt=0)
+    train_ofv: float | None = None
+    test_npde_mean: float | None = None
+    test_npde_variance: float | None = None
+    test_bic: float | None = None
+    converged: bool = False
+    fold_vpc_min_coverage: float | None = None
+
+
+class LOROMetrics(BaseModel):
+    """Aggregated LORO-CV predictive performance metrics.
+
+    Gate 2 in the Optimization lane evaluates these against policy thresholds.
+    Pooled variance uses the law of total variance (E[Var] + Var[E]) per
+    multi-model review (crush/GLM-5, gemini 3.1 Pro).
+    """
+
+    n_folds: int = Field(ge=1)
+    n_total_test_subjects: int = Field(ge=1)
+    pooled_npde_mean: float
+    pooled_npde_variance: float
+    vpc_coverage_concordance: float = Field(ge=0.0, le=1.0)
+    auc_gmr: float | None = None
+    cmax_gmr: float | None = None
+    bioequivalence_pass: bool | None = None
+    per_fold_bic: list[float] = Field(default_factory=list)
+    worst_fold_npde_mean: float | None = None
+    worst_fold_npde_variance: float | None = None
+    overall_pass: bool = False
+    evaluation_mode: Literal["fixed_parameter", "refit"] = "fixed_parameter"
+
+
+class LOROCVResult(BaseModel):
+    """loro_cv/{candidate_id}.json — complete LORO-CV output for one candidate.
+
+    Stored as a separate bundle artifact under loro_cv/ directory.
+    """
+
+    candidate_id: str
+    metrics: LOROMetrics
+    fold_results: list[LOROFoldResult]
+    wall_time_seconds: float = Field(ge=0.0)
+    regimen_groups: list[str] = Field(default_factory=list)
+    seed: int = 0
 
 
 class ReportSummary(BaseModel):

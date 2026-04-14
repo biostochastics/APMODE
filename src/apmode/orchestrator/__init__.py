@@ -28,11 +28,13 @@ from apmode.bundle.models import (
     CandidateLineage,
     CandidateLineageEntry,
     FailedCandidate,
+    LOROMetrics,
     SeedRegistry,
 )
 from apmode.data.initial_estimates import NCAEstimator, build_initial_estimates_bundle
 from apmode.data.profiler import profile_data
-from apmode.data.splitter import split_subjects
+from apmode.data.splitter import loro_cv_splits, split_subjects
+from apmode.evaluation.loro_cv import evaluate_loro_cv
 from apmode.governance.gates import (
     evaluate_gate1,
     evaluate_gate2,
@@ -94,11 +96,13 @@ class Orchestrator:
         bundle_base_dir: Path,
         config: RunConfig | None = None,
         node_runner: BackendRunner | None = None,
+        agentic_runner: BackendRunner | None = None,
     ) -> None:
         self._runner = runner
         self._bundle_base = bundle_base_dir
         self._config = config or RunConfig()
         self._node_runner = node_runner
+        self._agentic_runner = agentic_runner
 
     async def run(
         self,
@@ -190,6 +194,8 @@ class Orchestrator:
         runners: dict[str, BackendRunner] = {"nlmixr2": self._runner}
         if self._node_runner is not None and "jax_node" in dispatch.backends:
             runners["jax_node"] = self._node_runner
+        if self._agentic_runner is not None and "agentic_llm" in dispatch.backends:
+            runners["agentic_llm"] = self._agentic_runner
         search_engine = SearchEngine(
             runner=self._runner,
             data_manifest=manifest,
@@ -207,6 +213,7 @@ class Orchestrator:
             covariate_names=self._config.covariate_names,
         )
         outcome.search_outcome = search_outcome
+        self._last_search_outcome = search_outcome  # for LORO spec lookup
 
         # Write candidate lineage
         lineage_entries = [
@@ -280,14 +287,14 @@ class Orchestrator:
                     if seed_runs:
                         seed_results_map[cid] = seed_runs
 
-            # Stage 6b: Gate 1 + Gate 2 evaluation
+            # Stage 6b: Gate 1 evaluation (collect survivors)
+            gate1_survivors: list[tuple[object, BRModel]] = []  # (search_result, backend_result)
             for sr in search_outcome.results:
                 if sr.result is None:
                     continue
 
                 emitter.write_backend_result(sr.result)
 
-                # Gate 1: Technical Validity (with seed results if available)
                 seed_results = seed_results_map.get(sr.candidate_id)
                 g1 = evaluate_gate1(sr.result, policy, seed_results=seed_results)
                 emitter.write_gate_decision(g1, gate_number=1)
@@ -297,7 +304,7 @@ class Orchestrator:
                     emitter.append_failed_candidate(
                         FailedCandidate(
                             candidate_id=sr.candidate_id,
-                            backend="nlmixr2",
+                            backend=sr.result.backend,
                             gate_failed="gate1",
                             failed_checks=[c.check_id for c in g1.checks if not c.passed],
                             summary_reason=g1.summary_reason,
@@ -306,16 +313,34 @@ class Orchestrator:
                     )
                     continue
 
-                # Gate 2: Lane-Specific Admissibility
-                g2 = evaluate_gate2(sr.result, policy, self._config.lane)
+                gate1_survivors.append((sr, sr.result))
+
+            # Stage 6b.5: LORO-CV for optimization lane (after Gate 1, before Gate 2)
+            loro_metrics_map: dict[str, LOROMetrics] = {}
+            if self._config.lane == "optimization" and gate1_survivors:
+                loro_metrics_map = await self._run_loro_cv(
+                    gate1_survivors=[r for _, r in gate1_survivors],
+                    df=df,
+                    manifest=manifest,
+                    data_path=data_path,
+                    nca_estimates=nca_estimates,
+                    emitter=emitter,
+                    policy=policy,
+                )
+
+            # Stage 6c: Gate 2 + Gate 2.5 evaluation (with LORO metrics)
+            for sr, sr_result in gate1_survivors:
+                loro_m = loro_metrics_map.get(sr_result.model_id)
+
+                g2 = evaluate_gate2(sr_result, policy, self._config.lane, loro_metrics=loro_m)
                 emitter.write_gate_decision(g2, gate_number=2)
-                outcome.gate2_results.append((sr.candidate_id, g2.passed))
+                outcome.gate2_results.append((sr_result.model_id, g2.passed))
 
                 if not g2.passed:
                     emitter.append_failed_candidate(
                         FailedCandidate(
-                            candidate_id=sr.candidate_id,
-                            backend="nlmixr2",
+                            candidate_id=sr_result.model_id,
+                            backend=sr_result.backend,
                             gate_failed="gate2",
                             failed_checks=[c.check_id for c in g2.checks if not c.passed],
                             summary_reason=g2.summary_reason,
@@ -324,28 +349,28 @@ class Orchestrator:
                     )
                     continue
 
-                # Gate 2.5: Credibility Qualification (Phase 2)
+                # Gate 2.5: Credibility Qualification
                 from apmode.bundle.models import CredibilityContext
 
                 cred_ctx = CredibilityContext(
                     context_of_use=f"{self._config.lane} lane analysis",
                     risk_level="medium",
                     n_observations=manifest.n_observations,
-                    n_parameters=len(sr.result.parameter_estimates),
+                    n_parameters=len(sr_result.parameter_estimates),
                     ml_transparency_statement=(
-                        f"Backend: {sr.result.backend}"
-                        if sr.result.backend in ("jax_node", "agentic_llm")
+                        f"Backend: {sr_result.backend}"
+                        if sr_result.backend in ("jax_node", "agentic_llm")
                         else None
                     ),
                 )
-                g25 = evaluate_gate2_5(sr.result, policy, credibility_context=cred_ctx)
-                emitter.write_gate_decision(g25, gate_number=2)  # writes gate2_5 file
+                g25 = evaluate_gate2_5(sr_result, policy, credibility_context=cred_ctx)
+                emitter.write_gate_decision(g25, gate_number=2)
 
                 if not g25.passed:
                     emitter.append_failed_candidate(
                         FailedCandidate(
-                            candidate_id=sr.candidate_id,
-                            backend=sr.result.backend,
+                            candidate_id=sr_result.model_id,
+                            backend=sr_result.backend,
                             gate_failed="gate2_5",
                             failed_checks=[c.check_id for c in g25.checks if not c.passed],
                             summary_reason=g25.summary_reason,
@@ -355,8 +380,8 @@ class Orchestrator:
                     continue
 
                 # Passed gates 1, 2, 2.5
-                outcome.recommended.append(sr.candidate_id)
-                gate12_survivors.append(sr.result)
+                outcome.recommended.append(sr_result.model_id)
+                gate12_survivors.append(sr_result)
 
             # Stage 6c: Gate 3 — Ranking (within- or cross-paradigm)
             if gate12_survivors:
@@ -409,6 +434,119 @@ class Orchestrator:
         )
 
         return outcome
+
+    async def _run_loro_cv(
+        self,
+        gate1_survivors: list[BackendResult],
+        df: pd.DataFrame,
+        manifest: DataManifest,
+        data_path: Path,
+        nca_estimates: dict[str, float],
+        emitter: BundleEmitter,
+        policy: GatePolicy,
+    ) -> dict[str, LOROMetrics]:
+        """Run LORO-CV for optimization lane Gate 1 survivors.
+
+        Returns a map of candidate_id → LOROMetrics for use by Gate 2.
+        Respects policy.gate2.loro_budget_top_n to limit computation.
+        """
+        from apmode.bundle.models import BackendResult as BRModel
+
+        import numpy as np
+
+        # Generate LORO folds from the data
+        try:
+            folds = loro_cv_splits(
+                df, seed=self._config.seed, min_folds=policy.gate2.loro_min_folds,
+            )
+        except ValueError:
+            logger.warning("loro_cv_insufficient_regimens", min_folds=policy.gate2.loro_min_folds)
+            return {}
+
+        # Budget control: only evaluate top-N by BIC
+        budget = policy.gate2.loro_budget_top_n
+        candidates = sorted(
+            gate1_survivors,
+            key=lambda r: r.bic if r.bic is not None and np.isfinite(r.bic) else float("inf"),
+        )
+        if budget is not None:
+            candidates = candidates[:budget]
+
+        logger.info(
+            "loro_cv_start",
+            n_candidates=len(candidates),
+            n_folds=len(folds),
+            lane=self._config.lane,
+        )
+
+        loro_map: dict[str, LOROMetrics] = {}
+        for cand_result in candidates:
+            # Select the appropriate runner for this candidate's backend
+            runner: BackendRunner = self._runner
+            if cand_result.backend == "jax_node" and self._node_runner is not None:
+                runner = self._node_runner
+            elif cand_result.backend == "agentic_llm" and self._agentic_runner is not None:
+                runner = self._agentic_runner
+
+            # Use candidate's fitted estimates for warm-start
+            warm_estimates = {
+                name: pe.estimate
+                for name, pe in cand_result.parameter_estimates.items()
+                if pe.category == "structural"
+            }
+            if not warm_estimates:
+                warm_estimates = {
+                    k: v for k, v in nca_estimates.items() if not k.startswith("_")
+                }
+
+            # Need the candidate's DSLSpec — find it from search results
+            spec = self._find_spec_for_candidate(cand_result.model_id)
+            if spec is None:
+                logger.warning("loro_cv_no_spec", candidate=cand_result.model_id)
+                continue
+
+            try:
+                loro_result = await evaluate_loro_cv(
+                    candidate_spec=spec,
+                    candidate_result=cand_result,
+                    folds=folds,
+                    runner=runner,
+                    data_manifest=manifest,
+                    data_path=data_path,
+                    initial_estimates=warm_estimates,
+                    seed=self._config.seed,
+                    timeout_seconds=self._config.timeout_seconds,
+                )
+                emitter.write_loro_cv_result(loro_result)
+                loro_map[cand_result.model_id] = loro_result.metrics
+                logger.info(
+                    "loro_cv_complete",
+                    candidate=cand_result.model_id,
+                    npde_mean=loro_result.metrics.pooled_npde_mean,
+                    vpc_concordance=loro_result.metrics.vpc_coverage_concordance,
+                )
+            except Exception:
+                logger.warning(
+                    "loro_cv_candidate_failed",
+                    candidate=cand_result.model_id,
+                    exc_info=True,
+                )
+
+        return loro_map
+
+    def _find_spec_for_candidate(self, model_id: str) -> DSLSpec | None:
+        """Find the DSLSpec for a candidate from the search outcome.
+
+        This is a lookup helper — the spec is stored in the SearchResult
+        objects during the search phase.
+        """
+        # The spec is available via the search outcome, which the orchestrator
+        # holds. We store a reference to the latest search outcome for this.
+        if hasattr(self, "_last_search_outcome") and self._last_search_outcome is not None:
+            for sr in self._last_search_outcome.results:
+                if sr.candidate_id == model_id:
+                    return sr.spec
+        return None
 
     def _load_policy(self) -> GatePolicy | None:
         """Load gate policy from file or default."""

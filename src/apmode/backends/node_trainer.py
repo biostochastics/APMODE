@@ -51,6 +51,50 @@ class TrainingResult:
     loss_history: list[float] = field(default_factory=list)
     wall_time_seconds: float = 0.0
     method: str = "adam"
+    minimization_status: str = "max_evaluations"
+
+
+def _solve_multidose_eager(
+    model: HybridPKODE,
+    y0: jax.Array,
+    obs_times: jax.Array,
+    dose_events: list[tuple[float, float, int, int]],
+) -> jax.Array:
+    """Piecewise ODE integration with dose events (eager mode, NOT JIT-safe).
+
+    Used for multi-dose subjects loaded from CSV. Dose events are Python
+    tuples (time, amt, cmt, evid) to avoid JAX tracer issues.
+
+    Returns predicted states at obs_times (shape: [n_obs, n_states]).
+    """
+    n_states = int(y0.shape[0])
+
+    if not dose_events:
+        return model.solve(y0, obs_times)
+
+    state = y0
+    t_current = 0.0
+
+    for t_dose, amt, cmt, evid in dose_events:
+        # Integrate from t_current to t_dose
+        if t_dose > t_current + 1e-12:
+            sol = model.solve(state, jnp.array([t_dose]), t0=t_current)
+            state = sol[0]
+            t_current = t_dose
+
+        # Apply reset (EVID=3 or 4)
+        if evid in (3, 4):
+            state = jnp.zeros(n_states)
+
+        # Apply dose (EVID=1 or 4)
+        if evid in (1, 4) and amt > 0:
+            cmt_idx = max(0, min(cmt - 1, n_states - 1))
+            state = state.at[cmt_idx].add(amt)
+
+    if int(obs_times.shape[0]) > 0:
+        return model.solve(state, obs_times, t0=t_current)
+
+    return jnp.zeros((0, n_states))
 
 
 def _population_nll(
@@ -62,6 +106,10 @@ def _population_nll(
 
     For each subject: solve ODE at observation times, compute
     -log N(y_obs | y_pred, sigma^2).
+
+    Subjects may use either:
+    - Legacy single-dose: dose in y0[0], no dose_events key
+    - Multi-dose: dose_events as Python list of (time, amt, cmt, evid) tuples
     """
     sigma = jnp.exp(log_sigma)
     total_nll = jnp.array(0.0)
@@ -70,15 +118,34 @@ def _population_nll(
         times = subj["times"]
         obs = subj["observations"]
         y0 = subj["y0"]
-        cmt_idx = int(subj.get("obs_cmt", jnp.array(1)))
+        _obs_cmt = subj.get("obs_cmt", jnp.array(1))
+        cmt_idx = int(_obs_cmt)
 
-        # Solve ODE for this subject
-        sol = model.solve(y0, times)
-        pred = sol[:, cmt_idx] / model.V  # concentration = amount / V
+        # Multi-dose path (eager, non-JIT): dose_events is a Python list
+        dose_events = subj.get("dose_events")
+        if dose_events is not None and len(dose_events) > 0:
+            sol = _solve_multidose_eager(
+                model,
+                y0,
+                times,
+                dose_events,  # type: ignore[arg-type]
+            )
+        else:
+            # Legacy single-dose path: dose is in y0[0], JIT-compatible
+            sol = model.solve(y0, times)
 
-        # Normal log-likelihood
+        # Use appropriate volume for compartment
+        v_scale = model.V if cmt_idx <= 1 else model.V2
+        pred = sol[:, cmt_idx] / v_scale
+
+        # Normal negative log-likelihood (full, for cross-backend comparability)
         residuals = obs - pred
-        nll = 0.5 * jnp.sum((residuals / sigma) ** 2) + len(obs) * jnp.log(sigma)
+        n = len(obs)
+        nll = (
+            0.5 * jnp.sum((residuals / sigma) ** 2)
+            + n * jnp.log(sigma)
+            + 0.5 * n * jnp.log(2 * jnp.pi)
+        )
         total_nll = total_nll + nll
 
     return total_nll
@@ -143,13 +210,19 @@ def train_node(
     best_loss = float("inf")
     patience_counter = 0
     converged = False
+    minimization_status = "max_evaluations"
 
     for _epoch in range(config.epochs):
         params, opt_state, loss_val = step(params, opt_state)
         loss_float = float(loss_val)
         loss_history.append(loss_float)
 
-        # Early stopping
+        # NaN detection — abort immediately
+        if not jnp.isfinite(loss_val):
+            minimization_status = "nan_detected"
+            break
+
+        # Early stopping check
         if loss_float < best_loss - config.early_stop_min_delta:
             best_loss = loss_float
             patience_counter = 0
@@ -157,16 +230,15 @@ def train_node(
             patience_counter += 1
 
         if patience_counter >= config.early_stop_patience:
+            # Loss plateaued — converged only if we improved significantly
+            converged = len(loss_history) > 1 and best_loss < loss_history[0] * 0.99
+            minimization_status = "plateau" if not converged else "successful"
+            break
+    else:
+        # Completed all epochs without early stopping
+        if len(loss_history) > 1 and best_loss < loss_history[0] * 0.99:
             converged = True
-            break
-
-        # NaN detection
-        if not jnp.isfinite(loss_val):
-            break
-
-    # If we ran all epochs without triggering patience, that's also convergence
-    if not converged and patience_counter < config.early_stop_patience and len(loss_history) > 1:
-        converged = loss_history[-1] < loss_history[0]
+            minimization_status = "successful"
 
     wall_time = time.monotonic() - start_time
     final_model, final_log_sigma = params
@@ -179,4 +251,5 @@ def train_node(
         converged=converged,
         loss_history=loss_history,
         wall_time_seconds=wall_time,
+        minimization_status=minimization_status,
     )

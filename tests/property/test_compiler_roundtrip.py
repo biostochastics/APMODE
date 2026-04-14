@@ -86,7 +86,7 @@ _ABS_PARAMS: dict[str, list[str]] = {
     "FirstOrder(ka": ["ka"],
     "ZeroOrder(dur": ["dur"],
     "LaggedFirstOrder(ka": ["ka"],
-    "Transit(n": ["n", "ktr", "ka"],
+    "Transit(n": ["ktr", "ka"],  # n excluded: no IIV/covariates on transit n
     "MixedFirstZero(ka": ["ka"],
 }
 

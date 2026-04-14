@@ -102,6 +102,88 @@ def k_fold_split(
     return manifests
 
 
+def loro_cv_splits(
+    df: pd.DataFrame,
+    seed: int,
+    min_folds: int = 3,
+) -> list[SplitManifest]:
+    """Generate leave-one-regimen-out cross-validation folds.
+
+    Groups subjects by regimen signature (modal dose amount from EVID==1),
+    then generates K folds where K = number of unique regimen groups.
+    Each fold holds out one regimen group as "test", rest as "train".
+
+    Per GPT-5.2-Pro review: uses regimen signature (modal dose per subject)
+    rather than total AMT to better capture true regimen identity.
+
+    Args:
+        df: Validated PK DataFrame with NMID, EVID, AMT columns.
+        seed: Random seed (stored in manifest; folds are deterministic).
+        min_folds: Minimum number of regimen groups required. Default 3.
+
+    Returns:
+        List of SplitManifest, one per regimen group (fold).
+
+    Raises:
+        ValueError: If fewer than min_folds unique regimen groups exist.
+    """
+    subjects = sorted(df["NMID"].unique().tolist())
+    regimen_groups = _identify_regimen_groups(df)
+    unique_group_labels = sorted(set(regimen_groups.values()))
+    n_groups = len(unique_group_labels)
+
+    if n_groups < min_folds:
+        msg = (
+            f"Insufficient regimen groups for LORO-CV: found {n_groups} "
+            f"unique regimen groups, but min_folds={min_folds} required. "
+            f"Groups: {unique_group_labels}"
+        )
+        raise ValueError(msg)
+
+    manifests: list[SplitManifest] = []
+    for holdout_group in unique_group_labels:
+        assignments: list[SubjectAssignment] = []
+        for subj in subjects:
+            subj_group = regimen_groups.get(str(subj), regimen_groups.get(subj, "unknown"))
+            fold = "test" if subj_group == holdout_group else "train"
+            assignments.append(SubjectAssignment(subject_id=str(subj), fold=fold))
+        manifests.append(
+            SplitManifest(
+                split_seed=seed,
+                split_strategy="regimen_level",
+                assignments=assignments,
+            )
+        )
+
+    return manifests
+
+
+def _identify_regimen_groups(df: pd.DataFrame) -> dict[str, str]:
+    """Identify regimen group for each subject via modal dose amount.
+
+    Uses the most frequent dose amount from EVID==1 records per subject
+    as the regimen signature (more robust than total AMT).
+    """
+    doses = df[df["EVID"] == 1].copy()
+    if doses.empty:
+        subjects = sorted(df["NMID"].unique().tolist())
+        return {str(s): "no_dose" for s in subjects}
+
+    per_subj_modal_dose: dict[str, float] = {}
+    for subj_id, group in doses.groupby("NMID"):
+        amt_values = group["AMT"].dropna()
+        if len(amt_values) == 0:
+            per_subj_modal_dose[str(subj_id)] = 0.0
+        else:
+            mode_val = amt_values.mode()
+            per_subj_modal_dose[str(subj_id)] = float(mode_val.iloc[0])
+
+    unique_doses = sorted(set(per_subj_modal_dose.values()))
+    dose_to_label = {dose: f"{dose}mg" for dose in unique_doses}
+
+    return {subj: dose_to_label[dose] for subj, dose in per_subj_modal_dose.items()}
+
+
 # ---------------------------------------------------------------------------
 # Internal split implementations
 # ---------------------------------------------------------------------------

@@ -684,7 +684,7 @@
       lka <- log(1.0)
       lV <- log(70.0)
       lCL <- log(5.0)
-      lkdecay <- log(0.1)  # decay rate initial estimate
+      lkdecay <- log(0.1)
       
       # Inter-individual variability
       eta.CL ~ 0.1

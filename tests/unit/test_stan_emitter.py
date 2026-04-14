@@ -19,6 +19,7 @@ from apmode.dsl.ast_models import (
     LaggedFirstOrder,
     LinearElim,
     MichaelisMenten,
+    MixedFirstZero,
     NODEAbsorption,
     OccasionByStudy,
     OneCmt,
@@ -27,6 +28,7 @@ from apmode.dsl.ast_models import (
     ThreeCmt,
     Transit,
     TwoCmt,
+    ZeroOrder,
 )
 from apmode.dsl.stan_emitter import emit_stan
 
@@ -267,30 +269,25 @@ class TestStanEmitterErrors:
 
 
 class TestIOVEmission:
-    def test_iov_produces_valid_stan(self) -> None:
-        code = emit_stan(
-            _make_spec(
-                variability=[IOV(params=["CL"], occasions=OccasionByStudy())]  # type: ignore[list-item]
+    def test_iov_raises_not_implemented(self) -> None:
+        """IOV etas are declared but not applied in Stan — reject until fixed."""
+        with pytest.raises(NotImplementedError, match="IOV"):
+            emit_stan(
+                _make_spec(
+                    variability=[IOV(params=["CL"], occasions=OccasionByStudy())]  # type: ignore[list-item]
+                )
             )
-        )
-        assert "N_occ" in code
-        assert "occ" in code
-        assert "omega_iov_CL" in code
-        assert "eta_iov_raw" in code
 
-    def test_iov_with_iiv(self) -> None:
-        code = emit_stan(
-            _make_spec(
-                variability=[
-                    IIV(params=["CL", "V"], structure="diagonal"),  # type: ignore[list-item]
-                    IOV(params=["CL"], occasions=OccasionByStudy()),  # type: ignore[list-item]
-                ]
+    def test_iov_with_iiv_raises(self) -> None:
+        with pytest.raises(NotImplementedError, match="IOV"):
+            emit_stan(
+                _make_spec(
+                    variability=[
+                        IIV(params=["CL", "V"], structure="diagonal"),  # type: ignore[list-item]
+                        IOV(params=["CL"], occasions=OccasionByStudy()),  # type: ignore[list-item]
+                    ]
+                )
             )
-        )
-        assert "omega_CL" in code
-        assert "omega_iov_CL" in code
-        assert "eta_raw" in code
-        assert "eta_iov_raw" in code
 
 
 # ---------------------------------------------------------------------------
@@ -398,3 +395,17 @@ class TestCrossBackendLowering:
         for param in spec.structural_param_names():
             assert param in r_code or f"l{param}" in r_code, f"nlmixr2 missing {param} for {name}"
             assert f"log_{param}" in stan_code, f"Stan missing log_{param} for {name}"
+
+
+class TestStanUnsupportedAbsorption:
+    """Stan emitter should reject unsupported absorption types in ODE mode."""
+
+    def test_zero_order_raises(self) -> None:
+        spec = _make_spec(absorption=ZeroOrder(dur=0.5))
+        with pytest.raises(NotImplementedError, match="ZeroOrder"):
+            emit_stan(spec)
+
+    def test_mixed_first_zero_raises(self) -> None:
+        spec = _make_spec(absorption=MixedFirstZero(ka=1.0, dur=0.5, frac=0.6))
+        with pytest.raises(NotImplementedError, match="MixedFirstZero"):
+            emit_stan(spec)

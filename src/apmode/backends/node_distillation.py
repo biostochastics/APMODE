@@ -33,10 +33,15 @@ class SurrogateResult:
 
 @dataclass(frozen=True)
 class FidelityResult:
-    """Bioequivalence fidelity between NODE and surrogate."""
+    """Bioequivalence fidelity between NODE and surrogate.
 
-    auc_gmr: float  # geometric mean ratio of AUC
-    cmax_gmr: float  # geometric mean ratio of Cmax
+    GMR convention: surrogate (test) / NODE (reference).
+    Values in [0.80, 1.25] indicate the surrogate faithfully
+    reproduces the NODE-learned sub-function.
+    """
+
+    auc_gmr: float  # geometric mean ratio: surrogate/NODE
+    cmax_gmr: float  # geometric mean ratio: surrogate/NODE
     auc_pass: bool  # within 80-125%
     cmax_pass: bool  # within 80-125%
     overall_pass: bool  # both pass

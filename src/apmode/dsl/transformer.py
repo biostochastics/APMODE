@@ -76,6 +76,9 @@ class DSLTransformer(Transformer):  # type: ignore[type-arg]
     def DECAY_FN(self, token: str) -> str:
         return str(token)
 
+    def ERROR_MODEL(self, token: str) -> str:
+        return str(token)
+
     # --- Absorption ---
 
     def first_order(self, ka: float) -> FirstOrder:
@@ -136,7 +139,11 @@ class DSLTransformer(Transformer):  # type: ignore[type-arg]
     def parallel_linear_mm(self, cl: float, vmax: float, km: float) -> ParallelLinearMM:
         return ParallelLinearMM(CL=cl, Vmax=vmax, Km=km)
 
-    def time_varying_elim(self, cl: float, decay_fn: str) -> TimeVaryingElim:
+    def time_varying_elim(self, *args: object) -> TimeVaryingElim:
+        if len(args) == 3:
+            cl, kdecay, decay_fn = args
+            return TimeVaryingElim(CL=cl, kdecay=kdecay, decay_fn=decay_fn)
+        cl, decay_fn = args
         return TimeVaryingElim(CL=cl, decay_fn=decay_fn)
 
     def node_elimination(self, dim: int, ct: str) -> NODEElimination:
@@ -194,11 +201,27 @@ class DSLTransformer(Transformer):  # type: ignore[type-arg]
     def combined_obs(self, sigma_prop: float, sigma_add: float) -> Combined:
         return Combined(sigma_prop=sigma_prop, sigma_add=sigma_add)
 
-    def blq_m3(self, loq_value: float) -> BLQM3:
-        return BLQM3(loq_value=loq_value)
+    def blq_m3(self, *args: object) -> BLQM3:
+        if len(args) == 4:
+            loq, err_model, sigma_prop, sigma_add = args
+            return BLQM3(
+                loq_value=loq,
+                error_model=err_model,
+                sigma_prop=sigma_prop,
+                sigma_add=sigma_add,
+            )
+        return BLQM3(loq_value=args[0])
 
-    def blq_m4(self, loq_value: float) -> BLQM4:
-        return BLQM4(loq_value=loq_value)
+    def blq_m4(self, *args: object) -> BLQM4:
+        if len(args) == 4:
+            loq, err_model, sigma_prop, sigma_add = args
+            return BLQM4(
+                loq_value=loq,
+                error_model=err_model,
+                sigma_prop=sigma_prop,
+                sigma_add=sigma_add,
+            )
+        return BLQM4(loq_value=args[0])
 
     def observation_type(self, variant: object) -> object:
         return variant

@@ -201,7 +201,7 @@ def _emit_structural_ini(
     elif isinstance(elim_mod, TimeVaryingElim):
         # Only exponential decay is implemented; validator rejects half_life/linear
         lines.append(f"lCL <- log({ov.get('CL', elim_mod.CL)})")
-        lines.append(f"lkdecay <- log({ov.get('kdecay', 0.1)})  # decay rate initial estimate")
+        lines.append(f"lkdecay <- log({ov.get('kdecay', elim_mod.kdecay)})")
 
     # Covariate coefficients
     cov_links = [v for v in spec.variability if isinstance(v, CovariateLink)]

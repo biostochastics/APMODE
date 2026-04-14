@@ -490,6 +490,141 @@ class TestCovariateLinkValidation:
         assert errors == []
 
 
+class TestTMDDEliminationCompatibility:
+    """TMDD distribution requires LinearElim (provides CL for kel = CL/V)."""
+
+    def test_tmdd_core_with_linear_elim_valid(self) -> None:
+        from apmode.dsl.ast_models import TMDDCore
+
+        spec = _make_spec(
+            distribution=TMDDCore(V=50.0, R0=10.0, kon=0.1, koff=0.01, kint=0.05),
+            variability=[IIV(params=["CL", "V"], structure="diagonal")],
+        )
+        errors = validate_dsl(spec, lane=Lane.SUBMISSION)
+        assert not any(e.constraint == "tmdd_requires_linear_elim" for e in errors)
+
+    def test_tmdd_core_with_mm_elim_rejected(self) -> None:
+        from apmode.dsl.ast_models import TMDDCore
+
+        spec = _make_spec(
+            distribution=TMDDCore(V=50.0, R0=10.0, kon=0.1, koff=0.01, kint=0.05),
+            elimination=MichaelisMenten(Vmax=100.0, Km=10.0),
+            variability=[IIV(params=["Vmax", "V"], structure="diagonal")],
+        )
+        errors = validate_dsl(spec, lane=Lane.SUBMISSION)
+        assert any(e.constraint == "tmdd_requires_linear_elim" for e in errors)
+
+    def test_tmdd_qss_with_mm_elim_rejected(self) -> None:
+        from apmode.dsl.ast_models import TMDDQSS
+
+        spec = _make_spec(
+            distribution=TMDDQSS(V=50.0, R0=10.0, KD=0.5, kint=0.05),
+            elimination=MichaelisMenten(Vmax=100.0, Km=10.0),
+            variability=[IIV(params=["Vmax", "V"], structure="diagonal")],
+        )
+        errors = validate_dsl(spec, lane=Lane.SUBMISSION)
+        assert any(e.constraint == "tmdd_requires_linear_elim" for e in errors)
+
+    def test_tmdd_qss_with_parallel_mm_rejected(self) -> None:
+        from apmode.dsl.ast_models import TMDDQSS
+
+        spec = _make_spec(
+            distribution=TMDDQSS(V=50.0, R0=10.0, KD=0.5, kint=0.05),
+            elimination=ParallelLinearMM(CL=2.0, Vmax=50.0, Km=5.0),
+            variability=[IIV(params=["CL", "V"], structure="diagonal")],
+        )
+        errors = validate_dsl(spec, lane=Lane.SUBMISSION)
+        assert any(e.constraint == "tmdd_requires_linear_elim" for e in errors)
+
+
+class TestDuplicateIIVParams:
+    """Same parameter in multiple IIV blocks should be rejected."""
+
+    def test_duplicate_iiv_param_rejected(self) -> None:
+        spec = _make_spec(
+            variability=[
+                IIV(params=["CL"], structure="diagonal"),
+                IIV(params=["CL", "V"], structure="diagonal"),
+            ],
+        )
+        errors = validate_dsl(spec, lane=Lane.SUBMISSION)
+        assert any(e.constraint == "iiv_no_duplicate_params" for e in errors)
+
+    def test_no_duplicate_across_blocks(self) -> None:
+        spec = _make_spec(
+            variability=[
+                IIV(params=["CL"], structure="diagonal"),
+                IIV(params=["V"], structure="diagonal"),
+            ],
+        )
+        errors = validate_dsl(spec, lane=Lane.SUBMISSION)
+        assert not any(e.constraint == "iiv_no_duplicate_params" for e in errors)
+
+
+class TestDuplicateCovariateLinks:
+    """Duplicate CovariateLink (same param+covariate) should be rejected."""
+
+    def test_duplicate_covariate_link_rejected(self) -> None:
+        spec = _make_spec(
+            variability=[
+                IIV(params=["CL", "V"], structure="diagonal"),
+                CovariateLink(param="CL", covariate="WT", form="power"),
+                CovariateLink(param="CL", covariate="WT", form="exponential"),
+            ],
+        )
+        errors = validate_dsl(spec, lane=Lane.SUBMISSION)
+        assert any(e.constraint == "covariate_link_no_duplicate" for e in errors)
+
+    def test_different_param_covariate_ok(self) -> None:
+        spec = _make_spec(
+            variability=[
+                IIV(params=["CL", "V"], structure="diagonal"),
+                CovariateLink(param="CL", covariate="WT", form="power"),
+                CovariateLink(param="V", covariate="WT", form="power"),
+            ],
+        )
+        errors = validate_dsl(spec, lane=Lane.SUBMISSION)
+        assert not any(e.constraint == "covariate_link_no_duplicate" for e in errors)
+
+
+class TestTransitNVariability:
+    """Transit n should not accept IIV/covariates."""
+
+    def test_iiv_on_n_rejected(self) -> None:
+        spec = _make_spec(
+            absorption=Transit(n=4, ktr=2.0, ka=1.0),
+            variability=[IIV(params=["CL", "n"], structure="diagonal")],
+        )
+        errors = validate_dsl(spec, lane=Lane.SUBMISSION)
+        assert any(e.constraint == "no_variability_on_param" for e in errors)
+
+    def test_iiv_on_ka_ktr_ok(self) -> None:
+        spec = _make_spec(
+            absorption=Transit(n=4, ktr=2.0, ka=1.0),
+            variability=[IIV(params=["CL", "ka"], structure="diagonal")],
+        )
+        errors = validate_dsl(spec, lane=Lane.SUBMISSION)
+        assert not any(e.constraint == "no_variability_on_param" for e in errors)
+
+
+class TestKdecayValidation:
+    """TimeVaryingElim kdecay should be validated as a first-class parameter."""
+
+    def test_kdecay_positive_valid(self) -> None:
+        spec = _make_spec(elimination=TimeVaryingElim(CL=5.0, kdecay=0.1, decay_fn="exponential"))
+        errors = validate_dsl(spec, lane=Lane.SUBMISSION)
+        assert not any("kdecay" in e.param for e in errors)
+
+    def test_kdecay_negative_rejected(self) -> None:
+        spec = _make_spec(elimination=TimeVaryingElim(CL=5.0, kdecay=-0.1, decay_fn="exponential"))
+        errors = validate_dsl(spec, lane=Lane.SUBMISSION)
+        assert any("kdecay" in e.param for e in errors)
+
+    def test_kdecay_default_value(self) -> None:
+        elim = TimeVaryingElim(CL=5.0, decay_fn="exponential")
+        assert elim.kdecay == 0.1
+
+
 class TestValidationErrorStructure:
     """ValidationError should have module, param, constraint, and message."""
 

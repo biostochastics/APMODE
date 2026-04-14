@@ -7,6 +7,7 @@ Semantic validation (dim ceilings, constraint enforcement) is a separate phase.
 
 from __future__ import annotations
 
+import functools
 from pathlib import Path
 
 from lark import Lark, Tree
@@ -18,8 +19,9 @@ _GRAMMAR_PATH = Path(__file__).parent / "pk_grammar.lark"
 _MAX_DSL_INPUT_CHARS = 10_000
 
 
+@functools.lru_cache(maxsize=1)
 def load_grammar() -> Lark:
-    """Load and return the PK DSL Lark parser."""
+    """Load and return the Formular Lark parser (cached after first call)."""
     return Lark(
         _GRAMMAR_PATH.read_text(),
         parser="earley",

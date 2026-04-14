@@ -195,11 +195,16 @@ class ParallelLinearMM(BaseModel):
 
 
 class TimeVaryingElim(BaseModel):
-    """Time-varying elimination: CL with decay function."""
+    """Time-varying elimination: CL with decay function.
+
+    kdecay controls the rate of clearance change over time.
+    For exponential decay: CL(t) = CL * exp(-kdecay * t).
+    """
 
     model_config = ConfigDict(frozen=True)
     type: Literal["TimeVarying"] = "TimeVarying"
     CL: float
+    kdecay: float = 0.1
     decay_fn: Literal["exponential", "half_life", "linear"]
 
 

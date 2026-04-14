@@ -43,45 +43,60 @@ class ConstraintTemplate(eqx.Module):
 
 
 class MonotoneIncreasing(ConstraintTemplate):
-    """Output is non-decreasing: cumulative softplus of raw values."""
+    """Output is strictly positive: sum of softplus activations.
+
+    Note: This guarantees positive output (suitable for increasing rate
+    constants), but does not enforce input-output monotonicity of the
+    full NODE sub-function. The monotonicity of the composed function
+    depends on the upstream linear layers.
+    """
 
     def apply(self, raw: jax.Array) -> jax.Array:
-        increments = jnp.log1p(jnp.exp(raw))
-        return jnp.sum(increments, keepdims=True)
+        return jnp.sum(jax.nn.softplus(raw), keepdims=True)
 
 
 class MonotoneDecreasing(ConstraintTemplate):
-    """Output is non-increasing: negative cumulative softplus."""
+    """Output is positive and bounded: inverse of sum of softplus.
+
+    Produces output in (0, 1/dim] range — a positive value that decreases
+    as raw activations grow. Suitable for rate constants that attenuate
+    with increasing concentration.
+    """
 
     def apply(self, raw: jax.Array) -> jax.Array:
-        increments = jnp.log1p(jnp.exp(raw))
-        return -jnp.sum(increments, keepdims=True)
+        # 1 / (1 + sum(softplus)) ensures positive output that decreases
+        return (1.0 / (1.0 + jnp.sum(jax.nn.softplus(raw)))).reshape(1)
 
 
 class BoundedPositive(ConstraintTemplate):
     """Output is strictly positive: softplus of sum."""
 
     def apply(self, raw: jax.Array) -> jax.Array:
-        s = jnp.sum(raw)
-        return jnp.log1p(jnp.exp(s)).reshape(1)
+        return jax.nn.softplus(jnp.sum(raw)).reshape(1)
 
 
 class Saturable(ConstraintTemplate):
-    """Output > 0, saturates for large input: sigmoid-scaled.
+    """Output > 0 with MM-like saturation: Vmax * s / (Km + s).
 
-    Uses a learned scale parameter (JAX array, trainable) to set the
-    saturation plateau height.
+    Uses learned log-scale parameters (JAX arrays, trainable) for the
+    saturation plateau (Vmax) and half-saturation (Km). Output
+    increases with activation magnitude but plateaus at Vmax.
     """
 
-    scale: jax.Array
+    log_vmax: jax.Array
+    log_km: jax.Array
 
     def __init__(self, dim: int, scale: float = 1.0) -> None:
         self.dim = dim
-        self.scale = jnp.array(scale)
+        self.log_vmax = jnp.log(jnp.array(scale))
+        self.log_km = jnp.log(jnp.array(1.0))
 
     def apply(self, raw: jax.Array) -> jax.Array:
-        s = jnp.sum(raw)
-        return (self.scale * jax.nn.sigmoid(s)).reshape(1)
+        # MM-like: Vmax * s / (Km + s) where s = softplus(sum(raw))
+        s = jax.nn.softplus(jnp.sum(raw))
+        vmax = jnp.exp(self.log_vmax)
+        km = jnp.exp(self.log_km)
+        return (vmax * s / (km + s)).reshape(1)
 
 
 class UnconstrainedSmooth(ConstraintTemplate):

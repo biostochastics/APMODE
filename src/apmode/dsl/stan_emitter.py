@@ -69,7 +69,19 @@ def emit_stan(
             "NODE backends use the JAX/Diffrax emitter."
         )
 
-    # IOV and BLQ M3/M4 are now supported
+    # IOV: etas are declared but not applied in transformed parameters.
+    if any(isinstance(v, IOV) for v in spec.variability):
+        raise NotImplementedError(
+            "IOV is not yet fully implemented in Stan codegen. "
+            "IOV etas are declared but not applied to parameter back-transforms."
+        )
+
+    # Unsupported absorption types in ODE mode
+    if _needs_ode(spec) and isinstance(spec.absorption, (ZeroOrder, MixedFirstZero)):
+        raise NotImplementedError(
+            f"Stan ODE codegen does not support {spec.absorption.type} absorption. "
+            f"Use the nlmixr2 backend."
+        )
 
     blocks: list[str] = []
     blocks.append(f"// APMODE generated Stan model: {spec.model_id}")
@@ -149,7 +161,18 @@ def _emit_data_block(spec: DSLSpec) -> str:
     lines.append("  array[N] int<lower=1,upper=N_subjects> subject;  // subject index")
     lines.append("  vector[N] time;              // observation times")
     lines.append("  vector<lower=0>[N] dv;       // observed concentrations")
-    lines.append("  vector<lower=0>[N_subjects] dose;  // dose per subject")
+    lines.append("")
+    lines.append("  // Multi-dose event schedule")
+    lines.append("  int<lower=0> N_events;       // total dose/reset events across all subjects")
+    lines.append("  array[N_events] int<lower=1,upper=N_subjects> event_subject;")
+    lines.append("  vector[N_events] event_time;  // event times")
+    lines.append("  vector[N_events] event_amt;   // dose amounts (0 for resets)")
+    lines.append("  array[N_events] int event_cmt; // compartment")
+    lines.append("  array[N_events] int event_evid; // 1=dose, 3=reset, 4=reset+dose")
+    lines.append("  vector[N_events] event_rate;   // infusion rate (0=bolus)")
+    lines.append("  // Per-subject event index ranges (1-indexed, inclusive)")
+    lines.append("  array[N_subjects] int event_start;  // first event index for subject")
+    lines.append("  array[N_subjects] int event_end;    // last event index for subject")
 
     # IOV: occasion index per observation
     if _has_iov(spec):
@@ -660,16 +683,18 @@ def _emit_ode_dynamics(spec: DSLSpec, indent: int = 4) -> list[str]:
         lines.append(f"{pad}dydt[4] = Q3 / V1 * centr - Q3 / V3 * periph2;")
     elif isinstance(dist_mod, TMDDCore):
         lines.append(f"{pad}real kel = CL / {vol};")
-        lines.append(f"{pad}real ksyn = koff * R0;")
+        lines.append(f"{pad}real kdeg = koff;  // receptor degradation ~ koff")
+        lines.append(f"{pad}real ksyn = kdeg * R0;  // receptor synthesis at steady state")
         lines.append(
             f"{pad}dydt[2] = {abs_influx} - kel * centr"
             f" - kon * conc * R * {vol} + koff * RC * {vol};"
         )
-        lines.append(f"{pad}dydt[3] = ksyn - koff * R - kon * conc * R + koff * RC;")
+        lines.append(f"{pad}dydt[3] = ksyn - kdeg * R - kon * conc * R + koff * RC;")
         lines.append(f"{pad}dydt[4] = kon * conc * R - koff * RC - kint * RC;")
     elif isinstance(dist_mod, TMDDQSS):
         lines.append(f"{pad}real kel = CL / {vol};")
-        lines.append(f"{pad}real ksyn = kint * R0;")
+        lines.append(f"{pad}real kdeg = kint;  // receptor degradation initial estimate")
+        lines.append(f"{pad}real ksyn = kdeg * R0;  // receptor synthesis at steady state")
         lines.append(
             f"{pad}real Cfree = 0.5 * ((conc - Rtot - KD)"
             f" + sqrt(square(conc - Rtot - KD) + 4 * KD * conc));"
@@ -679,7 +704,7 @@ def _emit_ode_dynamics(spec: DSLSpec, indent: int = 4) -> list[str]:
         lines.append(
             f"{pad}dydt[2] = {abs_influx} - kel * Cfree * {vol} - kint * RC_conc * {vol};"
         )
-        lines.append(f"{pad}dydt[3] = ksyn - kint * Rfree - kint * RC_conc;")
+        lines.append(f"{pad}dydt[3] = ksyn - kdeg * Rfree - kint * RC_conc;")
 
     return lines
 
@@ -697,7 +722,15 @@ def _stan_elim_expr(elim_mod: object, cmt: str, vol: str) -> str:
 
 
 def _emit_ode_solve(spec: DSLSpec, indent: int = 4) -> list[str]:
-    """Emit ODE solve call within the transformed parameters loop."""
+    """Emit piecewise ODE solve with event-driven dose injection.
+
+    For each subject: iterate through their events in time order.
+    Between consecutive event times, integrate the ODE forward.
+    At dose events (EVID=1), add AMT to the appropriate state.
+    At reset events (EVID=3), zero all states.
+    At reset+dose (EVID=4), zero then add.
+    At observation times, extract predicted concentration.
+    """
     pad = " " * indent
     lines: list[str] = []
     n_states = _n_states(spec)
@@ -709,26 +742,60 @@ def _emit_ode_solve(spec: DSLSpec, indent: int = 4) -> list[str]:
         lines.append(f"{pad}theta_i[{idx}] = {name}_i;")
 
     # Initial state
-    lines.append(f"{pad}vector[{n_states}] y0 = rep_vector(0, {n_states});")
-    lines.append(f"{pad}y0[1] = dose[i];  // initial dose in depot")
-
-    # Observation times for this subject
-    lines.append(f"{pad}// Solve ODE for subject i")
-    lines.append(f"{pad}{{")
-    lines.append(f"{pad}  int obs_start = 1;")
-    lines.append(f"{pad}  int obs_end = N;")
-    lines.append(f"{pad}  // Find observation indices for subject i")
-    lines.append(f"{pad}  for (n in 1:N) {{")
-    lines.append(f"{pad}    if (subject[n] == i) {{")
+    lines.append(f"{pad}vector[{n_states}] y_state = rep_vector(0, {n_states});")
+    lines.append(f"{pad}real t_prev = 0.0;")
 
     # Volume for concentration conversion
     vol = "V" if isinstance(spec.distribution, (OneCmt, TMDDCore, TMDDQSS)) else "V1"
-    lines.append(f"{pad}      // Solve at each observation time individually")
+
+    lines.append("")
+    lines.append(f"{pad}// Process dose events for subject i")
+    lines.append(f"{pad}if (event_start[i] > 0) {{")
+    lines.append(f"{pad}  for (e in event_start[i]:event_end[i]) {{")
+    lines.append(f"{pad}    // Integrate from t_prev to event_time[e]")
+    lines.append(f"{pad}    if (event_time[e] > t_prev) {{")
+    lines.append(f"{pad}      array[1] real ts = {{event_time[e]}};")
+    lines.append(f"{pad}      array[1] vector[{n_states}] y_sol =")
+    lines.append(f"{pad}        ode_rk45(ode_rhs, y_state, t_prev, ts, theta_i, x_r, x_i);")
+    lines.append(f"{pad}      y_state = y_sol[1];")
+    lines.append(f"{pad}      t_prev = event_time[e];")
+    lines.append(f"{pad}    }}")
+    lines.append(f"{pad}    // Apply event: reset then dose")
+    lines.append(f"{pad}    if (event_evid[e] == 3 || event_evid[e] == 4)")
+    lines.append(f"{pad}      y_state = rep_vector(0, {n_states});")
+    lines.append(f"{pad}    if (event_evid[e] == 1 || event_evid[e] == 4) {{")
+    lines.append(f"{pad}      // Bolus: add to depot (state 1) or central (state 2) per CMT")
+    lines.append(f"{pad}      if (event_cmt[e] == 1)")
+    lines.append(f"{pad}        y_state[1] += event_amt[e];")
+    lines.append(f"{pad}      else if (event_cmt[e] == 2)")
+    lines.append(f"{pad}        y_state[2] += event_amt[e];")
+    lines.append(f"{pad}    }}")
+    lines.append(f"{pad}  }}")
+    lines.append(f"{pad}}}")
+
+    lines.append("")
+    lines.append(f"{pad}// Compute predictions at observation times")
+    lines.append(f"{pad}for (n in 1:N) {{")
+    lines.append(f"{pad}  if (subject[n] == i) {{")
+    lines.append(f"{pad}    if (time[n] > t_prev) {{")
     lines.append(f"{pad}      array[1] real ts = {{time[n]}};")
     lines.append(f"{pad}      array[1] vector[{n_states}] y_sol =")
-    lines.append(f"{pad}        ode_rk45(ode_rhs, y0, 0.0, ts, theta_i, x_r, x_i);")
-    lines.append(f"{pad}      f[n] = fmax(y_sol[1, 2] / {vol}_i, 1e-10);")
+    lines.append(f"{pad}        ode_rk45(ode_rhs, y_state, t_prev, ts, theta_i, x_r, x_i);")
+    lines.append(f"{pad}      y_state = y_sol[1];")
+    lines.append(f"{pad}      t_prev = time[n];")
     lines.append(f"{pad}    }}")
+
+    if isinstance(spec.distribution, TMDDQSS):
+        lines.append(f"{pad}    real Ctot_n = y_state[2] / {vol}_i;")
+        lines.append(f"{pad}    real Rtot_n = y_state[3];")
+        lines.append(
+            f"{pad}    f[n] = fmax(0.5 * ((Ctot_n - Rtot_n - KD_i)"
+            f" + sqrt(square(Ctot_n - Rtot_n - KD_i)"
+            f" + 4 * KD_i * Ctot_n)), 1e-10);"
+        )
+    else:
+        lines.append(f"{pad}    f[n] = fmax(y_state[2] / {vol}_i, 1e-10);")
+
     lines.append(f"{pad}  }}")
     lines.append(f"{pad}}}")
 
@@ -736,7 +803,12 @@ def _emit_ode_solve(spec: DSLSpec, indent: int = 4) -> list[str]:
 
 
 def _emit_analytical_solve(spec: DSLSpec, indent: int = 4) -> list[str]:
-    """Emit analytical solution for linear compartment models."""
+    """Emit analytical solution with superposition for multi-dose linear models.
+
+    Uses the superposition principle: for linear time-invariant systems,
+    the response to multiple doses is the sum of individual dose responses.
+    At each observation time, sum contributions from all prior dose events.
+    """
     pad = " " * indent
     lines: list[str] = []
 
@@ -745,25 +817,33 @@ def _emit_analytical_solve(spec: DSLSpec, indent: int = 4) -> list[str]:
     elim_mod = spec.elimination
 
     if not isinstance(elim_mod, LinearElim):
-        # Fall back to ODE for non-linear
         return _emit_ode_solve(spec, indent)
 
-    lines.append(f"{pad}// Analytical solution for linear model")
+    lines.append(f"{pad}// Analytical solution with superposition for multi-dose")
     lines.append(f"{pad}for (n in 1:N) {{")
     lines.append(f"{pad}  if (subject[n] == i) {{")
     lines.append(f"{pad}    real t_obs = time[n];")
+    lines.append(f"{pad}    real conc = 0.0;")
 
     if isinstance(dist_mod, OneCmt) and isinstance(abs_mod, (FirstOrder, LaggedFirstOrder)):
         lines.append(f"{pad}    real ke = CL_i / V_i;")
+        lines.append(f"{pad}    // Superposition: sum contributions from all prior doses")
+        lines.append(f"{pad}    if (event_start[i] > 0) {{")
+        lines.append(f"{pad}      for (e in event_start[i]:event_end[i]) {{")
+        lines.append(f"{pad}        if (event_evid[e] == 1 && event_time[e] <= t_obs) {{")
+        lines.append(f"{pad}          real t_since_dose = t_obs - event_time[e];")
         if isinstance(abs_mod, LaggedFirstOrder):
-            lines.append(f"{pad}    real t_eff = fmax(t_obs - tlag_i, 0);")
+            lines.append(f"{pad}          real t_eff = fmax(t_since_dose - tlag_i, 0);")
             t_var = "t_eff"
         else:
-            t_var = "t_obs"
+            t_var = "t_since_dose"
         lines.append(
-            f"{pad}    real conc = dose[i] * ka_i / (V_i * (ka_i - ke))"
+            f"{pad}          conc += event_amt[e] * ka_i / (V_i * (ka_i - ke))"
             f" * (exp(-ke * {t_var}) - exp(-ka_i * {t_var}));"
         )
+        lines.append(f"{pad}        }}")
+        lines.append(f"{pad}      }}")
+        lines.append(f"{pad}    }}")
         lines.append(f"{pad}    f[n] = fmax(conc, 1e-10);")
 
     elif isinstance(dist_mod, TwoCmt) and isinstance(abs_mod, FirstOrder):
@@ -778,17 +858,24 @@ def _emit_analytical_solve(spec: DSLSpec, indent: int = 4) -> list[str]:
             f"{pad}    real a2 = 0.5 * ((ke + k12 + k21)"
             f" - sqrt(square(ke + k12 + k21) - 4 * ke * k21));"
         )
-        lines.append(f"{pad}    real A = dose[i] * ka_i / V1_i;")
+        lines.append(f"{pad}    // Superposition: sum contributions from all prior doses")
+        lines.append(f"{pad}    if (event_start[i] > 0) {{")
+        lines.append(f"{pad}      for (e in event_start[i]:event_end[i]) {{")
+        lines.append(f"{pad}        if (event_evid[e] == 1 && event_time[e] <= t_obs) {{")
+        lines.append(f"{pad}          real td = t_obs - event_time[e];")
+        lines.append(f"{pad}          real Ae = event_amt[e] * ka_i / V1_i;")
         lines.append(
-            f"{pad}    real conc = A * ((k21 - a1) / ((ka_i - a1) * (a2 - a1)) * exp(-a1 * t_obs)"
+            f"{pad}          conc += Ae * ((k21 - a1) / ((ka_i - a1) * (a2 - a1)) * exp(-a1 * td)"
         )
-        lines.append(f"{pad}      + (k21 - a2) / ((ka_i - a2) * (a1 - a2)) * exp(-a2 * t_obs)")
+        lines.append(f"{pad}            + (k21 - a2) / ((ka_i - a2) * (a1 - a2)) * exp(-a2 * td)")
         lines.append(
-            f"{pad}      + (k21 - ka_i) / ((a1 - ka_i) * (a2 - ka_i)) * exp(-ka_i * t_obs));"
+            f"{pad}            + (k21 - ka_i) / ((a1 - ka_i) * (a2 - ka_i)) * exp(-ka_i * td));"
         )
+        lines.append(f"{pad}        }}")
+        lines.append(f"{pad}      }}")
+        lines.append(f"{pad}    }}")
         lines.append(f"{pad}    f[n] = fmax(conc, 1e-10);")
     else:
-        # Fallback for complex linear models
         return _emit_ode_solve(spec, indent)
 
     lines.append(f"{pad}  }}")

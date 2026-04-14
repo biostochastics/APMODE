@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from apmode.bundle.models import CredibilityContext, GateCheckResult, GateResult
+from apmode.bundle.models import CredibilityContext, GateCheckResult, GateResult, LOROMetrics
 from apmode.governance.policy import Gate25Config  # noqa: TC001 — used at runtime
 from apmode.ids import generate_gate_id
 
@@ -360,6 +360,7 @@ def evaluate_gate2(
     result: BackendResult,
     policy: GatePolicy,
     lane: str,
+    loro_metrics: LOROMetrics | None = None,
 ) -> GateResult:
     """Evaluate Gate 2: Lane-Specific Admissibility.
 
@@ -374,6 +375,7 @@ def evaluate_gate2(
         result: BackendResult from estimation.
         policy: GatePolicy with gate2 thresholds.
         lane: Operating lane ("submission", "discovery", "optimization").
+        loro_metrics: Optional LORO-CV metrics for optimization lane.
     """
     if lane not in _VALID_LANES:
         msg = f"Invalid lane '{lane}'. Must be one of {sorted(_VALID_LANES)}"
@@ -387,7 +389,7 @@ def evaluate_gate2(
     checks.append(_check_identifiability(result, g2))
     checks.append(_check_node_eligibility(result, g2))
     checks.append(_check_reproducible_estimation(result, g2))
-    checks.append(_check_loro_requirement(result, g2, lane))
+    checks.append(_check_loro_requirement(result, g2, lane, loro_metrics=loro_metrics))
 
     passed = all(c.passed for c in checks)
     failed_names = [c.check_id for c in checks if not c.passed]
@@ -551,10 +553,17 @@ def _check_reproducible_estimation(result: BackendResult, g2: Gate2Config) -> Ga
     )
 
 
-def _check_loro_requirement(result: BackendResult, g2: Gate2Config, lane: str) -> GateCheckResult:
-    """LORO-CV requirement for Optimization lane.
+def _check_loro_requirement(
+    result: BackendResult,
+    g2: Gate2Config,
+    lane: str,
+    loro_metrics: LOROMetrics | None = None,
+) -> GateCheckResult:
+    """LORO-CV requirement for Optimization lane (Phase 3).
 
-    Phase 1 placeholder: LORO evaluation is Phase 3.
+    Evaluates pooled NPDE (CWRES proxy) and VPC coverage concordance from
+    LORO-CV against policy-driven thresholds. Uses law of total variance for
+    pooled variance (per multi-model review: crush/GLM-5, Gemini 3.1 Pro).
     """
     if not g2.loro_required or lane != "optimization":
         return GateCheckResult(
@@ -563,12 +572,39 @@ def _check_loro_requirement(result: BackendResult, g2: Gate2Config, lane: str) -
             observed="not_required" if not g2.loro_required else "not_optimization_lane",
         )
 
-    # Phase 1: LORO not yet implemented — flag as not_evaluated
+    if loro_metrics is None:
+        return GateCheckResult(
+            check_id="loro_required",
+            passed=False,
+            observed="not_evaluated",
+            threshold="required",
+        )
+
+    issues: list[str] = []
+
+    if loro_metrics.n_folds < g2.loro_min_folds:
+        issues.append(f"insufficient_folds ({loro_metrics.n_folds}<{g2.loro_min_folds})")
+
+    if abs(loro_metrics.pooled_npde_mean) > g2.loro_npde_mean_max:
+        issues.append(f"npde_mean={loro_metrics.pooled_npde_mean:.3f}")
+
+    npde_var = loro_metrics.pooled_npde_variance
+    if not (g2.loro_npde_variance_min <= npde_var <= g2.loro_npde_variance_max):
+        issues.append(f"npde_var={npde_var:.3f}")
+
+    if loro_metrics.vpc_coverage_concordance < g2.loro_vpc_coverage_min:
+        issues.append(f"vpc_cov={loro_metrics.vpc_coverage_concordance:.3f}")
+
+    passed = len(issues) == 0
     return GateCheckResult(
         check_id="loro_required",
-        passed=False,
-        observed="not_evaluated",
-        threshold="required",
+        passed=passed,
+        observed="; ".join(issues) if issues else "all_within_bounds",
+        threshold=(
+            f"|npde_mean|<{g2.loro_npde_mean_max}, "
+            f"npde_var[{g2.loro_npde_variance_min}-{g2.loro_npde_variance_max}], "
+            f"vpc>{g2.loro_vpc_coverage_min}"
+        ),
     )
 
 

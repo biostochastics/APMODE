@@ -19,16 +19,22 @@ import re
 from pathlib import Path  # noqa: TC003 — used at runtime in __init__
 
 from apmode.bundle.models import (  # noqa: TC001 — used at runtime in method signatures
+    AgenticTraceInput,
+    AgenticTraceMeta,
+    AgenticTraceOutput,
     BackendResult,
     BackendVersions,
     CandidateLineage,
+    CredibilityReport,
     DataManifest,
     EvidenceManifest,
     FailedCandidate,
     GateResult,
     InitialEstimates,
+    LOROCVResult,
     Ranking,
     ReportProvenance,
+    RunLineage,
     SearchTrajectoryEntry,
     SeedRegistry,
     SplitManifest,
@@ -203,4 +209,54 @@ class BundleEmitter:
         """Write report_provenance.json (who/what generated each section)."""
         path = self.run_dir / "report_provenance.json"
         path.write_text(provenance.model_dump_json(indent=2))
+        return path
+
+    # --- LORO-CV results (Phase 3, Optimization lane) ---
+
+    def _loro_cv_dir(self) -> Path:
+        """Ensure and return the loro_cv/ subdirectory."""
+        loro_dir = self.run_dir / "loro_cv"
+        loro_dir.mkdir(exist_ok=True)
+        return loro_dir
+
+    def write_loro_cv_result(self, result: LOROCVResult) -> Path:
+        """Write loro_cv/{candidate_id}.json."""
+        _validate_path_component(result.candidate_id, "candidate_id")
+        path = self._loro_cv_dir() / f"{result.candidate_id}.json"
+        path.write_text(result.model_dump_json(indent=2))
+        return path
+
+    # --- Agentic trace (Phase 3, PRD §4.2.6) ---
+
+    def _agentic_trace_dir(self) -> Path:
+        """Ensure and return the agentic_trace/ subdirectory."""
+        trace_dir = self.run_dir / "agentic_trace"
+        trace_dir.mkdir(exist_ok=True)
+        return trace_dir
+
+    def write_agentic_trace_input(self, inp: AgenticTraceInput) -> Path:
+        """Write agentic_trace/{iteration_id}_input.json."""
+        _validate_path_component(inp.iteration_id, "iteration_id")
+        path = self._agentic_trace_dir() / f"{inp.iteration_id}_input.json"
+        path.write_text(inp.model_dump_json(indent=2))
+        return path
+
+    def write_agentic_trace_output(self, out: AgenticTraceOutput) -> Path:
+        """Write agentic_trace/{iteration_id}_output.json."""
+        _validate_path_component(out.iteration_id, "iteration_id")
+        path = self._agentic_trace_dir() / f"{out.iteration_id}_output.json"
+        path.write_text(out.model_dump_json(indent=2))
+        return path
+
+    def write_agentic_trace_meta(self, meta: AgenticTraceMeta) -> Path:
+        """Write agentic_trace/{iteration_id}_meta.json."""
+        _validate_path_component(meta.iteration_id, "iteration_id")
+        path = self._agentic_trace_dir() / f"{meta.iteration_id}_meta.json"
+        path.write_text(meta.model_dump_json(indent=2))
+        return path
+
+    def write_run_lineage(self, lineage: RunLineage) -> Path:
+        """Write run_lineage.json (multi-run provenance, PRD §4.2.6)."""
+        path = self.run_dir / "run_lineage.json"
+        path.write_text(lineage.model_dump_json(indent=2))
         return path

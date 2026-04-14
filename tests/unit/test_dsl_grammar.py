@@ -217,6 +217,45 @@ class TestParseValidModels:
         tree = parser.parse(spec)
         assert tree is not None
 
+    def test_time_varying_with_kdecay(self, parser: Lark) -> None:
+        spec = """
+        model {
+            absorption: FirstOrder(ka=1.0)
+            distribution: OneCmt(V=70.0)
+            elimination: TimeVarying(CL=5.0, kdecay=0.05, decay_fn=exponential)
+            variability: IIV(params=[CL, V], structure=diagonal)
+            observation: Proportional(sigma_prop=0.1)
+        }
+        """
+        tree = parser.parse(spec)
+        assert tree is not None
+
+    def test_blq_m3_with_error_model(self, parser: Lark) -> None:
+        spec = """
+        model {
+            absorption: FirstOrder(ka=1.0)
+            distribution: OneCmt(V=70.0)
+            elimination: Linear(CL=5.0)
+            variability: IIV(params=[CL, V], structure=diagonal)
+            observation: BLQ_M3(loq_value=0.1, error_model=combined, sigma_prop=0.2, sigma_add=0.5)
+        }
+        """
+        tree = parser.parse(spec)
+        assert tree is not None
+
+    def test_blq_m4_with_error_model(self, parser: Lark) -> None:
+        spec = """
+        model {
+            absorption: FirstOrder(ka=1.0)
+            distribution: OneCmt(V=70.0)
+            elimination: Linear(CL=5.0)
+            variability: IIV(params=[CL, V], structure=diagonal)
+            observation: BLQ_M4(loq_value=0.5, error_model=additive, sigma_prop=0.1, sigma_add=1.0)
+        }
+        """
+        tree = parser.parse(spec)
+        assert tree is not None
+
 
 class TestParseInvalidModels:
     """Syntactically invalid specs should fail to parse."""

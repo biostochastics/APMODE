@@ -44,6 +44,7 @@ from apmode.dsl.ast_models import (
     TwoCmt,
     ZeroOrder,
 )
+from apmode.dsl.normalize import normalize_param_name
 
 # NODE constraint template max dims (PRD §4.2.5 table)
 _TEMPLATE_MAX_DIM: dict[str, int] = {
@@ -83,6 +84,7 @@ def validate_dsl(spec: DSLSpec, *, lane: Lane) -> list[ValidationError]:
     _validate_elimination(spec, errors)
     _validate_observation(spec, errors)
     _validate_variability(spec, errors)
+    _validate_module_compatibility(spec, errors)
     _validate_node_constraints(spec, lane, errors)
     return errors
 
@@ -210,6 +212,7 @@ def _validate_elimination(spec: DSLSpec, errors: list[ValidationError]) -> None:
         _positive(mod, "Km", m.Km, errors)
     elif isinstance(m, TimeVaryingElim):
         _positive(mod, "CL", m.CL, errors)
+        _positive(mod, "kdecay", m.kdecay, errors)
         if m.decay_fn != "exponential":
             errors.append(
                 ValidationError(
@@ -241,9 +244,61 @@ def _validate_observation(spec: DSLSpec, errors: list[ValidationError]) -> None:
         _positive(mod, "loq_value", m.loq_value, errors)
 
 
+_NO_VARIABILITY_PARAMS: frozenset[str] = frozenset({"n"})
+"""Structural parameters that cannot have IIV/IOV/CovariateLink.
+
+Transit 'n' is estimated via log/exp transform but the nlmixr2/Stan emitters
+do not apply eta or covariate effects to its back-transform. Allowing
+variability on n would produce code that silently ignores the effect.
+"""
+
+
 def _validate_variability(spec: DSLSpec, errors: list[ValidationError]) -> None:
     mod = "variability"
     valid_params = set(spec.structural_param_names())
+
+    # Check for duplicate IIV parameters across all IIV blocks
+    # Normalize param names for case-insensitive matching
+    all_iiv_params: list[str] = []
+    for item in spec.variability:
+        if isinstance(item, IIV):
+            for p in item.params:
+                np = normalize_param_name(p)
+                if np in all_iiv_params:
+                    errors.append(
+                        ValidationError(
+                            module=mod,
+                            param="variability.IIV.params",
+                            constraint="iiv_no_duplicate_params",
+                            message=(
+                                f"Parameter '{p}' appears in multiple IIV blocks; "
+                                f"each parameter may have IIV in at most one block"
+                            ),
+                        )
+                    )
+                else:
+                    all_iiv_params.append(np)
+
+    # Check for duplicate CovariateLinks (same param+covariate, case-insensitive)
+    seen_cov_links: set[tuple[str, str]] = set()
+    for i, item in enumerate(spec.variability):
+        if isinstance(item, CovariateLink):
+            key = (normalize_param_name(item.param), item.covariate.upper())
+            if key in seen_cov_links:
+                errors.append(
+                    ValidationError(
+                        module=mod,
+                        param=f"variability[{i}]",
+                        constraint="covariate_link_no_duplicate",
+                        message=(
+                            f"Duplicate CovariateLink: {item.param}~{item.covariate} "
+                            f"appears more than once"
+                        ),
+                    )
+                )
+            else:
+                seen_cov_links.add(key)
+
     for i, item in enumerate(spec.variability):
         if isinstance(item, IIV):
             if len(item.params) == 0:
@@ -265,7 +320,8 @@ def _validate_variability(spec: DSLSpec, errors: list[ValidationError]) -> None:
                     )
                 )
             for p in item.params:
-                if p not in valid_params:
+                np = normalize_param_name(p)
+                if np not in valid_params:
                     errors.append(
                         ValidationError(
                             module=mod,
@@ -274,6 +330,18 @@ def _validate_variability(spec: DSLSpec, errors: list[ValidationError]) -> None:
                             message=(
                                 f"IIV param '{p}' does not match any structural "
                                 f"parameter; valid: {sorted(valid_params)}"
+                            ),
+                        )
+                    )
+                elif np in _NO_VARIABILITY_PARAMS:
+                    errors.append(
+                        ValidationError(
+                            module=mod,
+                            param=f"variability[{i}].params",
+                            constraint="no_variability_on_param",
+                            message=(
+                                f"Parameter '{p}' cannot have IIV; "
+                                f"emitter does not apply eta to its back-transform"
                             ),
                         )
                     )
@@ -288,7 +356,8 @@ def _validate_variability(spec: DSLSpec, errors: list[ValidationError]) -> None:
                     )
                 )
             for p in item.params:
-                if p not in valid_params:
+                np = normalize_param_name(p)
+                if np not in valid_params:
                     errors.append(
                         ValidationError(
                             module=mod,
@@ -303,7 +372,8 @@ def _validate_variability(spec: DSLSpec, errors: list[ValidationError]) -> None:
         elif isinstance(item, CovariateLink):
             # Covariate column name is checked at data-binding time, but
             # param name must reference a structural parameter in the spec
-            if item.param not in valid_params:
+            np = normalize_param_name(item.param)
+            if np not in valid_params:
                 errors.append(
                     ValidationError(
                         module=mod,
@@ -315,6 +385,31 @@ def _validate_variability(spec: DSLSpec, errors: list[ValidationError]) -> None:
                         ),
                     )
                 )
+
+
+def _validate_module_compatibility(spec: DSLSpec, errors: list[ValidationError]) -> None:
+    """Validate cross-module compatibility constraints.
+
+    TMDD distribution models emit kel = CL/V in the dynamics, so they
+    require an elimination module that provides CL (LinearElim only).
+    ParallelLinearMM has CL but its MM term is not wired into TMDD dynamics,
+    so allowing it would silently drop Vmax/Km.
+    """
+    if isinstance(spec.distribution, (TMDDCore, TMDDQSS)) and not isinstance(
+        spec.elimination, LinearElim
+    ):
+        errors.append(
+            ValidationError(
+                module="distribution",
+                param="distribution.type",
+                constraint="tmdd_requires_linear_elim",
+                message=(
+                    f"TMDD distribution ({spec.distribution.type}) requires "
+                    f"Linear elimination (provides CL for kel = CL/V); "
+                    f"got {spec.elimination.type}"
+                ),
+            )
+        )
 
 
 def _validate_node_constraints(spec: DSLSpec, lane: Lane, errors: list[ValidationError]) -> None:
