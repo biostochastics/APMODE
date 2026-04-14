@@ -30,6 +30,8 @@ class RSubprocessRequest(BaseModel):
     estimation: list[str] = Field(min_length=1)
     compiled_r_code: str = ""
     initial_estimate_source: Literal["nca", "warm_start", "fallback"] = "fallback"
+    # Optional split manifest for split-aware CWRES diagnostics
+    split_manifest: dict[str, object] | None = None
 
     @field_validator("data_path")
     @classmethod

@@ -29,6 +29,66 @@ generate_covariates <- function(n) {
   )
 }
 
+# Build a proper NONMEM-format output from rxSolve result and event table.
+# rxSolve changes EVID internally; we reconstruct NONMEM EVID from the
+# original event table structure.
+build_nonmem_output <- function(sim, et, n_id, covs, sigma_prop, sigma_add = 0) {
+  # Extract simulated concentrations — rxSolve returns many integration
+  # steps. We only want the observation times from the event table.
+  obs_times <- sort(unique(et$TIME[et$EVID == 0]))
+
+  sim_df <- data.frame(
+    NMID = sim$sim.id,
+    TIME = sim$time,
+    CP   = sim$cp
+  )
+  # Filter to observation times only (with tolerance for floating point)
+  sim_df <- sim_df[round(sim_df$TIME, 6) %in% round(obs_times, 6), ]
+
+  # Build dose rows from original event table (EVID==1)
+  dose_rows <- et[et$EVID == 1, , drop = FALSE]
+
+  # For each subject, take exactly one simulated value per obs time
+  obs_list <- list()
+  for (id in sort(unique(sim_df$NMID))) {
+    sub <- sim_df[sim_df$NMID == id, ]
+    sub <- sub[!duplicated(round(sub$TIME, 6)), ]
+    obs_list[[length(obs_list) + 1]] <- sub
+  }
+  obs_df <- do.call(rbind, obs_list)
+  # Add residual error
+  obs_df$DV <- obs_df$CP * (1 + rnorm(nrow(obs_df), 0, sigma_prop)) +
+               rnorm(nrow(obs_df), 0, sigma_add)
+  obs_df$DV[obs_df$DV < 0] <- 0  # censor negative concentrations
+
+  # Combine dose + obs
+  dose_out <- data.frame(
+    NMID = dose_rows$NMID,
+    TIME = dose_rows$TIME,
+    DV   = 0,
+    MDV  = 1L,
+    EVID = 1L,
+    AMT  = dose_rows$AMT,
+    CMT  = dose_rows$CMT
+  )
+  obs_out <- data.frame(
+    NMID = obs_df$NMID,
+    TIME = obs_df$TIME,
+    DV   = obs_df$DV,
+    MDV  = 0L,
+    EVID = 0L,
+    AMT  = 0,
+    CMT  = 1L
+  )
+
+  combined <- rbind(dose_out, obs_out)
+  combined <- merge(combined,
+                    data.frame(NMID = seq_len(n_id), covs),
+                    by = "NMID")
+  combined <- combined[order(combined$NMID, combined$TIME, -combined$EVID), ]
+  combined
+}
+
 # Standard oral dosing protocol (for A1, A3, A4)
 oral_event_table <- function(n_id) {
   times <- c(0.5, 1, 2, 4, 6, 8, 12, 24)
@@ -36,12 +96,10 @@ oral_event_table <- function(n_id) {
 
   rows <- list()
   for (id in seq_len(n_id)) {
-    # Dose row
     rows[[length(rows) + 1]] <- data.frame(
       NMID = id, TIME = 0, DV = 0, MDV = 1, EVID = 1,
       AMT = dose_amt, CMT = 1
     )
-    # Observation rows
     for (t in times) {
       rows[[length(rows) + 1]] <- data.frame(
         NMID = id, TIME = t, DV = NA_real_, MDV = 0, EVID = 0,
@@ -61,7 +119,7 @@ iv_event_table <- function(n_id) {
   for (id in seq_len(n_id)) {
     rows[[length(rows) + 1]] <- data.frame(
       NMID = id, TIME = 0, DV = 0, MDV = 1, EVID = 1,
-      AMT = dose_amt, CMT = 1  # central compartment (rxode2: centr is CMT 1)
+      AMT = dose_amt, CMT = 1
     )
     for (t in times) {
       rows[[length(rows) + 1]] <- data.frame(
@@ -98,22 +156,8 @@ a1_sim <- rxSolve(
   nSub = N_SUBJECTS, seed = SEED
 )
 
-a1_out <- merge(
-  data.frame(
-    NMID = a1_sim$sim.id,
-    TIME = a1_sim$time,
-    DV = a1_sim$cp * (1 + rnorm(nrow(a1_sim), 0, 0.15)),
-    MDV = ifelse(a1_sim$evid == 1, 1, 0),
-    EVID = a1_sim$evid,
-    AMT = ifelse(a1_sim$evid == 1, a1_sim$amt, 0),
-    CMT = 1
-  ),
-  data.frame(NMID = seq_len(N_SUBJECTS), a1_covs),
-  by = "NMID"
-)
-# Fix dose rows
-a1_out$DV[a1_out$EVID == 1] <- 0
-a1_out <- a1_out[order(a1_out$NMID, a1_out$TIME), ]
+a1_out <- build_nonmem_output(a1_sim, a1_et, N_SUBJECTS, a1_covs,
+                               sigma_prop = 0.15)
 write.csv(a1_out, file.path(output_dir, "a1_1cmt_oral_linear.csv"),
           row.names = FALSE)
 cat("  A1 done:", nrow(a1_out), "rows,", N_SUBJECTS, "subjects\n")
@@ -149,22 +193,8 @@ a2_sim <- rxSolve(
   nSub = N_SUBJECTS, seed = SEED + 1
 )
 
-a2_out <- merge(
-  data.frame(
-    NMID = a2_sim$sim.id,
-    TIME = a2_sim$time,
-    DV = a2_sim$cp * (1 + rnorm(nrow(a2_sim), 0, 0.1)) +
-         rnorm(nrow(a2_sim), 0, 0.5),
-    MDV = ifelse(a2_sim$evid == 1, 1, 0),
-    EVID = a2_sim$evid,
-    AMT = ifelse(a2_sim$evid == 1, a2_sim$amt, 0),
-    CMT = 1  # all central (centr is CMT 1 in rxode2)
-  ),
-  data.frame(NMID = seq_len(N_SUBJECTS), a2_covs),
-  by = "NMID"
-)
-a2_out$DV[a2_out$EVID == 1] <- 0
-a2_out <- a2_out[order(a2_out$NMID, a2_out$TIME), ]
+a2_out <- build_nonmem_output(a2_sim, a2_et, N_SUBJECTS, a2_covs,
+                               sigma_prop = 0.1, sigma_add = 0.5)
 write.csv(a2_out, file.path(output_dir, "a2_2cmt_iv_parallel_mm.csv"),
           row.names = FALSE)
 cat("  A2 done:", nrow(a2_out), "rows\n")
@@ -196,21 +226,8 @@ a3_sim <- rxSolve(
   nSub = N_SUBJECTS, seed = SEED + 2
 )
 
-a3_out <- merge(
-  data.frame(
-    NMID = a3_sim$sim.id,
-    TIME = a3_sim$time,
-    DV = a3_sim$cp * (1 + rnorm(nrow(a3_sim), 0, 0.12)),
-    MDV = ifelse(a3_sim$evid == 1, 1, 0),
-    EVID = a3_sim$evid,
-    AMT = ifelse(a3_sim$evid == 1, a3_sim$amt, 0),
-    CMT = 1
-  ),
-  data.frame(NMID = seq_len(N_SUBJECTS), a3_covs),
-  by = "NMID"
-)
-a3_out$DV[a3_out$EVID == 1] <- 0
-a3_out <- a3_out[order(a3_out$NMID, a3_out$TIME), ]
+a3_out <- build_nonmem_output(a3_sim, a3_et, N_SUBJECTS, a3_covs,
+                               sigma_prop = 0.12)
 write.csv(a3_out, file.path(output_dir, "a3_transit_1cmt_linear.csv"),
           row.names = FALSE)
 cat("  A3 done:", nrow(a3_out), "rows\n")
@@ -241,22 +258,8 @@ a4_sim <- rxSolve(
   nSub = N_SUBJECTS, seed = SEED + 3
 )
 
-a4_out <- merge(
-  data.frame(
-    NMID = a4_sim$sim.id,
-    TIME = a4_sim$time,
-    DV = a4_sim$cp * (1 + rnorm(nrow(a4_sim), 0, 0.1)) +
-         rnorm(nrow(a4_sim), 0, 0.3),
-    MDV = ifelse(a4_sim$evid == 1, 1, 0),
-    EVID = a4_sim$evid,
-    AMT = ifelse(a4_sim$evid == 1, a4_sim$amt, 0),
-    CMT = 1
-  ),
-  data.frame(NMID = seq_len(N_SUBJECTS), a4_covs),
-  by = "NMID"
-)
-a4_out$DV[a4_out$EVID == 1] <- 0
-a4_out <- a4_out[order(a4_out$NMID, a4_out$TIME), ]
+a4_out <- build_nonmem_output(a4_sim, a4_et, N_SUBJECTS, a4_covs,
+                               sigma_prop = 0.1, sigma_add = 0.3)
 write.csv(a4_out, file.path(output_dir, "a4_1cmt_oral_mm.csv"),
           row.names = FALSE)
 cat("  A4 done:", nrow(a4_out), "rows\n")

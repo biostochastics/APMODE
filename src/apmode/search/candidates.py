@@ -17,7 +17,10 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from apmode.dsl.ast_models import (
+    BLQM3,
+    BLQM4,
     IIV,
+    IOV,
     Additive,
     Combined,
     DSLSpec,
@@ -25,6 +28,7 @@ from apmode.dsl.ast_models import (
     LaggedFirstOrder,
     LinearElim,
     MichaelisMenten,
+    OccasionByStudy,
     OneCmt,
     ParallelLinearMM,
     Proportional,
@@ -71,6 +75,9 @@ class SearchSpace:
     )
     iiv_structures: list[str] = field(default_factory=lambda: ["diagonal", "block"])
     covariates: list[tuple[str, str, str]] = field(default_factory=list)
+    force_blq_method: str | None = None  # "m3" or "m4" when BLQ burden > 0.20
+    force_iov: bool = False  # True when protocol_heterogeneity = pooled-heterogeneous
+    lloq_value: float = 1.0  # LLOQ for BLQ M3/M4 observation model
 
     @classmethod
     def from_manifest(
@@ -124,6 +131,15 @@ class SearchSpace:
             if "michaelis_menten" not in space.elimination_types:
                 space.elimination_types.append("michaelis_menten")
 
+        # BLQ burden > 0.20 → force BLQ-aware likelihood (M3/M4)
+        if manifest.blq_burden > 0.20:
+            space.force_blq_method = "m3"
+            space.error_types = ["proportional", "combined"]  # BLQ composes with these
+
+        # Protocol heterogeneity → IOV must be tested
+        if manifest.protocol_heterogeneity == "pooled-heterogeneous":
+            space.force_iov = True
+
         # Covariates
         if covariate_names:
             params = ["CL", "V"]
@@ -148,6 +164,10 @@ def generate_root_candidates(
     Root candidates use NCA-derived initial estimates (or defaults).
     Each unique (structural x absorption x elimination x error) combination
     produces one candidate.
+
+    Dispatch constraints applied:
+      - force_blq_method → BLQ_M3/M4 observation model
+      - force_iov → IOV variability item added
     """
     defaults = base_params or {"ka": 1.0, "CL": 5.0, "V": 70.0}
     candidates: list[DSLSpec] = []
@@ -162,6 +182,9 @@ def generate_root_candidates(
                         elim_type=elim_type,
                         err_type=err_type,
                         params=defaults,
+                        force_blq_method=search_space.force_blq_method,
+                        lloq_value=search_space.lloq_value,
+                        force_iov=search_space.force_iov,
                     )
                     if spec is not None:
                         candidates.append(spec)
@@ -176,8 +199,18 @@ def _build_spec(
     elim_type: str,
     err_type: str,
     params: dict[str, float],
+    force_blq_method: str | None = None,
+    lloq_value: float = 1.0,
+    force_iov: bool = False,
 ) -> DSLSpec | None:
-    """Build a single DSLSpec from search dimensions."""
+    """Build a single DSLSpec from search dimensions.
+
+    When force_blq_method is set, observation model uses BLQ_M3 or BLQ_M4
+    instead of standard error models (PRD §4.2.1: blq_burden > 0.20).
+
+    When force_iov is set, IOV on CL is added to variability
+    (PRD §4.2.1: protocol_heterogeneity = pooled-heterogeneous).
+    """
     # Absorption
     ka = params.get("ka", 1.0)
     absorption: FirstOrder | LaggedFirstOrder | Transit
@@ -225,9 +258,17 @@ def _build_spec(
     if has_absorption:
         iiv_params.append("ka")  # include ka IIV for oral models only
 
-    # Observation model
-    observation: Proportional | Additive | Combined
-    if err_type == "proportional":
+    # Observation model — BLQ-aware when forced by dispatch constraints
+    observation: Proportional | Additive | Combined | BLQM3 | BLQM4
+    if force_blq_method == "m3":
+        valid_errs = ("proportional", "additive", "combined")
+        blq_err = err_type if err_type in valid_errs else "proportional"
+        observation = BLQM3(loq_value=lloq_value, error_model=blq_err)
+    elif force_blq_method == "m4":
+        valid_errs = ("proportional", "additive", "combined")
+        blq_err = err_type if err_type in valid_errs else "proportional"
+        observation = BLQM4(loq_value=lloq_value, error_model=blq_err)
+    elif err_type == "proportional":
         observation = Proportional(sigma_prop=0.15)
     elif err_type == "additive":
         observation = Additive(sigma_add=0.5)
@@ -236,12 +277,17 @@ def _build_spec(
     else:
         return None
 
+    # Variability — add IOV when forced by protocol heterogeneity
+    variability_items: list[IIV | IOV] = [IIV(params=iiv_params, structure="diagonal")]
+    if force_iov:
+        variability_items.append(IOV(params=["CL"], occasions=OccasionByStudy()))
+
     return DSLSpec(
         model_id=generate_candidate_id(),
         absorption=absorption,
         distribution=distribution,
         elimination=elimination,
-        variability=[IIV(params=iiv_params, structure="diagonal")],
+        variability=variability_items,
         observation=observation,
     )
 

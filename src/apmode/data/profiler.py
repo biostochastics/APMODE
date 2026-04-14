@@ -46,8 +46,8 @@ def profile_data(
         data_sha256=manifest.data_sha256,
         route_certainty=_assess_route_certainty(doses),
         absorption_complexity=_assess_absorption_complexity(obs),
-        nonlinear_clearance_signature=_detect_nonlinear_clearance(obs),
-        nonlinear_clearance_confidence=_nonlinear_clearance_confidence(obs),
+        nonlinear_clearance_signature=_detect_nonlinear_clearance(obs, doses),
+        nonlinear_clearance_confidence=_nonlinear_clearance_confidence(obs, doses),
         richness_category=_classify_richness(obs, n_subjects),
         identifiability_ceiling=_assess_identifiability(obs, n_subjects),
         covariate_burden=len(manifest.covariates),
@@ -194,78 +194,109 @@ def _assess_absorption_complexity(obs: pd.DataFrame) -> str:
     return "simple"
 
 
-def _detect_nonlinear_clearance(obs: pd.DataFrame) -> bool:
-    """Detect signature of nonlinear (dose-dependent) clearance.
+def _get_dose_auc_pairs(
+    obs: pd.DataFrame,
+    doses: pd.DataFrame,
+) -> list[tuple[float, float]]:
+    """Compute per-subject (dose, AUC) pairs using actual AMT from dosing records.
 
-    Uses dose-normalized AUC comparison: if higher doses show
-    disproportionately higher exposure, clearance is saturating.
+    For multi-dose subjects, uses total dose and AUC over the observed interval.
+    Returns pairs where both dose and AUC are positive.
     """
-    if obs.empty:
-        return False
-
-    # Need observations linked to dose amounts
-    # Simple heuristic: check if AUC/dose increases with dose
     subjects = obs["NMID"].unique()
-    if len(subjects) < 4:
-        return False
+    pairs: list[tuple[float, float]] = []
 
-    dose_auc_pairs: list[tuple[float, float]] = []
     for subj in subjects:
         subj_obs = obs[obs["NMID"] == subj].sort_values("TIME")
-        concs = subj_obs["DV"].values
-        times = subj_obs["TIME"].values
-        if len(concs) < 3:
-            continue
-        # Trapezoidal AUC
-        auc = float(np.trapezoid(concs, times))
-        # Try to find dose for this subject from full dataset context
-        # (approximation: use max DV as proxy for dose level)
-        cmax = float(np.max(concs)) if len(concs) > 0 else 0.0
-        if cmax > 0 and auc > 0:
-            dose_auc_pairs.append((cmax, auc))
+        subj_doses = doses[doses["NMID"] == subj]
 
-    if len(dose_auc_pairs) < 4:
+        if len(subj_obs) < 3 or subj_doses.empty:
+            continue
+
+        # Total dose from AMT column (actual dose, not Cmax proxy)
+        total_dose = float(subj_doses["AMT"].sum())
+        if total_dose <= 0:
+            continue
+
+        concs = subj_obs["DV"].values.astype(float)
+        times = subj_obs["TIME"].values.astype(float)
+
+        # For multi-dose: use AUC over the dosing interval (AUC_tau)
+        # if repeated dosing is detected, otherwise use full AUC_last
+        n_doses = len(subj_doses)
+        if n_doses > 1:
+            dose_times = subj_doses["TIME"].values.astype(float)
+            # Estimate tau as median inter-dose interval
+            sorted_dt = np.sort(dose_times)
+            intervals = np.diff(sorted_dt)
+            if len(intervals) > 0 and np.median(intervals) > 0:
+                tau = float(np.median(intervals))
+                # Use observations within the last dosing interval
+                last_dose_time = float(sorted_dt[-1])
+                tau_mask = (times >= last_dose_time) & (times <= last_dose_time + tau)
+                if tau_mask.sum() >= 2:
+                    auc = float(np.trapezoid(concs[tau_mask], times[tau_mask]))
+                    # Normalize to single dose for comparability
+                    single_dose = float(subj_doses["AMT"].iloc[-1])
+                    if single_dose > 0 and auc > 0:
+                        pairs.append((single_dose, auc))
+                    continue
+
+        # Single-dose or fallback: AUC_last over entire profile
+        auc = float(np.trapezoid(concs, times))
+        if auc > 0:
+            pairs.append((total_dose, auc))
+
+    return pairs
+
+
+def _detect_nonlinear_clearance(obs: pd.DataFrame, doses: pd.DataFrame) -> bool:
+    """Detect signature of nonlinear (dose-dependent) clearance.
+
+    Uses dose-normalized AUC comparison with actual AMT from dosing records:
+    if higher doses show disproportionately higher AUC/dose ratios,
+    clearance is saturating (Michaelis-Menten kinetics).
+    """
+    if obs.empty or doses.empty:
         return False
 
-    # Check if AUC/Cmax ratio increases with Cmax (nonlinear signature)
-    cmax_vals = np.array([p[0] for p in dose_auc_pairs])
-    auc_vals = np.array([p[1] for p in dose_auc_pairs])
-    ratios = auc_vals / cmax_vals
+    pairs = _get_dose_auc_pairs(obs, doses)
+    if len(pairs) < 4:
+        return False
 
-    # Spearman rank correlation between Cmax and AUC/Cmax ratio
-    corr = _spearman_r(cmax_vals, ratios)
+    dose_vals = np.array([p[0] for p in pairs])
+    auc_vals = np.array([p[1] for p in pairs])
+
+    # Need at least 2 distinct dose levels for meaningful comparison
+    if len(np.unique(dose_vals)) < 2:
+        return False
+
+    # Dose-normalized AUC: AUC/dose should be constant for linear PK
+    dn_auc = auc_vals / dose_vals
+
+    # Spearman rank correlation between dose and dose-normalized AUC
+    # Positive correlation → higher doses give disproportionately higher exposure
+    corr = _spearman_r(dose_vals, dn_auc)
     return bool(corr > 0.4)
 
 
-def _nonlinear_clearance_confidence(obs: pd.DataFrame) -> float | None:
-    """Confidence score for nonlinear clearance detection."""
-    if obs.empty:
+def _nonlinear_clearance_confidence(obs: pd.DataFrame, doses: pd.DataFrame) -> float | None:
+    """Confidence score for nonlinear clearance detection (0.0-1.0)."""
+    if obs.empty or doses.empty:
         return None
 
-    subjects = obs["NMID"].unique()
-    if len(subjects) < 4:
+    pairs = _get_dose_auc_pairs(obs, doses)
+    if len(pairs) < 4:
         return None
 
-    dose_auc_pairs: list[tuple[float, float]] = []
-    for subj in subjects:
-        subj_obs = obs[obs["NMID"] == subj].sort_values("TIME")
-        concs = subj_obs["DV"].values
-        times = subj_obs["TIME"].values
-        if len(concs) < 3:
-            continue
-        auc = float(np.trapezoid(concs, times))
-        cmax = float(np.max(concs)) if len(concs) > 0 else 0.0
-        if cmax > 0 and auc > 0:
-            dose_auc_pairs.append((cmax, auc))
+    dose_vals = np.array([p[0] for p in pairs])
+    auc_vals = np.array([p[1] for p in pairs])
 
-    if len(dose_auc_pairs) < 4:
+    if len(np.unique(dose_vals)) < 2:
         return None
 
-    cmax_vals = np.array([p[0] for p in dose_auc_pairs])
-    auc_vals = np.array([p[1] for p in dose_auc_pairs])
-    ratios = auc_vals / cmax_vals
-
-    corr = _spearman_r(cmax_vals, ratios)
+    dn_auc = auc_vals / dose_vals
+    corr = _spearman_r(dose_vals, dn_auc)
     return float(max(0.0, min(1.0, corr)))
 
 

@@ -86,10 +86,26 @@ class BLQHandling(BaseModel):
     blq_fraction: float = Field(ge=0.0, le=1.0)
 
 
+class SplitGOFMetrics(BaseModel):
+    """Per-fold GOF from split-aware backend evaluation.
+
+    Computed by partitioning per-subject CWRES by train/test assignment
+    from the SplitManifest — no second backend run needed.
+    """
+
+    train_cwres_mean: float
+    train_outlier_fraction: float = Field(ge=0.0, le=1.0)
+    test_cwres_mean: float
+    test_outlier_fraction: float = Field(ge=0.0, le=1.0)
+    n_train: int = Field(gt=0)
+    n_test: int = Field(gt=0)
+
+
 class DiagnosticBundle(BaseModel):
     """All diagnostic outputs for a candidate model."""
 
     gof: GOFMetrics
+    split_gof: SplitGOFMetrics | None = None
     vpc: VPCSummary | None = None
     identifiability: IdentifiabilityFlags
     blq: BLQHandling
@@ -364,6 +380,116 @@ class GateResult(BaseModel):
 
 
 # --- Report Provenance ---
+
+
+class RankedCandidateEntry(BaseModel):
+    """One entry in the Gate 3 ranking."""
+
+    candidate_id: str
+    rank: int = Field(ge=1)
+    bic: float
+    aic: float | None = None
+    n_params: int = Field(ge=0)
+    backend: str
+
+
+class Ranking(BaseModel):
+    """ranking.json — full ordered candidate list from Gate 3."""
+
+    ranked_candidates: list[RankedCandidateEntry]
+    best_candidate_id: str | None = None
+    ranking_metric: str = "bic"
+    n_survivors: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def n_survivors_matches_list(self) -> Ranking:
+        if self.n_survivors != len(self.ranked_candidates):
+            msg = (
+                f"n_survivors ({self.n_survivors}) must equal "
+                f"len(ranked_candidates) ({len(self.ranked_candidates)})"
+            )
+            raise ValueError(msg)
+        return self
+
+
+# --- Phase 2+ Prep Models ---
+
+
+class CredibilityReport(BaseModel):
+    """Per-candidate credibility assessment (ARCHITECTURE.md §4.4, PRD §4.3.3).
+
+    Phase 2: each recommended model's report includes context-of-use,
+    credibility evidence, data adequacy, limitations, and ML transparency.
+    """
+
+    candidate_id: str
+    context_of_use: str
+    model_credibility: dict[str, str | float | bool]
+    data_adequacy: str
+    limitations: list[str] = Field(default_factory=list)
+    ml_transparency: str | None = None
+    sensitivity_results: dict[str, str | float] = Field(default_factory=dict)
+    evidence_refs: dict[str, str] = Field(default_factory=dict)
+
+
+class AgenticTraceInput(BaseModel):
+    """agentic_trace/{iteration_id}_input.json — redacted LLM input (Phase 3)."""
+
+    iteration_id: str
+    run_id: str
+    candidate_id: str
+    prompt_hash: str
+    prompt_template: str
+    dsl_spec_json: str
+    diagnostics_summary: dict[str, str | float] = Field(default_factory=dict)
+
+
+class AgenticTraceOutput(BaseModel):
+    """agentic_trace/{iteration_id}_output.json — verbatim LLM output (Phase 3)."""
+
+    iteration_id: str
+    raw_output: str
+    parsed_transforms: list[str] = Field(default_factory=list)
+    validation_passed: bool = False
+    validation_errors: list[str] = Field(default_factory=list)
+
+
+class AgenticTraceMeta(BaseModel):
+    """agentic_trace/{iteration_id}_meta.json — model/cost metadata (Phase 3)."""
+
+    iteration_id: str
+    model_id: str
+    model_version: str
+    prompt_hash: str
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+    cost_usd: float = Field(ge=0.0)
+    temperature: float = 0.0
+    wall_time_seconds: float = Field(ge=0.0)
+
+
+class RunLineage(BaseModel):
+    """run_lineage.json — links to prior run IDs for multi-run provenance (Phase 3)."""
+
+    current_run_id: str
+    parent_run_ids: list[str] = Field(default_factory=list)
+    lineage_type: Literal["independent", "continuation", "refinement"] = "independent"
+    notes: str | None = None
+
+
+class ReportSummary(BaseModel):
+    """report/summary.json — structured summary of the run (Phase 2+)."""
+
+    run_id: str
+    lane: str
+    n_candidates_evaluated: int = Field(ge=0)
+    n_gate1_passed: int = Field(ge=0)
+    n_gate2_passed: int = Field(ge=0)
+    recommended_candidate_id: str | None = None
+    recommended_bic: float | None = None
+    ranking_metric: str = "bic"
+    data_summary: dict[str, str | int | float] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
 
 
 class ReportProvenance(BaseModel):

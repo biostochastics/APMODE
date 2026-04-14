@@ -51,6 +51,9 @@ class NCAEstimator:
         Returns dict with keys like "CL", "V", "ka" mapped to median values
         across subjects. Falls back to population-level NCA if per-subject
         NCA is infeasible for too many subjects.
+
+        Handles multi-dose profiles via AUC_tau for steady-state subjects.
+        Flags subjects with AUC extrapolation fraction >20% (unreliable).
         """
         subjects = self._obs["NMID"].unique()
         if len(subjects) < 2:
@@ -59,7 +62,7 @@ class NCAEstimator:
         cl_vals: list[float] = []
         v_vals: list[float] = []
         ka_vals: list[float] = []
-        kel_vals: list[float] = []
+        extrap_flags: list[float] = []
 
         for subj in subjects:
             subj_obs = self._obs[self._obs["NMID"] == subj].sort_values("TIME")
@@ -68,8 +71,7 @@ class NCAEstimator:
             if len(subj_obs) < 3:
                 continue
 
-            dose = float(subj_dose["AMT"].sum()) if not subj_dose.empty else 0.0
-            if dose <= 0:
+            if subj_dose.empty:
                 continue
 
             times = subj_obs["TIME"].values.astype(float)
@@ -83,23 +85,45 @@ class NCAEstimator:
             times_pos = times[pos_mask]
             concs_pos = concs[pos_mask]
 
-            nca = _compute_nca_single_subject(times_pos, concs_pos, dose)
+            # Detect multi-dose and estimate dosing interval
+            is_multi, tau = _detect_multi_dose(subj_dose)
+
+            # For multi-dose: use last dose's AMT; for single: total AMT
+            dose = float(subj_dose["AMT"].iloc[-1]) if is_multi else float(subj_dose["AMT"].sum())
+
+            if dose <= 0:
+                continue
+
+            nca = _compute_nca_single_subject(
+                times_pos,
+                concs_pos,
+                dose,
+                is_steady_state=is_multi,
+                tau=tau,
+            )
             if nca is not None:
-                cl, v, ka, kel = nca
-                cl_vals.append(cl)
-                v_vals.append(v)
-                ka_vals.append(ka)
-                kel_vals.append(kel)
+                # Flag high extrapolation fraction (>20%) but still use the estimate
+                extrap_flags.append(nca.auc_extrap_fraction)
+                cl_vals.append(nca.cl)
+                v_vals.append(nca.v)
+                ka_vals.append(nca.ka)
 
         # Need at least 2 successful subjects for median
         if len(cl_vals) < 2:
             return self.estimate_population_level()
 
-        return {
+        result = {
             "CL": float(np.median(cl_vals)),
             "V": float(np.median(v_vals)),
             "ka": float(np.median(ka_vals)),
         }
+
+        # Record quality flag: fraction of subjects with high extrapolation
+        if extrap_flags:
+            high_extrap = sum(1 for f in extrap_flags if f > 0.20)
+            result["_auc_extrap_high_fraction"] = high_extrap / len(extrap_flags)
+
+        return result
 
     def estimate_population_level(self) -> dict[str, float]:
         """Population-level NCA on naive-averaged profiles.
@@ -137,8 +161,7 @@ class NCAEstimator:
         if nca is None:
             return _default_estimates()
 
-        cl, v, ka, _kel = nca
-        return {"CL": cl, "V": v, "ka": ka}
+        return {"CL": nca.cl, "V": nca.v, "ka": nca.ka}
 
     def build_entry(
         self,
@@ -185,15 +208,41 @@ def build_initial_estimates_bundle(
 # ---------------------------------------------------------------------------
 
 
+class NCAResult:
+    """Result of single-subject NCA computation with quality flags."""
+
+    __slots__ = ("auc_extrap_fraction", "cl", "ka", "kel", "v")
+
+    def __init__(
+        self,
+        cl: float,
+        v: float,
+        ka: float,
+        kel: float,
+        auc_extrap_fraction: float,
+    ) -> None:
+        self.cl = cl
+        self.v = v
+        self.ka = ka
+        self.kel = kel
+        self.auc_extrap_fraction = auc_extrap_fraction
+
+
 def _compute_nca_single_subject(
     times: np.ndarray,
     concs: np.ndarray,
     dose: float,
-) -> tuple[float, float, float, float] | None:
+    *,
+    is_steady_state: bool = False,
+    tau: float | None = None,
+) -> NCAResult | None:
     """Compute NCA for one subject.
 
-    Returns (CL, V, ka, kel) or None if computation fails.
+    Returns NCAResult or None if computation fails.
     Requires times and concs to be sorted, positive, and len >= 3.
+
+    For multi-dose profiles at steady state, when tau is provided:
+    uses AUC_tau (AUC over the dosing interval) instead of AUC_inf.
     """
     # Validate finite inputs (VULN-001: NaN/Inf guard)
     if not (np.all(np.isfinite(times)) and np.all(np.isfinite(concs))):
@@ -251,6 +300,19 @@ def _compute_nca_single_subject(
     if kel <= 0:
         return None
 
+    # For steady-state multi-dose: use AUC_tau (dose/AUC_tau = CL at ss)
+    if is_steady_state and tau is not None and tau > 0:
+        tau_mask = nonneg_mask & (times <= times[0] + tau)
+        auc_tau = float(np.trapezoid(concs[tau_mask], times[tau_mask]))
+        if auc_tau > 0:
+            cl = dose / auc_tau
+            v = cl / kel
+            ka = 1.0 / tmax if tmax > 0 else 1.0
+            cl = max(0.01, min(cl, 10000.0))
+            v = max(0.1, min(v, 100000.0))
+            ka = max(0.01, min(ka, 100.0))
+            return NCAResult(cl=cl, v=v, ka=ka, kel=kel, auc_extrap_fraction=0.0)
+
     # AUC extrapolation to infinity
     c_last = float(concs[-1])
     auc_extrap = c_last / kel if c_last > 0 else 0.0
@@ -258,6 +320,9 @@ def _compute_nca_single_subject(
 
     if auc_inf <= 0:
         return None
+
+    # AUC extrapolation fraction: flag if >20% (unreliable estimate)
+    auc_extrap_fraction = auc_extrap / auc_inf if auc_inf > 0 else 0.0
 
     # CL = Dose / AUC_inf
     cl = dose / auc_inf
@@ -274,7 +339,22 @@ def _compute_nca_single_subject(
     v = max(0.1, min(v, 100000.0))
     ka = max(0.01, min(ka, 100.0))
 
-    return (cl, v, ka, kel)
+    return NCAResult(cl=cl, v=v, ka=ka, kel=kel, auc_extrap_fraction=auc_extrap_fraction)
+
+
+def _detect_multi_dose(dose_df: pd.DataFrame) -> tuple[bool, float | None]:
+    """Detect if a subject has multiple doses and estimate tau.
+
+    Returns (is_multi_dose, tau_estimate).
+    """
+    if len(dose_df) < 2:
+        return False, None
+    dose_times = np.sort(dose_df["TIME"].values.astype(float))
+    intervals = np.diff(dose_times)
+    if len(intervals) == 0:
+        return False, None
+    tau = float(np.median(intervals))
+    return (True, tau) if tau > 0 else (False, None)
 
 
 def _default_estimates() -> dict[str, float]:

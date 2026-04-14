@@ -73,6 +73,9 @@ select = [
     "RUF",       # ruff-specific
 ]
 
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["TCH001", "TCH003", "RUF012"]
+
 [tool.ruff.lint.isort]
 known-first-party = ["apmode"]
 

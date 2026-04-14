@@ -6,7 +6,7 @@ Gate thresholds are versioned policy artifacts, not hard-coded constants.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, Self
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -23,6 +23,12 @@ class Gate1Config(BaseModel):
     vpc_coverage_lower: float
     vpc_coverage_upper: float
     seed_stability_n: int = Field(ge=1)
+    seed_stability_cv_max: float = Field(default=0.10, gt=0.0, le=1.0)
+    # State trajectory validity thresholds
+    obs_vs_pred_r2_min: float = Field(default=0.30, ge=0.0, le=1.0)
+    cwres_sd_min: float = Field(default=0.50, gt=0.0)
+    cwres_sd_max: float = Field(default=2.0, gt=0.0)
+    gradient_norm_max: float = Field(default=100.0, gt=0.0)
 
     @model_validator(mode="after")
     def vpc_bounds_ordered(self) -> Gate1Config:
@@ -60,10 +66,24 @@ class Gate25Config(BaseModel):
 
 
 class GatePolicy(BaseModel):
-    """Top-level policy file: versioned gate configuration per lane."""
+    """Top-level policy file: versioned gate configuration per lane.
+
+    Validates PRD §3 hard rule: Submission lane excludes NODE.
+    """
 
     policy_version: str
     lane: Literal["submission", "discovery", "optimization"]
     gate1: Gate1Config
     gate2: Gate2Config
     gate2_5: Gate25Config | None = None
+
+    @model_validator(mode="after")
+    def submission_excludes_node(self) -> Self:
+        """PRD §3 hard rule: NODE models not eligible in Submission lane."""
+        if self.lane == "submission" and self.gate2.node_eligible:
+            msg = (
+                "NODE models are not eligible in the Submission lane "
+                "(PRD §3 hard rule). Set gate2.node_eligible=false."
+            )
+            raise ValueError(msg)
+        return self

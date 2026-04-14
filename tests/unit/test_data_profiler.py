@@ -235,24 +235,23 @@ class TestNonlinearClearance:
     """Nonlinear clearance detection."""
 
     def test_linear_clearance_same_dose(self) -> None:
-        # All subjects get same dose → no dose-dependent signal
+        # All subjects get same dose → dose-normalized AUC constant → no nonlinear signal
         import numpy as np
 
         rng = np.random.default_rng(42)
         n_subj = 10
         times = [0.5, 1, 2, 4, 8]
         rows: list[dict[str, object]] = []
+        dose_rows: list[dict[str, object]] = []
         for subj in range(1, n_subj + 1):
             scale = rng.lognormal(0, 0.3)  # IIV
+            dose_rows.append({"NMID": subj, "TIME": 0.0, "DV": 0.0, "EVID": 1, "AMT": 100.0})
             for t in times:
                 cp = scale * 5.0 * np.exp(-0.2 * t)  # linear clearance
-                rows.append({"NMID": subj, "TIME": t, "DV": float(cp), "EVID": 0})
+                rows.append({"NMID": subj, "TIME": t, "DV": float(cp), "EVID": 0, "AMT": 0.0})
         obs = pd.DataFrame(rows)
-        # With same dose, AUC/Cmax ratio is independent of Cmax
-        # so nonlinear detection should not trigger
-        result = _detect_nonlinear_clearance(obs)
-        # Accept either False or True — heuristic may flag variability;
-        # the key test is that the function runs without error
+        doses = pd.DataFrame(dose_rows)
+        result = _detect_nonlinear_clearance(obs, doses)
         assert isinstance(result, bool)
 
     def test_too_few_subjects(self) -> None:
@@ -264,7 +263,10 @@ class TestNonlinearClearance:
                 "EVID": [0] * 3,
             }
         )
-        assert _detect_nonlinear_clearance(obs) is False
+        doses = pd.DataFrame(
+            {"NMID": [1], "TIME": [0.0], "DV": [0.0], "EVID": [1], "AMT": [100.0]}
+        )
+        assert _detect_nonlinear_clearance(obs, doses) is False
 
 
 class TestSpearmanR:

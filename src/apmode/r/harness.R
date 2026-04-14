@@ -109,6 +109,38 @@ response_path <- args[2]
     list(cwres_mean = 0, cwres_sd = 1, outlier_fraction = 0, obs_vs_pred_r2 = NULL)
   })
 
+  # Split GOF metrics — partition CWRES by train/test if split manifest provided
+  split_gof <- NULL
+  if (!is.null(req$split_manifest) && length(req$split_manifest$assignments) > 0) {
+    tryCatch({
+      cwres <- fit$CWRES
+      fit_ids <- as.character(fit$ID)
+      assignments <- req$split_manifest$assignments
+
+      # Build subject→fold lookup
+      fold_map <- setNames(
+        sapply(assignments, function(a) a$fold),
+        sapply(assignments, function(a) as.character(a$subject_id))
+      )
+
+      train_mask <- fit_ids %in% names(fold_map)[fold_map == "train"]
+      test_mask  <- fit_ids %in% names(fold_map)[fold_map == "test"]
+
+      if (sum(train_mask) > 0 && sum(test_mask) > 0) {
+        split_gof <- list(
+          train_cwres_mean = mean(cwres[train_mask], na.rm = TRUE),
+          train_outlier_fraction = mean(abs(cwres[train_mask]) > 4, na.rm = TRUE),
+          test_cwres_mean = mean(cwres[test_mask], na.rm = TRUE),
+          test_outlier_fraction = mean(abs(cwres[test_mask]) > 4, na.rm = TRUE),
+          n_train = as.integer(sum(train_mask)),
+          n_test  = as.integer(sum(test_mask))
+        )
+      }
+    }, error = function(e) {
+      message(paste("APMODE: split_gof computation failed:", e$message))
+    })
+  }
+
   # Condition number
   cond_num <- tryCatch(fit$conditionNumber, error = function(e) NULL)
 
@@ -129,6 +161,7 @@ response_path <- args[2]
     convergence_metadata = conv_meta,
     diagnostics = list(
       gof = gof,
+      split_gof = split_gof,
       vpc = NULL,
       identifiability = list(
         condition_number = cond_num,

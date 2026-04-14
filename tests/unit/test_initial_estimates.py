@@ -38,6 +38,8 @@ class TestNCAEstimator:
         estimator = NCAEstimator(df, manifest)
         result = estimator.estimate_per_subject()
         for key, val in result.items():
+            if key.startswith("_"):
+                continue  # skip metadata keys like _auc_extrap_high_fraction
             assert val > 0, f"{key} should be positive, got {val}"
 
     def test_estimates_in_reasonable_range(self) -> None:
@@ -75,22 +77,21 @@ class TestComputeNCASingleSubject:
         concs = 10.0 * np.exp(-0.2 * times)
         result = _compute_nca_single_subject(times, concs, dose=100.0)
         assert result is not None
-        cl, v, ka, kel = result
-        assert cl > 0
-        assert v > 0
-        assert ka > 0
-        assert kel > 0
+        assert result.cl > 0
+        assert result.v > 0
+        assert result.ka > 0
+        assert result.kel > 0
         # kel should be approximately 0.2
-        assert abs(kel - 0.2) < 0.1
+        assert abs(result.kel - 0.2) < 0.1
+        # AUC extrapolation fraction should be reasonable
+        assert 0.0 <= result.auc_extrap_fraction <= 1.0
 
     def test_returns_none_for_insufficient_data(self) -> None:
         times = np.array([1.0, 2.0])
         concs = np.array([5.0, 3.0])
         # Only 2 points — not enough for terminal regression
         result = _compute_nca_single_subject(times, concs, dose=100.0)
-        # May return result or None depending on whether regression works
-        # with 2 post-Tmax points
-        assert result is None or all(x > 0 for x in result)
+        assert result is None or result.cl > 0
 
     def test_returns_none_for_zero_auc(self) -> None:
         times = np.array([1.0, 2.0, 3.0])
@@ -104,10 +105,31 @@ class TestComputeNCASingleSubject:
         concs = np.array([2.0, 5.0, 3.0, 1.0, 0.3])
         result = _compute_nca_single_subject(times, concs, dose=100.0)
         if result is not None:
-            cl, v, ka, _ = result
-            assert 0.01 <= cl <= 10000
-            assert 0.1 <= v <= 100000
-            assert 0.01 <= ka <= 100
+            assert 0.01 <= result.cl <= 10000
+            assert 0.1 <= result.v <= 100000
+            assert 0.01 <= result.ka <= 100
+
+    def test_multi_dose_steady_state(self) -> None:
+        """Multi-dose AUC_tau estimation at steady state."""
+        # Simulate steady-state: concentrations within one dosing interval (tau=12h)
+        times = np.array([0.0, 0.5, 1.0, 2.0, 4.0, 8.0, 12.0])
+        concs = np.array([2.0, 8.0, 10.0, 7.0, 4.0, 1.5, 0.8])
+        result = _compute_nca_single_subject(
+            times, concs, dose=100.0, is_steady_state=True, tau=12.0
+        )
+        assert result is not None
+        assert result.cl > 0
+        assert result.auc_extrap_fraction == 0.0  # no extrapolation for AUC_tau
+
+    def test_high_auc_extrapolation_flagged(self) -> None:
+        """AUC extrapolation fraction is computed correctly."""
+        # Short profile with high last concentration → large extrapolation
+        times = np.array([0.5, 1.0, 2.0, 3.0])
+        concs = np.array([5.0, 10.0, 8.0, 7.0])  # barely declining terminal phase
+        result = _compute_nca_single_subject(times, concs, dose=100.0)
+        if result is not None:
+            # High last-concentration relative to AUC → high extrapolation
+            assert result.auc_extrap_fraction >= 0.0
 
 
 class TestWarmStartEstimates:

@@ -4,10 +4,41 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository Status
 
-This repository currently contains **product requirements documents** only. No source code, build system, tests, or tooling exist yet. Phase 0/1 implementation has not begun. When implementation starts, update this file with build/test/run commands.
+**Phase 1 Month 5-6 — in progress.** 679 tests passing. `mypy --strict` clean. `ruff` clean.
 
 - `PRD_APMODE_v0.2.md` — Initial RFC (2026-04-11)
 - `PRD_APMODE_v0.3.md` — Revised per multi-model stress-test (2026-04-13, **current**)
+- `ARCHITECTURE.md` — Technical architecture (v0.2, derived from PRD v0.3)
+
+## Build, Test, and Run Commands
+
+```bash
+# Install dependencies (Python 3.12+, uv required)
+uv sync --all-extras
+
+# Run the full test suite (679 tests)
+uv run pytest tests/ -q
+
+# Run specific test categories
+uv run pytest tests/unit/ -q              # unit tests
+uv run pytest tests/integration/ -q       # E2E mock R pipeline
+uv run pytest tests/property/ -q          # Hypothesis property-based
+uv run pytest tests/golden/ -q            # syrupy golden master snapshots
+uv run pytest tests/ --snapshot-update    # update snapshots after emitter changes
+
+# Type checking and linting (both must be clean)
+uv run mypy src/apmode/ --strict
+uv run ruff check src/apmode/ tests/
+uv run ruff format src/apmode/ tests/
+
+# CLI
+uv run apmode run <dataset.csv> --lane submission
+uv run apmode validate <dataset.csv>
+uv run apmode inspect <bundle_dir>
+
+# Benchmark Suite A (requires R 4.4+ with rxode2, jsonlite, lotri)
+Rscript benchmarks/suite_a/simulate_all.R [output_dir]
+```
 
 ## Product: APMODE
 

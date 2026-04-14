@@ -62,6 +62,7 @@ class Nlmixr2Runner:
         timeout_seconds: int | None = None,
         *,
         data_path: Path | None = None,
+        split_manifest: dict[str, object] | None = None,
     ) -> BackendResult:
         """Run nlmixr2 estimation via R subprocess.
 
@@ -101,6 +102,7 @@ class Nlmixr2Runner:
             initial_estimates=initial_estimates,
             estimation=self.estimation,
             compiled_r_code=compiled_r_code,
+            split_manifest=split_manifest,
         )
 
         request_path = run_dir / "request.json"

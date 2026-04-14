@@ -1,0 +1,654 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+"""Tests for Gate 1 (Technical Validity) and Gate 2 (Lane Admissibility).
+
+Verifies the governance funnel: gates are sequential disqualifiers,
+failures logged with per-check reasons, thresholds from policy files.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from apmode.bundle.models import (
+    BackendResult,
+    BLQHandling,
+    ConvergenceMetadata,
+    DiagnosticBundle,
+    GOFMetrics,
+    IdentifiabilityFlags,
+    ParameterEstimate,
+    VPCSummary,
+)
+from apmode.governance.gates import evaluate_gate1, evaluate_gate2, evaluate_gate3
+from apmode.governance.policy import GatePolicy
+
+POLICY_DIR = Path(__file__).parent.parent.parent / "policies"
+
+
+def _make_backend_result(
+    *,
+    converged: bool = True,
+    ofv: float = 150.0,
+    aic: float = 160.0,
+    bic: float = 170.0,
+    cwres_mean: float = 0.01,
+    cwres_sd: float = 1.0,
+    outlier_fraction: float = 0.02,
+    r2: float | None = 0.95,
+    vpc_coverage: dict[str, float] | None = None,
+    condition_number: float = 15.0,
+    ill_conditioned: bool = False,
+    profile_ci: dict[str, bool] | None = None,
+    shrinkage: dict[str, float] | None = None,
+    backend: str = "nlmixr2",
+    method: str = "saem",
+) -> BackendResult:
+    """Build a BackendResult for testing."""
+    from apmode.bundle.models import BackendResult as BR
+
+    return BR(
+        model_id="test_model",
+        backend=backend,  # type: ignore[arg-type]
+        converged=converged,
+        ofv=ofv,
+        aic=aic,
+        bic=bic,
+        parameter_estimates={
+            "CL": ParameterEstimate(
+                name="CL", estimate=5.0, se=0.5, rse=10.0, category="structural"
+            ),
+            "V": ParameterEstimate(
+                name="V", estimate=70.0, se=7.0, rse=10.0, category="structural"
+            ),
+            "ka": ParameterEstimate(
+                name="ka", estimate=1.5, se=0.2, rse=13.0, category="structural"
+            ),
+        },
+        eta_shrinkage=shrinkage or {"CL": 0.05, "V": 0.08, "ka": 0.12},
+        convergence_metadata=ConvergenceMetadata(
+            method=method,
+            converged=converged,
+            iterations=200,
+            gradient_norm=0.001,
+            minimization_status="successful",
+            wall_time_seconds=45.0,
+        ),
+        diagnostics=DiagnosticBundle(
+            gof=GOFMetrics(
+                cwres_mean=cwres_mean,
+                cwres_sd=cwres_sd,
+                outlier_fraction=outlier_fraction,
+                obs_vs_pred_r2=r2,
+            ),
+            vpc=VPCSummary(
+                percentiles=[5.0, 50.0, 95.0],
+                coverage=vpc_coverage or {"p5": 0.92, "p50": 0.97, "p95": 0.93},
+                n_bins=10,
+                prediction_corrected=False,
+            ),
+            identifiability=IdentifiabilityFlags(
+                condition_number=condition_number,
+                profile_likelihood_ci=profile_ci or {"CL": True, "V": True, "ka": True},
+                ill_conditioned=ill_conditioned,
+            ),
+            blq=BLQHandling(
+                method="none",
+                n_blq=0,
+                blq_fraction=0.0,
+            ),
+        ),
+        wall_time_seconds=45.0,
+        backend_versions={"nlmixr2": "2.1.2", "R": "4.4.1"},
+        initial_estimate_source="nca",
+    )
+
+
+def _load_policy(lane: str) -> GatePolicy:
+    """Load a policy from the policies directory."""
+    path = POLICY_DIR / f"{lane}.json"
+    return GatePolicy.model_validate(json.loads(path.read_text()))
+
+
+# ---------------------------------------------------------------------------
+# Gate 1 Tests
+# ---------------------------------------------------------------------------
+
+
+class TestGate1:
+    """Gate 1: Technical Validity."""
+
+    def test_all_passing(self) -> None:
+        result = _make_backend_result()
+        seed_r2 = _make_backend_result(ofv=150.5)
+        seed_r3 = _make_backend_result(ofv=149.5)
+        policy = _load_policy("submission")
+        g1 = evaluate_gate1(result, policy, seed_results=[seed_r2, seed_r3])
+        assert g1.passed is True
+        assert g1.gate_name == "technical_validity"
+        assert all(c.passed for c in g1.checks)
+
+    def test_convergence_failure(self) -> None:
+        result = _make_backend_result(converged=False)
+        policy = _load_policy("submission")
+        g1 = evaluate_gate1(result, policy)
+        assert g1.passed is False
+        failed = [c for c in g1.checks if not c.passed]
+        assert any(c.check_id == "convergence" for c in failed)
+
+    def test_cwres_mean_too_high(self) -> None:
+        result = _make_backend_result(cwres_mean=0.5)  # submission threshold is 0.1
+        policy = _load_policy("submission")
+        g1 = evaluate_gate1(result, policy)
+        assert g1.passed is False
+        failed_ids = {c.check_id for c in g1.checks if not c.passed}
+        assert "cwres_mean" in failed_ids
+
+    def test_outlier_fraction_too_high(self) -> None:
+        result = _make_backend_result(outlier_fraction=0.15)  # threshold 0.05
+        policy = _load_policy("submission")
+        g1 = evaluate_gate1(result, policy)
+        assert g1.passed is False
+        failed_ids = {c.check_id for c in g1.checks if not c.passed}
+        assert "cwres_outlier_fraction" in failed_ids
+
+    def test_vpc_coverage_too_low(self) -> None:
+        result = _make_backend_result(
+            vpc_coverage={"p5": 0.70, "p50": 0.95, "p95": 0.90}  # p5 below 0.85
+        )
+        policy = _load_policy("submission")
+        g1 = evaluate_gate1(result, policy)
+        assert g1.passed is False
+        failed_ids = {c.check_id for c in g1.checks if not c.passed}
+        assert "vpc_coverage" in failed_ids
+
+    def test_seed_stability_with_consistent_seeds(self) -> None:
+        result1 = _make_backend_result(ofv=150.0)
+        result2 = _make_backend_result(ofv=150.5)
+        result3 = _make_backend_result(ofv=149.5)
+        policy = _load_policy("submission")
+        g1 = evaluate_gate1(result1, policy, seed_results=[result2, result3])
+        seed_check = next(c for c in g1.checks if c.check_id == "seed_stability")
+        assert seed_check.passed is True
+
+    def test_seed_stability_with_inconsistent_seeds(self) -> None:
+        result1 = _make_backend_result(ofv=150.0)
+        result2 = _make_backend_result(ofv=300.0)
+        result3 = _make_backend_result(ofv=50.0)
+        policy = _load_policy("submission")
+        g1 = evaluate_gate1(result1, policy, seed_results=[result2, result3])
+        seed_check = next(c for c in g1.checks if c.check_id == "seed_stability")
+        assert seed_check.passed is False
+
+    def test_seed_stability_fails_without_seeds(self) -> None:
+        """Missing seed results should fail, not silently pass."""
+        result = _make_backend_result()
+        policy = _load_policy("submission")
+        g1 = evaluate_gate1(result, policy, seed_results=None)
+        seed_check = next(c for c in g1.checks if c.check_id == "seed_stability")
+        assert seed_check.passed is False
+
+    def test_vpc_missing_fails(self) -> None:
+        """Missing VPC should fail, not silently pass."""
+        result = _make_backend_result(vpc_coverage=None)
+        # Override to remove VPC
+        from apmode.bundle.models import BackendResult as BR
+
+        data = result.model_dump()
+        data["diagnostics"]["vpc"] = None
+        result_no_vpc = BR.model_validate(data)
+        policy = _load_policy("submission")
+        g1 = evaluate_gate1(result_no_vpc, policy)
+        vpc_check = next(c for c in g1.checks if c.check_id == "vpc_coverage")
+        assert vpc_check.passed is False
+
+    def test_discovery_policy_more_lenient(self) -> None:
+        # Discovery allows higher CWRES mean (0.15 vs 0.10)
+        result = _make_backend_result(cwres_mean=0.12)
+        seeds = [_make_backend_result(ofv=150.5), _make_backend_result(ofv=149.5)]
+        sub_policy = _load_policy("submission")
+        disc_policy = _load_policy("discovery")
+        g1_sub = evaluate_gate1(result, sub_policy, seed_results=seeds)
+        g1_disc = evaluate_gate1(result, disc_policy, seed_results=seeds)
+        assert g1_sub.passed is False  # fails submission
+        assert g1_disc.passed is True  # passes discovery
+
+    def test_gate_result_has_all_checks(self) -> None:
+        result = _make_backend_result()
+        policy = _load_policy("submission")
+        g1 = evaluate_gate1(result, policy)
+        check_ids = {c.check_id for c in g1.checks}
+        expected = {
+            "convergence",
+            "parameter_plausibility",
+            "state_trajectory_validity",
+            "cwres_mean",
+            "cwres_outlier_fraction",
+            "vpc_coverage",
+            "split_integrity",
+            "seed_stability",
+        }
+        assert expected == check_ids
+
+    def test_parameter_plausibility_negative_volume(self) -> None:
+        """Negative structural parameter (e.g. V < 0) should fail plausibility."""
+        result = _make_backend_result()
+        result.parameter_estimates["V"] = ParameterEstimate(
+            name="V", estimate=-10.0, se=1.0, rse=10.0, category="structural"
+        )
+        policy = _load_policy("submission")
+        g1 = evaluate_gate1(result, policy)
+        plaus = next(c for c in g1.checks if c.check_id == "parameter_plausibility")
+        assert plaus.passed is False
+        assert "non-positive" in str(plaus.observed)
+
+    def test_parameter_plausibility_zero_clearance(self) -> None:
+        """Zero CL is pharmacologically implausible — should fail."""
+        result = _make_backend_result()
+        result.parameter_estimates["CL"] = ParameterEstimate(
+            name="CL", estimate=0.0, se=0.5, rse=10.0, category="structural"
+        )
+        policy = _load_policy("submission")
+        g1 = evaluate_gate1(result, policy)
+        plaus = next(c for c in g1.checks if c.check_id == "parameter_plausibility")
+        assert plaus.passed is False
+        assert "non-positive" in str(plaus.observed)
+
+    def test_parameter_plausibility_extreme_rse(self) -> None:
+        """RSE > 200% means effectively unidentifiable — should fail."""
+        result = _make_backend_result()
+        result.parameter_estimates["CL"] = ParameterEstimate(
+            name="CL", estimate=5.0, se=15.0, rse=300.0, category="structural"
+        )
+        policy = _load_policy("submission")
+        g1 = evaluate_gate1(result, policy)
+        plaus = next(c for c in g1.checks if c.check_id == "parameter_plausibility")
+        assert plaus.passed is False
+        assert "RSE" in str(plaus.observed)
+
+    def test_parameter_plausibility_at_lower_bound(self) -> None:
+        """Estimate at lower sanity bound (1e-4) should fail."""
+        result = _make_backend_result()
+        result.parameter_estimates["ka"] = ParameterEstimate(
+            name="ka", estimate=1e-5, se=0.001, rse=10.0, category="structural"
+        )
+        policy = _load_policy("submission")
+        g1 = evaluate_gate1(result, policy)
+        plaus = next(c for c in g1.checks if c.check_id == "parameter_plausibility")
+        assert plaus.passed is False
+        assert "lower bound" in str(plaus.observed)
+
+    def test_parameter_plausibility_at_upper_bound(self) -> None:
+        """Estimate at upper sanity bound (1e5) should fail."""
+        result = _make_backend_result()
+        result.parameter_estimates["V"] = ParameterEstimate(
+            name="V", estimate=200000.0, se=1000.0, rse=0.5, category="structural"
+        )
+        policy = _load_policy("submission")
+        g1 = evaluate_gate1(result, policy)
+        plaus = next(c for c in g1.checks if c.check_id == "parameter_plausibility")
+        assert plaus.passed is False
+        assert "upper bound" in str(plaus.observed)
+
+    def test_parameter_plausibility_iiv_not_checked(self) -> None:
+        """Non-structural parameters (IIV) should not trigger plausibility failure."""
+        result = _make_backend_result()
+        result.parameter_estimates["eta_CL"] = ParameterEstimate(
+            name="eta_CL", estimate=-0.5, se=0.1, rse=20.0, category="iiv"
+        )
+        policy = _load_policy("submission")
+        g1 = evaluate_gate1(result, policy)
+        plaus = next(c for c in g1.checks if c.check_id == "parameter_plausibility")
+        assert plaus.passed is True
+
+    def test_state_trajectory_negative_r2(self) -> None:
+        """R² < 0 (pathological fit) should fail state trajectory check."""
+        result = _make_backend_result(r2=-0.5)
+        policy = _load_policy("submission")
+        g1 = evaluate_gate1(result, policy)
+        traj = next(c for c in g1.checks if c.check_id == "state_trajectory_validity")
+        assert traj.passed is False
+
+    def test_state_trajectory_missing_r2_passes(self) -> None:
+        """When R² is not available but other signals OK, passes."""
+        result = _make_backend_result(r2=None)
+        policy = _load_policy("submission")
+        g1 = evaluate_gate1(result, policy)
+        traj = next(c for c in g1.checks if c.check_id == "state_trajectory_validity")
+        assert traj.passed is True
+
+    def test_state_trajectory_r2_below_threshold(self) -> None:
+        """R² below obs_vs_pred_r2_min (0.30) should fail."""
+        result = _make_backend_result(r2=0.1)
+        policy = _load_policy("submission")
+        g1 = evaluate_gate1(result, policy)
+        traj = next(c for c in g1.checks if c.check_id == "state_trajectory_validity")
+        assert traj.passed is False
+        assert "R²" in str(traj.observed)
+
+    def test_state_trajectory_cwres_sd_too_high(self) -> None:
+        """CWRES SD > cwres_sd_max (2.0) indicates misspecification."""
+        result = _make_backend_result(cwres_sd=3.0)
+        policy = _load_policy("submission")
+        g1 = evaluate_gate1(result, policy)
+        traj = next(c for c in g1.checks if c.check_id == "state_trajectory_validity")
+        assert traj.passed is False
+        assert "cwres_sd" in str(traj.observed)
+
+    def test_state_trajectory_cwres_sd_too_low(self) -> None:
+        """CWRES SD < cwres_sd_min (0.50) indicates collapsed residuals."""
+        result = _make_backend_result(cwres_sd=0.1)
+        policy = _load_policy("submission")
+        g1 = evaluate_gate1(result, policy)
+        traj = next(c for c in g1.checks if c.check_id == "state_trajectory_validity")
+        assert traj.passed is False
+        assert "cwres_sd" in str(traj.observed)
+
+    def test_split_integrity_no_diagnostics_passes(self) -> None:
+        """When split_gof is None, passes (no evidence to evaluate)."""
+        result = _make_backend_result()
+        policy = _load_policy("submission")
+        g1 = evaluate_gate1(result, policy)
+        si = next(c for c in g1.checks if c.check_id == "split_integrity")
+        assert si.passed is True
+        assert "no_split" in str(si.observed)
+
+    def test_split_integrity_consistent_passes(self) -> None:
+        """When train/test metrics are similar, passes."""
+        from apmode.bundle.models import SplitGOFMetrics
+
+        result = _make_backend_result()
+        result.diagnostics.split_gof = SplitGOFMetrics(
+            train_cwres_mean=0.02,
+            train_outlier_fraction=0.02,
+            test_cwres_mean=0.05,
+            test_outlier_fraction=0.03,
+            n_train=40,
+            n_test=10,
+        )
+        policy = _load_policy("submission")
+        g1 = evaluate_gate1(result, policy)
+        si = next(c for c in g1.checks if c.check_id == "split_integrity")
+        assert si.passed is True
+
+    def test_split_integrity_overfitting_fails(self) -> None:
+        """When test CWRES drifts far from train, fails (overfitting)."""
+        from apmode.bundle.models import SplitGOFMetrics
+
+        result = _make_backend_result()
+        result.diagnostics.split_gof = SplitGOFMetrics(
+            train_cwres_mean=0.01,
+            train_outlier_fraction=0.02,
+            test_cwres_mean=0.8,  # big drift
+            test_outlier_fraction=0.15,  # much worse
+            n_train=40,
+            n_test=10,
+        )
+        policy = _load_policy("submission")
+        g1 = evaluate_gate1(result, policy)
+        si = next(c for c in g1.checks if c.check_id == "split_integrity")
+        assert si.passed is False
+
+
+# ---------------------------------------------------------------------------
+# Gate 2 Tests
+# ---------------------------------------------------------------------------
+
+
+class TestGate2:
+    """Gate 2: Lane-Specific Admissibility."""
+
+    def test_submission_all_passing(self) -> None:
+        result = _make_backend_result()
+        policy = _load_policy("submission")
+        g2 = evaluate_gate2(result, policy, lane="submission")
+        assert g2.passed is True
+        assert g2.gate_name == "lane_admissibility"
+
+    def test_submission_rejects_node(self) -> None:
+        result = _make_backend_result(backend="jax_node")
+        policy = _load_policy("submission")
+        g2 = evaluate_gate2(result, policy, lane="submission")
+        assert g2.passed is False
+        failed_ids = {c.check_id for c in g2.checks if not c.passed}
+        assert "node_eligibility" in failed_ids
+
+    def test_discovery_allows_node(self) -> None:
+        result = _make_backend_result(backend="jax_node")
+        policy = _load_policy("discovery")
+        g2 = evaluate_gate2(result, policy, lane="discovery")
+        node_check = next(c for c in g2.checks if c.check_id == "node_eligibility")
+        assert node_check.passed is True
+
+    def test_submission_shrinkage_too_high(self) -> None:
+        result = _make_backend_result(shrinkage={"CL": 0.05, "V": 0.45, "ka": 0.10})
+        policy = _load_policy("submission")
+        g2 = evaluate_gate2(result, policy, lane="submission")
+        assert g2.passed is False
+        failed_ids = {c.check_id for c in g2.checks if not c.passed}
+        assert "shrinkage" in failed_ids
+
+    def test_identifiability_ill_conditioned(self) -> None:
+        result = _make_backend_result(ill_conditioned=True, condition_number=5000.0)
+        policy = _load_policy("submission")
+        g2 = evaluate_gate2(result, policy, lane="submission")
+        assert g2.passed is False
+        failed_ids = {c.check_id for c in g2.checks if not c.passed}
+        assert "identifiability" in failed_ids
+
+    def test_identifiability_missing_profile_ci(self) -> None:
+        result = _make_backend_result(profile_ci={"CL": True, "V": False, "ka": True})
+        policy = _load_policy("submission")
+        g2 = evaluate_gate2(result, policy, lane="submission")
+        assert g2.passed is False
+        ident_check = next(c for c in g2.checks if c.check_id == "identifiability")
+        assert ident_check.passed is False
+
+    def test_discovery_no_identifiability_required(self) -> None:
+        result = _make_backend_result(ill_conditioned=True)
+        policy = _load_policy("discovery")
+        g2 = evaluate_gate2(result, policy, lane="discovery")
+        ident_check = next(c for c in g2.checks if c.check_id == "identifiability")
+        assert ident_check.passed is True  # discovery doesn't require identifiability
+
+    def test_optimization_loro_required(self) -> None:
+        result = _make_backend_result()
+        policy = _load_policy("optimization")
+        g2 = evaluate_gate2(result, policy, lane="optimization")
+        loro_check = next(c for c in g2.checks if c.check_id == "loro_required")
+        # LORO not yet implemented → fails
+        assert loro_check.passed is False
+
+    def test_invalid_lane_raises(self) -> None:
+        result = _make_backend_result()
+        policy = _load_policy("submission")
+        with pytest.raises(ValueError, match="Invalid lane"):
+            evaluate_gate2(result, policy, lane="invalid_lane")
+
+    def test_gate2_has_all_checks(self) -> None:
+        result = _make_backend_result()
+        policy = _load_policy("submission")
+        g2 = evaluate_gate2(result, policy, lane="submission")
+        check_ids = {c.check_id for c in g2.checks}
+        expected = {
+            "interpretable_parameterization",
+            "shrinkage",
+            "identifiability",
+            "node_eligibility",
+            "reproducible_estimation",
+            "loro_required",
+        }
+        assert expected == check_ids
+
+
+# ---------------------------------------------------------------------------
+# Gate 3 Tests
+# ---------------------------------------------------------------------------
+
+
+class TestGate3:
+    """Gate 3: Within-Paradigm Ranking."""
+
+    def test_ranking_by_bic(self) -> None:
+        r1 = _make_backend_result(bic=170.0)
+        r2 = _make_backend_result(bic=160.0)
+        r3 = _make_backend_result(bic=180.0)
+        policy = _load_policy("submission")
+        g3, ranked = evaluate_gate3([r1, r2, r3], policy)
+        assert g3.passed is True
+        assert g3.gate_name == "within_paradigm_ranking"
+        assert len(ranked) == 3
+        assert ranked[0].bic == 160.0
+        assert ranked[1].bic == 170.0
+        assert ranked[2].bic == 180.0
+
+    def test_empty_survivors(self) -> None:
+        policy = _load_policy("submission")
+        g3, ranked = evaluate_gate3([], policy)
+        assert g3.passed is False
+        assert ranked == []
+
+    def test_single_survivor(self) -> None:
+        r1 = _make_backend_result(bic=150.0)
+        policy = _load_policy("submission")
+        g3, ranked = evaluate_gate3([r1], policy)
+        assert g3.passed is True
+        assert len(ranked) == 1
+        assert ranked[0].rank == 1
+
+    def test_tie_breaking_equal_bic(self) -> None:
+        """Equal BIC: ranking should be stable (all get ranked, no crash)."""
+        r1 = _make_backend_result(bic=170.0)
+        r2 = _make_backend_result(bic=170.0)
+        r3 = _make_backend_result(bic=170.0)
+        policy = _load_policy("submission")
+        g3, ranked = evaluate_gate3([r1, r2, r3], policy)
+        assert g3.passed is True
+        assert len(ranked) == 3
+        # All should be ranked 1..3
+        assert {rc.rank for rc in ranked} == {1, 2, 3}
+        # BIC spread should be 0
+        bic_spread = next(c for c in g3.checks if c.check_id == "bic_spread")
+        assert bic_spread.observed == 0.0
+
+    def test_none_bic_sorted_last(self) -> None:
+        """Candidates with None BIC should be ranked last."""
+        r1 = _make_backend_result(bic=170.0)
+        r2 = _make_backend_result(bic=None)  # type: ignore[arg-type]
+        policy = _load_policy("submission")
+        _g3, ranked = evaluate_gate3([r1, r2], policy)
+        assert ranked[0].bic == 170.0
+        assert ranked[1].bic == float("inf")
+
+
+# ---------------------------------------------------------------------------
+# Dispatch Constraint Tests
+# ---------------------------------------------------------------------------
+
+
+class TestDispatchConstraints:
+    """Verify BLQ and IOV dispatch constraints in SearchSpace."""
+
+    def test_blq_forces_m3(self) -> None:
+        from apmode.bundle.models import EvidenceManifest
+        from apmode.search.candidates import SearchSpace
+
+        manifest = EvidenceManifest(
+            route_certainty="confirmed",
+            absorption_complexity="simple",
+            nonlinear_clearance_signature=False,
+            richness_category="rich",
+            identifiability_ceiling="high",
+            covariate_burden=0,
+            covariate_correlated=False,
+            blq_burden=0.25,
+            protocol_heterogeneity="single-study",
+            absorption_phase_coverage="adequate",
+            elimination_phase_coverage="adequate",
+        )
+        space = SearchSpace.from_manifest(manifest)
+        assert space.force_blq_method == "m3"
+
+    def test_heterogeneous_forces_iov(self) -> None:
+        from apmode.bundle.models import EvidenceManifest
+        from apmode.search.candidates import SearchSpace
+
+        manifest = EvidenceManifest(
+            route_certainty="confirmed",
+            absorption_complexity="simple",
+            nonlinear_clearance_signature=False,
+            richness_category="rich",
+            identifiability_ceiling="high",
+            covariate_burden=0,
+            covariate_correlated=False,
+            blq_burden=0.05,
+            protocol_heterogeneity="pooled-heterogeneous",
+            absorption_phase_coverage="adequate",
+            elimination_phase_coverage="adequate",
+        )
+        space = SearchSpace.from_manifest(manifest)
+        assert space.force_iov is True
+
+    def test_blq_m3_in_generated_candidates(self) -> None:
+        from apmode.dsl.ast_models import BLQM3
+        from apmode.search.candidates import SearchSpace, generate_root_candidates
+
+        space = SearchSpace(
+            structural_cmt=[1],
+            absorption_types=["first_order"],
+            elimination_types=["linear"],
+            error_types=["proportional"],
+            force_blq_method="m3",
+        )
+        candidates = generate_root_candidates(space)
+        assert len(candidates) == 1
+        assert isinstance(candidates[0].observation, BLQM3)
+
+    def test_iov_in_generated_candidates(self) -> None:
+        from apmode.dsl.ast_models import IOV
+        from apmode.search.candidates import SearchSpace, generate_root_candidates
+
+        space = SearchSpace(
+            structural_cmt=[1],
+            absorption_types=["first_order"],
+            elimination_types=["linear"],
+            error_types=["proportional"],
+            force_iov=True,
+        )
+        candidates = generate_root_candidates(space)
+        assert len(candidates) == 1
+        iov_items = [v for v in candidates[0].variability if isinstance(v, IOV)]
+        assert len(iov_items) == 1
+        assert iov_items[0].params == ["CL"]
+
+    def test_compound_blq_and_iov_constraints(self) -> None:
+        """BLQ > 0.20 + pooled-heterogeneous: both M3 and IOV in candidates."""
+        from apmode.bundle.models import EvidenceManifest
+        from apmode.dsl.ast_models import BLQM3, IOV
+        from apmode.search.candidates import SearchSpace, generate_root_candidates
+
+        manifest = EvidenceManifest(
+            route_certainty="confirmed",
+            absorption_complexity="simple",
+            nonlinear_clearance_signature=False,
+            richness_category="rich",
+            identifiability_ceiling="high",
+            covariate_burden=0,
+            covariate_correlated=False,
+            blq_burden=0.25,
+            protocol_heterogeneity="pooled-heterogeneous",
+            absorption_phase_coverage="adequate",
+            elimination_phase_coverage="adequate",
+        )
+        space = SearchSpace.from_manifest(manifest)
+        assert space.force_blq_method == "m3"
+        assert space.force_iov is True
+
+        candidates = generate_root_candidates(space)
+        assert len(candidates) >= 1
+        for c in candidates:
+            assert isinstance(c.observation, BLQM3)
+            iov_items = [v for v in c.variability if isinstance(v, IOV)]
+            assert len(iov_items) == 1

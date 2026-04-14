@@ -6,9 +6,18 @@ from pathlib import Path
 
 from apmode.bundle.emitter import BundleEmitter
 from apmode.bundle.models import (
+    BackendResult,
     BackendVersions,
+    BLQHandling,
     ColumnMapping,
+    ConvergenceMetadata,
     DataManifest,
+    DiagnosticBundle,
+    GOFMetrics,
+    IdentifiabilityFlags,
+    ParameterEstimate,
+    RankedCandidateEntry,
+    Ranking,
     SeedRegistry,
 )
 from apmode.dsl.ast_models import (
@@ -198,3 +207,68 @@ class TestBundleEmitter:
         assert (run_dir / "policy_file.json").exists()
         assert len(list((run_dir / "compiled_specs").glob("*.json"))) == 1
         assert len(list((run_dir / "compiled_specs").glob("*.R"))) == 1
+
+    def test_write_seed_result(self, tmp_path: Path) -> None:
+        """Seed stability results are persisted as {cid}_seed_{n}_result.json."""
+        emitter = BundleEmitter(tmp_path, run_id="test_seed_persist")
+        emitter.initialize()
+        result = BackendResult(
+            model_id="seed_run_model",
+            backend="nlmixr2",
+            converged=True,
+            ofv=152.0,
+            aic=162.0,
+            bic=172.0,
+            parameter_estimates={
+                "CL": ParameterEstimate(name="CL", estimate=5.1, category="structural"),
+            },
+            eta_shrinkage={"CL": 0.05},
+            convergence_metadata=ConvergenceMetadata(
+                method="saem",
+                converged=True,
+                iterations=200,
+                minimization_status="successful",
+                wall_time_seconds=40.0,
+            ),
+            diagnostics=DiagnosticBundle(
+                gof=GOFMetrics(cwres_mean=0.01, cwres_sd=1.0, outlier_fraction=0.01),
+                identifiability=IdentifiabilityFlags(
+                    profile_likelihood_ci={"CL": True},
+                    ill_conditioned=False,
+                ),
+                blq=BLQHandling(method="none", n_blq=0, blq_fraction=0.0),
+            ),
+            wall_time_seconds=40.0,
+            backend_versions={"nlmixr2": "2.1.2"},
+            initial_estimate_source="nca",
+        )
+        path = emitter.write_seed_result(result, "cand_001", 1)
+        assert path.exists()
+        assert path.name == "cand_001_seed_1_result.json"
+        data = json.loads(path.read_text())
+        assert data["ofv"] == 152.0
+
+    def test_write_ranking(self, tmp_path: Path) -> None:
+        """ranking.json with full ordered candidate list."""
+        emitter = BundleEmitter(tmp_path, run_id="test_ranking")
+        emitter.initialize()
+        ranking = Ranking(
+            ranked_candidates=[
+                RankedCandidateEntry(
+                    candidate_id="c1", rank=1, bic=160.0, n_params=3, backend="nlmixr2"
+                ),
+                RankedCandidateEntry(
+                    candidate_id="c2", rank=2, bic=170.0, n_params=4, backend="nlmixr2"
+                ),
+            ],
+            best_candidate_id="c1",
+            ranking_metric="bic",
+            n_survivors=2,
+        )
+        path = emitter.write_ranking(ranking)
+        assert path.exists()
+        assert path.name == "ranking.json"
+        data = json.loads(path.read_text())
+        assert data["best_candidate_id"] == "c1"
+        assert len(data["ranked_candidates"]) == 2
+        assert data["ranked_candidates"][0]["rank"] == 1
