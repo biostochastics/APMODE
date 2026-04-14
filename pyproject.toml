@@ -118,7 +118,7 @@ warn_unused_configs = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["sparkid.*", "pandera.*", "lark.*", "jax.*", "jaxlib.*", "diffrax.*", "equinox.*", "optax.*", "jaxtyping.*"]
+module = ["sparkid.*", "pandera.*", "lark.*", "jax.*", "jaxlib.*", "diffrax.*", "equinox.*", "optax.*", "jaxtyping.*", "pandas.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
@@ -128,4 +128,7 @@ markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks integration tests",
     "live: marks tests that call live LLM APIs (deselect with '-m \"not live\"')",
+]
+filterwarnings = [
+    "ignore:os.fork\\(\\) was called.*JAX is multithreaded:RuntimeWarning",
 ]

@@ -11,6 +11,9 @@ import time
 from pathlib import Path  # noqa: TC003 — used at runtime in run()
 from typing import TYPE_CHECKING, Literal
 
+# JAX/Equinox imports are deferred to prevent thread-pool initialization
+# before R subprocess forks (os.fork() + JAX threads = potential deadlock).
+# The actual imports happen in __init__ when execution_mode is set.
 import equinox as eqx
 import jax
 import jax.numpy as jnp

@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Deep inspection CLI commands** (Phase 3 deep inspection, PRD §4.3.2)
+  - `apmode trace <bundle>` — inspect agentic LLM iteration traces: summary table,
+    per-iteration detail (`--iteration N`), token/cost aggregation (`--cost`),
+    JSON export (`--json`)
+  - `apmode lineage <bundle> <candidate_id>` — trace the DSL transform chain from
+    root to any candidate, with gate status at each step; merges agentic lineage
+    automatically; optional `--spec` for DSL snapshots, `--no-gate` to hide gates
+  - `apmode graph <bundle>` — visualize the full search DAG as Rich tree (default),
+    Graphviz DOT (`--format dot`), Mermaid (`--format mermaid`), or JSON
+    (`--format json`); filters: `--converged`, `--backend`, `--depth`; file export
+    via `--output`; cycle-safe rendering
+  - `apmode inspect` now shows deep inspection hints when trace/graph/lineage
+    artifacts are present in the bundle
+  - New Pydantic models: `SearchGraphNode`, `SearchGraphEdge`, `SearchGraph`,
+    `AgenticIterationEntry` in `bundle/models.py`
+  - `BundleEmitter.write_search_graph()` for `search_graph.json` artifact
+  - `SearchDAG.iter_nodes()` / `to_edges()` public API for graph building
+  - `IterationRecord` now tracks `transforms_rejected` and `validation_feedback`
+    for complete audit trail in `agentic_iterations.jsonl`
+  - 25 new unit tests covering models, emitter, and all three CLI commands
 - **Parallel model evaluation** (`--parallel-models N` / `-j N` CLI flag)
   - Concurrent candidate evaluation in SearchEngine via `asyncio.gather` + `Semaphore`
   - Parallelized seed-stability runs and LORO-CV evaluation in the orchestrator

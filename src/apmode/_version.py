@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 __all__ = [
+    "__commit_id__",
     "__version__",
     "__version_tuple__",
+    "commit_id",
     "version",
     "version_tuple",
-    "__commit_id__",
-    "commit_id",
 ]
 
 version: str
@@ -18,7 +18,7 @@ version_tuple: tuple[int | str, ...]
 commit_id: str | None
 __commit_id__: str | None
 
-__version__ = version = '0.1.1.dev16+g71caaa486.d20260414'
-__version_tuple__ = version_tuple = (0, 1, 1, 'dev16', 'g71caaa486.d20260414')
+__version__ = version = "0.1.1.dev22+g7d6de56e3.d20260414"
+__version_tuple__ = version_tuple = (0, 1, 1, "dev22", "g7d6de56e3.d20260414")
 
 __commit_id__ = commit_id = None

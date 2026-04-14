@@ -378,3 +378,15 @@ class SearchDAG:
             }
             for n in self._nodes.values()
         ]
+
+    def iter_nodes(self) -> list[SearchNode]:
+        """Return all nodes (public access for graph building)."""
+        return list(self._nodes.values())
+
+    def to_edges(self) -> list[tuple[str, str, str]]:
+        """Return (parent_id, child_id, transform) for all non-root nodes."""
+        return [
+            (n.parent_id, n.candidate_id, n.transform or "")
+            for n in self._nodes.values()
+            if n.parent_id is not None
+        ]

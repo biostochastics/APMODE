@@ -75,10 +75,12 @@ class IterationRecord:
     spec_before: str  # model_id
     spec_after: str | None = None  # model_id after transforms
     transforms_proposed: list[str] = field(default_factory=list)
+    transforms_rejected: list[str] = field(default_factory=list)
     reasoning: str = ""
     converged: bool = False
     bic: float | None = None
     error: str | None = None
+    validation_feedback: list[str] = field(default_factory=list)
 
 
 class AgenticRunner:
@@ -468,10 +470,14 @@ class AgenticRunner:
                     [e.message for e in dsl_errors],
                 )
                 record.error = f"DSL validation: {[e.message for e in dsl_errors]}"
-                validation_feedback.append(
+                record.validation_feedback = [
+                    *validation_feedback,
                     "Post-transform DSL validation failed: "
-                    + "; ".join(e.message for e in dsl_errors)
-                )
+                    + "; ".join(e.message for e in dsl_errors),
+                ]
+                record.transforms_rejected = [
+                    str(t) for t in parse_result.transforms if str(t) not in applied_transforms
+                ]
                 iteration_records.append(record)
                 # Feed validation failures back to LLM for next iteration
                 conversation_history.append(
@@ -500,8 +506,12 @@ class AgenticRunner:
                 )
 
             record.spec_after = new_spec.model_id
-            record.transforms_proposed = applied_transforms
+            all_proposed = [str(t) for t in parse_result.transforms]
+            record.transforms_proposed = all_proposed
+            applied_set = set(applied_transforms)
+            record.transforms_rejected = [t for t in all_proposed if t not in applied_set]
             record.reasoning = parse_result.reasoning
+            record.validation_feedback = validation_feedback
             iteration_records.append(record)
 
             # Use fitted params as warm-start for next iteration
@@ -582,9 +592,11 @@ class AgenticRunner:
                     "spec_before": rec.spec_before,
                     "spec_after": rec.spec_after,
                     "transforms_proposed": rec.transforms_proposed,
+                    "transforms_rejected": rec.transforms_rejected,
                     "reasoning": rec.reasoning,
                     "converged": rec.converged,
                     "bic": rec.bic,
                     "error": rec.error,
+                    "validation_feedback": rec.validation_feedback,
                 }
                 f.write(json.dumps(entry) + "\n")

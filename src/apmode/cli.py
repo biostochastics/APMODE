@@ -9,6 +9,9 @@ Commands:
   apmode explore <dataset-or-name> [--lane] [--non-interactive]
   apmode diff <bundle-a> <bundle-b>
   apmode log <bundle-dir> [--gate] [--failed]
+  apmode trace <bundle-dir> [--iteration N] [--cost] [--json]
+  apmode lineage <bundle-dir> <candidate-id> [--spec] [--gate]
+  apmode graph <bundle-dir> [--format tree|dot|mermaid|json] [--converged]
 
 Exit codes:
   0  Success
@@ -773,6 +776,21 @@ def inspect(
                 console.print(Panel(table, title="[bold]Ranking[/]", border_style="green"))
                 sections_shown += 1
 
+    # --- Deep inspection hints ---
+    hints: list[str] = []
+    trace_dir = bundle_dir / "agentic_trace"
+    if trace_dir.is_dir() and list(trace_dir.glob("iter_*_input.json")):
+        hints.append("[bold]apmode trace[/] for agentic iteration details")
+    graph_path = bundle_dir / "search_graph.json"
+    if graph_path.exists():
+        hints.append("[bold]apmode graph[/] for search DAG visualization")
+    lineage_path = bundle_dir / "candidate_lineage.json"
+    if lineage_path.exists():
+        hints.append("[bold]apmode lineage[/] <candidate_id> for transform history")
+    if hints:
+        console.print("  [dim]Deep inspection:[/] " + " | ".join(hints))
+        sections_shown += 1
+
     if sections_shown == 0:
         console.print("[dim]Bundle is empty or contains no recognized artifacts.[/]")
 
@@ -1410,3 +1428,717 @@ def _show_bundle_overview(bundle_dir: Path) -> None:
 
     console.print(Panel(t, title="[bold]Bundle Overview[/]", border_style="blue"))
     console.print("[dim]Use --failed, --gate, or --top for details.[/]")
+
+
+# ---------------------------------------------------------------------------
+# trace command — agentic iteration traces (Phase 3 deep inspection)
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def trace(
+    bundle_dir: Annotated[
+        Path,
+        typer.Argument(help="Path to a run bundle directory."),
+    ],
+    iteration: Annotated[
+        int | None,
+        typer.Option("--iteration", "-i", help="Show detail for a specific iteration."),
+    ] = None,
+    cost: Annotated[
+        bool,
+        typer.Option("--cost", help="Show token/cost aggregation."),
+    ] = False,
+    output_json: Annotated[
+        bool,
+        typer.Option("--json", help="Machine-readable JSON output."),
+    ] = False,
+) -> None:
+    """Inspect agentic LLM iteration traces.
+
+    Shows the propose-validate-compile-fit loop history from the agentic
+    backend (Phase 3, PRD §4.2.6).
+
+    \b
+    Examples:
+      apmode trace ./runs/run_abc123                  # iteration summary table
+      apmode trace ./runs/run_abc123 --iteration 5    # detail for iteration 5
+      apmode trace ./runs/run_abc123 --cost           # token/cost rollup
+    """
+    if not bundle_dir.is_dir():
+        err_console.print(f"[red bold]Error:[/] not a directory: {escape(str(bundle_dir))}")
+        raise typer.Exit(code=1)
+
+    trace_dir = bundle_dir / "agentic_trace"
+    if not trace_dir.is_dir():
+        console.print("[dim]No agentic trace found in this bundle.[/]")
+        return
+
+    # --- Cost aggregation ---
+    if cost:
+        _show_trace_cost(trace_dir, output_json)
+        return
+
+    # --- Single iteration detail ---
+    if iteration is not None:
+        _show_trace_iteration(trace_dir, iteration, output_json)
+        return
+
+    # --- Summary table ---
+    _show_trace_summary(trace_dir, output_json)
+
+
+def _show_trace_summary(trace_dir: Path, as_json: bool) -> None:
+    """Show summary table of all agentic iterations."""
+    iters_path = trace_dir / "agentic_iterations.jsonl"
+    if not iters_path.exists():
+        console.print("[dim]No agentic_iterations.jsonl found.[/]")
+        return
+
+    entries: list[dict[str, Any]] = []
+    for i, line in enumerate(iters_path.read_text().strip().split("\n"), 1):
+        if not line.strip():
+            continue
+        try:
+            entries.append(json.loads(line))
+        except json.JSONDecodeError:
+            console.print(f"  [yellow]Warning:[/] corrupt line {i} in agentic_iterations.jsonl")
+
+    if not entries:
+        console.print("[dim]No iterations recorded.[/]")
+        return
+
+    if as_json:
+        console.print(json.dumps(entries, indent=2))
+        return
+
+    console.print()
+    console.rule("[bold]Agentic Iteration Trace[/]")
+
+    t = Table(show_lines=False)
+    t.add_column("#", style="dim", width=3, justify="right")
+    t.add_column("Before", style="bold", max_width=20)
+    t.add_column("After", max_width=20)
+    t.add_column("Transforms", max_width=40)
+    t.add_column("Conv", justify="center", width=4)
+    t.add_column("BIC", justify="right", width=8)
+    t.add_column("Error", style="red", max_width=30)
+
+    for e in entries:
+        it = str(e.get("iteration", "?"))
+        before = e.get("spec_before", "?")
+        after = e.get("spec_after") or "[dim]--[/]"
+        transforms = ", ".join(e.get("transforms_proposed", [])) or "[dim]none[/]"
+        conv = "[green]Y[/]" if e.get("converged") else "[dim]N[/]"
+        bic_val = e.get("bic")
+        bic = f"{bic_val:.1f}" if isinstance(bic_val, int | float) else "--"
+        error = (e.get("error") or "")[:30]
+        t.add_row(it, before, after, transforms, conv, bic, error)
+
+    console.print(t)
+
+    # Mini convergence chart
+    bics = [e.get("bic") for e in entries if e.get("bic") is not None]
+    if len(bics) >= 2:
+        n_conv = sum(1 for e in entries if e.get("converged"))
+        bar = _mini_bar(n_conv, len(entries))
+        console.print(f"\n  [dim]Convergence:[/] {n_conv}/{len(entries)} iterations  {bar}")
+
+    console.print()
+
+
+def _show_trace_iteration(trace_dir: Path, iteration: int, as_json: bool) -> None:
+    """Show detail for a specific agentic iteration."""
+    iter_id = f"iter_{iteration:03d}"
+
+    input_path = trace_dir / f"{iter_id}_input.json"
+    output_path = trace_dir / f"{iter_id}_output.json"
+    meta_path = trace_dir / f"{iter_id}_meta.json"
+
+    if not input_path.exists():
+        err_console.print(f"[red]Iteration {iteration} not found.[/]")
+        raise typer.Exit(code=1)
+
+    inp: dict[str, Any] = _load_json(input_path, f"{iter_id}_input.json") or {}
+    out: dict[str, Any] = (
+        _load_json(output_path, f"{iter_id}_output.json") or {} if output_path.exists() else {}
+    )
+    meta: dict[str, Any] = (
+        _load_json(meta_path, f"{iter_id}_meta.json") or {} if meta_path.exists() else {}
+    )
+
+    if as_json:
+        console.print(json.dumps({"input": inp, "output": out, "meta": meta}, indent=2))
+        return
+
+    console.print()
+    console.rule(f"[bold]Iteration {iteration}[/]")
+
+    # Input panel
+    t = Table(show_header=False, box=None, padding=(0, 2))
+    t.add_column(style="dim", min_width=20)
+    t.add_column()
+    t.add_row("Candidate", inp.get("candidate_id", "?"))
+    t.add_row("Prompt Template", inp.get("prompt_template", "?"))
+    diag = inp.get("diagnostics_summary", {})
+    if diag:
+        for k, v in diag.items():
+            t.add_row(f"  {k}", str(v))
+    console.print(Panel(t, title="[bold]Input[/]", border_style="blue"))
+
+    # Output panel
+    transforms = out.get("parsed_transforms", [])
+    rejected = out.get("transforms_rejected", [])
+    valid = "[green]PASS[/]" if out.get("validation_passed") else "[red]FAIL[/]"
+    errors = out.get("validation_errors", [])
+
+    t2 = Table(show_header=False, box=None, padding=(0, 2))
+    t2.add_column(style="dim", min_width=20)
+    t2.add_column()
+    t2.add_row("Validation", valid)
+    if transforms:
+        t2.add_row("Transforms", "\n".join(f"[green]✓[/] {tr}" for tr in transforms))
+    if rejected:
+        t2.add_row("Rejected", "\n".join(f"[red]✗[/] {tr}" for tr in rejected))
+    if errors:
+        t2.add_row("Errors", "\n".join(errors))
+
+    # Show reasoning (truncated)
+    raw = out.get("raw_output", "")
+    if raw:
+        display = raw[:500]
+        if len(raw) > 500:
+            display += f"\n[dim]... ({len(raw) - 500} chars truncated, use --json for full)[/]"
+        t2.add_row("LLM Output", display)
+
+    console.print(Panel(t2, title="[bold]Output[/]", border_style="cyan"))
+
+    # Meta panel
+    if meta:
+        t3 = Table(show_header=False, box=None, padding=(0, 2))
+        t3.add_column(style="dim", min_width=20)
+        t3.add_column()
+        t3.add_row("Model", meta.get("model_id", "?"))
+        t3.add_row("Version", meta.get("model_version", "?"))
+        in_tok = meta.get("input_tokens", 0)
+        out_tok = meta.get("output_tokens", 0)
+        t3.add_row("Tokens", f"{in_tok} in / {out_tok} out")
+        cost_val = meta.get("cost_usd", 0)
+        t3.add_row("Cost", f"${cost_val:.4f}")
+        t3.add_row("Wall Time", f"{meta.get('wall_time_seconds', 0):.1f}s")
+        console.print(Panel(t3, title="[bold]Meta[/]", border_style="magenta"))
+
+    console.print()
+
+
+def _show_trace_cost(trace_dir: Path, as_json: bool) -> None:
+    """Aggregate token/cost across all iterations."""
+    meta_files = sorted(trace_dir.glob("iter_*_meta.json"))
+    if not meta_files:
+        console.print("[dim]No meta files found.[/]")
+        return
+
+    total_input = 0
+    total_output = 0
+    total_cost = 0.0
+    total_time = 0.0
+
+    for f in meta_files:
+        try:
+            meta = json.loads(f.read_text())
+        except json.JSONDecodeError:
+            console.print(f"  [yellow]Warning:[/] corrupt meta file: {f.name}")
+            continue
+        total_input += meta.get("input_tokens", 0)
+        total_output += meta.get("output_tokens", 0)
+        total_cost += meta.get("cost_usd", 0.0)
+        total_time += meta.get("wall_time_seconds", 0.0)
+
+    if as_json:
+        console.print(
+            json.dumps(
+                {
+                    "iterations": len(meta_files),
+                    "input_tokens": total_input,
+                    "output_tokens": total_output,
+                    "total_tokens": total_input + total_output,
+                    "cost_usd": round(total_cost, 4),
+                    "wall_time_seconds": round(total_time, 1),
+                },
+                indent=2,
+            )
+        )
+        return
+
+    console.print()
+    console.rule("[bold]Agentic Cost Summary[/]")
+    t = Table(show_header=False, box=None, padding=(0, 2))
+    t.add_column(style="dim")
+    t.add_column(style="bold")
+    t.add_row("Iterations", str(len(meta_files)))
+    t.add_row("Input tokens", f"{total_input:,}")
+    t.add_row("Output tokens", f"{total_output:,}")
+    t.add_row("Total tokens", f"{total_input + total_output:,}")
+    t.add_row("Cost", f"${total_cost:.4f}")
+    t.add_row("Wall time", f"{total_time:.1f}s")
+    console.print(
+        Panel(
+            t,
+            title="[bold]Cost[/]",
+            border_style="yellow",
+            subtitle=f"${total_cost:.2f} across {len(meta_files)} iterations",
+        )
+    )
+    console.print()
+
+
+# ---------------------------------------------------------------------------
+# lineage command — per-candidate DSL transform history (deep inspection)
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def lineage(
+    bundle_dir: Annotated[
+        Path,
+        typer.Argument(help="Path to a run bundle directory."),
+    ],
+    candidate_id: Annotated[
+        str,
+        typer.Argument(help="Target candidate ID to trace."),
+    ],
+    spec: Annotated[
+        bool,
+        typer.Option("--spec", help="Show DSL spec at each step."),
+    ] = False,
+    show_gate: Annotated[
+        bool,
+        typer.Option("--gate/--no-gate", help="Show gate outcomes per step."),
+    ] = True,
+    output_json: Annotated[
+        bool,
+        typer.Option("--json", help="Machine-readable JSON output."),
+    ] = False,
+) -> None:
+    """Trace the transform lineage of a specific candidate.
+
+    Shows the chain of DSL transforms from root to the target candidate,
+    with gate status at each step.
+
+    \b
+    Examples:
+      apmode lineage ./runs/run_abc123 cand_a3f8              # transform chain
+      apmode lineage ./runs/run_abc123 cand_a3f8 --spec       # with DSL snapshots
+      apmode lineage ./runs/run_abc123 cand_a3f8 --no-gate    # skip gate details
+    """
+    if not bundle_dir.is_dir():
+        err_console.print(f"[red bold]Error:[/] not a directory: {escape(str(bundle_dir))}")
+        raise typer.Exit(code=1)
+
+    lineage_path = bundle_dir / "candidate_lineage.json"
+    if not lineage_path.exists():
+        err_console.print("[red]No candidate_lineage.json found.[/]")
+        raise typer.Exit(code=1)
+
+    lineage_data = _load_json(lineage_path, "candidate_lineage.json")
+    if not lineage_data:
+        raise typer.Exit(code=1)
+
+    entries: list[dict[str, Any]] = lineage_data.get("entries", [])
+
+    # Merge agentic lineage if present
+    agentic_lineage_path = bundle_dir / "agentic_trace" / "agentic_lineage.json"
+    if agentic_lineage_path.exists():
+        al_data = _load_json(agentic_lineage_path, "agentic_lineage.json")
+        if al_data:
+            existing_ids = {e.get("candidate_id") for e in entries}
+            for ae in al_data.get("entries", []):
+                if ae.get("candidate_id") and ae["candidate_id"] not in existing_ids:
+                    entries.append(ae)
+
+    # Build parent map: candidate_id -> entry
+    by_id: dict[str, dict[str, Any]] = {}
+    for e in entries:
+        cid = e.get("candidate_id")
+        if cid:
+            by_id[cid] = e
+
+    if candidate_id not in by_id:
+        err_console.print(f"[red]Candidate '{escape(candidate_id)}' not found in lineage.[/]")
+        raise typer.Exit(code=1)
+
+    # Back-trace to root
+    chain: list[dict[str, Any]] = []
+    current: str | None = candidate_id
+    visited: set[str] = set()
+    while current is not None and current not in visited:
+        visited.add(current)
+        entry = by_id.get(current)
+        if entry is None:
+            break
+        chain.append(entry)
+        parent: str | None = entry.get("parent_id")
+        current = parent
+
+    chain.reverse()  # root → target
+
+    # Enrich with gate decisions
+    gd_dir = bundle_dir / "gate_decisions"
+    specs_dir = bundle_dir / "compiled_specs"
+
+    if output_json:
+        result_entries: list[dict[str, Any]] = []
+        for step in chain:
+            step_data: dict[str, Any] = dict(step)
+            if show_gate and gd_dir.is_dir():
+                step_data["gates"] = _get_gate_status(gd_dir, step["candidate_id"])
+            if spec and specs_dir.is_dir():
+                spec_path = specs_dir / f"{step['candidate_id']}.json"
+                if spec_path.exists():
+                    step_data["spec"] = json.loads(spec_path.read_text())
+            result_entries.append(step_data)
+        console.print(json.dumps(result_entries, indent=2))
+        return
+
+    console.print()
+    console.rule(f"[bold]Lineage: {escape(candidate_id)}[/]")
+
+    from rich.tree import Tree
+
+    tree = Tree(f"[bold]{escape(chain[0]['candidate_id'])}[/] [dim](root)[/]")
+
+    current_branch = tree
+    for i, step in enumerate(chain):
+        cid = step["candidate_id"]
+        transform = step.get("transform")
+
+        # Gate status
+        gate_str = ""
+        if show_gate and gd_dir.is_dir():
+            gates = _get_gate_status(gd_dir, cid)
+            parts: list[str] = []
+            for gname, gpassed in gates.items():
+                if gpassed:
+                    parts.append(f"[green]{gname}: PASS[/]")
+                else:
+                    parts.append(f"[red]{gname}: FAIL[/]")
+            if parts:
+                gate_str = "  " + "  ".join(parts)
+
+        if i == 0:
+            # Root already shown as tree label
+            if gate_str:
+                current_branch.add(f"[dim]Gates:[/]{gate_str}")
+        else:
+            label = f"[dim]→[/] [bold cyan]{escape(transform or '?')}[/]"
+            transform_node = current_branch.add(label)
+            node_label = f"[bold]{escape(cid)}[/]{gate_str}"
+            current_branch = transform_node.add(node_label)
+
+        # Optional spec display
+        if spec and specs_dir.is_dir():
+            spec_path = specs_dir / f"{cid}.json"
+            if spec_path.exists():
+                spec_data = json.loads(spec_path.read_text())
+                spec_summary = _spec_one_liner(spec_data)
+                current_branch.add(f"[dim]{spec_summary}[/]")
+
+    console.print(tree)
+    console.print()
+
+
+def _get_gate_status(gd_dir: Path, candidate_id: str) -> dict[str, bool]:
+    """Read gate pass/fail status for a candidate."""
+    gates: dict[str, bool] = {}
+    for gate_name, pattern in [
+        ("G1", f"gate1_{candidate_id}.json"),
+        ("G2", f"gate2_{candidate_id}.json"),
+        ("G2.5", f"gate2_5_{candidate_id}.json"),
+    ]:
+        path = gd_dir / pattern
+        if path.exists():
+            data = _load_json(path, pattern)
+            if data:
+                gates[gate_name] = bool(data.get("passed", False))
+    return gates
+
+
+def _spec_one_liner(spec_data: dict[str, Any]) -> str:
+    """Generate a one-line summary of a DSL spec."""
+    parts: list[str] = []
+    for key in ["absorption", "distribution", "elimination", "observation"]:
+        if key in spec_data:
+            val = spec_data[key]
+            if isinstance(val, dict) and "type" in val:
+                parts.append(val["type"])
+            elif isinstance(val, str):
+                parts.append(val)
+    return " x ".join(parts) if parts else "?"
+
+
+# ---------------------------------------------------------------------------
+# graph command — full search DAG visualization (deep inspection)
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def graph(
+    bundle_dir: Annotated[
+        Path,
+        typer.Argument(help="Path to a run bundle directory."),
+    ],
+    fmt: Annotated[
+        str,
+        typer.Option("--format", "-f", help="Output format: tree, dot, mermaid, json."),
+    ] = "tree",
+    output: Annotated[
+        Path | None,
+        typer.Option("--output", "-o", help="Write output to file."),
+    ] = None,
+    backend: Annotated[
+        str | None,
+        typer.Option("--backend", help="Filter by backend (nlmixr2, jax_node, agentic_llm)."),
+    ] = None,
+    converged: Annotated[
+        bool,
+        typer.Option("--converged", help="Show only converged candidates."),
+    ] = False,
+    depth: Annotated[
+        int,
+        typer.Option("--depth", help="Max tree depth."),
+    ] = 10,
+) -> None:
+    """Visualize the full search DAG.
+
+    Shows the tree/graph of all candidate models explored during the run,
+    with convergence, gate status, and BIC on each node.
+
+    \b
+    Examples:
+      apmode graph ./runs/run_abc123                           # tree view
+      apmode graph ./runs/run_abc123 --format dot -o dag.dot   # Graphviz export
+      apmode graph ./runs/run_abc123 --converged --backend nlmixr2
+    """
+    if not bundle_dir.is_dir():
+        err_console.print(f"[red bold]Error:[/] not a directory: {escape(str(bundle_dir))}")
+        raise typer.Exit(code=1)
+
+    graph_path = bundle_dir / "search_graph.json"
+    if not graph_path.exists():
+        console.print("[dim]No search graph found in this bundle.[/]")
+        return
+
+    graph_data = _load_json(graph_path, "search_graph.json")
+    if not graph_data:
+        return
+
+    nodes: list[dict[str, Any]] = graph_data.get("nodes", [])
+    edges: list[dict[str, Any]] = graph_data.get("edges", [])
+
+    # Apply filters
+    if backend:
+        nodes = [n for n in nodes if n.get("backend") == backend]
+        node_ids = {n["candidate_id"] for n in nodes}
+        edges = [e for e in edges if e["parent_id"] in node_ids and e["child_id"] in node_ids]
+
+    if converged:
+        nodes = [n for n in nodes if n.get("converged")]
+        node_ids = {n["candidate_id"] for n in nodes}
+        edges = [e for e in edges if e["parent_id"] in node_ids and e["child_id"] in node_ids]
+
+    valid_formats = {"tree", "dot", "mermaid", "json"}
+    if fmt not in valid_formats:
+        err_console.print(
+            f"[red bold]Error:[/] unknown format '{escape(fmt)}'. "
+            f"Choose from: {', '.join(sorted(valid_formats))}"
+        )
+        raise typer.Exit(code=1)
+
+    if fmt == "json":
+        text = json.dumps({"nodes": nodes, "edges": edges}, indent=2)
+        if output:
+            output.write_text(text)
+            console.print(f"[green]Written to {escape(str(output))}[/]")
+        else:
+            console.print(text)
+        return
+
+    if fmt == "dot":
+        text = _graph_to_dot(nodes, edges)
+        if output:
+            output.write_text(text)
+            console.print(f"[green]DOT written to {escape(str(output))}[/]")
+        else:
+            console.print(text)
+        return
+
+    if fmt == "mermaid":
+        text = _graph_to_mermaid(nodes, edges)
+        if output:
+            output.write_text(text)
+            console.print(f"[green]Mermaid written to {escape(str(output))}[/]")
+        else:
+            console.print(text)
+        return
+
+    # Default: tree view
+    _graph_tree_view(nodes, edges, depth)
+
+
+def _node_label(node: dict[str, Any]) -> str:
+    """Build a display label for a graph node."""
+    cid = node.get("candidate_id", "?")
+    bic = node.get("bic")
+    bic_str = f" BIC={bic:.1f}" if isinstance(bic, int | float) else ""
+    rank = node.get("rank")
+    rank_str = f" #{rank}" if rank else ""
+
+    conv = node.get("converged", False)
+    g1 = node.get("gate1_passed")
+    g2 = node.get("gate2_passed")
+
+    if not conv:
+        status = "[dim][NC][/]"
+    elif g2 is True:
+        status = "[green][PASS][/]"
+    elif g1 is True:
+        status = "[yellow][G1][/]"
+    elif g1 is False:
+        status = "[red][FAIL][/]"
+    else:
+        status = "[dim][?][/]"
+
+    star = " ★" if rank == 1 else ""
+    return f"{escape(cid)}{bic_str}{rank_str} {status}{star}"
+
+
+def _graph_tree_view(
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+    max_depth: int,
+) -> None:
+    """Render the search DAG as a Rich tree."""
+    from rich.tree import Tree
+
+    # Build children map from edges
+    children_map: dict[str, list[tuple[str, str]]] = {}  # parent -> [(child, transform)]
+    for e in edges:
+        pid = e["parent_id"]
+        cid = e["child_id"]
+        transform = e.get("transform", "?")
+        children_map.setdefault(pid, []).append((cid, transform))
+
+    # Index nodes by id
+    node_by_id: dict[str, dict[str, Any]] = {n["candidate_id"]: n for n in nodes}
+
+    # Find roots (nodes with no parent or parent not in node set)
+    child_ids = {e["child_id"] for e in edges}
+    roots = [n for n in nodes if n["candidate_id"] not in child_ids]
+
+    if not roots:
+        console.print("[dim]No root nodes found in graph.[/]")
+        return
+
+    console.print()
+    console.rule("[bold]Search DAG[/]")
+
+    tree = Tree("[bold]Search Space[/]")
+
+    visited: set[str] = set()
+
+    def _add_children(parent_tree: Tree, parent_id: str, current_depth: int) -> None:
+        if current_depth >= max_depth:
+            remaining = len(children_map.get(parent_id, []))
+            if remaining:
+                parent_tree.add(f"[dim]... {remaining} more (--depth to expand)[/]")
+            return
+        for child_id, transform in children_map.get(parent_id, []):
+            if child_id in visited:
+                parent_tree.add(f"[dim]→ {escape(child_id)} (cycle)[/]")
+                continue
+            visited.add(child_id)
+            child_node = node_by_id.get(child_id)
+            if child_node is None:
+                continue
+            label = f"[dim]→[/] [cyan]{escape(transform)}[/] → {_node_label(child_node)}"
+            child_tree = parent_tree.add(label)
+            _add_children(child_tree, child_id, current_depth + 1)
+
+    for root in roots:
+        root_tree = tree.add(_node_label(root))
+        _add_children(root_tree, root["candidate_id"], 1)
+
+    console.print(tree)
+    console.print(f"\n  [dim]{len(nodes)} nodes, {len(edges)} edges[/]")
+    console.print()
+
+
+def _dot_escape(s: str) -> str:
+    """Escape a string for use in DOT labels."""
+    return s.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _graph_to_dot(nodes: list[dict[str, Any]], edges: list[dict[str, Any]]) -> str:
+    """Convert search graph to Graphviz DOT format."""
+    lines = ["digraph search_dag {", "  rankdir=TB;", "  node [shape=box, fontsize=10];", ""]
+
+    for n in nodes:
+        cid = n["candidate_id"]
+        bic = n.get("bic")
+        conv = n.get("converged", False)
+        rank = n.get("rank")
+
+        label = _dot_escape(cid)
+        if bic is not None:
+            label += f"\\nBIC={bic:.1f}"
+        if rank:
+            label += f"\\n#{rank}"
+
+        color = "gray" if not conv else ("green" if n.get("gate2_passed") else "yellow")
+        style = "bold" if rank == 1 else "solid"
+        lines.append(f'  "{_dot_escape(cid)}" [label="{label}", color={color}, style={style}];')
+
+    lines.append("")
+    for e in edges:
+        transform = _dot_escape(e.get("transform", ""))
+        pid = _dot_escape(e["parent_id"])
+        cid = _dot_escape(e["child_id"])
+        lines.append(f'  "{pid}" -> "{cid}" [label="{transform}"];')
+
+    lines.append("}")
+    return "\n".join(lines)
+
+
+def _graph_to_mermaid(nodes: list[dict[str, Any]], edges: list[dict[str, Any]]) -> str:
+    """Convert search graph to Mermaid flowchart format."""
+    lines = ["flowchart TD"]
+
+    def _mermaid_id(s: str) -> str:
+        """Sanitize a string for use as a Mermaid node ID."""
+        import re
+
+        return re.sub(r"[^a-zA-Z0-9_]", "_", s)
+
+    def _mermaid_label(s: str) -> str:
+        """Escape a string for Mermaid labels."""
+        return s.replace('"', "'").replace("|", "/")
+
+    for n in nodes:
+        cid = n["candidate_id"]
+        mid = _mermaid_id(cid)
+        bic = n.get("bic")
+        label = cid
+        if bic is not None:
+            label += f" BIC={bic:.1f}"
+        rank = n.get("rank")
+        if rank:
+            label += f" #{rank}"
+        lines.append(f'  {mid}["{_mermaid_label(label)}"]')
+
+    for e in edges:
+        transform = _mermaid_label(e.get("transform", ""))
+        pid = _mermaid_id(e["parent_id"])
+        cid = _mermaid_id(e["child_id"])
+        lines.append(f'  {pid} -->|"{transform}"| {cid}')
+
+    return "\n".join(lines)

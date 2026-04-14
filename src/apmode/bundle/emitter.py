@@ -35,6 +35,7 @@ from apmode.bundle.models import (  # noqa: TC001 — used at runtime in method 
     Ranking,
     ReportProvenance,
     RunLineage,
+    SearchGraph,
     SearchTrajectoryEntry,
     SeedRegistry,
     SplitManifest,
@@ -197,6 +198,12 @@ class BundleEmitter:
         """Write candidate_lineage.json (DAG of candidate parentage)."""
         path = self.run_dir / "candidate_lineage.json"
         path.write_text(lineage.model_dump_json(indent=2))
+        return path
+
+    def write_search_graph(self, graph: SearchGraph) -> Path:
+        """Write search_graph.json (enriched DAG for deep inspection)."""
+        path = self.run_dir / "search_graph.json"
+        path.write_text(graph.model_dump_json(indent=2))
         return path
 
     def write_ranking(self, ranking: Ranking) -> Path:

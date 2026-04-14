@@ -333,6 +333,58 @@ class CandidateLineage(BaseModel):
     entries: list[CandidateLineageEntry]
 
 
+# --- Search Graph (Deep Inspection) ---
+
+
+class SearchGraphNode(BaseModel):
+    """A node in the enriched search graph (candidate + gate status)."""
+
+    candidate_id: str
+    parent_id: str | None = None
+    backend: Literal["nlmixr2", "jax_node", "agentic_llm"] = "nlmixr2"
+    converged: bool = False
+    bic: float | None = None
+    aic: float | None = None
+    n_params: int = 0
+    gate1_passed: bool | None = None
+    gate2_passed: bool | None = None
+    gate2_5_passed: bool | None = None
+    rank: int | None = None
+
+
+class SearchGraphEdge(BaseModel):
+    """An edge in the search graph (parent -> child via transform)."""
+
+    parent_id: str
+    child_id: str
+    transform: str
+
+
+class SearchGraph(BaseModel):
+    """search_graph.json — enriched DAG of the full search space."""
+
+    nodes: list[SearchGraphNode]
+    edges: list[SearchGraphEdge] = Field(default_factory=list)
+
+
+# --- Agentic Iteration Entry (Deep Inspection) ---
+
+
+class AgenticIterationEntry(BaseModel):
+    """One line in agentic_iterations.jsonl — typed audit trail."""
+
+    iteration: int = Field(ge=1)
+    spec_before: str
+    spec_after: str | None = None
+    transforms_proposed: list[str] = Field(default_factory=list)
+    transforms_rejected: list[str] = Field(default_factory=list)
+    reasoning: str = ""
+    converged: bool = False
+    bic: float | None = None
+    error: str | None = None
+    validation_feedback: list[str] = Field(default_factory=list)
+
+
 # --- Backend Versions ---
 
 
@@ -488,6 +540,7 @@ class AgenticTraceOutput(BaseModel):
     iteration_id: str
     raw_output: str
     parsed_transforms: list[str] = Field(default_factory=list)
+    transforms_rejected: list[str] = Field(default_factory=list)
     validation_passed: bool = False
     validation_errors: list[str] = Field(default_factory=list)
 

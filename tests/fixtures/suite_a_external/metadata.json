@@ -1,0 +1,62 @@
+{
+  "Bolus_1CPT": {
+    "n_rows": 7920,
+    "n_subjects": 120,
+    "columns": ["ID", "TIME", "DV", "LNDV", "MDV", "AMT", "EVID", "DOSE", "V", "CL", "SS", "II", "SD", "CMT"]
+  },
+  "Bolus_1CPTMM": {
+    "n_rows": 7920,
+    "n_subjects": 120,
+    "columns": ["ID", "TIME", "DV", "LNDV", "MDV", "AMT", "EVID", "DOSE", "V", "VM", "KM", "SD", "CMT"]
+  },
+  "Bolus_2CPT": {
+    "n_rows": 7920,
+    "n_subjects": 120,
+    "columns": ["ID", "TIME", "DV", "LNDV", "MDV", "AMT", "EVID", "DOSE", "V1", "CL", "Q", "V2", "SS", "II", "SD", "CMT"]
+  },
+  "Bolus_2CPTMM": {
+    "n_rows": 7920,
+    "n_subjects": 120,
+    "columns": ["ID", "TIME", "DV", "LNDV", "MDV", "AMT", "EVID", "DOSE", "V", "VM", "KM", "Q", "V2", "SD", "CMT"]
+  },
+  "Infusion_1CPT": {
+    "n_rows": 7920,
+    "n_subjects": 120,
+    "columns": ["ID", "TIME", "DV", "LNDV", "MDV", "AMT", "RATE", "EVID", "DOSE", "V", "CL", "SS", "II", "SD", "CMT"]
+  },
+  "Infusion_1CPTMM": {
+    "n_rows": 7920,
+    "n_subjects": 120,
+    "columns": ["ID", "TIME", "DV", "LNDV", "MDV", "AMT", "RATE", "EVID", "DOSE", "V", "VM", "KM", "SD", "CMT"]
+  },
+  "Infusion_2CPT": {
+    "n_rows": 7920,
+    "n_subjects": 120,
+    "columns": ["ID", "TIME", "DV", "LNDV", "MDV", "AMT", "RATE", "EVID", "DOSE", "V", "CL", "Q", "V2", "SS", "II", "SD", "CMT"]
+  },
+  "Infusion_2CPTMM": {
+    "n_rows": 7920,
+    "n_subjects": 120,
+    "columns": ["ID", "TIME", "DV", "LNDV", "MDV", "AMT", "RATE", "EVID", "DOSE", "V", "VM", "KM", "Q", "V2", "SD", "CMT"]
+  },
+  "Oral_1CPT": {
+    "n_rows": 7920,
+    "n_subjects": 120,
+    "columns": ["ID", "TIME", "DV", "LNDV", "MDV", "AMT", "EVID", "DOSE", "V", "CL", "KA", "SS", "II", "SD", "CMT"]
+  },
+  "Oral_1CPTMM": {
+    "n_rows": 7920,
+    "n_subjects": 120,
+    "columns": ["ID", "TIME", "DV", "LNDV", "MDV", "AMT", "EVID", "DOSE", "V", "VM", "KM", "KA", "SD", "CMT"]
+  },
+  "Oral_2CPT": {
+    "n_rows": 7920,
+    "n_subjects": 120,
+    "columns": ["ID", "TIME", "DV", "LNDV", "MDV", "AMT", "EVID", "DOSE", "V1", "CL", "Q", "V2", "KA", "SS", "II", "SD", "CMT"]
+  },
+  "Oral_2CPTMM": {
+    "n_rows": 7920,
+    "n_subjects": 120,
+    "columns": ["ID", "TIME", "DV", "LNDV", "MDV", "AMT", "EVID", "DOSE", "V1", "VM", "KM", "Q", "V2", "KA", "SD", "CMT"]
+  }
+}

@@ -94,6 +94,14 @@ uv run apmode log <bundle_dir> --gate gate1
 
 # Compare two runs side-by-side
 uv run apmode diff ./runs/run_a ./runs/run_b
+
+# Deep inspection (Phase 3)
+uv run apmode trace <bundle_dir>                         # agentic iteration summary
+uv run apmode trace <bundle_dir> --iteration 5           # detail for iteration 5
+uv run apmode trace <bundle_dir> --cost                  # token/cost rollup
+uv run apmode lineage <bundle_dir> <candidate_id>        # transform chain root→target
+uv run apmode graph <bundle_dir>                         # search DAG tree view
+uv run apmode graph <bundle_dir> --format dot -o dag.dot # Graphviz export
 ```
 
 ### Run the Test Suite
@@ -332,6 +340,9 @@ uv run pytest tests/ --snapshot-update      # update snapshots after emitter cha
 | `apmode log <bundle> --failed` | List failed candidates with gate + reason |
 | `apmode log <bundle> --gate gate1` | Per-check pass/fail details for a specific gate |
 | `apmode diff <bundle-a> <bundle-b>` | Side-by-side comparison of evidence, rankings, gate pass rates |
+| `apmode trace <bundle>` | Agentic iteration traces: summary, `--iteration N`, `--cost`, `--json` |
+| `apmode lineage <bundle> <candidate>` | Transform chain from root to candidate with gate status |
+| `apmode graph <bundle>` | Search DAG visualization: `--format tree/dot/mermaid/json`, `--converged` |
 | `apmode validate <bundle>` | Validate bundle completeness |
 | `apmode --version` | Print version |
 

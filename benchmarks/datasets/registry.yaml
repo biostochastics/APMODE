@@ -1,0 +1,108 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Benchmark Dataset Registry
+#
+# Master index of all datasets available for APMODE benchmark suites.
+# Each entry maps to a directory under benchmarks/datasets/<dataset_id>/.
+
+datasets:
+  # --- Tier 1: Open (CI-eligible) ---
+
+  nlmixr2data_schoemaker:
+    name: "Schoemaker 2019 / ACOP 2016 Grid"
+    source: "nlmixr2data CRAN package"
+    citation: "Schoemaker et al. (2019) CPT:PSP 8(12):923-930"
+    license: "GPL-2"
+    access_tier: open
+    n_datasets: 12
+    n_subjects_per: 120
+    route: mixed  # bolus, infusion, oral
+    suites: [A_external]
+    prepare: "prepare.R"
+
+  nlmixr2data_theophylline:
+    name: "Theophylline (Upton)"
+    source: "R base datasets::Theoph + nlmixr2data::theo_sd"
+    citation: "Boeckmann et al. (1994) NONMEM Users Guide"
+    license: "GPL-2"
+    access_tier: open
+    n_subjects: 12
+    n_observations: 144
+    route: oral
+    suites: [B]
+    prepare: "prepare.R"
+
+  nlmixr2data_warfarin:
+    name: "Warfarin PK/PD"
+    source: "nlmixr2data::warfarin"
+    citation: "O'Reilly (1968) / nlmixr2data"
+    license: "GPL-2"
+    access_tier: open
+    n_subjects: 32
+    n_observations: 519
+    route: oral
+    has_covariates: true
+    covariate_names: [WT, AGE, SEX]
+    suites: [B, C]
+    prepare: "prepare.R"
+
+  nlmixr2data_mavoglurant:
+    name: "Mavoglurant (Novartis mGluR5 antagonist)"
+    source: "nlmixr2data::mavoglurant"
+    citation: "nlmixr2data package / Novartis"
+    license: "GPL-2"
+    access_tier: open
+    n_subjects: 222
+    n_observations: 2346
+    route: oral
+    n_compartments: 2
+    suites: [B, C]
+    prepare: "prepare.R"
+
+  # --- Tier 1: Scripted download ---
+
+  ddmore_gentamicin:
+    name: "Gentamicin neonatal IOV (DDMoRe)"
+    source: "http://repository.ddmore.eu/model/DDMODEL00000238"
+    citation: "Germovsek et al. (2017) AAC 61(8):e00481-17"
+    license: "CC0"
+    access_tier: scripted
+    n_subjects: 205
+    n_observations: 2788
+    route: iv_bolus
+    has_covariates: true
+    covariate_names: [GA, PNA, WT, SCR]
+    has_iov: true
+    suites: [B, C]
+    prepare: "prepare.py"
+
+  opentci_propofol:
+    name: "Eleveld Propofol (OpenTCI)"
+    source: "https://opentci.org/"
+    citation: "Eleveld et al. (2018) Br J Anaesth 120(5):942-959"
+    license: "Open access"
+    access_tier: scripted
+    n_subjects: 1033
+    n_observations: 15433
+    route: iv_infusion
+    n_compartments: 3
+    has_covariates: true
+    covariate_names: [AGE, WT, SEX, OPIOID]
+    suites: [C]
+    prepare: "prepare.R"
+
+  # --- Tier 2: Credentialed ---
+
+  mimic_vancomycin:
+    name: "MIMIC-IV Vancomycin ICU TDM"
+    source: "https://physionet.org/content/mimiciv/"
+    citation: "Zhang et al. (2025) Microbiol Spectrum"
+    license: "PhysioNet Credentialed Health Data License"
+    access_tier: credentialed
+    n_subjects: 4059
+    n_observations: ~8000  # sparse TDM
+    route: iv_infusion
+    has_covariates: true
+    covariate_names: [WT, AGE, SCR, EGFR, CRCL, SOFA]
+    suites: [B, C]
+    prepare: "prepare.py"
+    ci_policy: never  # Never in public CI
