@@ -375,8 +375,7 @@ DATASET_REGISTRY: dict[str, DatasetInfo] = {
         name="theo_md",
         source="nlmixr2data",
         description=(
-            "Theophylline multiple-dose oral PK."
-            " Extends theo_sd with steady-state dosing."
+            "Theophylline multiple-dose oral PK. Extends theo_sd with steady-state dosing."
         ),
         n_subjects=12,
         n_rows=348,
@@ -454,6 +453,10 @@ def fetch_dataset(
     info = DATASET_REGISTRY[name]
     output_dir.mkdir(parents=True, exist_ok=True)
     out_path = output_dir / f"{name}.csv"
+
+    # Cache check: skip fetch if file already exists
+    if out_path.exists():
+        return out_path
 
     if info.source == "nlmixr2data":
         _fetch_from_nlmixr2data(name, out_path, normalize=normalize_columns)
