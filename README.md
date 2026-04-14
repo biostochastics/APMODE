@@ -22,11 +22,11 @@ APMODE is a **governed meta-system** that composes four population PK modeling p
 
 **Four paradigms, one pipeline.** Classical NLME (nlmixr2), automated structural search, hybrid mechanistic-NODE (JAX/Diffrax), and agentic LLM model construction (Phase 3) — each dispatched, evaluated, and ranked through a unified governance funnel.
 
-**Evidence gates, not vibes.** Every candidate passes Gate 1 (technical validity), Gate 2 (lane admissibility), Gate 2.5 (ICH M15 credibility), and Gate 3 (cross-paradigm ranking) before it can be recommended. NODE models are never eligible for regulatory submission — this is a hard rule, not a tunable weight.
+**Evidence gates.** Every candidate passes Gate 1 (technical validity), Gate 2 (lane admissibility), Gate 2.5 (ICH M15 credibility), and Gate 3 (cross-paradigm ranking) before it can be recommended. NODE models are never eligible for regulatory submission — this is a hard rule, not a tunable weight.
 
 **Reproducibility is the unit of output.** Every run emits a versioned JSON bundle — data manifest, search trajectory, gate decisions, candidate lineage DAG, compiled specs — so any result can be audited or replayed.
 
-**A typed PK DSL is the control surface.** Models are specified in a structured grammar (`Absorption x Distribution x Elimination x Variability x Observation`), compiled to a typed AST, validated against pharmacometric constraints, and lowered to backend-specific code. The agentic LLM backend (Phase 3) operates exclusively through DSL transforms — it cannot emit raw code.
+**Formular — a typed PK DSL — is the control surface.** Models are specified in [Formular](docs/FORMULAR.md), a structured grammar (`Absorption x Distribution x Elimination x Variability x Observation`), compiled to a typed AST, validated against pharmacometric constraints, and lowered to backend-specific code. The agentic LLM backend (Phase 3) operates exclusively through Formular transforms — it cannot emit raw code.
 
 > **Status**: Phase 3 in progress (P3.B LORO-CV complete). 1145 tests passing. `mypy --strict` clean (62 files). `ruff` clean.
 
@@ -105,9 +105,13 @@ uv run ruff check src/apmode/ tests/       # linting (0 errors)
 
 ---
 
-## The PK DSL
+## Formular — The PK DSL
 
-APMODE's typed domain-specific language is the single source of truth for model specification. It compiles to a validated AST and lowers to nlmixr2 R code or Stan programs.
+**Formular** is APMODE's typed domain-specific language for specifying population PK models. The name evokes *formulary* (pharmacy) and *formula* (mathematics). It is the single source of truth for model structure: every model is expressed as a Formular specification, compiled to a typed AST, validated against pharmacometric constraints, and lowered to backend-specific code (nlmixr2 R, Stan, or JAX/Diffrax).
+
+> **Full reference:** [`docs/FORMULAR.md`](docs/FORMULAR.md) — grammar, compilation pipeline, constraint templates, semantic validation rules, extensibility.
+
+**Why a dedicated language?** (1) Safety boundary for agentic AI — the Phase 3 LLM backend operates exclusively through Formular transforms, it cannot emit raw code. (2) Backend independence — one spec, multiple targets. (3) Reproducibility — the compiled `DSLSpec` is the serializable unit in the reproducibility bundle. (4) Constraint enforcement — pharmacometric invariants are checked at the language level before any code generation.
 
 ```
 model {
@@ -122,13 +126,19 @@ model {
 }
 ```
 
-| DSL Axis | Supported Forms |
-|----------|----------------|
+**Compilation:** `Formular text → Lark parser (Earley) → DSLTransformer → DSLSpec (Pydantic AST) → Semantic validator → Backend emitter`
+
+**Entry point:** `apmode.dsl.grammar.compile_dsl(text) → DSLSpec`
+
+| DSL Axis | Supported Modules |
+|----------|-------------------|
 | **Absorption** | FirstOrder, ZeroOrder, LaggedFirstOrder, Transit(n), MixedFirstZero, NODE_Absorption |
 | **Distribution** | OneCmt, TwoCmt, ThreeCmt, TMDD_Core, TMDD_QSS |
 | **Elimination** | Linear, MichaelisMenten, ParallelLinearMM, TimeVarying(kdecay, decay_fn), NODE_Elimination |
 | **Variability** | IIV (diagonal/block), IOV (ByStudy/ByVisit/ByDoseEpoch/Custom), CovariateLink (power/exponential/linear/categorical/maturation) |
 | **Observation** | Proportional, Additive, Combined, BLQ_M3, BLQ_M4 (with composable error_model) |
+
+**NODE constraint templates:** `monotone_increasing`, `monotone_decreasing`, `bounded_positive`, `saturable`, `unconstrained_smooth` — with lane-dependent dim ceilings (≤8 Discovery, ≤4 Optimization, excluded from Submission).
 
 ---
 
