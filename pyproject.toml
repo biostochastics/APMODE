@@ -2,12 +2,12 @@
 # Copyright (C) 2026 APMODE Contributors
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
 name = "apmode"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Adaptive Pharmacokinetic Model Discovery Engine"
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
@@ -35,6 +35,7 @@ dependencies = [
     "numpy>=1.25",
     "pandas>=2.0",
     "rich>=13.0",
+    "scipy>=1.11",
 ]
 
 [project.optional-dependencies]
@@ -66,6 +67,13 @@ dev = [
 [project.scripts]
 apmode = "apmode.cli:app"
 
+[tool.hatch.version]
+source = "vcs"
+fallback-version = "0.2.0.dev0"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/apmode/_version.py"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/apmode"]
 
@@ -84,6 +92,9 @@ select = [
     "SIM",       # flake8-simplify
     "TCH",       # flake8-type-checking
     "RUF",       # ruff-specific
+]
+ignore = [
+    "UP038",     # isinstance(x, (A, B)) is more readable than isinstance(x, A | B)
 ]
 
 [tool.ruff.lint.per-file-ignores]

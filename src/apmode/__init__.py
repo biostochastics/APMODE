@@ -1,4 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """APMODE — Adaptive Pharmacokinetic Model Discovery Engine."""
 
-__version__ = "0.1.0"
+__version__: str
+try:
+    from apmode._version import __version__
+except ModuleNotFoundError:  # editable install without build
+    __version__ = "0.2.0.dev0"

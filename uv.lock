@@ -39,7 +39,6 @@ wheels = [
 
 [[package]]
 name = "apmode"
-version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "lark" },
@@ -50,6 +49,7 @@ dependencies = [
     { name = "pandera" },
     { name = "pydantic" },
     { name = "rich" },
+    { name = "scipy" },
     { name = "sparkid" },
     { name = "structlog" },
     { name = "tenacity" },
@@ -109,13 +109,14 @@ requires-dist = [
     { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=0.23" },
     { name = "rich", specifier = ">=13.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4" },
+    { name = "scipy", specifier = ">=1.11" },
     { name = "sparkid", specifier = ">=0.2" },
     { name = "structlog", specifier = ">=24.1" },
     { name = "syrupy", marker = "extra == 'test'", specifier = ">=4.0" },
     { name = "tenacity", specifier = ">=8.3" },
     { name = "typer", specifier = ">=0.12" },
 ]
-provides-extras = ["node", "test", "dev"]
+provides-extras = ["dev", "node", "test"]
 
 [[package]]
 name = "cfgv"
