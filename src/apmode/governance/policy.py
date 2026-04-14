@@ -55,12 +55,14 @@ class Gate2Config(BaseModel):
 class Gate25Config(BaseModel):
     """Gate 2.5: Credibility Qualification (Phase 2, PRD §4.3.1 / ICH M15).
 
-    Stubbed for forward compatibility. Fields will be refined in Phase 2.
+    ICH M15 requires context-of-use specification and risk-based model
+    assessment. This is a qualifying gate, not documentation.
     """
 
     context_of_use_required: bool = True
     limitation_to_risk_mapping_required: bool = False
     data_adequacy_required: bool = True
+    data_adequacy_ratio_min: float = Field(default=5.0, gt=0)
     sensitivity_analysis_required: bool = False
     ai_ml_transparency_required: bool = False
 

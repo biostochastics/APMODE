@@ -1,0 +1,19 @@
+{
+  "planPath": "docs/plans/2026-04-13-phase2-node-discovery-lane.md",
+  "tasks": [
+    {"id": 0, "subject": "Task 0: Add JAX/Diffrax/Equinox/Optax dependencies", "status": "pending"},
+    {"id": 1, "subject": "Task 1: NODE constraint enforcement module", "status": "pending", "blockedBy": [0]},
+    {"id": 2, "subject": "Task 2: NODE sub-model (Equinox MLP with constraints)", "status": "pending", "blockedBy": [1]},
+    {"id": 3, "subject": "Task 3: Hybrid ODE system (mechanistic + NODE)", "status": "pending", "blockedBy": [1, 2]},
+    {"id": 4, "subject": "Task 4: NODE training loop (population-level fitting)", "status": "pending", "blockedBy": [2, 3]},
+    {"id": 5, "subject": "Task 5: NodeBackendRunner (BackendRunner protocol)", "status": "pending", "blockedBy": [3, 4]},
+    {"id": 6, "subject": "Task 6: Gate 2.5 Credibility Qualification (ICH M15)", "status": "pending"},
+    {"id": 7, "subject": "Task 7: Gate 3 Cross-paradigm ranking", "status": "pending"},
+    {"id": 8, "subject": "Task 8: Functional distillation module", "status": "pending", "blockedBy": [5]},
+    {"id": 9, "subject": "Task 9: Discovery lane activation + orchestrator wiring", "status": "pending", "blockedBy": [5, 6, 7, 8]},
+    {"id": 10, "subject": "Task 10: Credibility Assessment Report generator", "status": "pending", "blockedBy": [6]},
+    {"id": 11, "subject": "Task 11: Benchmark Suite A expansion + Suite B", "status": "pending", "blockedBy": [9]},
+    {"id": 12, "subject": "Task 12: Policy updates + execution_mode config", "status": "pending", "blockedBy": [6]}
+  ],
+  "lastUpdated": "2026-04-13T20:00:00Z"
+}

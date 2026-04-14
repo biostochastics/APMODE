@@ -6,9 +6,9 @@ Licensed under GPL-2.0-or-later.
 
 ## Status
 
-**Phase 1, Month 5-6 — IN PROGRESS.** 679 tests passing. `mypy --strict` clean. `ruff` clean.
+**Phase 2 — IN PROGRESS.** 797 tests passing. `mypy --strict` clean. `ruff` clean.
 
-Five rounds of multi-model code review completed (codex, gemini, crush, opencode, droid); all critical and high-severity issues fixed.
+Phase 1 complete (679 tests). Phase 2 NODE backend + governance implemented (118 new tests). Six rounds of multi-model code review completed; all critical and high-severity issues fixed.
 
 ### What exists
 
@@ -28,8 +28,18 @@ Five rounds of multi-model code review completed (codex, gemini, crush, opencode
 | **Search engine** | `src/apmode/search/engine.py` | Candidate dispatch, BIC scoring, Pareto frontier |
 | **Gate 1 evaluator** | `src/apmode/governance/gates.py` | Technical Validity: 7 checks (convergence, plausibility, CWRES, VPC, seed stability) |
 | **Gate 2 evaluator** | `src/apmode/governance/gates.py` | Lane Admissibility: 6 checks (interpretability, shrinkage, identifiability, NODE exclusion) |
+| **Gate 2.5 evaluator** | `src/apmode/governance/gates.py` | Credibility Qualification (ICH M15): 5 checks (COU, data adequacy, ML transparency) |
+| **Gate 3 ranking** | `src/apmode/governance/gates.py` | Within-paradigm BIC + cross-paradigm simulation-based composite ranking |
+| **Cross-paradigm ranking** | `src/apmode/governance/ranking.py` | VPC concordance, NPE, composite score for mixed-backend ranking |
+| **NODE constraints** | `src/apmode/backends/node_constraints.py` | 5 enumerated constraint templates (monotone, bounded, saturable, smooth) |
+| **NODE sub-model** | `src/apmode/backends/node_model.py` | Bram-style MLP with RE on input-layer weights |
+| **Hybrid ODE** | `src/apmode/backends/node_ode.py` | Mechanistic PK skeleton + NODE sub-function, Diffrax Tsit5 solver |
+| **NODE trainer** | `src/apmode/backends/node_trainer.py` | Optax Adam training loop with early stopping, log-space params |
+| **NodeBackendRunner** | `src/apmode/backends/node_runner.py` | BackendRunner protocol impl for JAX/Diffrax NODE backend |
+| **Functional distillation** | `src/apmode/backends/node_distillation.py` | Sub-function visualization, parametric surrogate fitting, AUC/Cmax BE fidelity |
+| **Credibility report** | `src/apmode/report/credibility.py` | ICH M15-aligned credibility assessment per candidate |
 | **Lane Router** | `src/apmode/routing.py` | Dispatch decisions by lane + evidence manifest constraints |
-| **Orchestrator** | `src/apmode/orchestrator/__init__.py` | Full pipeline: ingest → profile → NCA → split → search → gates → bundle |
+| **Orchestrator** | `src/apmode/orchestrator/__init__.py` | Full pipeline: ingest → profile → NCA → split → search → gates 1/2/2.5/3 → bundle |
 | **Bundle emitter** | `src/apmode/bundle/emitter.py` | All reproducibility bundle artifacts per §5 |
 | **Bundle models** | `src/apmode/bundle/models.py` | All Pydantic schemas (BackendResult, EvidenceManifest, etc.) |
 | **Gate policies** | `src/apmode/governance/policy.py` | Gate 1, 2, 2.5 policy file schemas |
@@ -42,7 +52,9 @@ Five rounds of multi-model code review completed (codex, gemini, crush, opencode
 
 | Suite | Count | Description |
 |-------|-------|-------------|
-| Unit tests | ~490 | All modules: DSL, data, backends, search, governance, gates, routing, bundle, benchmarks |
+| Unit tests | ~600 | All modules: DSL, data, backends (nlmixr2 + NODE), search, governance, gates, routing, bundle, benchmarks, distillation, credibility |
+| NODE backend tests | 74 | Constraints (32), sub-model (16), ODE (11), trainer (6), runner (6), distillation (13) |
+| Gate 2.5 + cross-paradigm | 27 | ICH M15 credibility (11), cross-paradigm ranking (16) |
 | Integration tests | 3 | End-to-end mock R pipeline (success, convergence error, crash) |
 | Golden masters | 21 | Syrupy snapshots for pharmacometrician-validated R output |
 | R syntax validation | 168 | Balanced delimiters, eta/param consistency |
@@ -78,7 +90,7 @@ uv sync --all-extras
 ## Testing
 
 ```bash
-uv run pytest tests/ -q                    # all 604 tests
+uv run pytest tests/ -q                    # all 797 tests
 uv run pytest tests/unit/ -q               # unit tests only
 uv run pytest tests/integration/ -q        # end-to-end mock R pipeline
 uv run pytest tests/property/ -q           # Hypothesis property-based
@@ -168,11 +180,12 @@ DSL text ──→ Lark parser ──→ DSLSpec  ──→       ├─ Warm-st
 - **Phase 1 Month 2-3** (complete): Classical NLME backend, R harness, data ingestion, benchmarks
 - **Phase 1 Month 3-4** (complete): Data profiler, NCA estimates, automated search, data splitting
 - **Phase 1 Month 4-5** (complete): Governance gates (1+2+3), orchestrator, dispatch constraints, seed stability
-- **Phase 1 Month 5-6** (in progress): CLI (Typer), structlog, Lane Router + dispatch wiring, seed stability (top-k, configurable CV), ranking persistence, boundary estimate check, multi-signal state trajectory, split integrity (SplitGOFMetrics), Phase 2 prep models, Benchmark Suite A CI + integration assertions
+- **Phase 1 Month 5-6** (complete): CLI (Typer), structlog, Lane Router + dispatch wiring, seed stability (top-k, configurable CV), ranking persistence, boundary estimate check, multi-signal state trajectory, split integrity (SplitGOFMetrics), Phase 2 prep models, Benchmark Suite A CI + integration assertions
+- **Phase 2** (in progress): Hybrid NODE backend (JAX/Diffrax/Equinox), Bram-style MLP with RE on input-layer weights, 5 constraint templates, log-space mechanistic params, functional distillation (surrogate fitting + AUC/Cmax BE fidelity), Gate 2.5 ICH M15 credibility (5 checks), Gate 3 cross-paradigm ranking (VPC concordance + NPE + composite), credibility report generator, policy gate2_5 thresholds, execution_mode config
 
 ## Code Review Provenance
 
-Five rounds of multi-model code review have been conducted:
+Six rounds of multi-model code review have been conducted:
 
 | Date | Models | Focus | Key Fixes |
 |------|--------|-------|-----------|
@@ -181,6 +194,7 @@ Five rounds of multi-model code review have been conducted:
 | 2026-04-13 (R3) | codex, gemini, crush, opencode, droid | Gates, search engine, orchestrator, bundle emitter | Gate pass-on-missing→fail, NaN OFV filtering, Pareto tie-handling, lane validation, broad exception catch |
 | 2026-04-13 (R4) | codex, gemini, crush, opencode, droid | Lane Router, Gate 3, Gate 2.5, CLI, dispatch constraints | Warm-start constraint propagation, submission NODE exclusion validator, lane validation, CLI policy path check |
 | 2026-04-13 (R5) | codex, gemini, crush, opencode, droid | Orchestrator wiring, seed stability, ranking, Phase 2 models | CV ddof=1, non-positive param plausibility, NaN-safe BIC sort, path traversal guard, seed_stability_n=1, Ranking cross-validation |
+| 2026-04-13 (R6) | gemini-3.1-pro | Phase 2 NODE backend, Gate 2.5, cross-paradigm ranking | Log-space mechanistic params, trainable Saturable scale, ss_tot unbound fix, ParameterEstimate type restoration, pooled NLL docstring |
 
 ## Known Limitations (Phase 1)
 
@@ -190,9 +204,11 @@ Five rounds of multi-model code review have been conducted:
 - Zero-order absorption uses `dur(centr)` modeled-duration pattern; requires compatible dose event coding (CMT=central, modeled duration flag)
 - NCA initial estimates: per-subject terminal-phase log-linear regression (last 3 post-Tmax points); multi-dose uses AUC_tau but requires sorted dose records
 - Route certainty assessment is conservative: CMT=1 without RATE/DUR is classified as "inferred" not "confirmed"
-- Gate 1 split integrity: checks train/test CWRES divergence via `SplitGOFMetrics`; R harness computes when `split_manifest` is provided in request
-- Gate 2.5 (Credibility Qualification) is a Phase 2 scaffold — all checks pass with placeholder notes
-- Gate 3 ranking is BIC-only (within-paradigm); cross-paradigm simulation metrics are Phase 2
+- Gate 1 split integrity: checks train/test CWRES divergence via `SplitGOFMetrics`; `split_manifest` is passed from orchestrator to runner for all estimation and seed stability calls
 - Automated search warm-start explores error model + IIV structure variants; structural/covariate expansion deferred
-- Lane Router dispatches to nlmixr2 only in Phase 1 (NODE/agentic backends are Phase 2/3)
-- NODE modules raise `NotImplementedError` (Phase 2)
+- Lane Router dispatches to nlmixr2 only in Phase 1; NODE dispatch wired but SearchEngine multi-backend is Phase 2 completion
+- NODE training uses pooled population NLL (no per-subject RE); Laplace approximation deferred to Phase 3
+- NODE subject loop in trainer is Python-list based (not vmap); scales to ~50 subjects, not 500+
+- Functional distillation Lineweaver-Burk MM fit is approximate; nonlinear least-squares fit deferred
+- VPC concordance target (0.90) is hardcoded; policy-configurable target deferred
+- Agentic LLM backend is Phase 3

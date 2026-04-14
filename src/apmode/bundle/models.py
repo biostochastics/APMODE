@@ -412,6 +412,26 @@ class Ranking(BaseModel):
         return self
 
 
+# --- Gate 2.5 Credibility Context (Phase 2) ---
+
+
+class CredibilityContext(BaseModel):
+    """Input context for Gate 2.5 credibility checks.
+
+    Carries the information needed to evaluate ICH M15 credibility
+    qualification: context-of-use, data adequacy metrics, sensitivity
+    analysis availability, and AI/ML transparency.
+    """
+
+    context_of_use: str | None = None
+    risk_level: Literal["low", "medium", "high"] | None = None
+    n_observations: int = Field(ge=0, default=0)
+    n_parameters: int = Field(ge=0, default=0)
+    sensitivity_available: bool = False
+    limitations: list[str] = Field(default_factory=list)
+    ml_transparency_statement: str | None = None
+
+
 # --- Phase 2+ Prep Models ---
 
 

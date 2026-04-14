@@ -37,12 +37,24 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+node = [
+    "jax[cpu]>=0.4.30",
+    "diffrax>=0.6",
+    "equinox>=0.11",
+    "optax>=0.2",
+    "jaxtyping>=0.2",
+]
 test = [
     "pytest>=8.0",
     "hypothesis>=6.100",
     "syrupy>=4.0",
     "pytest-asyncio>=0.23",
     "pandas>=2.0",
+    "jax[cpu]>=0.4.30",
+    "diffrax>=0.6",
+    "equinox>=0.11",
+    "optax>=0.2",
+    "jaxtyping>=0.2",
 ]
 dev = [
     "ruff>=0.4",
@@ -87,7 +99,7 @@ warn_unused_configs = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["sparkid.*", "pandera.*", "lark.*"]
+module = ["sparkid.*", "pandera.*", "lark.*", "jax.*", "jaxlib.*", "diffrax.*", "equinox.*", "optax.*", "jaxtyping.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

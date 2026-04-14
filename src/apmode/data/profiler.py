@@ -253,51 +253,141 @@ def _get_dose_auc_pairs(
 def _detect_nonlinear_clearance(obs: pd.DataFrame, doses: pd.DataFrame) -> bool:
     """Detect signature of nonlinear (dose-dependent) clearance.
 
-    Uses dose-normalized AUC comparison with actual AMT from dosing records:
-    if higher doses show disproportionately higher AUC/dose ratios,
-    clearance is saturating (Michaelis-Menten kinetics).
+    Two complementary heuristics:
+    1. Dose-normalized AUC: if multiple dose levels exist, Spearman correlation
+       between dose and AUC/dose > 0.4 indicates saturable clearance.
+    2. Elimination curvature: for single dose-level studies, compares early vs.
+       late post-Cmax log-concentration slopes. MM kinetics produces faster
+       decline at high concentrations (early) than low (late), yielding a
+       median |early/late| slope ratio > 1.8.
     """
     if obs.empty or doses.empty:
         return False
 
     pairs = _get_dose_auc_pairs(obs, doses)
-    if len(pairs) < 4:
+    if len(pairs) >= 4:
+        dose_vals = np.array([p[0] for p in pairs])
+        auc_vals = np.array([p[1] for p in pairs])
+
+        if len(np.unique(dose_vals)) >= 2:
+            # Heuristic 1: dose-normalized AUC comparison
+            dn_auc = auc_vals / dose_vals
+            corr = _spearman_r(dose_vals, dn_auc)
+            if corr > 0.4:
+                return True
+
+    # Heuristic 2: elimination curvature (works with single dose level)
+    return _detect_curvature_nonlinearity(obs)
+
+
+def _detect_curvature_nonlinearity(obs: pd.DataFrame) -> bool:
+    """Detect nonlinear clearance via elimination phase curvature.
+
+    For Michaelis-Menten kinetics, the post-Cmax log-concentration curve is
+    concave: the slope is steeper at high concentrations (early, near Vmax)
+    and shallower at low concentrations (late, near linear regime).
+
+    Computes the median ratio of |early slope| / |late slope| across subjects.
+    Linear PK (including multi-compartment) typically yields ratio ≤ 1.5;
+    MM kinetics yields ratio > 1.8.
+    """
+    subjects = obs["NMID"].unique()
+    ratios: list[float] = []
+
+    for subj in subjects:
+        subj_data = obs[obs["NMID"] == subj].sort_values("TIME")
+        times = subj_data["TIME"].values.astype(float)
+        concs = subj_data["DV"].values.astype(float)
+
+        if len(concs) < 5:
+            continue
+
+        tmax_idx = int(np.argmax(concs))
+        post_c = concs[tmax_idx:]
+        post_t = times[tmax_idx:]
+
+        # Need enough post-Cmax points with positive concentrations
+        if len(post_c) < 4 or not np.all(post_c > 0):
+            continue
+
+        log_c = np.log(post_c)
+        mid = len(post_c) // 2
+        if mid < 2 or len(post_c) - mid < 2:
+            continue
+
+        dt_early = post_t[mid] - post_t[0]
+        dt_late = post_t[-1] - post_t[mid]
+        if dt_early <= 0 or dt_late <= 0:
+            continue
+
+        early_slope = abs((log_c[mid] - log_c[0]) / dt_early)
+        late_slope = abs((log_c[-1] - log_c[mid]) / dt_late)
+
+        if late_slope > 1e-6:
+            ratios.append(early_slope / late_slope)
+
+    if len(ratios) < 4:
         return False
 
-    dose_vals = np.array([p[0] for p in pairs])
-    auc_vals = np.array([p[1] for p in pairs])
-
-    # Need at least 2 distinct dose levels for meaningful comparison
-    if len(np.unique(dose_vals)) < 2:
-        return False
-
-    # Dose-normalized AUC: AUC/dose should be constant for linear PK
-    dn_auc = auc_vals / dose_vals
-
-    # Spearman rank correlation between dose and dose-normalized AUC
-    # Positive correlation → higher doses give disproportionately higher exposure
-    corr = _spearman_r(dose_vals, dn_auc)
-    return bool(corr > 0.4)
+    return bool(float(np.median(ratios)) > 1.8)
 
 
 def _nonlinear_clearance_confidence(obs: pd.DataFrame, doses: pd.DataFrame) -> float | None:
-    """Confidence score for nonlinear clearance detection (0.0-1.0)."""
+    """Confidence score for nonlinear clearance detection (0.0-1.0).
+
+    Returns the maximum signal from dose-normalized AUC correlation (if
+    multiple dose levels) and elimination curvature ratio (scaled to 0-1).
+    """
     if obs.empty or doses.empty:
         return None
 
+    scores: list[float] = []
+
+    # Score from dose-normalized AUC
     pairs = _get_dose_auc_pairs(obs, doses)
-    if len(pairs) < 4:
+    if len(pairs) >= 4:
+        dose_vals = np.array([p[0] for p in pairs])
+        auc_vals = np.array([p[1] for p in pairs])
+        if len(np.unique(dose_vals)) >= 2:
+            dn_auc = auc_vals / dose_vals
+            corr = _spearman_r(dose_vals, dn_auc)
+            scores.append(max(0.0, min(1.0, corr)))
+
+    # Score from curvature ratio
+    subjects = obs["NMID"].unique()
+    ratios: list[float] = []
+    for subj in subjects:
+        subj_data = obs[obs["NMID"] == subj].sort_values("TIME")
+        times = subj_data["TIME"].values.astype(float)
+        concs = subj_data["DV"].values.astype(float)
+        if len(concs) < 5:
+            continue
+        tmax_idx = int(np.argmax(concs))
+        post_c = concs[tmax_idx:]
+        post_t = times[tmax_idx:]
+        if len(post_c) < 4 or not np.all(post_c > 0):
+            continue
+        log_c = np.log(post_c)
+        mid = len(post_c) // 2
+        if mid < 2 or len(post_c) - mid < 2:
+            continue
+        dt_early = post_t[mid] - post_t[0]
+        dt_late = post_t[-1] - post_t[mid]
+        if dt_early <= 0 or dt_late <= 0:
+            continue
+        early_slope = abs((log_c[mid] - log_c[0]) / dt_early)
+        late_slope = abs((log_c[-1] - log_c[mid]) / dt_late)
+        if late_slope > 1e-6:
+            ratios.append(early_slope / late_slope)
+    if len(ratios) >= 4:
+        # Map ratio to 0-1: ratio=1.0 → 0.0, ratio=3.0 → 1.0
+        median_ratio = float(np.median(ratios))
+        curvature_score = max(0.0, min(1.0, (median_ratio - 1.0) / 2.0))
+        scores.append(curvature_score)
+
+    if not scores:
         return None
-
-    dose_vals = np.array([p[0] for p in pairs])
-    auc_vals = np.array([p[1] for p in pairs])
-
-    if len(np.unique(dose_vals)) < 2:
-        return None
-
-    dn_auc = auc_vals / dose_vals
-    corr = _spearman_r(dose_vals, dn_auc)
-    return float(max(0.0, min(1.0, corr)))
+    return float(max(scores))
 
 
 def _classify_richness(obs: pd.DataFrame, n_subjects: int) -> str:

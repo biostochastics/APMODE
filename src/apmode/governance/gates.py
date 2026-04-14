@@ -18,7 +18,8 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from apmode.bundle.models import GateCheckResult, GateResult
+from apmode.bundle.models import CredibilityContext, GateCheckResult, GateResult
+from apmode.governance.policy import Gate25Config  # noqa: TC001 — used at runtime
 from apmode.ids import generate_gate_id
 
 _VALID_LANES = frozenset({"submission", "discovery", "optimization"})
@@ -592,19 +593,21 @@ def evaluate_gate3(
     survivors: list[BackendResult],
     policy: GatePolicy,
 ) -> tuple[GateResult, list[RankedCandidate]]:
-    """Evaluate Gate 3: Within-Paradigm Ranking.
+    """Evaluate Gate 3: Ranking.
 
-    Phase 1: rank by BIC (lower is better) within the same backend.
-    Phase 2 adds cross-paradigm ranking via simulation-based metrics
-    (VPC coverage concordance, AUC/Cmax bioequivalence, NPE).
+    Single-backend survivors: rank by BIC (within-paradigm).
+    Multi-backend survivors: rank by simulation-based composite score
+    (VPC concordance + NPE + BIC), flagged as qualified comparison.
 
     Args:
-        survivors: BackendResults that passed Gates 1 and 2.
+        survivors: BackendResults that passed Gates 1+2(+2.5).
         policy: GatePolicy (for version tracking in the result).
 
     Returns:
         Tuple of (GateResult, ranked list of candidates).
     """
+    from apmode.governance.ranking import is_cross_paradigm
+
     if not survivors:
         return (
             GateResult(
@@ -626,8 +629,19 @@ def evaluate_gate3(
             [],
         )
 
-    # Sort by BIC ascending (lower = better fit with parsimony penalty).
-    # NaN-safe: treat None and NaN BIC as infinity (sort last).
+    cross = is_cross_paradigm(survivors)
+
+    if cross:
+        return _gate3_cross_paradigm(survivors, policy)
+    return _gate3_within_paradigm(survivors, policy)
+
+
+def _gate3_within_paradigm(
+    survivors: list[BackendResult],
+    policy: GatePolicy,
+) -> tuple[GateResult, list[RankedCandidate]]:
+    """Within-paradigm ranking by BIC (Phase 1 behavior, preserved)."""
+
     def _safe_bic(r: BackendResult) -> float:
         if r.bic is None or not np.isfinite(r.bic):
             return float("inf")
@@ -653,6 +667,11 @@ def evaluate_gate3(
             check_id="ranking",
             passed=True,
             observed=f"{len(ranked)} candidates ranked",
+        ),
+        GateCheckResult(
+            check_id="ranking_method",
+            passed=True,
+            observed="within_paradigm_bic",
         ),
         GateCheckResult(
             check_id="best_bic",
@@ -683,6 +702,82 @@ def evaluate_gate3(
     )
 
 
+def _gate3_cross_paradigm(
+    survivors: list[BackendResult],
+    policy: GatePolicy,
+) -> tuple[GateResult, list[RankedCandidate]]:
+    """Cross-paradigm ranking using simulation-based metrics (PRD SS4.3.1)."""
+    from apmode.governance.ranking import rank_cross_paradigm
+
+    cp_result = rank_cross_paradigm(survivors)
+
+    ranked: list[RankedCandidate] = []
+    for i, m in enumerate(cp_result.ranked_candidates):
+        # Find the original survivor to extract BIC/AIC/n_params
+        orig = next(s for s in survivors if s.model_id == m.candidate_id)
+
+        def _safe_bic(r: BackendResult) -> float:
+            if r.bic is None or not np.isfinite(r.bic):
+                return float("inf")
+            return r.bic
+
+        ranked.append(
+            RankedCandidate(
+                candidate_id=m.candidate_id,
+                rank=i + 1,
+                bic=_safe_bic(orig),
+                aic=orig.aic,
+                n_params=len(orig.parameter_estimates),
+                backend=m.backend,
+            )
+        )
+
+    backends_str = ", ".join(cp_result.backends_compared)
+    checks = [
+        GateCheckResult(
+            check_id="ranking",
+            passed=True,
+            observed=f"{len(ranked)} candidates ranked",
+        ),
+        GateCheckResult(
+            check_id="ranking_method",
+            passed=True,
+            observed="cross_paradigm_simulation_based",
+        ),
+        GateCheckResult(
+            check_id="qualified_comparison",
+            passed=True,
+            observed=True,
+            evidence_ref=f"backends: {backends_str}",
+        ),
+        GateCheckResult(
+            check_id="best_composite",
+            passed=True,
+            observed=round(cp_result.ranked_candidates[0].composite_score, 4)
+            if cp_result.ranked_candidates
+            else float("inf"),
+            units="composite_score",
+        ),
+    ]
+
+    best_id = ranked[0].candidate_id if ranked else "none"
+    return (
+        GateResult(
+            gate_id=generate_gate_id(),
+            gate_name="cross_paradigm_ranking",
+            candidate_id=best_id,
+            passed=True,
+            checks=checks,
+            summary_reason=(
+                f"Cross-paradigm qualified comparison: best={best_id} (backends: {backends_str})"
+            ),
+            policy_version=policy.policy_version,
+            timestamp=datetime.now(tz=UTC).isoformat(),
+        ),
+        ranked,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Gate 2.5: Credibility Qualification (Phase 2 scaffold)
 # ---------------------------------------------------------------------------
@@ -691,23 +786,27 @@ def evaluate_gate3(
 def evaluate_gate2_5(
     result: BackendResult,
     policy: GatePolicy,
+    credibility_context: CredibilityContext | None = None,
 ) -> GateResult:
     """Evaluate Gate 2.5: Credibility Qualification (ICH M15).
 
-    Phase 2 scaffold. Checks will include:
-      - Context-of-use statement
-      - Limitation-to-risk mapping
-      - Data adequacy vs model complexity
-      - Sensitivity analysis
-      - AI/ML transparency (when NODE/agentic)
+    Checks:
+      1. Context-of-use: statement exists when required
+      2. Limitation-to-risk: mapping present when required
+      3. Data adequacy: n_observations / n_parameters >= threshold
+      4. Sensitivity: results available when required
+      5. AI/ML transparency: statement present for NODE/agentic backends
 
-    Currently passes all candidates with a placeholder note.
+    Args:
+        result: BackendResult from estimation.
+        policy: GatePolicy with gate2_5 thresholds.
+        credibility_context: Optional context with COU statement, etc.
     """
     g25 = policy.gate2_5
+    ctx = credibility_context or CredibilityContext()
     checks: list[GateCheckResult] = []
 
     if g25 is None:
-        # No Gate 2.5 config in policy → pass
         checks.append(
             GateCheckResult(
                 check_id="credibility_qualification",
@@ -715,36 +814,163 @@ def evaluate_gate2_5(
                 observed="no_gate2_5_config",
             )
         )
-    else:
-        checks.append(
-            GateCheckResult(
-                check_id="context_of_use",
-                passed=True,
-                observed="not_evaluated (Phase 2)",
-            )
+        return GateResult(
+            gate_id=generate_gate_id(),
+            gate_name="credibility_qualification",
+            candidate_id=result.model_id,
+            passed=True,
+            checks=checks,
+            summary_reason="No Gate 2.5 config — passed",
+            policy_version=policy.policy_version,
+            timestamp=datetime.now(tz=UTC).isoformat(),
         )
-        checks.append(
-            GateCheckResult(
-                check_id="limitation_to_risk",
-                passed=True,
-                observed="not_evaluated (Phase 2)",
-            )
-        )
-        checks.append(
-            GateCheckResult(
-                check_id="data_adequacy",
-                passed=True,
-                observed="not_evaluated (Phase 2)",
-            )
-        )
+
+    # Check 1: Context-of-use
+    checks.append(_check_context_of_use(ctx, g25))
+
+    # Check 2: Limitation-to-risk mapping
+    checks.append(_check_limitation_to_risk(ctx, g25))
+
+    # Check 3: Data adequacy vs model complexity
+    checks.append(_check_data_adequacy(ctx, g25))
+
+    # Check 4: Sensitivity analysis
+    checks.append(_check_sensitivity(ctx, g25))
+
+    # Check 5: AI/ML transparency
+    checks.append(_check_ml_transparency(result, ctx, g25))
+
+    passed = all(c.passed for c in checks)
+    failed_names = [c.check_id for c in checks if not c.passed]
+    summary = "All checks passed" if passed else f"Failed: {', '.join(failed_names)}"
 
     return GateResult(
         gate_id=generate_gate_id(),
         gate_name="credibility_qualification",
         candidate_id=result.model_id,
-        passed=True,
+        passed=passed,
         checks=checks,
-        summary_reason="Phase 2 scaffold — all checks deferred",
+        summary_reason=summary,
         policy_version=policy.policy_version,
         timestamp=datetime.now(tz=UTC).isoformat(),
+    )
+
+
+def _check_context_of_use(
+    ctx: CredibilityContext,
+    g25: Gate25Config,
+) -> GateCheckResult:
+    """Context-of-use statement must exist when required."""
+    if not g25.context_of_use_required:
+        return GateCheckResult(
+            check_id="context_of_use",
+            passed=True,
+            observed="not_required",
+        )
+    has_cou = ctx.context_of_use is not None and len(ctx.context_of_use.strip()) > 0
+    return GateCheckResult(
+        check_id="context_of_use",
+        passed=has_cou,
+        observed="present" if has_cou else "missing",
+        threshold="required",
+    )
+
+
+def _check_limitation_to_risk(
+    ctx: CredibilityContext,
+    g25: Gate25Config,
+) -> GateCheckResult:
+    """Limitation-to-risk mapping must exist when required."""
+    if not g25.limitation_to_risk_mapping_required:
+        return GateCheckResult(
+            check_id="limitation_to_risk",
+            passed=True,
+            observed="not_required",
+        )
+    has_mapping = len(ctx.limitations) > 0 and ctx.risk_level is not None
+    return GateCheckResult(
+        check_id="limitation_to_risk",
+        passed=has_mapping,
+        observed="present" if has_mapping else "missing",
+        threshold="required",
+    )
+
+
+def _check_data_adequacy(
+    ctx: CredibilityContext,
+    g25: Gate25Config,
+) -> GateCheckResult:
+    """Data adequacy: n_obs / n_params >= threshold."""
+    if not g25.data_adequacy_required:
+        return GateCheckResult(
+            check_id="data_adequacy",
+            passed=True,
+            observed="not_required",
+        )
+    if ctx.n_parameters == 0:
+        return GateCheckResult(
+            check_id="data_adequacy",
+            passed=True,
+            observed="no_parameters",
+        )
+    ratio = ctx.n_observations / ctx.n_parameters
+    passed = ratio >= g25.data_adequacy_ratio_min
+    return GateCheckResult(
+        check_id="data_adequacy",
+        passed=passed,
+        observed=round(ratio, 1),
+        threshold=g25.data_adequacy_ratio_min,
+        units="obs/params",
+    )
+
+
+def _check_sensitivity(
+    ctx: CredibilityContext,
+    g25: Gate25Config,
+) -> GateCheckResult:
+    """Sensitivity analysis results must be available when required."""
+    if not g25.sensitivity_analysis_required:
+        return GateCheckResult(
+            check_id="sensitivity_analysis",
+            passed=True,
+            observed="not_required",
+        )
+    return GateCheckResult(
+        check_id="sensitivity_analysis",
+        passed=ctx.sensitivity_available,
+        observed="available" if ctx.sensitivity_available else "missing",
+        threshold="required",
+    )
+
+
+def _check_ml_transparency(
+    result: BackendResult,
+    ctx: CredibilityContext,
+    g25: Gate25Config,
+) -> GateCheckResult:
+    """AI/ML transparency statement required for NODE/agentic backends."""
+    if not g25.ai_ml_transparency_required:
+        return GateCheckResult(
+            check_id="ml_transparency",
+            passed=True,
+            observed="not_required",
+        )
+
+    is_ml_backend = result.backend in ("jax_node", "agentic_llm")
+    if not is_ml_backend:
+        return GateCheckResult(
+            check_id="ml_transparency",
+            passed=True,
+            observed="not_ml_backend",
+        )
+
+    has_statement = (
+        ctx.ml_transparency_statement is not None
+        and len(ctx.ml_transparency_statement.strip()) > 0
+    )
+    return GateCheckResult(
+        check_id="ml_transparency",
+        passed=has_statement,
+        observed="present" if has_statement else "missing",
+        threshold="required",
     )

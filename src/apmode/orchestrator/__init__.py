@@ -33,7 +33,12 @@ from apmode.bundle.models import (
 from apmode.data.initial_estimates import NCAEstimator, build_initial_estimates_bundle
 from apmode.data.profiler import profile_data
 from apmode.data.splitter import split_subjects
-from apmode.governance.gates import evaluate_gate1, evaluate_gate2, evaluate_gate3
+from apmode.governance.gates import (
+    evaluate_gate1,
+    evaluate_gate2,
+    evaluate_gate2_5,
+    evaluate_gate3,
+)
 from apmode.governance.policy import GatePolicy
 from apmode.routing import route
 
@@ -57,6 +62,7 @@ class RunConfig:
     timeout_seconds: int = 600
     policy_path: Path | None = None
     covariate_names: list[str] = field(default_factory=list)
+    execution_mode: Literal["cpu_deterministic", "gpu_fast"] = "cpu_deterministic"
 
 
 @dataclass
@@ -86,10 +92,12 @@ class Orchestrator:
         runner: Nlmixr2Runner,
         bundle_base_dir: Path,
         config: RunConfig | None = None,
+        node_runner: object | None = None,
     ) -> None:
         self._runner = runner
         self._bundle_base = bundle_base_dir
         self._config = config or RunConfig()
+        self._node_runner = node_runner  # Phase 2: NodeBackendRunner
 
     async def run(
         self,
@@ -176,6 +184,7 @@ class Orchestrator:
             emitter.write_policy_file(policy.model_dump())
 
         # --- Stage 5: Automated Search ---
+        split_manifest_dict = split.model_dump()
         search_engine = SearchEngine(
             runner=self._runner,
             data_manifest=manifest,
@@ -183,6 +192,7 @@ class Orchestrator:
             seed=self._config.seed,
             timeout_seconds=self._config.timeout_seconds,
             allowed_backends=dispatch.backends,
+            split_manifest=split_manifest_dict,
         )
         search_outcome = await search_engine.run(
             evidence_manifest=evidence,
@@ -251,6 +261,7 @@ class Orchestrator:
                                 seed=self._config.seed + seed_offset,
                                 timeout_seconds=self._config.timeout_seconds,
                                 data_path=data_path,
+                                split_manifest=split_manifest_dict,
                             )
                             seed_runs.append(seed_result)
                             emitter.write_seed_result(seed_result, cid, seed_offset)
@@ -303,11 +314,41 @@ class Orchestrator:
                     )
                     continue
 
-                # Passed both gates
+                # Gate 2.5: Credibility Qualification (Phase 2)
+                from apmode.bundle.models import CredibilityContext
+
+                cred_ctx = CredibilityContext(
+                    context_of_use=f"{self._config.lane} lane analysis",
+                    risk_level="medium",
+                    n_observations=manifest.n_observations,
+                    n_parameters=len(sr.result.parameter_estimates),
+                    ml_transparency_statement=(
+                        f"Backend: {sr.result.backend}"
+                        if sr.result.backend in ("jax_node", "agentic_llm")
+                        else None
+                    ),
+                )
+                g25 = evaluate_gate2_5(sr.result, policy, credibility_context=cred_ctx)
+                emitter.write_gate_decision(g25, gate_number=2)  # writes gate2_5 file
+
+                if not g25.passed:
+                    emitter.append_failed_candidate(
+                        FailedCandidate(
+                            candidate_id=sr.candidate_id,
+                            backend=sr.result.backend,
+                            gate_failed="gate2_5",
+                            failed_checks=[c.check_id for c in g25.checks if not c.passed],
+                            summary_reason=g25.summary_reason,
+                            timestamp=datetime.now(tz=UTC).isoformat(),
+                        )
+                    )
+                    continue
+
+                # Passed gates 1, 2, 2.5
                 outcome.recommended.append(sr.candidate_id)
                 gate12_survivors.append(sr.result)
 
-            # Stage 6c: Gate 3 — Within-paradigm ranking
+            # Stage 6c: Gate 3 — Ranking (within- or cross-paradigm)
             if gate12_survivors:
                 g3_result, ranked = evaluate_gate3(gate12_survivors, policy)
                 emitter.write_gate_decision(g3_result, gate_number=3)

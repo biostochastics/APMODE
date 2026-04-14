@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository Status
 
-**Phase 1 Month 5-6 — in progress.** 679 tests passing. `mypy --strict` clean. `ruff` clean.
+**Phase 2 — in progress.** 797 tests passing. `mypy --strict` clean. `ruff` clean.
 
 - `PRD_APMODE_v0.2.md` — Initial RFC (2026-04-11)
 - `PRD_APMODE_v0.3.md` — Revised per multi-model stress-test (2026-04-13, **current**)
@@ -16,7 +16,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Install dependencies (Python 3.12+, uv required)
 uv sync --all-extras
 
-# Run the full test suite (679 tests)
+# Run the full test suite (797 tests)
 uv run pytest tests/ -q
 
 # Run specific test categories

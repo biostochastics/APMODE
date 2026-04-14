@@ -222,27 +222,24 @@ class TestSuiteAStructureCoverage:
         )
 
     @pytest.mark.parametrize("name", ["A2", "A4"])
-    def test_nonlinear_scenarios_need_profiler_signal(self, name: str) -> None:
-        """A2/A4 have nonlinear CL — coverage depends on profiler sensitivity.
+    def test_nonlinear_scenarios_detected(self, name: str) -> None:
+        """A2/A4 have nonlinear CL — profiler must detect via curvature heuristic.
 
-        If the profiler detects nonlinear_clearance_signature, the search
-        space will include MM/parallel elimination. Otherwise, only linear
-        elimination is searched and the ground-truth model is not covered.
-        This test documents the dependency on profiler sensitivity.
+        Even with a single dose level, the elimination curvature (early/late
+        log-concentration slope ratio) reliably detects MM kinetics.
         """
         manifest, df = ingest_nonmem_csv(_csv_path(name))
         evidence = profile_data(df, manifest)
-        space = SearchSpace.from_manifest(evidence)
 
-        if evidence.nonlinear_clearance_signature:
-            # Profiler detected nonlinear CL — search space should cover it
-            truth = self.GROUND_TRUTH[name]
-            candidates = generate_root_candidates(space, base_params=REFERENCE_PARAMS[name])
-            found = any(c.elimination.type == truth["elimination"] for c in candidates)
-            assert found, f"{name}: profiler detected nonlinear CL but space missing {truth}"
-        else:
-            # Profiler did not detect — document limitation, don't fail
-            assert "michaelis_menten" not in space.elimination_types
+        assert evidence.nonlinear_clearance_signature, (
+            f"{name}: profiler failed to detect nonlinear CL"
+        )
+
+        space = SearchSpace.from_manifest(evidence)
+        truth = self.GROUND_TRUTH[name]
+        candidates = generate_root_candidates(space, base_params=REFERENCE_PARAMS[name])
+        found = any(c.elimination.type == truth["elimination"] for c in candidates)
+        assert found, f"{name}: search space missing {truth['elimination']}"
 
 
 # ---------------------------------------------------------------------------

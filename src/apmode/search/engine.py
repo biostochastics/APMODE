@@ -75,6 +75,7 @@ class SearchEngine:
         seed: int,
         timeout_seconds: int | None = None,
         allowed_backends: list[str] | None = None,
+        split_manifest: dict[str, object] | None = None,
     ) -> None:
         self._runner = runner
         self._data_manifest = data_manifest
@@ -86,6 +87,7 @@ class SearchEngine:
         # Phase 2: SearchEngine will dispatch to multiple BackendRunners
         # based on this list.
         self._allowed_backends = allowed_backends or ["nlmixr2"]
+        self._split_manifest = split_manifest
 
     async def run(
         self,
@@ -219,6 +221,7 @@ class SearchEngine:
                 seed=self._seed,
                 timeout_seconds=self._timeout,
                 data_path=self._data_path,
+                split_manifest=self._split_manifest,
             )
             return SearchResult(
                 candidate_id=spec.model_id,

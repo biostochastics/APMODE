@@ -16,5 +16,13 @@
     "identifiability_required": false,
     "node_eligible": true,
     "loro_required": false
+  },
+  "gate2_5": {
+    "context_of_use_required": true,
+    "limitation_to_risk_mapping_required": false,
+    "data_adequacy_required": true,
+    "data_adequacy_ratio_min": 5.0,
+    "sensitivity_analysis_required": false,
+    "ai_ml_transparency_required": true
   }
 }
