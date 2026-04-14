@@ -14,6 +14,7 @@ Dispatch constraints from Evidence Manifest (PRD §4.2.1):
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass, field
 from datetime import UTC
@@ -28,6 +29,7 @@ from apmode.bundle.models import (
     CandidateLineage,
     CandidateLineageEntry,
     FailedCandidate,
+    LOROCVResult,
     LOROMetrics,
     SeedRegistry,
 )
@@ -62,11 +64,15 @@ class RunConfig:
     """Configuration for a single APMODE run."""
 
     lane: Literal["submission", "discovery", "optimization"] = "submission"
-    seed: int = 42
-    timeout_seconds: int = 600
+    seed: int = 753849
+    timeout_seconds: int = 900
     policy_path: Path | None = None
     covariate_names: list[str] = field(default_factory=list)
     execution_mode: Literal["cpu_deterministic", "gpu_fast"] = "cpu_deterministic"
+    max_concurrency: int = 1
+
+    def __post_init__(self) -> None:
+        self.max_concurrency = max(1, self.max_concurrency)
 
 
 @dataclass
@@ -207,6 +213,7 @@ class Orchestrator:
             allowed_backends=dispatch.backends,
             split_manifest=split_manifest_dict,
             runners=runners,
+            max_concurrency=self._config.max_concurrency,
         )
         search_outcome = await search_engine.run(
             evidence_manifest=evidence,
@@ -261,7 +268,6 @@ class Orchestrator:
             seed_results_map: dict[str, list[BRModel]] = {}
             seed_n = policy.gate1.seed_stability_n
             if seed_n > 1:
-                # Rank converged candidates by BIC, seed top-k
                 converged_srs = sorted(
                     [
                         sr
@@ -270,45 +276,56 @@ class Orchestrator:
                     ],
                     key=lambda r: r.bic if r.bic is not None else float("inf"),
                 )
-                # Seed top-k: enough to survive other Gate 1/2 attrition
                 top_k = min(len(converged_srs), max(3, seed_n))
-                for sr in converged_srs[:top_k]:
+                sem = asyncio.Semaphore(self._config.max_concurrency)
+
+                async def _seed_run(
+                    sr: SearchResult,
+                    seed_offset: int,
+                ) -> tuple[str, int, BRModel | None]:
                     cid = sr.candidate_id
-                    # Use the candidate's own fitted estimates for seed
-                    # stability (not NCA root estimates), so warm-start
-                    # children are re-evaluated from their discovered minimum
                     if sr.result is not None:
-                        cand_estimates = {
+                        cand_est = {
                             name: pe.estimate
                             for name, pe in sr.result.parameter_estimates.items()
                             if pe.category == "structural"
                         }
                     else:
-                        cand_estimates = {
+                        cand_est = {
                             k: v for k, v in nca_estimates.items() if not k.startswith("_")
                         }
-                    # Select runner based on spec type
                     seed_runner: BackendRunner = self._runner
                     if sr.spec.has_node_modules() and self._node_runner is not None:
                         seed_runner = self._node_runner
-                    seed_runs: list[BRModel] = []
-                    for seed_offset in range(1, seed_n):
+                    async with sem:
                         try:
-                            seed_result = await seed_runner.run(
+                            result = await seed_runner.run(
                                 spec=sr.spec,
                                 data_manifest=manifest,
-                                initial_estimates=cand_estimates,
+                                initial_estimates=cand_est,
                                 seed=self._config.seed + seed_offset,
                                 timeout_seconds=self._config.timeout_seconds,
                                 data_path=data_path,
                                 split_manifest=split_manifest_dict,
                             )
-                            seed_runs.append(seed_result)
-                            emitter.write_seed_result(seed_result, cid, seed_offset)
+                            return cid, seed_offset, result
                         except Exception:
                             logger.warning("Seed run %d failed for %s", seed_offset, cid)
-                    if seed_runs:
-                        seed_results_map[cid] = seed_runs
+                            return cid, seed_offset, None
+
+                # Build all seed tasks for all top-k candidates
+                seed_tasks = [
+                    _seed_run(sr, offset)
+                    for sr in converged_srs[:top_k]
+                    for offset in range(1, seed_n)
+                ]
+                seed_outcomes = await asyncio.gather(*seed_tasks)
+
+                # Collect results per candidate
+                for cid, seed_offset, result in seed_outcomes:
+                    if result is not None:
+                        seed_results_map.setdefault(cid, []).append(result)
+                        emitter.write_seed_result(result, cid, seed_offset)
 
             # Stage 6b: Gate 1 evaluation (collect survivors)
             gate1_survivors: list[tuple[SearchResult, BRModel]] = []
@@ -660,16 +677,17 @@ class Orchestrator:
             lane=self._config.lane,
         )
 
-        loro_map: dict[str, LOROMetrics] = {}
-        for cand_result in candidates:
-            # Select the appropriate runner for this candidate's backend
-            runner: BackendRunner = self._runner
-            if cand_result.backend == "jax_node" and self._node_runner is not None:
-                runner = self._node_runner
-            elif cand_result.backend == "agentic_llm" and self._agentic_runner is not None:
-                runner = self._agentic_runner
+        sem = asyncio.Semaphore(max(1, self._config.max_concurrency))
 
-            # Use candidate's fitted estimates for warm-start
+        async def _eval_one(
+            cand_result: BackendResult,
+        ) -> tuple[str, LOROCVResult | None]:
+            cand_runner: BackendRunner = self._runner
+            if cand_result.backend == "jax_node" and self._node_runner is not None:
+                cand_runner = self._node_runner
+            elif cand_result.backend == "agentic_llm" and self._agentic_runner is not None:
+                cand_runner = self._agentic_runner
+
             warm_estimates = {
                 name: pe.estimate
                 for name, pe in cand_result.parameter_estimates.items()
@@ -678,39 +696,46 @@ class Orchestrator:
             if not warm_estimates:
                 warm_estimates = {k: v for k, v in nca_estimates.items() if not k.startswith("_")}
 
-            # Need the candidate's DSLSpec — find it from search results
             spec = self._spec_map.get(cand_result.model_id)
             if spec is None:
                 logger.warning("loro_cv_no_spec", candidate=cand_result.model_id)
-                continue
+                return cand_result.model_id, None
 
-            try:
-                loro_result = await evaluate_loro_cv(
-                    candidate_spec=spec,
-                    candidate_result=cand_result,
-                    folds=folds,
-                    runner=runner,
-                    data_manifest=manifest,
-                    data_path=data_path,
-                    initial_estimates=warm_estimates,
-                    seed=self._config.seed,
-                    timeout_seconds=self._config.timeout_seconds,
-                )
+            async with sem:
+                try:
+                    return cand_result.model_id, await evaluate_loro_cv(
+                        candidate_spec=spec,
+                        candidate_result=cand_result,
+                        folds=folds,
+                        runner=cand_runner,
+                        data_manifest=manifest,
+                        data_path=data_path,
+                        initial_estimates=warm_estimates,
+                        seed=self._config.seed,
+                        timeout_seconds=self._config.timeout_seconds,
+                    )
+                except Exception:
+                    logger.warning(
+                        "loro_cv_candidate_failed",
+                        candidate=cand_result.model_id,
+                        exc_info=True,
+                    )
+                    return cand_result.model_id, None
+
+        gathered = await asyncio.gather(*[_eval_one(c) for c in candidates])
+
+        # Post-gather: write artifacts and collect metrics (sequential, no races)
+        loro_map: dict[str, LOROMetrics] = {}
+        for model_id, loro_result in gathered:
+            if loro_result is not None:
                 emitter.write_loro_cv_result(loro_result)
-                loro_map[cand_result.model_id] = loro_result.metrics
+                loro_map[model_id] = loro_result.metrics
                 logger.info(
                     "loro_cv_complete",
-                    candidate=cand_result.model_id,
+                    candidate=model_id,
                     npde_mean=loro_result.metrics.pooled_npde_mean,
                     vpc_concordance=loro_result.metrics.vpc_coverage_concordance,
                 )
-            except Exception:
-                logger.warning(
-                    "loro_cv_candidate_failed",
-                    candidate=cand_result.model_id,
-                    exc_info=True,
-                )
-
         return loro_map
 
     def _load_policy(self) -> GatePolicy | None:

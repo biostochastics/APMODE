@@ -17,6 +17,7 @@ Search flow:
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -81,6 +82,7 @@ class SearchEngine:
         allowed_backends: list[str] | None = None,
         split_manifest: dict[str, object] | None = None,
         runners: dict[str, BackendRunner] | None = None,
+        max_concurrency: int = 1,
     ) -> None:
         self._data_manifest = data_manifest
         self._data_path = data_path
@@ -88,6 +90,8 @@ class SearchEngine:
         self._timeout = timeout_seconds
         self._allowed_backends = allowed_backends or ["nlmixr2"]
         self._split_manifest = split_manifest
+        self._max_concurrency = max(1, max_concurrency)
+        self._semaphore: asyncio.Semaphore | None = None
 
         # Phase 2: multiple runners keyed by backend name.
         # ``runner`` is the default (nlmixr2); ``runners`` overrides.
@@ -125,24 +129,25 @@ class SearchEngine:
         all_results: list[SearchResult] = []
 
         # Phase 1: evaluate all root candidates
+        # Register all roots in the DAG and write compiled specs (cheap, sequential)
         for spec in candidates:
             dag.add_root(spec)
-
             if emitter:
-                # Filter out metadata keys (prefixed with _) from initial estimates
                 clean_estimates = {
                     k: v for k, v in initial_estimates.items() if not k.startswith("_")
                 }
                 emitter.write_compiled_spec(spec, initial_estimates=clean_estimates)
 
-            sr = await self._evaluate_candidate(spec, initial_estimates)
+        # Dispatch evaluations (parallel when max_concurrency > 1)
+        root_results = await self._gather_evaluations(
+            [(spec, initial_estimates) for spec in candidates]
+        )
+        for sr in root_results:
             all_results.append(sr)
-
             if sr.converged and sr.bic is not None:
-                dag.update_score(spec.model_id, sr.bic, True)
+                dag.update_score(sr.candidate_id, sr.bic, True)
             else:
-                dag.update_score(spec.model_id, float("inf"), False)
-
+                dag.update_score(sr.candidate_id, float("inf"), False)
             if emitter:
                 self._write_trajectory_entry(emitter, sr, parent_id=None)
 
@@ -151,6 +156,11 @@ class SearchEngine:
         if converged:
             # Top 3 by BIC for warm-starting
             top_k = sorted(converged, key=lambda r: r.bic or float("inf"))[:3]
+
+            # Collect all child tasks upfront so they can run concurrently
+            child_tasks: list[tuple[DSLSpec, dict[str, float], str, str]] = []
+            seen_ids = {r.candidate_id for r in all_results}
+
             for parent_sr in top_k:
                 if parent_sr.result is None:
                     continue
@@ -162,7 +172,6 @@ class SearchEngine:
                 if not parent_params:
                     continue
 
-                # Generate child candidates with different error models
                 for err_type in ["proportional", "additive", "combined"]:
                     child_specs = generate_root_candidates(
                         SearchSpace(
@@ -177,22 +186,32 @@ class SearchEngine:
                         ),
                         parent_params,
                     )
-                    for child_spec in child_specs[:2]:  # limit children per parent
-                        if any(r.spec.model_id == child_spec.model_id for r in all_results):
+                    for child_spec in child_specs[:2]:
+                        if child_spec.model_id in seen_ids:
                             continue
-
+                        seen_ids.add(child_spec.model_id)
                         dag.add_child(parent_sr.candidate_id, child_spec, f"warm_start_{err_type}")
-                        warm_est = parent_params.copy()
-                        child_sr = await self._evaluate_candidate(child_spec, warm_est)
-                        all_results.append(child_sr)
-
-                        if child_sr.converged and child_sr.bic is not None:
-                            dag.update_score(child_spec.model_id, child_sr.bic, True)
-
-                        if emitter:
-                            self._write_trajectory_entry(
-                                emitter, child_sr, parent_id=parent_sr.candidate_id
+                        child_tasks.append(
+                            (
+                                child_spec,
+                                parent_params.copy(),
+                                parent_sr.candidate_id,
+                                err_type,
                             )
+                        )
+
+            if child_tasks:
+                child_results = await self._gather_evaluations(
+                    [(spec, est) for spec, est, _, _ in child_tasks]
+                )
+                for (child_spec, _, parent_id, _), child_sr in zip(
+                    child_tasks, child_results, strict=True
+                ):
+                    all_results.append(child_sr)
+                    if child_sr.converged and child_sr.bic is not None:
+                        dag.update_score(child_spec.model_id, child_sr.bic, True)
+                    if emitter:
+                        self._write_trajectory_entry(emitter, child_sr, parent_id=parent_id)
 
         # Compute Pareto frontier
         pareto = _pareto_frontier(all_results)
@@ -209,6 +228,32 @@ class SearchEngine:
             dag=dag,
             best_bic=best,
         )
+
+    async def _gather_evaluations(
+        self,
+        tasks: list[tuple[DSLSpec, dict[str, float]]],
+    ) -> list[SearchResult]:
+        """Evaluate candidates, respecting max_concurrency via semaphore.
+
+        When max_concurrency == 1, evaluates sequentially (no gather overhead).
+        """
+        if not tasks:
+            return []
+
+        if self._max_concurrency == 1:
+            # Fast path: sequential, no gather overhead
+            return [await self._evaluate_candidate(spec, est) for spec, est in tasks]
+
+        # Lazy semaphore creation — binds to the running event loop
+        if self._semaphore is None:
+            self._semaphore = asyncio.Semaphore(self._max_concurrency)
+        sem = self._semaphore
+
+        async def _bounded(spec: DSLSpec, est: dict[str, float]) -> SearchResult:
+            async with sem:
+                return await self._evaluate_candidate(spec, est)
+
+        return list(await asyncio.gather(*[_bounded(s, e) for s, e in tasks]))
 
     def _select_runner(self, spec: DSLSpec) -> tuple[BackendRunner, str]:
         """Select the appropriate backend runner for a spec.

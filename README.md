@@ -8,7 +8,7 @@
 
   [![Phase](https://img.shields.io/badge/phase-3%20(P3.B)-blue)]()
 
-  [![Tests](https://img.shields.io/badge/tests-1145%20passing-success)]()
+  [![Tests](https://img.shields.io/badge/tests-1244%20passing-success)]()
   [![License](https://img.shields.io/badge/license-GPL--2.0--or--later-green)](LICENSE)
   [![Python](https://img.shields.io/badge/python-3.12%2B-yellow)]()
   [![mypy](https://img.shields.io/badge/mypy-strict%20%E2%9C%93-blue)]()
@@ -333,7 +333,19 @@ uv run pytest tests/ --snapshot-update      # update snapshots after emitter cha
 | `apmode log <bundle> --gate gate1` | Per-check pass/fail details for a specific gate |
 | `apmode diff <bundle-a> <bundle-b>` | Side-by-side comparison of evidence, rankings, gate pass rates |
 | `apmode validate <bundle>` | Validate bundle completeness |
-| `apmode version` | Print version |
+| `apmode --version` | Print version |
+
+### Key Options for `apmode run`
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--lane` | `submission` | Operating lane: `submission`, `discovery`, `optimization` |
+| `--seed` | `753849` | Root random seed for reproducibility |
+| `--parallel-models N` / `-j N` | `1` | Max concurrent model evaluations (R subprocesses). Higher values speed up search but use more memory. |
+| `--timeout` | `600` | Backend timeout in seconds |
+| `--agentic/--no-agentic` | on | Enable/disable agentic LLM backend (discovery/optimization lanes) |
+| `--provider` | `anthropic` | LLM provider: `anthropic`, `openai`, `gemini`, `ollama`, `openrouter` |
+| `--policy` | auto | Gate policy JSON file (falls back to `policies/<lane>.json`) |
 
 **Exit codes:** `0` success, `1` input/validation error, `2` backend error, `130` user interrupt.
 

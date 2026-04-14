@@ -9,7 +9,6 @@ Commands:
   apmode explore <dataset-or-name> [--lane] [--non-interactive]
   apmode diff <bundle-a> <bundle-b>
   apmode log <bundle-dir> [--gate] [--failed]
-  apmode version
 
 Exit codes:
   0  Success
@@ -47,6 +46,17 @@ class Lane(enum.StrEnum):
     optimization = "optimization"
 
 
+_COPYRIGHT = "(C) 2026 Biostochastics. For Research Use Only."
+_CITATION = "Cite: Kornilov, S.A. (2026). APMODE: Adaptive Pharmacokinetic Model Discovery Engine. https://github.com/biostochastics/apmode"
+
+
+def _get_version() -> str:
+    """Return the package version string (lazy import)."""
+    from apmode import __version__
+
+    return __version__
+
+
 app = typer.Typer(
     name="apmode",
     help="Adaptive Pharmacokinetic Model Discovery Engine",
@@ -54,11 +64,8 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
     context_settings={"help_option_names": ["-h", "--help"]},
+    epilog=(f"[dim]Version: {_get_version()}[/]\n[dim]{_COPYRIGHT}[/]\n[dim]{_CITATION}[/]"),
 )
-
-
-_COPYRIGHT = "(C) 2026 Biostochastics. For Research Use Only."
-_GITHUB = "https://github.com/biostochastics/APMODE"
 
 # Default model per provider for the agentic backend
 _DEFAULT_MODELS: dict[str, str] = {
@@ -161,7 +168,7 @@ def _version_callback(value: bool) -> None:
 
         console.print(f"[bold]apmode[/bold] {__version__}")
         console.print(f"[dim]{_COPYRIGHT}[/]")
-        console.print(f"[dim]{_GITHUB}[/]")
+        console.print(f"[dim]{_CITATION}[/]")
         raise typer.Exit()
 
 
@@ -182,21 +189,7 @@ def _main(
 
     Composes classical NLME, automated structural search, hybrid NODE,
     and agentic LLM backends into a governed PK model discovery workflow.
-
-    \b
-    (C) 2026 Biostochastics. For Research Use Only.
-    https://github.com/biostochastics/APMODE
     """
-
-
-@app.command()
-def version() -> None:
-    """Print APMODE version."""
-    from apmode import __version__
-
-    console.print(f"[bold]apmode[/bold] {__version__}")
-    console.print(f"[dim]{_COPYRIGHT}[/]")
-    console.print(f"[dim]{_GITHUB}[/]")
 
 
 @app.command()
@@ -222,7 +215,7 @@ def run(
     seed: Annotated[
         int,
         typer.Option(help="Root random seed for reproducibility."),
-    ] = 42,
+    ] = 753849,
     policy: Annotated[
         Path | None,
         typer.Option(
@@ -232,8 +225,15 @@ def run(
     ] = None,
     timeout: Annotated[
         int,
-        typer.Option(help="Backend timeout in seconds.", min=1),
-    ] = 600,
+        typer.Option(
+            help=(
+                "Per-candidate backend timeout in seconds. "
+                "SAEM on 50 subjects ~10s, 120 subjects ~60-120s, "
+                "1000+ subjects ~300-600s. Default 900s is safe for most datasets."
+            ),
+            min=1,
+        ),
+    ] = 900,
     output: Annotated[
         Path,
         typer.Option(help="Bundle output directory."),
@@ -241,7 +241,7 @@ def run(
     agentic: Annotated[
         bool,
         typer.Option(
-            "--agentic",
+            "--agentic/--no-agentic",
             help=(
                 "Enable the agentic LLM backend (Phase 3). "
                 "Auto-activates in discovery/optimization lanes when an API key is found. "
@@ -278,6 +278,15 @@ def run(
             max=25,
         ),
     ] = 10,
+    parallel_models: Annotated[
+        int,
+        typer.Option(
+            "--parallel-models",
+            "-j",
+            help="Max concurrent model evaluations (R subprocesses). Default 1 = sequential.",
+            min=1,
+        ),
+    ] = 1,
     verbose: Annotated[
         bool,
         typer.Option("--verbose", "-v", help="Show detailed pipeline logs."),
@@ -350,7 +359,7 @@ def run(
 
     # --- Write nlmixr2-ready CSV ---
     nlmixr2_df = to_nlmixr2_format(df)
-    data_csv = output / "_tmp_data.csv"
+    data_csv = (output / "_tmp_data.csv").resolve()
     data_csv.parent.mkdir(parents=True, exist_ok=True)
     nlmixr2_df.to_csv(data_csv, index=False)
 
@@ -359,6 +368,7 @@ def run(
         seed=seed,
         timeout_seconds=timeout,
         policy_path=policy,
+        max_concurrency=parallel_models,
     )
 
     runner = Nlmixr2Runner(work_dir=output / "_work", estimation=["saem"])
@@ -912,7 +922,7 @@ def explore(
     seed: Annotated[
         int,
         typer.Option(help="Random seed."),
-    ] = 42,
+    ] = 753849,
 ) -> None:
     """Interactive exploration of a PK dataset.
 
@@ -1074,7 +1084,13 @@ def _print_search_space_panel(space: object, candidates: Sequence[object], lane:
     console.print(Panel(t, title="[bold]Search Space[/]", border_style="yellow"))
 
 
-def _launch_run(csv_path: Path, lane: Lane, seed: int, output: Path) -> None:
+def _launch_run(
+    csv_path: Path,
+    lane: Lane,
+    seed: int,
+    output: Path,
+    parallel_models: int = 1,
+) -> None:
     """Delegate to the run command by invoking it directly."""
     import contextlib
 
@@ -1085,6 +1101,7 @@ def _launch_run(csv_path: Path, lane: Lane, seed: int, output: Path) -> None:
             seed=seed,
             output=output,
             timeout=600,
+            parallel_models=parallel_models,
             verbose=False,
             quiet=False,
         )

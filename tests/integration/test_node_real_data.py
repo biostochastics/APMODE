@@ -11,7 +11,6 @@ Datasets:
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 
 import jax
@@ -234,7 +233,7 @@ class TestTheoSDNodeFit:
         assert report.fidelity is not None
         assert report.fidelity.auc_gmr > 0
 
-    def test_full_runner_e2e(self, tmp_path: Path) -> None:
+    async def test_full_runner_e2e(self, tmp_path: Path) -> None:
         """End-to-end NodeBackendRunner.run() on theo_sd."""
         reset_weight_library()
 
@@ -247,14 +246,12 @@ class TestTheoSDNodeFit:
             training_config=TrainingConfig(epochs=50, learning_rate=5e-3),
         )
 
-        result = asyncio.get_event_loop().run_until_complete(
-            runner.run(
-                spec=spec,
-                data_manifest=manifest,
-                initial_estimates={"ka": 1.5, "V": 30.0, "CL": 3.0},
-                seed=42,
-                data_path=csv_path,
-            )
+        result = await runner.run(
+            spec=spec,
+            data_manifest=manifest,
+            initial_estimates={"ka": 1.5, "V": 30.0, "CL": 3.0},
+            seed=42,
+            data_path=csv_path,
         )
 
         assert result.backend == "jax_node"

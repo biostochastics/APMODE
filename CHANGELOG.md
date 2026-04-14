@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Parallel model evaluation** (`--parallel-models N` / `-j N` CLI flag)
+  - Concurrent candidate evaluation in SearchEngine via `asyncio.gather` + `Semaphore`
+  - Parallelized seed-stability runs and LORO-CV evaluation in the orchestrator
+  - Sequential fast-path when `max_concurrency=1` (default, zero overhead)
+  - `RunConfig.max_concurrency` field with `__post_init__` clamping for API safety
+  - Lazy semaphore creation to avoid event-loop binding issues
+  - All shared-state mutations (DAG, trajectory writes, emitter) remain sequential post-gather
+  - 6 new async unit tests covering semaphore bounds, result ordering, and error isolation
 - **Comprehensive benchmark suite expansion** (Phase 3, PRD §5/§9)
   - **Benchmark infrastructure** (`benchmarks/models.py`): Pydantic v2 models for
     `DatasetCard`, `BenchmarkCase`, `BenchmarkScore`, `PerturbationRecipe`,

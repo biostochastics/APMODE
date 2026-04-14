@@ -134,7 +134,7 @@ def pretrain_node_weights(
     *,
     epochs: int = 200,
     learning_rate: float = 5e-3,
-    seed: int = 42,
+    seed: int = 753849,
 ) -> NODESubModel:
     """Pre-train a NODE sub-model to approximate a classical rate law.
 
@@ -225,7 +225,7 @@ class WeightLibrary:
         constraint_template: str = "bounded_positive",
         hidden_dim: int = 3,
         *,
-        seed: int = 42,
+        seed: int = 753849,
     ) -> NODESubModel | None:
         """Retrieve or generate pre-trained weights for a reference profile.
 
