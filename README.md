@@ -195,6 +195,8 @@ DSL text ──→ Lark parser ──→ AST ──→        Search Engine
 | Dose expansion | `src/apmode/data/dosing.py` | ADDL/II expansion, infusion events, event table builder |
 | Classical backend | `src/apmode/backends/nlmixr2_runner.py` | Async subprocess runner with file-based IPC |
 | NODE backend | `src/apmode/backends/node_*.py` | Bram-style hybrid MLP, Diffrax ODE, Optax training |
+| Agentic LLM backend | `src/apmode/backends/agentic_runner.py` | Closed-loop LLM model improvement via Formular transforms |
+| LLM providers | `src/apmode/backends/llm_providers.py` | Anthropic, OpenAI, Gemini, Ollama, OpenRouter, litellm |
 | Governance | `src/apmode/governance/` | Gates 1/2/2.5/3, cross-paradigm ranking, policy files |
 | Search engine | `src/apmode/search/engine.py` | Multi-backend dispatch, BIC scoring, Pareto frontier |
 | Orchestrator | `src/apmode/orchestrator/` | Full pipeline: ingest → gates → bundle |
@@ -351,6 +353,73 @@ Plus 9 simulated ground-truth datasets (1/2-cmt, oral/IV/infusion, linear/MM).
 
 ---
 
+## Agentic LLM Backend (Phase 3)
+
+The agentic backend is a **closed-loop model improvement system** where an LLM proposes typed PK model transforms based on diagnostic feedback, operating exclusively within the Formular DSL grammar.
+
+### How It Works
+
+```
+AgenticRunner.run(initial_spec, data)
+ │
+ FOR each iteration (max 25):
+ │  1. EVALUATE  → inner_runner fits current spec (nlmixr2/JAX)
+ │  2. SUMMARIZE → convergence, CWRES, shrinkage, VPC → markdown
+ │  3. PROMPT    → system prompt + conversation history → LLM
+ │  4. PARSE     → JSON extraction → typed FormularTransform objects
+ │  5. VALIDATE  → precondition checks + post-apply semantic validation
+ │  6. APPLY     → transforms applied sequentially, lineage DAG tracked
+ │  7. TRACE     → input/output/meta/cached_response written per iteration
+ │  8. FEEDBACK  → validation failures fed back to LLM for correction
+ │
+ RETURN best BackendResult by BIC across all iterations
+```
+
+### Available Transforms
+
+The LLM cannot write raw code — it can only propose these 6 typed operations:
+
+| Transform | Purpose | Example |
+|-----------|---------|---------|
+| `swap_module` | Replace absorption/distribution/elimination/observation | Linear → MichaelisMenten elimination |
+| `add_covariate_link` | Add covariate effect (power/exponential/linear/categorical/maturation) | Allometric WT → CL |
+| `adjust_variability` | Modify IIV structure (add/remove/upgrade_to_block) | Remove IIV on param with >30% shrinkage |
+| `set_transit_n` | Change transit compartment count | Increase transit N for delayed absorption |
+| `toggle_lag` | Enable/disable absorption lag time | Add tlag for delayed onset |
+| `replace_with_node` | Swap to Neural ODE (discovery/optimization only) | NODE absorption with dim=4 |
+
+### LLM Provider Support
+
+| Provider | SDK | Auth | Cost |
+|----------|-----|------|------|
+| **Anthropic** | `anthropic.AsyncAnthropic` | `ANTHROPIC_API_KEY` | Per-token |
+| **OpenAI** | `openai.AsyncOpenAI` | `OPENAI_API_KEY` | Per-token |
+| **Google Gemini** | `google.genai.Client` | `GEMINI_API_KEY` | Per-token |
+| **OpenRouter** | OpenAI-compatible | `OPENROUTER_API_KEY` | Per-token |
+| **Ollama** | `ollama.AsyncClient` | None (local) | Free |
+| **litellm** | `litellm.acompletion` | Per-provider | Fallback |
+
+Install provider SDKs: `uv sync --extra llm`
+
+### Reproducibility
+
+- **temperature=0** enforced (non-zero raises `ValueError`)
+- **Payload hashing** — SHA-256 of every request for audit
+- **Cached responses** — `ReplayClient` replays from `agentic_trace/` without API calls
+- **Model-version escrow** — deterministic fingerprint when available (Anthropic: `full`, others: `best-effort`)
+- **Conversation history** — multi-turn context preserved across iterations
+
+### Live Integration Tests
+
+```bash
+# Run live provider tests (requires API keys or local Ollama)
+uv run pytest tests/integration/test_llm_providers_live.py -m live -v
+
+# Tests skip gracefully on missing keys or billing/quota errors
+```
+
+---
+
 ## Known Limitations
 
 - **Multi-dose**: ADDL/II expansion supported across all backends; SS (steady-state) pass-through for nlmixr2 only — Stan/NODE reject SS!=0
@@ -361,7 +430,7 @@ Plus 9 simulated ground-truth datasets (1/2-cmt, oral/IV/infusion, linear/MM).
 - **TMDD QSS**: Uses KD as approximation for KSS; when kint >> koff, this can overestimate complex formation
 - **TimeVaryingElim**: Only `exponential` decay supported; `half_life` and `linear` rejected by validator
 - **Context of use**: Orchestrator auto-generates COU for Gate 2.5; production use needs user-provided COU via CLI or config
-- **Agentic LLM backend**: Phase 3 scope
+- **Agentic LLM backend**: Requires funded API keys (Anthropic/OpenAI) or local Ollama with a chat-capable model (≥4B params recommended)
 
 See `ARCHITECTURE.md` for the full design rationale.
 

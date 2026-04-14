@@ -146,6 +146,10 @@ class AgenticRunner:
         iteration_records: list[IterationRecord] = []
         lineage_entries: list[dict[str, str | None]] = []
 
+        # Conversation history preserves multi-turn context across iterations
+        # so the LLM knows what it tried before and what happened.
+        conversation_history: list[dict[str, str]] = []
+
         for iteration in range(1, self._config.max_iterations + 1):
             iter_id = f"iter_{iteration:03d}"
             record = IterationRecord(iteration=iteration, spec_before=current_spec.model_id)
@@ -177,9 +181,10 @@ class AgenticRunner:
                     f"Please propose transforms to address this failure, "
                     f"or signal stop if no recovery is possible."
                 )
+                conversation_history.append({"role": "user", "content": error_msg})
                 messages = [
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": error_msg},
+                    *conversation_history,
                 ]
                 prompt_hash = hashlib.sha256(
                     json.dumps(messages, sort_keys=True).encode()
@@ -198,6 +203,9 @@ class AgenticRunner:
 
                 llm_response = await self._llm.complete(iter_id, messages)
                 self._write_cached_response(iter_id, llm_response)
+                conversation_history.append(
+                    {"role": "assistant", "content": llm_response.raw_text}
+                )
 
                 parse_result = parse_llm_response(llm_response.raw_text)
                 trace_output = AgenticTraceOutput(
@@ -232,12 +240,17 @@ class AgenticRunner:
                     iteration_records.append(record)
                     break
 
-                # Apply corrective transforms if any
+                # Apply corrective transforms if any, with feedback
+                err_feedback: list[str] = []
                 if parse_result.success and parse_result.transforms:
                     new_spec = current_spec
                     for transform in parse_result.transforms:
                         t_errors = validate_transform(new_spec, transform)
-                        if not t_errors:
+                        if t_errors:
+                            err_feedback.append(
+                                f"Transform `{transform}` rejected: " + "; ".join(t_errors)
+                            )
+                        else:
                             try:
                                 prev_id = new_spec.model_id
                                 new_spec = apply_transform(new_spec, transform)
@@ -248,12 +261,28 @@ class AgenticRunner:
                                         "transform": str(transform),
                                     }
                                 )
-                            except ValueError:
-                                pass
+                            except ValueError as e:
+                                err_feedback.append(f"Transform `{transform}` apply failed: {e}")
                     lane_enum = Lane(self._config.lane)
                     dsl_errors = validate_dsl(new_spec, lane=lane_enum)
-                    if not dsl_errors:
+                    if dsl_errors:
+                        err_feedback.append(
+                            "Post-transform DSL validation failed: "
+                            + "; ".join(e.message for e in dsl_errors)
+                        )
+                    else:
                         current_spec = new_spec
+                elif not parse_result.success:
+                    err_feedback.append("Response parse failed: " + "; ".join(parse_result.errors))
+
+                # Feed validation failures back so the LLM can correct
+                if err_feedback:
+                    feedback_msg = (
+                        "## Validation Feedback\n\n"
+                        + "\n".join(f"- {f}" for f in err_feedback)
+                        + "\n\nPlease propose corrected transforms."
+                    )
+                    conversation_history.append({"role": "user", "content": feedback_msg})
 
                 history.append(
                     {
@@ -296,10 +325,11 @@ class AgenticRunner:
             )
             diag_summary = summarize_diagnostics(result)
 
-            # 3. Build messages
+            # 3. Build messages with conversation history
+            conversation_history.append({"role": "user", "content": diag_text})
             messages = [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": diag_text},
+                *conversation_history,
             ]
 
             # 4. Write trace input
@@ -325,6 +355,7 @@ class AgenticRunner:
 
             # 5a. Write cached response for ReplayClient deterministic replay
             self._write_cached_response(iter_id, llm_response)
+            conversation_history.append({"role": "assistant", "content": llm_response.raw_text})
 
             # 6. Write trace output + meta
             parse_result = parse_llm_response(llm_response.raw_text)
@@ -372,17 +403,29 @@ class AgenticRunner:
                 )
                 break
 
-            # 8. Parse failure → skip iteration
+            # 8. Parse failure → feed back to LLM
             if not parse_result.success:
                 record.error = f"Parse failure: {'; '.join(parse_result.errors)}"
                 record.reasoning = parse_result.reasoning
                 iteration_records.append(record)
                 logger.warning("Iteration %d: parse failed — %s", iteration, parse_result.errors)
+                conversation_history.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "## Validation Feedback\n\n"
+                            f"Your response could not be parsed: "
+                            f"{'; '.join(parse_result.errors)}\n\n"
+                            "Please respond with valid JSON matching the schema."
+                        ),
+                    }
+                )
                 continue
 
-            # 9. Apply transforms sequentially
+            # 9. Apply transforms sequentially, collecting validation feedback
             new_spec = current_spec
             applied_transforms: list[str] = []
+            validation_feedback: list[str] = []
 
             for transform in parse_result.transforms:
                 # Validate transform against current spec
@@ -392,6 +435,9 @@ class AgenticRunner:
                         "Iteration %d: transform validation failed: %s",
                         iteration,
                         t_errors,
+                    )
+                    validation_feedback.append(
+                        f"Transform `{transform}` rejected: " + "; ".join(t_errors)
                     )
                     continue
 
@@ -409,6 +455,7 @@ class AgenticRunner:
                     )
                 except ValueError as e:
                     logger.warning("Iteration %d: transform apply failed: %s", iteration, e)
+                    validation_feedback.append(f"Transform `{transform}` apply failed: {e}")
                     continue
 
             # 10. Validate new spec against lane
@@ -421,8 +468,36 @@ class AgenticRunner:
                     [e.message for e in dsl_errors],
                 )
                 record.error = f"DSL validation: {[e.message for e in dsl_errors]}"
+                validation_feedback.append(
+                    "Post-transform DSL validation failed: "
+                    + "; ".join(e.message for e in dsl_errors)
+                )
                 iteration_records.append(record)
+                # Feed validation failures back to LLM for next iteration
+                conversation_history.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "## Validation Feedback\n\n"
+                            + "\n".join(f"- {f}" for f in validation_feedback)
+                            + "\n\nPlease propose corrected transforms."
+                        ),
+                    }
+                )
                 continue
+
+            # Feed partial validation feedback if some transforms were rejected
+            if validation_feedback:
+                conversation_history.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "## Partial Validation Feedback\n\n"
+                            "Some transforms were applied but others were rejected:\n"
+                            + "\n".join(f"- {f}" for f in validation_feedback)
+                        ),
+                    }
+                )
 
             record.spec_after = new_spec.model_id
             record.transforms_proposed = applied_transforms

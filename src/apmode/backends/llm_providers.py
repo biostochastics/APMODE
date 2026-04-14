@@ -214,10 +214,12 @@ class OpenRouterClient(OpenAIClient):
     """OpenRouter via OpenAI-compatible API.
 
     Requires: ``pip install openai``
-    Auth: OPENAI_API_KEY env var (set to your OpenRouter key)
+    Auth: OPENROUTER_API_KEY or OPENAI_API_KEY env var
     """
 
     def __init__(self, config: LLMConfig) -> None:
+        import os
+
         # Override api_base to OpenRouter endpoint
         patched = LLMConfig(
             model=config.model,
@@ -227,6 +229,51 @@ class OpenRouterClient(OpenAIClient):
             api_base=config.api_base or "https://openrouter.ai/api/v1",
         )
         super().__init__(patched)
+        # OpenRouter uses its own key; set OPENAI_API_KEY for the OpenAI SDK
+        self._api_key = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENAI_API_KEY")
+
+    async def complete(
+        self,
+        iteration_id: str,
+        messages: list[dict[str, str]],
+    ) -> LLMResponse:
+        import openai
+
+        kwargs: dict[str, Any] = {"base_url": self._config.api_base}
+        if self._api_key:
+            kwargs["api_key"] = self._api_key
+
+        client = openai.AsyncOpenAI(**kwargs)
+
+        payload: dict[str, Any] = {
+            "model": self._config.model,
+            "messages": messages,
+            "max_tokens": self._config.max_tokens,
+            "temperature": self._config.temperature,
+        }
+        payload_hash = _compute_payload_hash(payload)
+
+        start = time.monotonic()
+        response = await client.chat.completions.create(**payload)
+        elapsed = time.monotonic() - start
+
+        raw_text = response.choices[0].message.content or "" if response.choices else ""
+        usage = response.usage
+
+        return LLMResponse(
+            raw_text=raw_text,
+            model_id=response.model or self._config.model,
+            model_version=getattr(response, "system_fingerprint", "") or response.model or "",
+            input_tokens=usage.prompt_tokens if usage else 0,
+            output_tokens=usage.completion_tokens if usage else 0,
+            cost_usd=_estimate_openai_cost(
+                self._config.model,
+                usage.prompt_tokens if usage else 0,
+                usage.completion_tokens if usage else 0,
+            ),
+            wall_time_seconds=round(elapsed, 3),
+            request_payload_hash=payload_hash,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -256,17 +303,22 @@ class GeminiClient:
 
         client = genai.Client()
 
-        # Gemini uses a flat contents string or list of Content objects.
-        # Convert chat messages to a single prompt string.
+        # Separate system instruction from conversation turns.
+        # Gemini supports multi-turn via list of Content objects with
+        # role="user" or role="model" (Gemini's name for "assistant").
         system_text = ""
-        user_parts: list[str] = []
+        contents: list[types.Content] = []
         for msg in messages:
             if msg["role"] == "system":
                 system_text = msg["content"]
             else:
-                user_parts.append(msg["content"])
-
-        contents = "\n\n".join(user_parts)
+                gemini_role = "model" if msg["role"] == "assistant" else "user"
+                contents.append(
+                    types.Content(
+                        role=gemini_role,
+                        parts=[types.Part.from_text(text=msg["content"])],
+                    )
+                )
 
         config = types.GenerateContentConfig(
             temperature=self._config.temperature,
@@ -276,7 +328,13 @@ class GeminiClient:
 
         payload: dict[str, Any] = {
             "model": self._config.model,
-            "contents": contents,
+            "contents": [
+                {
+                    "role": c.role,
+                    "text": c.parts[0].text if c.parts else "",
+                }
+                for c in contents
+            ],
             "system_instruction": system_text,
         }
         payload_hash = _compute_payload_hash(payload)

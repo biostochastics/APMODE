@@ -57,11 +57,17 @@ app = typer.Typer(
 )
 
 
+_COPYRIGHT = "(C) 2026 Biostochastics. For Research Use Only."
+_GITHUB = "https://github.com/biostochastics/APMODE"
+
+
 def _version_callback(value: bool) -> None:
     if value:
         from apmode import __version__
 
         console.print(f"[bold]apmode[/bold] {__version__}")
+        console.print(f"[dim]{_COPYRIGHT}[/]")
+        console.print(f"[dim]{_GITHUB}[/]")
         raise typer.Exit()
 
 
@@ -82,6 +88,10 @@ def _main(
 
     Composes classical NLME, automated structural search, hybrid NODE,
     and agentic LLM backends into a governed PK model discovery workflow.
+
+    \b
+    (C) 2026 Biostochastics. For Research Use Only.
+    https://github.com/biostochastics/APMODE
     """
 
 
@@ -91,6 +101,8 @@ def version() -> None:
     from apmode import __version__
 
     console.print(f"[bold]apmode[/bold] {__version__}")
+    console.print(f"[dim]{_COPYRIGHT}[/]")
+    console.print(f"[dim]{_GITHUB}[/]")
 
 
 @app.command()

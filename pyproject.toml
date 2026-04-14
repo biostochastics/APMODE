@@ -58,6 +58,13 @@ test = [
     "optax>=0.2",
     "jaxtyping>=0.2",
 ]
+llm = [
+    "anthropic>=0.39",
+    "openai>=1.50",
+    "google-genai>=1.0",
+    "ollama>=0.4",
+    "litellm>=1.50",
+]
 dev = [
     "ruff>=0.4",
     "mypy>=1.10",
@@ -120,4 +127,5 @@ asyncio_mode = "auto"
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks integration tests",
+    "live: marks tests that call live LLM APIs (deselect with '-m \"not live\"')",
 ]
