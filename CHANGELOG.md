@@ -7,6 +7,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed (code review sweep)
+- **Orchestrator:** replaced `if "ranking" in dir()` sentinel with explicit
+  `Ranking | None` initialization (C1). The prior pattern was fragile under
+  refactors and masked scope-tracking errors.
+- **Agentic runner:** a single `run_id` is now minted at the top of
+  `AgenticRunner.run()` and reused across every `agentic_trace/*_input.json`
+  and the run-level `RunLineage` artifact (C2). Previously each iteration
+  received a freshly-generated candidate ID, breaking PRD §4.2.6 multi-run
+  provenance.
+- **Gate 3 cross-paradigm ranking:** orphan candidate IDs are now logged and
+  skipped rather than raising `RuntimeError` mid-bundle-emission (C3).
+- **Concurrency:** migrated three `asyncio.gather` sites (search engine,
+  seed-stability runs, LORO-CV) to `asyncio.TaskGroup` for structured
+  cancellation (H1, PEP 654).
+- **Rich CLI formatters:** `isinstance(bic_val, float | int)` now correctly
+  rejects booleans via `_is_real_number`; `str(True)` no longer renders as
+  `"1"` in the LLM diagnostics summary (H2).
+- **JAX platform:** the process-global `jax.config.update("jax_platform_name",
+  "cpu")` is now routed through `configure_jax_platform()`, which warns on a
+  conflicting request instead of silently drifting (H3).
+- **Errors:** renamed `apmode.errors.TimeoutError` to `BackendTimeoutError`
+  to stop shadowing `builtins.TimeoutError` at importers (M1).
+- **Node subject records:** introduced `SubjectRecord` TypedDict; dropped
+  `# type: ignore[dict-item]` on the event-driven subject dict (M2).
+- **Profiler:** replaced the `[]`-sentinel + `isinstance(np.ndarray)` guard
+  in lag detection with an explicit `(times > 0).any()` branch (M7).
+- **Profiler thresholds:** the magic constants (0.7, 0.4, 1.8, 0.3, 0.5,
+  0.15) are now named module-level constants with intent comments pointing
+  toward a future `policies/profiler.json` artifact (M8).
+- **Broad excepts:** narrowed agentic / seed / LORO catches from
+  `except Exception` to `except BackendError` (plus `RuntimeError` where the
+  agentic runner intentionally raises on exhaustion) (M10).
+- **Ollama client:** the recorded `request_payload_hash` now covers the
+  `options` dict (including `temperature`) so the hash matches the actual
+  request (M11, PRD §4.2.6 model-version escrow).
+- **CLI:** dropped the blanket `console.status(...)` spinner around the
+  pipeline run so structlog stage messages are no longer suppressed (M14).
+
+### Added (code review sweep)
+- **DSL `IVBolus` absorption variant** (H7) — replaces the
+  `FirstOrder(ka=100.0)` stiff-ODE hack previously used to approximate IV
+  bolus dosing. Emitted explicitly by `nlmixr2_emitter` (no depot ODE;
+  dose routes to the central compartment via CMT=1).
+- **LLM diagnostics redaction layer** (H5) —
+  `diagnostic_summarizer.redact_for_llm()` enforces an allow-list of
+  aggregate fields before anything leaves the process to a third-party LLM
+  provider (PRD §10, ARCHITECTURE.md §11). Unknown keys are dropped
+  fail-closed.
+- **Provider registry typing** (M6) — `_PROVIDER_REGISTRY` is now typed as
+  `dict[str, Callable[[LLMConfig], LLMClientProtocol]]` and
+  `register_provider` preserves concrete subclass types via a TypeVar.
+- **CI security job** (H4) — new job runs `uv run bandit -r src/apmode/`
+  and `uv run pip-audit` on every push/PR. `bandit` and `pip-audit` added
+  to the `dev` extras group.
+- **Test parallelism** (L6) — `pytest-xdist` added to the `test` extras;
+  the CI `test` job now runs `pytest -n auto` without `-x`.
+- **Python version matrix widened to 3.14** (M3) — `requires-python` is now
+  `">=3.12,<3.15"` and the classifier block advertises 3.14. The CI matrix
+  remains 3.12/3.13 until JAX/Diffrax publish 3.14 wheels.
+
+### Changed (code review sweep)
+- **Agentic backend default** (H6) — `apmode run --agentic` now defaults to
+  `False`. The prior auto-on-when-API-key-present behavior would silently
+  exfiltrate diagnostics as soon as an `ANTHROPIC_API_KEY` was in the shell
+  env. Opt-in is explicit.
+- **Ruff config** (M4) — removed the deprecated `UP038` entry from the
+  ignore list.
+- **Pre-existing pandas `# type: ignore[import-untyped]` pragmas** — removed
+  throughout `data/` now that pandas is covered by the mypy overrides block.
+
 ### Added
 - **Deep inspection CLI commands** (Phase 3 deep inspection, PRD §4.3.2)
   - `apmode trace <bundle>` — inspect agentic LLM iteration traces: summary table,

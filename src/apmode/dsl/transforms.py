@@ -28,6 +28,7 @@ from apmode.dsl.ast_models import (
     Transit,
 )
 from apmode.dsl.normalize import normalize_param_name
+from apmode.dsl.prior_transforms import SetPrior, apply_set_prior, validate_set_prior
 from apmode.ids import generate_candidate_id
 
 # ---------------------------------------------------------------------------
@@ -99,7 +100,13 @@ class ReplaceWithNODE(BaseModel):
 
 
 FormularTransform = Annotated[
-    SwapModule | AddCovariateLink | AdjustVariability | SetTransitN | ToggleLag | ReplaceWithNODE,
+    SwapModule
+    | AddCovariateLink
+    | AdjustVariability
+    | SetTransitN
+    | ToggleLag
+    | ReplaceWithNODE
+    | SetPrior,
     Field(discriminator="type"),
 ]
 
@@ -207,6 +214,9 @@ def validate_transform(spec: DSLSpec, transform: FormularTransform) -> list[str]
                 f"got '{transform.position}'"
             )
 
+    elif isinstance(transform, SetPrior):
+        errors.extend(validate_set_prior(spec, transform))
+
     return errors
 
 
@@ -277,6 +287,11 @@ def apply_transform(spec: DSLSpec, transform: FormularTransform) -> DSLSpec:
             elimination = NODEElimination(
                 dim=transform.dim, constraint_template=transform.constraint_template
             )
+
+    elif isinstance(transform, SetPrior):
+        # Delegates to apply_set_prior which handles replace-or-append semantics.
+        # Return early — SetPrior does not touch structural modules or variability.
+        return apply_set_prior(spec, transform)
 
     new_spec = DSLSpec(
         model_id=new_id,

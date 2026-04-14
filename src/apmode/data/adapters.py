@@ -7,7 +7,7 @@ backend-specific expectations (e.g., nlmixr2 uses 'ID' not 'NMID').
 
 from __future__ import annotations
 
-import pandas as pd  # type: ignore[import-untyped]  # noqa: TC002 — runtime use
+import pandas as pd  # noqa: TC002
 
 # nlmixr2 expects 'ID' for subject identifier; all other canonical columns
 # (TIME, DV, MDV, EVID, AMT, CMT, RATE, DUR) are already nlmixr2-compatible.

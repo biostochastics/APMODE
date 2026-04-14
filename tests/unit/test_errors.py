@@ -5,10 +5,10 @@ import pytest
 
 from apmode.errors import (
     BackendError,
+    BackendTimeoutError,
     ConvergenceError,
     CrashError,
     InvalidSpecError,
-    TimeoutError,
 )
 
 
@@ -20,14 +20,14 @@ class TestBackendErrorHierarchy:
 
     @pytest.mark.parametrize(
         "error_cls",
-        [ConvergenceError, TimeoutError, CrashError, InvalidSpecError],
+        [ConvergenceError, BackendTimeoutError, CrashError, InvalidSpecError],
     )
     def test_subclass_of_backend_error(self, error_cls: type) -> None:
         assert issubclass(error_cls, BackendError)
 
     @pytest.mark.parametrize(
         "error_cls",
-        [ConvergenceError, TimeoutError, CrashError, InvalidSpecError],
+        [ConvergenceError, BackendTimeoutError, CrashError, InvalidSpecError],
     )
     def test_can_catch_as_backend_error(self, error_cls: type) -> None:
         with pytest.raises(BackendError):
@@ -54,17 +54,16 @@ class TestConvergenceError:
         assert err.gradient_norm is None
 
 
-class TestTimeoutError:
+class TestBackendTimeoutError:
     def test_fields(self) -> None:
-        err = TimeoutError("R process timed out", timeout_seconds=600, pid=12345)
+        err = BackendTimeoutError("R process timed out", timeout_seconds=600, pid=12345)
         assert err.timeout_seconds == 600
         assert err.pid == 12345
 
     def test_does_not_shadow_builtin(self) -> None:
-        """Our TimeoutError is distinct from builtins.TimeoutError."""
-        from apmode.errors import TimeoutError as ApmodeTimeout
-
-        assert ApmodeTimeout is not builtins.TimeoutError
+        """Our error class is distinct from and does not shadow builtins.TimeoutError."""
+        assert BackendTimeoutError is not builtins.TimeoutError
+        assert BackendTimeoutError.__name__ != "TimeoutError"
 
 
 class TestCrashError:

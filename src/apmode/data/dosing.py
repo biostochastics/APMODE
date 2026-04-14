@@ -13,7 +13,7 @@ backends that require explicit events (Stan, NODE/JAX).
 from __future__ import annotations
 
 import numpy as np
-import pandas as pd  # type: ignore[import-untyped]
+import pandas as pd
 
 # Event sort priority within the same TIME (lower = earlier).
 # Matches NONMEM/rxode2 convention: resets before doses before observations.

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import equinox as eqx
 import jax
@@ -24,6 +24,11 @@ import jax.numpy as jnp
 import optax
 
 from apmode.backends.node_ode import HybridPKODE  # noqa: TC001 — used at runtime
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from apmode.backends.node_runner import SubjectRecord
 
 
 @dataclass(frozen=True)
@@ -77,8 +82,8 @@ def _solve_multidose_eager(
     if not dose_events and n_obs > 0:
         return model.solve(y0, obs_times)
 
-    # Build merged chronological timeline: (time, type, index)
-    # type: 'dose' or 'obs'; index: into dose_events or obs_times
+    # Build merged chronological timeline of (time, kind, index) entries:
+    #   kind is "dose" or "obs"; index points into dose_events or obs_times.
     timeline: list[tuple[float, str, int]] = []
     for i, (t, _amt, _cmt, _evid) in enumerate(dose_events):
         timeline.append((t, "dose", i))
@@ -118,7 +123,7 @@ def _solve_multidose_eager(
 def _population_nll(
     model: HybridPKODE,
     log_sigma: jax.Array,
-    subjects: list[dict[str, jax.Array]],
+    subjects: Sequence[SubjectRecord],
 ) -> jax.Array:
     """Population negative log-likelihood (normal residual model).
 
@@ -146,7 +151,7 @@ def _population_nll(
                 model,
                 y0,
                 times,
-                dose_events,  # type: ignore[arg-type]
+                dose_events,
             )
         else:
             # Legacy single-dose path: dose is in y0[0], JIT-compatible
@@ -171,7 +176,7 @@ def _population_nll(
 
 def train_node(
     model: HybridPKODE,
-    subjects: list[dict[str, jax.Array]],
+    subjects: Sequence[SubjectRecord],
     config: TrainingConfig | None = None,
 ) -> TrainingResult:
     """Train the hybrid NODE model on population data.

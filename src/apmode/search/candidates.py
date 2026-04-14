@@ -25,6 +25,7 @@ from apmode.dsl.ast_models import (
     Combined,
     DSLSpec,
     FirstOrder,
+    IVBolus,
     LaggedFirstOrder,
     LinearElim,
     MichaelisMenten,
@@ -213,12 +214,10 @@ def _build_spec(
     """
     # Absorption
     ka = params.get("ka", 1.0)
-    absorption: FirstOrder | LaggedFirstOrder | Transit
-    has_absorption = True
+    absorption: IVBolus | FirstOrder | LaggedFirstOrder | Transit
+    has_absorption = abs_type != "none"
     if abs_type == "none":
-        # IV bolus: approximate with large ka (instantaneous absorption)
-        absorption = FirstOrder(ka=100.0)
-        has_absorption = False
+        absorption = IVBolus()
     elif abs_type == "first_order":
         absorption = FirstOrder(ka=ka)
     elif abs_type == "lagged_first_order":

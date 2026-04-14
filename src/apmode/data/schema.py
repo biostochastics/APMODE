@@ -7,7 +7,7 @@ this canonical schema. Validation uses lazy=True to surface all violations.
 
 from __future__ import annotations
 
-import pandas as pd  # type: ignore[import-untyped]
+import pandas as pd
 import pandera as pa
 from pandera.typing import Series  # noqa: TC002 — runtime use in field annotations
 

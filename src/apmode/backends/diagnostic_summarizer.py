@@ -14,6 +14,32 @@ if TYPE_CHECKING:
     from apmode.bundle.models import BackendResult
 
 
+# Allow-list of fields permitted in LLM context. Any key produced by
+# summarize_diagnostics that is not in this set is dropped by redact_for_llm.
+# This is the single enforcement gate for PRD §10 "LLM inputs aggregate-only":
+# update here (and the matching test) when new aggregate signals are added.
+_LLM_ALLOWED_TOP_LEVEL_KEYS: frozenset[str] = frozenset(
+    {
+        "converged",
+        "ofv",
+        "aic",
+        "bic",
+        "parameters",
+        "cwres_mean",
+        "cwres_sd",
+        "outlier_fraction",
+        "eta_shrinkage",
+        "method",
+        "wall_time_seconds",
+        "vpc_coverage",
+        "split_gof",
+        "identifiability_warning",
+    }
+)
+
+_LLM_ALLOWED_PARAM_KEYS: frozenset[str] = frozenset({"estimate", "rse_pct"})
+
+
 def summarize_diagnostics(result: BackendResult) -> dict[str, Any]:
     """Convert BackendResult into a structured summary dict."""
     gof = result.diagnostics.gof
@@ -56,6 +82,29 @@ def summarize_diagnostics(result: BackendResult) -> dict[str, Any]:
         summary["identifiability_warning"] = f"Ill-conditioned (CN={ident.condition_number})"
 
     return summary
+
+
+def redact_for_llm(summary: dict[str, Any]) -> dict[str, Any]:
+    """Drop any key outside the LLM allow-list.
+
+    Every code path that ships a diagnostic summary to a third-party LLM must
+    route the dict through this function first. Unknown keys are silently
+    dropped rather than raising, so upstream summarizer evolution does not
+    leak new fields by default (fail-closed).
+    """
+    redacted: dict[str, Any] = {}
+    for key, value in summary.items():
+        if key not in _LLM_ALLOWED_TOP_LEVEL_KEYS:
+            continue
+        if key == "parameters" and isinstance(value, dict):
+            redacted[key] = {
+                pname: {pk: pv for pk, pv in pinfo.items() if pk in _LLM_ALLOWED_PARAM_KEYS}
+                for pname, pinfo in value.items()
+                if isinstance(pinfo, dict)
+            }
+        else:
+            redacted[key] = value
+    return redacted
 
 
 def summarize_for_llm(

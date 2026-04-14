@@ -44,6 +44,20 @@ from apmode.dsl.ast_models import (
     TwoCmt,
     ZeroOrder,
 )
+from apmode.dsl.priors import (
+    BetaPrior,
+    GammaPrior,
+    HalfCauchyPrior,
+    HalfNormalPrior,
+    HistoricalBorrowingPrior,
+    InvGammaPrior,
+    LKJPrior,
+    LogNormalPrior,
+    MixturePrior,
+    NormalPrior,
+    PriorFamily,
+    PriorSpec,
+)
 
 
 def emit_stan(
@@ -100,6 +114,183 @@ def emit_stan(
     blocks.append(_emit_generated_quantities_block(spec))
 
     return "\n".join(blocks)
+
+
+# ---------------------------------------------------------------------------
+# Helpers: prior lookup and Stan prior statement emission
+# ---------------------------------------------------------------------------
+
+
+def _find_prior(priors: list[PriorSpec], target: str) -> PriorSpec | None:
+    """Return the user-declared prior for `target`, or None."""
+    for p in priors:
+        if p.target == target:
+            return p
+    return None
+
+
+def _emit_user_prior(
+    stan_param: str,
+    family: PriorFamily,
+    *,
+    on_log_scale: bool,
+) -> list[str]:
+    """Emit Stan prior statements for a declared prior family on a parameter.
+
+    Parameters
+    ----------
+    stan_param
+        The Stan variable name to sample (e.g. "log_CL", "omega_CL", "sigma_prop",
+        "beta_CL_WT"). Note: on_log_scale means the Stan variable is itself the
+        log-transform of the user-space parameter, which matters for emitting
+        LogNormal (must be transformed to Normal on the log-scale variable).
+    family
+        The prior family (discriminated union from priors.py).
+    on_log_scale
+        True when `stan_param` is the log of the user-space parameter (i.e.
+        structural log_{name}). LogNormal on a log-scale variable becomes
+        Normal(mu, sigma); on a natural-scale variable it stays LogNormal.
+    """
+    prefix = f"  {stan_param} ~ "
+
+    if isinstance(family, NormalPrior):
+        return [f"{prefix}normal({family.mu:.6f}, {family.sigma:.6f});"]
+
+    if isinstance(family, LogNormalPrior):
+        # If stan_param is already log-scale, LogNormal(mu, sigma) becomes
+        # Normal(mu, sigma) on the log variable.
+        if on_log_scale:
+            return [f"{prefix}normal({family.mu:.6f}, {family.sigma:.6f});"]
+        return [f"{prefix}lognormal({family.mu:.6f}, {family.sigma:.6f});"]
+
+    if isinstance(family, HalfNormalPrior):
+        # Relies on the parameter having <lower=0> in the parameters block.
+        return [f"{prefix}normal(0, {family.sigma:.6f});"]
+
+    if isinstance(family, HalfCauchyPrior):
+        return [f"{prefix}cauchy(0, {family.scale:.6f});"]
+
+    if isinstance(family, GammaPrior):
+        return [f"{prefix}gamma({family.alpha:.6f}, {family.beta:.6f});"]
+
+    if isinstance(family, InvGammaPrior):
+        return [f"{prefix}inv_gamma({family.alpha:.6f}, {family.beta:.6f});"]
+
+    if isinstance(family, BetaPrior):
+        return [f"{prefix}beta({family.alpha:.6f}, {family.beta:.6f});"]
+
+    if isinstance(family, LKJPrior):
+        # LKJ targets a correlation matrix. Emit lkj_corr; caller must ensure
+        # the Stan variable is declared as corr_matrix[K] (out of scope for v1
+        # since IIV correlation emission is planned for a follow-up).
+        return [f"{prefix}lkj_corr({family.eta:.6f});"]
+
+    if isinstance(family, MixturePrior):
+        return _emit_mixture_prior(stan_param, family, on_log_scale=on_log_scale)
+
+    if isinstance(family, HistoricalBorrowingPrior):
+        return _emit_historical_borrowing_prior(stan_param, family, on_log_scale=on_log_scale)
+
+    raise NotImplementedError(f"Unsupported prior family: {type(family).__name__}")
+
+
+def _component_lpdf(
+    stan_param: str,
+    component: NormalPrior
+    | LogNormalPrior
+    | HalfNormalPrior
+    | HalfCauchyPrior
+    | GammaPrior
+    | InvGammaPrior
+    | BetaPrior,
+    *,
+    on_log_scale: bool,
+) -> str:
+    """Return a Stan lpdf expression for a single mixture component.
+
+    Used by _emit_mixture_prior and _emit_historical_borrowing_prior to build
+    log_sum_exp form: target += log_sum_exp(log(w_k) + lpdf_k(...)).
+    """
+    if isinstance(component, NormalPrior):
+        return f"normal_lpdf({stan_param} | {component.mu:.6f}, {component.sigma:.6f})"
+    if isinstance(component, LogNormalPrior):
+        if on_log_scale:
+            return f"normal_lpdf({stan_param} | {component.mu:.6f}, {component.sigma:.6f})"
+        return f"lognormal_lpdf({stan_param} | {component.mu:.6f}, {component.sigma:.6f})"
+    if isinstance(component, HalfNormalPrior):
+        # On <lower=0> variable: half-normal lpdf = normal_lpdf + log(2), but since
+        # log(2) is a constant it drops out of the posterior (irrelevant to mixture
+        # within-component mass comparison only if both components are half-*).
+        # For mixing half- components we still need the normalizing constant term
+        # — but since both components add the same constant and mixture weights
+        # are pre-normalized, the log(2) cancels in the weighted log_sum_exp.
+        return f"normal_lpdf({stan_param} | 0, {component.sigma:.6f})"
+    if isinstance(component, HalfCauchyPrior):
+        return f"cauchy_lpdf({stan_param} | 0, {component.scale:.6f})"
+    if isinstance(component, GammaPrior):
+        return f"gamma_lpdf({stan_param} | {component.alpha:.6f}, {component.beta:.6f})"
+    if isinstance(component, InvGammaPrior):
+        return f"inv_gamma_lpdf({stan_param} | {component.alpha:.6f}, {component.beta:.6f})"
+    if isinstance(component, BetaPrior):
+        return f"beta_lpdf({stan_param} | {component.alpha:.6f}, {component.beta:.6f})"
+    raise NotImplementedError(
+        f"Mixture component type {type(component).__name__} is not supported"
+    )
+
+
+def _emit_mixture_prior(
+    stan_param: str,
+    family: MixturePrior,
+    *,
+    on_log_scale: bool,
+) -> list[str]:
+    """Emit a k-component mixture prior as target += log_sum_exp(...).
+
+    See Stan User's Guide §13.1 (Mixture modeling). Weights are on the
+    simplex (validated in priors.py); we pre-log them so log_sum_exp is
+    numerically stable.
+    """
+    import math
+
+    terms = [
+        f"{math.log(max(w, 1e-300)):.6f} + "
+        f"{_component_lpdf(stan_param, comp, on_log_scale=on_log_scale)}"
+        for w, comp in zip(family.weights, family.components, strict=True)
+    ]
+    joined = ",\n    ".join(terms)
+    return [
+        f"  // Mixture prior on {stan_param} (k={len(family.components)})",
+        f"  target += log_sum_exp([\n    {joined}\n  ]);",
+    ]
+
+
+def _emit_historical_borrowing_prior(
+    stan_param: str,
+    family: HistoricalBorrowingPrior,
+    *,
+    on_log_scale: bool,
+) -> list[str]:
+    """Compile Schmidli 2014 robust MAP to a 2-component mixture.
+
+    Weights: (1 - robust_weight) on the MAP component, robust_weight on a
+    weakly-informative component. The MAP component is Normal on log-scale
+    structural params (the canonical PK use case).
+    """
+    if not on_log_scale:
+        # Structural params in this emitter are always on the log scale;
+        # HistoricalBorrowing on non-log targets (e.g., sigma) is out of scope.
+        raise NotImplementedError(
+            f"HistoricalBorrowingPrior on non-log-scale target {stan_param!r} is not supported. "
+            "Use MixturePrior directly instead."
+        )
+
+    map_component = NormalPrior(mu=family.map_mean, sigma=family.map_sd)
+    weak_component = NormalPrior(mu=0.0, sigma=2.0)
+    mixture = MixturePrior(
+        components=[map_component, weak_component],
+        weights=[1.0 - family.robust_weight, family.robust_weight],
+    )
+    return _emit_mixture_prior(stan_param, mixture, on_log_scale=on_log_scale)
 
 
 # ---------------------------------------------------------------------------
@@ -300,30 +491,42 @@ def _emit_model_block(
     lines = ["model {"]
     ie = initial_estimates or {}
 
-    # Priors on structural params
+    # Priors on structural params — user overrides via spec.priors; otherwise default.
     lines.append("  // Priors on structural parameters")
     for name in spec.structural_param_names():
-        center = ie.get(name)
-        if center is not None and center > 0:
-            lines.append(f"  log_{name} ~ normal({_log(center):.4f}, 1);")
+        user_prior = _find_prior(spec.priors, name)
+        if user_prior is not None:
+            lines.extend(_emit_user_prior(f"log_{name}", user_prior.family, on_log_scale=True))
         else:
-            lines.append(f"  log_{name} ~ normal(0, 2);")
+            center = ie.get(name)
+            if center is not None and center > 0:
+                lines.append(f"  log_{name} ~ normal({_log(center):.4f}, 1);")
+            else:
+                lines.append(f"  log_{name} ~ normal(0, 2);")
 
     lines.append("")
 
-    # Priors on IIV
+    # Priors on IIV omega — user overrides via spec.priors; otherwise half-cauchy.
     iiv_params = _iiv_params(spec)
     for p in iiv_params:
-        lines.append(f"  omega_{p} ~ cauchy(0, 1);")
+        user_prior = _find_prior(spec.priors, f"omega_{p}")
+        if user_prior is not None:
+            lines.extend(_emit_user_prior(f"omega_{p}", user_prior.family, on_log_scale=False))
+        else:
+            lines.append(f"  omega_{p} ~ cauchy(0, 1);")
 
     # Standard normal etas (non-centered parameterization)
     if iiv_params:
         lines.append("  to_vector(eta_raw) ~ std_normal();")
 
-    # IOV priors
+    # IOV priors — user overrides via spec.priors; otherwise half-cauchy(0.5).
     iov_params = _iov_params(spec)
     for p in iov_params:
-        lines.append(f"  omega_iov_{p} ~ cauchy(0, 0.5);")
+        user_prior = _find_prior(spec.priors, f"omega_iov_{p}")
+        if user_prior is not None:
+            lines.extend(_emit_user_prior(f"omega_iov_{p}", user_prior.family, on_log_scale=False))
+        else:
+            lines.append(f"  omega_iov_{p} ~ cauchy(0, 0.5);")
     if iov_params and _has_iov(spec):
         lines.append("  to_vector(eta_iov_raw) ~ std_normal();")
 
@@ -332,12 +535,16 @@ def _emit_model_block(
     # Priors on covariate coefficients
     cov_links = [v for v in spec.variability if isinstance(v, CovariateLink)]
     for cov in cov_links:
-        if cov.form == "power":
-            lines.append(f"  beta_{cov.param}_{cov.covariate} ~ normal(0.75, 0.5);")
+        cov_target = f"beta_{cov.param}_{cov.covariate}"
+        user_prior = _find_prior(spec.priors, cov_target)
+        if user_prior is not None:
+            lines.extend(_emit_user_prior(cov_target, user_prior.family, on_log_scale=False))
+        elif cov.form == "power":
+            lines.append(f"  {cov_target} ~ normal(0.75, 0.5);")
         else:
-            lines.append(f"  beta_{cov.param}_{cov.covariate} ~ normal(0, 1);")
+            lines.append(f"  {cov_target} ~ normal(0, 1);")
 
-    # Sigma priors
+    # Sigma priors — user overrides handled inside _emit_sigma_priors.
     lines.extend(_emit_sigma_priors(spec))
 
     lines.append("")
@@ -472,26 +679,34 @@ def _emit_sigma_params(spec: DSLSpec, is_blq: bool = False) -> list[str]:
 
 
 def _emit_sigma_priors(spec: DSLSpec) -> list[str]:
+    """Emit priors on sigma_prop / sigma_add with user-override support."""
+
+    def _for(target: str, default_scale: float) -> list[str]:
+        user = _find_prior(spec.priors, target)
+        if user is not None:
+            return _emit_user_prior(target, user.family, on_log_scale=False)
+        return [f"  {target} ~ cauchy(0, {default_scale});"]
+
     obs = spec.observation
+    lines: list[str] = []
     if isinstance(obs, (BLQM3, BLQM4)):
         if obs.error_model == "additive":
-            return [f"  sigma_add ~ cauchy(0, {obs.sigma_add});"]
-        if obs.error_model == "combined":
-            return [
-                f"  sigma_prop ~ cauchy(0, {obs.sigma_prop});",
-                f"  sigma_add ~ cauchy(0, {obs.sigma_add});",
-            ]
-        return [f"  sigma_prop ~ cauchy(0, {obs.sigma_prop});"]
-    if isinstance(obs, Proportional):
-        return [f"  sigma_prop ~ cauchy(0, {obs.sigma_prop});"]
-    if isinstance(obs, Additive):
-        return [f"  sigma_add ~ cauchy(0, {obs.sigma_add});"]
-    if isinstance(obs, Combined):
-        return [
-            f"  sigma_prop ~ cauchy(0, {obs.sigma_prop});",
-            f"  sigma_add ~ cauchy(0, {obs.sigma_add});",
-        ]
-    return ["  sigma_prop ~ cauchy(0, 0.3);"]
+            lines.extend(_for("sigma_add", obs.sigma_add))
+        elif obs.error_model == "combined":
+            lines.extend(_for("sigma_prop", obs.sigma_prop))
+            lines.extend(_for("sigma_add", obs.sigma_add))
+        else:
+            lines.extend(_for("sigma_prop", obs.sigma_prop))
+    elif isinstance(obs, Proportional):
+        lines.extend(_for("sigma_prop", obs.sigma_prop))
+    elif isinstance(obs, Additive):
+        lines.extend(_for("sigma_add", obs.sigma_add))
+    elif isinstance(obs, Combined):
+        lines.extend(_for("sigma_prop", obs.sigma_prop))
+        lines.extend(_for("sigma_add", obs.sigma_add))
+    else:
+        lines.extend(_for("sigma_prop", 0.3))
+    return lines
 
 
 def _emit_likelihood(spec: DSLSpec) -> list[str]:

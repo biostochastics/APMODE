@@ -12,9 +12,23 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from apmode.dsl.priors import PriorSpec  # noqa: TC001 — Pydantic resolves type at runtime
+
 # ---------------------------------------------------------------------------
 # Absorption Module variants
 # ---------------------------------------------------------------------------
+
+
+class IVBolus(BaseModel):
+    """IV bolus dosing — no absorption phase.
+
+    Distinguishes "dose enters the central compartment directly" from
+    first-order oral absorption. Emitters should skip the depot compartment
+    and route doses straight to the central cmt.
+    """
+
+    model_config = ConfigDict(frozen=True)
+    type: Literal["IVBolus"] = "IVBolus"
 
 
 class FirstOrder(BaseModel):
@@ -83,7 +97,13 @@ class NODEAbsorption(BaseModel):
 
 
 AbsorptionModule = Annotated[
-    FirstOrder | ZeroOrder | LaggedFirstOrder | Transit | MixedFirstZero | NODEAbsorption,
+    IVBolus
+    | FirstOrder
+    | ZeroOrder
+    | LaggedFirstOrder
+    | Transit
+    | MixedFirstZero
+    | NODEAbsorption,
     Field(discriminator="type"),
 ]
 
@@ -393,6 +413,7 @@ class DSLSpec(BaseModel):
     elimination: EliminationModule
     variability: list[VariabilityItem]
     observation: ObservationModule
+    priors: list[PriorSpec] = Field(default_factory=list)
 
     def has_node_modules(self) -> bool:
         """Check if this spec uses any NODE modules."""

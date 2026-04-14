@@ -17,9 +17,21 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import numpy as np
-import pandas as pd  # type: ignore[import-untyped]  # noqa: TC002 — runtime use
+import pandas as pd  # noqa: TC002
 
 from apmode.bundle.models import CovariateSpec, EvidenceManifest
+
+# Profiler thresholds. These should migrate to a versioned policy artifact
+# (`policies/profiler.json`, analogous to gate policies) so bundle consumers
+# can recover exactly which cutoffs produced an Evidence Manifest. Until then,
+# named constants document intent and localize future updates.
+_COVARIATE_CORRELATION_THRESHOLD: float = 0.7  # |r| > 0.7 flagged as correlated
+_NONLINEAR_CLEARANCE_DOSE_AUC_THRESHOLD: float = 0.4  # Spearman rho threshold
+_NONLINEAR_MM_CURVATURE_RATIO: float = 1.8  # early/late slope ratio
+_NONLINEAR_TMDD_CURVATURE_RATIO: float = 0.3  # inverse pattern
+_MULTI_PEAK_FRACTION_THRESHOLD: float = 0.3  # fraction of subjects with ≥2 peaks
+_LAG_SIGNATURE_FRACTION_THRESHOLD: float = 0.5  # fraction of subjects with lag
+_BLQ_COVARIATE_MISSINGNESS_CUTOFF: float = 0.15  # above → full-information likelihood
 
 if TYPE_CHECKING:
     from apmode.bundle.models import DataManifest
@@ -171,12 +183,13 @@ def _assess_absorption_complexity(obs: pd.DataFrame) -> str:
             continue
 
         # Lag detection: first 2 observations near zero while later ones rise
-        early_mask = times <= np.percentile(times[times > 0], 25) if (times > 0).any() else []
-        if isinstance(early_mask, np.ndarray) and early_mask.any():
-            early_concs = concs[early_mask]
-            max_conc = np.max(concs[concs > 0]) if (concs > 0).any() else 1.0
-            if max_conc > 0 and np.all(early_concs < 0.05 * max_conc):
-                lag_count += 1
+        if (times > 0).any():
+            early_mask = times <= np.percentile(times[times > 0], 25)
+            if early_mask.any():
+                early_concs = concs[early_mask]
+                max_conc = np.max(concs[concs > 0]) if (concs > 0).any() else 1.0
+                if max_conc > 0 and np.all(early_concs < 0.05 * max_conc):
+                    lag_count += 1
 
         # Multi-peak detection: count local maxima
         peaks = 0
@@ -187,9 +200,9 @@ def _assess_absorption_complexity(obs: pd.DataFrame) -> str:
             multi_peak_count += 1
 
     n_analyzable = max(1, len(subjects))
-    if multi_peak_count / n_analyzable > 0.3:
+    if multi_peak_count / n_analyzable > _MULTI_PEAK_FRACTION_THRESHOLD:
         return "multi-phase"
-    if lag_count / n_analyzable > 0.5:
+    if lag_count / n_analyzable > _LAG_SIGNATURE_FRACTION_THRESHOLD:
         return "lag-signature"
     return "simple"
 
@@ -273,7 +286,7 @@ def _detect_nonlinear_clearance(obs: pd.DataFrame, doses: pd.DataFrame) -> bool:
             # Heuristic 1: dose-normalized AUC comparison
             dn_auc = auc_vals / dose_vals
             corr = _spearman_r(dose_vals, dn_auc)
-            if corr > 0.4:
+            if corr > _NONLINEAR_CLEARANCE_DOSE_AUC_THRESHOLD:
                 return True
 
     # Heuristic 2: elimination curvature (works with single dose level)
@@ -334,9 +347,11 @@ def _detect_curvature_nonlinearity(obs: pd.DataFrame) -> bool:
         return False
 
     median_ratio = float(np.median(ratios))
-    # MM kinetics: ratio > 1.8 (faster early decline)
-    # TMDD kinetics: ratio < 0.3 (slower early decline, faster late)
-    return median_ratio > 1.8 or median_ratio < 0.3
+    # MM kinetics: fast early decline; TMDD: inverse (slow early, fast late).
+    return (
+        median_ratio > _NONLINEAR_MM_CURVATURE_RATIO
+        or median_ratio < _NONLINEAR_TMDD_CURVATURE_RATIO
+    )
 
 
 def _nonlinear_clearance_confidence(obs: pd.DataFrame, doses: pd.DataFrame) -> float | None:
@@ -456,10 +471,9 @@ def _check_covariate_correlation(
         return False
 
     corr_matrix = numeric_covs.corr().abs()
-    # Check if any off-diagonal element > 0.7
     corr_arr = corr_matrix.to_numpy(copy=True)
     np.fill_diagonal(corr_arr, 0)
-    return bool((corr_arr > 0.7).any())
+    return bool((corr_arr > _COVARIATE_CORRELATION_THRESHOLD).any())
 
 
 def _assess_covariate_missingness(
@@ -489,7 +503,7 @@ def _assess_covariate_missingness(
     # Default to MAR as conservative assumption
     pattern: str = "MAR"
 
-    strategy = "impute-median" if frac <= 0.15 else "full-information"
+    strategy = "impute-median" if frac <= _BLQ_COVARIATE_MISSINGNESS_CUTOFF else "full-information"
 
     return CovariateSpec(
         pattern=pattern,

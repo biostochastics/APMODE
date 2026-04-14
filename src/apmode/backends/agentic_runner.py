@@ -15,7 +15,11 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import structlog
 
-from apmode.backends.diagnostic_summarizer import summarize_diagnostics, summarize_for_llm
+from apmode.backends.diagnostic_summarizer import (
+    redact_for_llm,
+    summarize_diagnostics,
+    summarize_for_llm,
+)
 from apmode.backends.prompts.system_v1 import SYSTEM_PROMPT_VERSION, build_system_prompt
 from apmode.backends.protocol import Lane
 from apmode.backends.transform_parser import parse_llm_response
@@ -35,6 +39,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from apmode.backends.llm_client import LLMResponse
+    from apmode.backends.protocol import BackendRunner
     from apmode.dsl.ast_models import DSLSpec
 
 logger = structlog.get_logger(__name__)
@@ -99,7 +104,7 @@ class AgenticRunner:
 
     def __init__(
         self,
-        inner_runner: Any,  # BackendRunner
+        inner_runner: BackendRunner,
         llm_client: LLMClientProtocol,
         config: AgenticConfig,
         trace_dir: Path,
@@ -125,6 +130,10 @@ class AgenticRunner:
         Returns the best BackendResult across all iterations.
         """
         self._trace_dir.mkdir(parents=True, exist_ok=True)
+
+        # Single, stable run_id for the entire loop — every iteration trace
+        # and the RunLineage artifact share this identifier (PRD §4.2.6).
+        run_id = self._config.run_id or generate_candidate_id()
 
         # Build available transforms based on lane
         available_transforms = [
@@ -194,7 +203,7 @@ class AgenticRunner:
 
                 trace_input = AgenticTraceInput(
                     iteration_id=iter_id,
-                    run_id=self._config.run_id or generate_candidate_id(),
+                    run_id=run_id,
                     candidate_id=current_spec.model_id,
                     prompt_hash=prompt_hash,
                     prompt_template=self._config.system_prompt_version,
@@ -325,7 +334,9 @@ class AgenticRunner:
                 max_iterations=self._config.max_iterations,
                 search_history=history,
             )
-            diag_summary = summarize_diagnostics(result)
+            # Redaction gate: enforce allow-list before any data leaves the
+            # process to the LLM provider (PRD §10, ARCHITECTURE.md §11).
+            diag_summary = redact_for_llm(summarize_diagnostics(result))
 
             # 3. Build messages with conversation history
             conversation_history.append({"role": "user", "content": diag_text})
@@ -339,15 +350,17 @@ class AgenticRunner:
 
             trace_input = AgenticTraceInput(
                 iteration_id=iter_id,
-                run_id=generate_candidate_id(),
+                run_id=run_id,
                 candidate_id=current_spec.model_id,
                 prompt_hash=prompt_hash,
                 prompt_template=self._config.system_prompt_version,
                 dsl_spec_json=current_spec.model_dump_json(),
                 diagnostics_summary={
+                    # str(True) → "True" instead of "1"; isinstance(True, int)
+                    # is True so bool must be handled before int in a tuple check.
                     k: str(v)
                     for k, v in diag_summary.items()
-                    if isinstance(v, (str, int, float, bool))
+                    if isinstance(v, (bool, str, int, float))
                 },
             )
             self._write_trace_input(trace_input)
@@ -529,7 +542,6 @@ class AgenticRunner:
         self._write_agentic_lineage(lineage_entries)
 
         # Write run_lineage.json for multi-run provenance (PRD §4.2.6)
-        run_id = self._config.run_id or generate_candidate_id()
         lineage = RunLineage(
             current_run_id=run_id,
             parent_run_ids=list(self._config.parent_run_ids),

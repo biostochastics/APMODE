@@ -253,7 +253,12 @@ class SearchEngine:
             async with sem:
                 return await self._evaluate_candidate(spec, est)
 
-        return list(await asyncio.gather(*[_bounded(s, e) for s, e in tasks]))
+        # Structured concurrency: if any task raises, the group cancels the
+        # rest and surfaces errors as an ExceptionGroup. _evaluate_candidate
+        # catches its own failures, so this is a defensive boundary.
+        async with asyncio.TaskGroup() as tg:
+            created = [tg.create_task(_bounded(s, e)) for s, e in tasks]
+        return [t.result() for t in created]
 
     def _select_runner(self, spec: DSLSpec) -> tuple[BackendRunner, str]:
         """Select the appropriate backend runner for a spec.

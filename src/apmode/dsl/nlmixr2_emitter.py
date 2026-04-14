@@ -29,6 +29,7 @@ from apmode.dsl.ast_models import (
     CovariateLink,
     DSLSpec,
     FirstOrder,
+    IVBolus,
     LaggedFirstOrder,
     LinearElim,
     MichaelisMenten,
@@ -142,7 +143,11 @@ def _emit_structural_ini(
     elim_mod = spec.elimination
 
     # --- Absorption ---
-    if isinstance(abs_mod, FirstOrder):
+    if isinstance(abs_mod, IVBolus):
+        # IV bolus: no absorption parameters. Dose is routed directly to
+        # the central compartment; depot is omitted by the structural emitter.
+        pass
+    elif isinstance(abs_mod, FirstOrder):
         lines.append(f"lka <- log({ov.get('ka', abs_mod.ka)})")
     elif isinstance(abs_mod, ZeroOrder):
         lines.append(f"ldur <- log({ov.get('dur', abs_mod.dur)})")
@@ -405,7 +410,9 @@ def _emit_backtransform(spec: DSLSpec) -> list[str]:
     elim_mod = spec.elimination
 
     # Absorption
-    if isinstance(abs_mod, FirstOrder):
+    if isinstance(abs_mod, IVBolus):
+        pass  # no absorption parameters to back-transform
+    elif isinstance(abs_mod, FirstOrder):
         lines.append(_bt("ka", "lka"))
     elif isinstance(abs_mod, ZeroOrder):
         lines.append(_bt("dur", "ldur"))
@@ -510,7 +517,11 @@ def _emit_ode_dynamics(spec: DSLSpec) -> list[str]:
     elim_mod = spec.elimination
 
     # --- Absorption compartment ---
-    if isinstance(abs_mod, FirstOrder):
+    if isinstance(abs_mod, IVBolus):
+        # No depot compartment. The dose event must route directly to
+        # the central compartment via CMT=1 in the NONMEM event table.
+        _abs_influx = ""
+    elif isinstance(abs_mod, FirstOrder):
         lines.append("d/dt(depot) <- -ka * depot")
         _abs_influx = "ka * depot"
     elif isinstance(abs_mod, ZeroOrder):

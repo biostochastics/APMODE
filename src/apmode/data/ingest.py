@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path  # noqa: TC003 — used at runtime in function signature
 
-import pandas as pd  # type: ignore[import-untyped]
+import pandas as pd
 
 from apmode.bundle.models import ColumnMapping, CovariateMetadata, DataManifest
 from apmode.data.schema import CanonicalPKSchema

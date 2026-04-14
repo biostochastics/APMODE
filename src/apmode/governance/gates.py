@@ -17,10 +17,13 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import numpy as np
+import structlog
 
 from apmode.bundle.models import CredibilityContext, GateCheckResult, GateResult, LOROMetrics
 from apmode.governance.policy import Gate25Config  # noqa: TC001 — used at runtime
 from apmode.ids import generate_gate_id
+
+logger = structlog.get_logger(__name__)
 
 _VALID_LANES = frozenset({"submission", "discovery", "optimization"})
 
@@ -751,15 +754,25 @@ def _gate3_cross_paradigm(
 
     cp_result = rank_cross_paradigm(survivors)
 
+    def _safe_bic(r: BackendResult) -> float:
+        if r.bic is None or not np.isfinite(r.bic):
+            return float("inf")
+        return r.bic
+
+    survivors_by_id = {s.model_id: s for s in survivors}
     ranked: list[RankedCandidate] = []
     for i, m in enumerate(cp_result.ranked_candidates):
-        # Find the original survivor to extract BIC/AIC/n_params
-        orig = next(s for s in survivors if s.model_id == m.candidate_id)
-
-        def _safe_bic(r: BackendResult) -> float:
-            if r.bic is None or not np.isfinite(r.bic):
-                return float("inf")
-            return r.bic
+        # Find the original survivor to extract BIC/AIC/n_params.
+        # A missing entry is a ranking-module invariant violation, not a
+        # recoverable state — log and skip rather than crash the bundle.
+        orig = survivors_by_id.get(m.candidate_id)
+        if orig is None:
+            logger.error(
+                "cross_paradigm_orphan_candidate",
+                candidate_id=m.candidate_id,
+                known_survivors=list(survivors_by_id.keys()),
+            )
+            continue
 
         ranked.append(
             RankedCandidate(

@@ -17,7 +17,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import numpy as np
-import pandas as pd  # type: ignore[import-untyped]  # noqa: TC002 — runtime use
+import pandas as pd  # noqa: TC002
 
 from apmode.bundle.models import InitialEstimateEntry, InitialEstimates
 

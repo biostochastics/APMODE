@@ -8,8 +8,9 @@ Uses JAX/Diffrax/Equinox for neural ODE integration and training.
 from __future__ import annotations
 
 import time
+import warnings
 from pathlib import Path  # noqa: TC003 — used at runtime in run()
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, TypedDict
 
 # JAX/Equinox imports are deferred to prevent thread-pool initialization
 # before R subprocess forks (os.fork() + JAX threads = potential deadlock).
@@ -27,6 +28,47 @@ from apmode.errors import InvalidSpecError
 if TYPE_CHECKING:
     from apmode.bundle.models import BackendResult, DataManifest
     from apmode.dsl.ast_models import DSLSpec
+
+_JAX_PLATFORM_LOCKED: str | None = None
+
+
+class _SubjectRequired(TypedDict):
+    times: jax.Array
+    observations: jax.Array
+    y0: jax.Array
+    obs_cmt: jax.Array
+
+
+class SubjectRecord(_SubjectRequired, total=False):
+    """Per-subject payload for NODE training.
+
+    The ``dose_events`` field is only present on the event-driven piecewise
+    path (multi-dose or delayed dose); the legacy single-dose-at-t0 path
+    encodes the dose in ``y0`` instead and omits this field.
+    """
+
+    dose_events: list[tuple[float, float, int, int]]
+
+
+def configure_jax_platform(platform: Literal["cpu", "gpu"]) -> None:
+    """Configure JAX platform globally (once per process).
+
+    JAX's platform is a process-wide setting that effectively locks after
+    first backend use. Calling this twice with different values logs a
+    warning instead of silently drifting. Import side effects (e.g. another
+    module's ``import jax``) can pin the platform before this is invoked.
+    """
+    global _JAX_PLATFORM_LOCKED
+    if _JAX_PLATFORM_LOCKED is not None and platform != _JAX_PLATFORM_LOCKED:
+        warnings.warn(
+            f"JAX platform already set to '{_JAX_PLATFORM_LOCKED}'; "
+            f"request for '{platform}' ignored. Platform is process-global.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return
+    jax.config.update("jax_platform_name", platform)  # type: ignore[no-untyped-call]
+    _JAX_PLATFORM_LOCKED = platform
 
 
 class NodeBackendRunner:
@@ -47,7 +89,7 @@ class NodeBackendRunner:
 
         # Force CPU mode for determinism if requested
         if execution_mode == "cpu_deterministic":
-            jax.config.update("jax_platform_name", "cpu")  # type: ignore[no-untyped-call]
+            configure_jax_platform("cpu")
 
     async def run(
         self,
@@ -236,7 +278,7 @@ class NodeBackendRunner:
         initial_estimates: dict[str, float],
         *,
         n_cmt: int = 1,
-    ) -> list[dict[str, jax.Array]]:
+    ) -> list[SubjectRecord]:
         """Prepare subject data for training.
 
         If no data_path, creates synthetic subjects from initial estimates
@@ -254,9 +296,9 @@ class NodeBackendRunner:
         data_manifest: DataManifest,
         *,
         n_cmt: int = 1,
-    ) -> list[dict[str, jax.Array]]:
+    ) -> list[SubjectRecord]:
         """Load subject data from CSV with multi-dose event support."""
-        import pandas as pd  # type: ignore[import-untyped]
+        import pandas as pd
 
         from apmode.data.dosing import build_event_table
 
@@ -276,7 +318,7 @@ class NodeBackendRunner:
             col_dur=cm.dur or "DUR",
         )
 
-        subjects: list[dict[str, jax.Array]] = []
+        subjects: list[SubjectRecord] = []
 
         # Reject infusions for NODE (not yet consumed in piecewise solver)
         rate_col = cm.rate or "RATE"
@@ -361,7 +403,7 @@ class NodeBackendRunner:
                         "obs_cmt": jnp.array(1),
                         "dose_events": all_events,
                     }
-                )  # type: ignore[dict-item]
+                )
 
         return subjects
 
@@ -371,10 +413,10 @@ class NodeBackendRunner:
         initial_estimates: dict[str, float],
         *,
         n_cmt: int = 1,
-    ) -> list[dict[str, jax.Array]]:
+    ) -> list[SubjectRecord]:
         """Create synthetic subjects for mock/test mode."""
         n_subj = min(data_manifest.n_subjects, 10)
-        subjects: list[dict[str, jax.Array]] = []
+        subjects: list[SubjectRecord] = []
 
         key = jax.random.PRNGKey(0)
         for _i in range(n_subj):

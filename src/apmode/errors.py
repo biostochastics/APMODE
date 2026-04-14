@@ -23,8 +23,12 @@ class ConvergenceError(BackendError):
         self.gradient_norm = gradient_norm
 
 
-class TimeoutError(BackendError):
-    """Backend process exceeded its time budget."""
+class BackendTimeoutError(BackendError):
+    """Backend process exceeded its time budget.
+
+    Named to avoid shadowing ``builtins.TimeoutError`` (which asyncio raises
+    from ``wait_for``) at callsites that import from this module.
+    """
 
     def __init__(
         self,

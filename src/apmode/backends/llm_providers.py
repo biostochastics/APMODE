@@ -19,11 +19,16 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import structlog
 
 from apmode.backends.llm_client import LLMConfig, LLMResponse
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from apmode.backends.agentic_runner import LLMClientProtocol
 
 logger = structlog.get_logger(__name__)
 
@@ -32,20 +37,32 @@ logger = structlog.get_logger(__name__)
 # Provider registry
 # ---------------------------------------------------------------------------
 
-_PROVIDER_REGISTRY: dict[str, type] = {}
+# Values are provider factories: callables that take an LLMConfig and return
+# an LLMClientProtocol. Classes satisfy this via their ``__init__`` signature,
+# so ``@register_provider(...)`` on ``class FooClient`` inserts ``FooClient``
+# directly. Using Callable (not ``type[LLMClientProtocol]``) avoids mypy's
+# Protocol-has-no-__init__ limitation at the call site.
+_PROVIDER_REGISTRY: dict[str, Callable[[LLMConfig], LLMClientProtocol]] = {}
+
+_ClientT = TypeVar("_ClientT", bound="LLMClientProtocol")
 
 
-def register_provider(name: str) -> Any:
-    """Decorator to register a provider client class."""
+def register_provider(name: str) -> Callable[[type[_ClientT]], type[_ClientT]]:
+    """Decorator to register a provider client class.
 
-    def decorator(cls: type) -> type:
+    Preserves the concrete subclass type so ``@register_provider("x") class
+    Foo(...): ...`` still yields ``Foo`` (not ``type[LLMClientProtocol]``),
+    which matters for subclasses like ``OpenRouterClient(OpenAIClient)``.
+    """
+
+    def decorator(cls: type[_ClientT]) -> type[_ClientT]:
         _PROVIDER_REGISTRY[name] = cls
         return cls
 
     return decorator
 
 
-def create_llm_client(config: LLMConfig) -> Any:
+def create_llm_client(config: LLMConfig) -> LLMClientProtocol:
     """Factory: create an LLM client from config.
 
     Resolves provider name to the appropriate client class.
@@ -393,9 +410,14 @@ class OllamaClient:
         host = self._config.api_base or "http://localhost:11434"
         client = ollama.AsyncClient(host=host)
 
+        # Hash the same payload we send — including options — so the recorded
+        # request_payload_hash fingerprints the full request (PRD §4.2.6
+        # model-version escrow).
+        options = {"temperature": self._config.temperature}
         payload: dict[str, Any] = {
             "model": self._config.model,
             "messages": messages,
+            "options": options,
         }
         payload_hash = _compute_payload_hash(payload)
 
@@ -403,7 +425,7 @@ class OllamaClient:
         response = await client.chat(
             model=self._config.model,
             messages=messages,
-            options={"temperature": self._config.temperature},
+            options=options,
         )
         elapsed = time.monotonic() - start
 

@@ -8,9 +8,9 @@
 
   [![Phase](https://img.shields.io/badge/phase-3%20(P3.B)-blue)]()
 
-  [![Tests](https://img.shields.io/badge/tests-1244%20passing-success)]()
+  [![Tests](https://img.shields.io/badge/tests-1163%20passing-success)]()
   [![License](https://img.shields.io/badge/license-GPL--2.0--or--later-green)](LICENSE)
-  [![Python](https://img.shields.io/badge/python-3.12%2B-yellow)]()
+  [![Python](https://img.shields.io/badge/python-3.12%E2%80%933.14-yellow)]()
   [![mypy](https://img.shields.io/badge/mypy-strict%20%E2%9C%93-blue)]()
 
 </div>
@@ -29,7 +29,7 @@ APMODE is a **governed meta-system** that composes four population PK modeling p
 
 **Formular — a typed PK DSL — is the control surface.** Models are specified in [Formular](docs/FORMULAR.md), a structured grammar (`Absorption x Distribution x Elimination x Variability x Observation`), compiled to a typed AST, validated against pharmacometric constraints, and lowered to backend-specific code. The agentic LLM backend (Phase 3) operates exclusively through Formular transforms — it cannot emit raw code.
 
-> **Status**: Phase 3 in progress (P3.B LORO-CV complete). 1145 tests passing. `mypy --strict` clean (62 files). `ruff` clean.
+> **Status**: Phase 3 in progress (P3.B LORO-CV complete). 1163 tests passing. `mypy --strict` clean (72 files). `ruff` clean. Supports Python 3.12–3.14.
 
 ---
 
@@ -37,7 +37,7 @@ APMODE is a **governed meta-system** that composes four population PK modeling p
 
 ### Prerequisites
 
-- **Python**: 3.12+
+- **Python**: 3.12, 3.13, or 3.14
 - **Package manager**: [uv](https://docs.astral.sh/uv/)
 - **Optional**: R 4.4+ with `nlmixr2`, `rxode2`, `jsonlite`, `lotri` for real estimation (mock R subprocess tests work without R)
 
@@ -354,7 +354,7 @@ uv run pytest tests/ --snapshot-update      # update snapshots after emitter cha
 | `--seed` | `753849` | Root random seed for reproducibility |
 | `--parallel-models N` / `-j N` | `1` | Max concurrent model evaluations (R subprocesses). Higher values speed up search but use more memory. |
 | `--timeout` | `600` | Backend timeout in seconds |
-| `--agentic/--no-agentic` | on | Enable/disable agentic LLM backend (discovery/optimization lanes) |
+| `--agentic/--no-agentic` | **off** | Enable the agentic LLM backend (discovery/optimization lanes). OFF by default because the loop ships aggregated diagnostics to a third-party LLM provider; pass `--agentic` to opt in. |
 | `--provider` | `anthropic` | LLM provider: `anthropic`, `openai`, `gemini`, `ollama`, `openrouter` |
 | `--policy` | auto | Gate policy JSON file (falls back to `policies/<lane>.json`) |
 
@@ -379,6 +379,8 @@ Plus 9 simulated ground-truth datasets (1/2-cmt, oral/IV/infusion, linear/MM).
 ## Agentic LLM Backend (Phase 3)
 
 The agentic backend is a **closed-loop model improvement system** where an LLM proposes typed PK model transforms based on diagnostic feedback, operating exclusively within the Formular DSL grammar.
+
+> **Privacy:** The agentic backend is **off by default** (`--agentic` to enable). When enabled, aggregated fit diagnostics — but never per-subject data — are sent to the selected LLM provider. The allow-list gate in `diagnostic_summarizer.redact_for_llm()` is the single enforcement point; unknown fields fail closed.
 
 ### Operating Modes
 

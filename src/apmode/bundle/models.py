@@ -17,7 +17,14 @@ HexSHA256 = Annotated[str, StringConstraints(pattern=r"^[0-9a-fA-F]{64}$")]
 
 
 class ParameterEstimate(BaseModel):
-    """A single parameter estimate with uncertainty."""
+    """A single parameter estimate with uncertainty.
+
+    Fields are a superset of what any single backend emits:
+    - MLE backends populate estimate/se/rse/ci95_{lower,upper}.
+    - Bayesian backend populates estimate (posterior mean), posterior_sd,
+      q05/q50/q95, and leaves se/rse/ci95 as None. ci95 from Bayesian is
+      the 95% credible interval; MLE-side ci95 is the Wald/profile CI.
+    """
 
     name: str
     estimate: float
@@ -25,6 +32,10 @@ class ParameterEstimate(BaseModel):
     rse: float | None = None
     ci95_lower: float | None = None
     ci95_upper: float | None = None
+    posterior_sd: float | None = None
+    q05: float | None = None
+    q50: float | None = None
+    q95: float | None = None
     fixed: bool = False
     category: Literal["structural", "iiv", "iov", "residual"]
 
@@ -115,11 +126,65 @@ class DiagnosticBundle(BaseModel):
 # --- BackendResult ---
 
 
+class PosteriorDiagnostics(BaseModel):
+    """MCMC convergence and reliability diagnostics (plan 2026-04-14 §3.4).
+
+    Populated by the Bayesian backend; None otherwise.
+
+    Thresholds for disqualification (policy-configurable, defaults per
+    Vehtari et al. 2021, rank-normalized R̂ < 1.01):
+      - rhat_max            ≤ 1.01
+      - ess_bulk_min        ≥ 400
+      - ess_tail_min        ≥ 400
+      - n_divergent         == 0
+      - n_max_treedepth     ≤ 0.01 * total_samples
+      - ebfmi_min           ≥ 0.3
+      - pareto_k_max        ≤ 0.7 (LOO reliability)
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    rhat_max: float = Field(ge=0.0)
+    ess_bulk_min: float = Field(ge=0.0)
+    ess_tail_min: float = Field(ge=0.0)
+    n_divergent: int = Field(ge=0)
+    n_max_treedepth: int = Field(ge=0)
+    ebfmi_min: float
+    pareto_k_max: float | None = None
+    pareto_k_counts: dict[str, int] = Field(default_factory=dict)  # "good/ok/bad/very_bad"
+    mcse_by_param: dict[str, float] = Field(default_factory=dict)  # headline params only
+    per_chain_rhat: dict[str, list[float]] = Field(default_factory=dict)
+
+
+class SamplerConfig(BaseModel):
+    """NUTS sampler configuration and environment — captured for reproducibility.
+
+    Fields like cmdstan_version/torsten_version/stan_version/compiler_id are
+    filled in by the harness post-compile. This record is persisted in the
+    bundle (backend_versions.json) and included inside BackendResult.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    chains: int = Field(default=4, ge=1)
+    warmup: int = Field(default=1000, ge=100)
+    sampling: int = Field(default=1000, ge=100)
+    adapt_delta: float = Field(default=0.95, gt=0.0, lt=1.0)
+    max_treedepth: int = Field(default=12, ge=4, le=20)
+    parallel_chains: int | None = None
+    threads_per_chain: int | None = None
+    seed: int = 0
+    cmdstan_version: str = ""
+    torsten_version: str = ""
+    stan_version: str = ""
+    compiler_id: str = ""
+
+
 class BackendResult(BaseModel):
     """Standardized result from any backend (ARCHITECTURE.md §4.1)."""
 
     model_id: str
-    backend: Literal["nlmixr2", "jax_node", "agentic_llm"]
+    backend: Literal["nlmixr2", "jax_node", "agentic_llm", "bayesian_stan"]
     converged: bool
     ofv: float | None = None
     aic: float | None = None
@@ -131,6 +196,10 @@ class BackendResult(BaseModel):
     wall_time_seconds: float = Field(ge=0.0)
     backend_versions: dict[str, str]
     initial_estimate_source: Literal["nca", "warm_start", "fallback"]
+    # Bayesian-only: populated by BayesianRunner, None otherwise.
+    posterior_diagnostics: PosteriorDiagnostics | None = None
+    sampler_config: SamplerConfig | None = None
+    posterior_draws_path: str | None = None  # relative to bundle root
 
 
 # --- Data Manifest ---
@@ -652,3 +721,77 @@ class ReportProvenance(BaseModel):
     apmode_version: str
     generator: str
     component_versions: dict[str, str] = Field(default_factory=dict)
+
+
+# --- Bayesian artifacts (Phase 2+) ---
+
+
+class PriorManifestEntry(BaseModel):
+    """One declared prior with full provenance for FDA Gate 2 justification."""
+
+    model_config = ConfigDict(frozen=True)
+
+    target: str
+    family: str
+    source: Literal[
+        "uninformative",
+        "weakly_informative",
+        "historical_data",
+        "expert_elicitation",
+        "meta_analysis",
+    ]
+    hyperparams: dict[str, float | list[float] | str | list[str]]
+    justification: str
+    historical_refs: list[str] = Field(default_factory=list)
+
+
+class PriorManifest(BaseModel):
+    """prior_manifest.json — versioned record of all declared priors (plan §3.5).
+
+    This is the FDA-required prior justification artifact. Every prior on
+    non-uninformative/weakly-informative source must carry a non-empty
+    justification; historical_data must also carry historical_refs.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    policy_version: str
+    entries: list[PriorManifestEntry]
+    default_prior_policy: Literal["weakly_informative", "custom"] = "weakly_informative"
+
+
+class SimulationScenario(BaseModel):
+    """One prospective-simulation scenario for Gate 3 operating characteristics."""
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str
+    n_subjects: int = Field(gt=0)
+    n_replicates: int = Field(gt=0)
+    dropout_rate: float = Field(ge=0.0, le=1.0, default=0.0)
+    assay_cv: float = Field(ge=0.0, default=0.0)
+    blq_mechanism: Literal["none", "m3", "m4"] = "none"
+    lloq: float | None = None
+
+
+class SimulationProtocol(BaseModel):
+    """simulation_protocol.json — prospective-simulation specification (plan §3.5).
+
+    Required for FDA 2026 operating-characteristics evaluation. Locked before
+    Gate 3 execution to prevent metric shopping (per gpt-5.2 review note).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    policy_version: str
+    scenarios: list[SimulationScenario] = Field(min_length=1)
+    metrics: list[
+        Literal[
+            "vpc_coverage",
+            "auc_bioequivalence",
+            "cmax_bioequivalence",
+            "npe",
+            "posterior_probability_target",
+        ]
+    ] = Field(min_length=1)
+    seed: int = 0

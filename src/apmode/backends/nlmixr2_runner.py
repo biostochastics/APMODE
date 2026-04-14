@@ -22,8 +22,7 @@ from typing import TYPE_CHECKING
 
 from apmode.backends.r_schemas import RSubprocessRequest, RSubprocessResponse
 from apmode.dsl.nlmixr2_emitter import emit_nlmixr2
-from apmode.errors import ConvergenceError, CrashError
-from apmode.errors import TimeoutError as BackendTimeoutError
+from apmode.errors import BackendTimeoutError, ConvergenceError, CrashError
 from apmode.ids import generate_run_id
 
 if TYPE_CHECKING:
