@@ -31,6 +31,9 @@ from typing import TYPE_CHECKING, Annotated, Any
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from apmode.backends.agentic_runner import AgenticRunner
+    from apmode.backends.protocol import BackendRunner
+
 import typer
 from rich.console import Console
 from rich.markup import escape
@@ -39,6 +42,11 @@ from rich.table import Table
 
 console = Console()
 err_console = Console(stderr=True)
+
+
+def _is_real_number(value: object) -> bool:
+    """True iff value is numeric and not a bool (isinstance(True, int) == True)."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
 class Lane(enum.StrEnum):
@@ -90,14 +98,14 @@ _PROVIDER_ENV_KEYS: dict[str, list[str]] = {
 
 
 def _try_build_agentic_runner(
-    inner_runner: Any,
+    inner_runner: BackendRunner,
     provider: str,
     model_name: str | None,
     max_iterations: int,
     lane: str,
     trace_dir: Path,
     quiet: bool,
-) -> Any | None:
+) -> AgenticRunner | None:
     """Try to build an AgenticRunner. Returns None if provider unavailable."""
     import os
 
@@ -247,11 +255,12 @@ def run(
             "--agentic/--no-agentic",
             help=(
                 "Enable the agentic LLM backend (Phase 3). "
-                "Auto-activates in discovery/optimization lanes when an API key is found. "
-                "Use --no-agentic to disable."
+                "OFF by default — the agentic loop ships aggregated diagnostics "
+                "to a third-party LLM provider. Pass --agentic to opt in on the "
+                "discovery/optimization lanes."
             ),
         ),
-    ] = True,
+    ] = False,
     provider: Annotated[
         str,
         typer.Option(
@@ -392,12 +401,14 @@ def run(
     orchestrator = Orchestrator(runner, output, config, agentic_runner=agentic_runner_instance)
 
     # --- Pipeline execution ---
+    # No global spinner: the orchestrator's structlog output reports each
+    # stage (profile → NCA → search → gates → bundle) and a long-running
+    # spinner would hide those messages. Progress is visible via the logger.
+    if not quiet:
+        console.print("  [dim]Running pipeline (stage progress via log)...[/]")
+
     try:
-        with console.status(
-            "[bold cyan]Running pipeline...[/]",
-            spinner="dots",
-        ):
-            result = asyncio.run(orchestrator.run(manifest, df, data_csv))
+        result = asyncio.run(orchestrator.run(manifest, df, data_csv))
     except BackendError as e:
         err_console.print(f"[red bold]Backend error:[/] {escape(str(e))}")
         if isinstance(e, CrashError) and e.stderr_tail:
@@ -477,6 +488,35 @@ def _load_json(path: Path, label: str) -> dict[str, Any] | None:
     except json.JSONDecodeError as e:
         console.print(f"  [yellow]Warning:[/] corrupt {escape(label)}: {escape(str(e))}")
         return None
+
+
+def _discover_agentic_mode_dirs(bundle_dir: Path) -> dict[str, Path]:
+    """Return map of mode_name -> trace_dir for all agentic modes found.
+
+    Current layout writes per-mode subdirectories:
+      bundle/agentic_trace/refine/
+      bundle/agentic_trace/independent/
+
+    Legacy (pre-fix) layout used a flat directory:
+      bundle/agentic_trace/iter_*.json
+    This helper transparently handles both — legacy bundles are keyed as
+    ``"default"`` so existing inspection commands still work.
+    """
+    base = bundle_dir / "agentic_trace"
+    if not base.is_dir():
+        return {}
+
+    mode_dirs: dict[str, Path] = {}
+    for name in ("refine", "independent"):
+        candidate = base / name
+        if candidate.is_dir() and any(candidate.glob("iter_*_input.json")):
+            mode_dirs[name] = candidate
+
+    # Legacy flat layout fallback
+    if not mode_dirs and any(base.glob("iter_*_input.json")):
+        mode_dirs["default"] = base
+
+    return mode_dirs
 
 
 def _validate_jsonl(path: Path) -> str | None:
@@ -761,8 +801,8 @@ def inspect(
                     rank_str = str(c.get("rank", "?"))
                     bic_val = c.get("bic")
                     aic_val = c.get("aic")
-                    bic = f"{bic_val:.1f}" if isinstance(bic_val, float | int) else "--"
-                    aic = f"{aic_val:.1f}" if isinstance(aic_val, float | int) else "--"
+                    bic = f"{bic_val:.1f}" if _is_real_number(bic_val) else "--"
+                    aic = f"{aic_val:.1f}" if _is_real_number(aic_val) else "--"
                     table.add_row(
                         rank_str,
                         escape(str(c.get("candidate_id", "?"))),
@@ -778,8 +818,7 @@ def inspect(
 
     # --- Deep inspection hints ---
     hints: list[str] = []
-    trace_dir = bundle_dir / "agentic_trace"
-    if trace_dir.is_dir() and list(trace_dir.glob("iter_*_input.json")):
+    if _discover_agentic_mode_dirs(bundle_dir):
         hints.append("[bold]apmode trace[/] for agentic iteration details")
     graph_path = bundle_dir / "search_graph.json"
     if graph_path.exists():
@@ -1449,6 +1488,16 @@ def trace(
         bool,
         typer.Option("--cost", help="Show token/cost aggregation."),
     ] = False,
+    mode: Annotated[
+        str | None,
+        typer.Option(
+            "--mode",
+            help=(
+                "Filter to a single agentic mode: [dim]refine[/] or [dim]independent[/]. "
+                "Defaults to showing all modes."
+            ),
+        ),
+    ] = None,
     output_json: Annotated[
         bool,
         typer.Option("--json", help="Machine-readable JSON output."),
@@ -1457,35 +1506,82 @@ def trace(
     """Inspect agentic LLM iteration traces.
 
     Shows the propose-validate-compile-fit loop history from the agentic
-    backend (Phase 3, PRD §4.2.6).
+    backend (Phase 3, PRD §4.2.6). The agentic stage runs two modes by default
+    (refine + independent) each written to its own subdirectory.
 
     \b
     Examples:
-      apmode trace ./runs/run_abc123                  # iteration summary table
-      apmode trace ./runs/run_abc123 --iteration 5    # detail for iteration 5
-      apmode trace ./runs/run_abc123 --cost           # token/cost rollup
+      apmode trace ./runs/run_abc123                       # all modes
+      apmode trace ./runs/run_abc123 --mode refine         # refine only
+      apmode trace ./runs/run_abc123 --iteration 5 --mode refine
+      apmode trace ./runs/run_abc123 --cost                # cost across modes
     """
     if not bundle_dir.is_dir():
         err_console.print(f"[red bold]Error:[/] not a directory: {escape(str(bundle_dir))}")
         raise typer.Exit(code=1)
 
-    trace_dir = bundle_dir / "agentic_trace"
-    if not trace_dir.is_dir():
+    mode_dirs = _discover_agentic_mode_dirs(bundle_dir)
+    if not mode_dirs:
         console.print("[dim]No agentic trace found in this bundle.[/]")
         return
 
-    # --- Cost aggregation ---
+    if mode is not None:
+        if mode not in mode_dirs:
+            err_console.print(
+                f"[red]Mode '{escape(mode)}' not found. "
+                f"Available: {', '.join(sorted(mode_dirs))}[/]"
+            )
+            raise typer.Exit(code=1)
+        mode_dirs = {mode: mode_dirs[mode]}
+
+    # --- Cost aggregation (sums across modes) ---
     if cost:
-        _show_trace_cost(trace_dir, output_json)
+        _show_trace_cost_multi(mode_dirs, output_json)
         return
 
-    # --- Single iteration detail ---
+    # --- Single iteration detail (requires --mode when multiple) ---
     if iteration is not None:
-        _show_trace_iteration(trace_dir, iteration, output_json)
+        if len(mode_dirs) > 1:
+            err_console.print(
+                f"[red]--iteration requires --mode when multiple modes present "
+                f"({', '.join(sorted(mode_dirs))}).[/]"
+            )
+            raise typer.Exit(code=1)
+        only_dir = next(iter(mode_dirs.values()))
+        _show_trace_iteration(only_dir, iteration, output_json)
         return
 
-    # --- Summary table ---
-    _show_trace_summary(trace_dir, output_json)
+    # --- Summary table across modes ---
+    _show_trace_summary_multi(mode_dirs, output_json)
+
+
+def _show_trace_summary_multi(mode_dirs: dict[str, Path], as_json: bool) -> None:
+    """Show summary table(s) across one or more agentic modes."""
+    if as_json:
+        payload = {mode: _read_iterations_jsonl(mode_dir) for mode, mode_dir in mode_dirs.items()}
+        console.print(json.dumps(payload, indent=2))
+        return
+
+    for mode, mode_dir in mode_dirs.items():
+        console.print()
+        console.rule(f"[bold]Agentic Trace — mode: {escape(mode)}[/]")
+        _show_trace_summary(mode_dir, as_json=False)
+
+
+def _read_iterations_jsonl(trace_dir: Path) -> list[dict[str, Any]]:
+    """Parse agentic_iterations.jsonl, skipping corrupt lines."""
+    iters_path = trace_dir / "agentic_iterations.jsonl"
+    if not iters_path.exists():
+        return []
+    entries: list[dict[str, Any]] = []
+    for i, line in enumerate(iters_path.read_text().strip().split("\n"), 1):
+        if not line.strip():
+            continue
+        try:
+            entries.append(json.loads(line))
+        except json.JSONDecodeError:
+            console.print(f"  [yellow]Warning:[/] corrupt line {i} in {escape(str(iters_path))}")
+    return entries
 
 
 def _show_trace_summary(trace_dir: Path, as_json: bool) -> None:
@@ -1531,7 +1627,7 @@ def _show_trace_summary(trace_dir: Path, as_json: bool) -> None:
         transforms = ", ".join(e.get("transforms_proposed", [])) or "[dim]none[/]"
         conv = "[green]Y[/]" if e.get("converged") else "[dim]N[/]"
         bic_val = e.get("bic")
-        bic = f"{bic_val:.1f}" if isinstance(bic_val, int | float) else "--"
+        bic = f"{bic_val:.1f}" if _is_real_number(bic_val) else "--"
         error = (e.get("error") or "")[:30]
         t.add_row(it, before, after, transforms, conv, bic, error)
 
@@ -1628,6 +1724,80 @@ def _show_trace_iteration(trace_dir: Path, iteration: int, as_json: bool) -> Non
         t3.add_row("Wall Time", f"{meta.get('wall_time_seconds', 0):.1f}s")
         console.print(Panel(t3, title="[bold]Meta[/]", border_style="magenta"))
 
+    console.print()
+
+
+def _show_trace_cost_multi(mode_dirs: dict[str, Path], as_json: bool) -> None:
+    """Aggregate token/cost across all modes and show per-mode + total."""
+    per_mode: dict[str, dict[str, float | int]] = {}
+    for mode, mode_dir in mode_dirs.items():
+        meta_files = sorted(mode_dir.glob("iter_*_meta.json"))
+        tot_in = 0
+        tot_out = 0
+        tot_cost = 0.0
+        tot_time = 0.0
+        for f in meta_files:
+            try:
+                meta = json.loads(f.read_text())
+            except json.JSONDecodeError:
+                console.print(f"  [yellow]Warning:[/] corrupt meta file: {escape(f.name)}")
+                continue
+            tot_in += meta.get("input_tokens", 0)
+            tot_out += meta.get("output_tokens", 0)
+            tot_cost += meta.get("cost_usd", 0.0)
+            tot_time += meta.get("wall_time_seconds", 0.0)
+        per_mode[mode] = {
+            "iterations": len(meta_files),
+            "input_tokens": tot_in,
+            "output_tokens": tot_out,
+            "total_tokens": tot_in + tot_out,
+            "cost_usd": round(tot_cost, 4),
+            "wall_time_seconds": round(tot_time, 1),
+        }
+
+    grand_total = {
+        "iterations": sum(int(m["iterations"]) for m in per_mode.values()),
+        "input_tokens": sum(int(m["input_tokens"]) for m in per_mode.values()),
+        "output_tokens": sum(int(m["output_tokens"]) for m in per_mode.values()),
+        "cost_usd": round(sum(float(m["cost_usd"]) for m in per_mode.values()), 4),
+        "wall_time_seconds": round(
+            sum(float(m["wall_time_seconds"]) for m in per_mode.values()), 1
+        ),
+    }
+    grand_total["total_tokens"] = grand_total["input_tokens"] + grand_total["output_tokens"]
+
+    if as_json:
+        console.print(json.dumps({"per_mode": per_mode, "total": grand_total}, indent=2))
+        return
+
+    console.print()
+    console.rule("[bold]Agentic Cost Summary[/]")
+    t = Table(show_header=True, box=None, padding=(0, 2))
+    t.add_column("Mode", style="bold")
+    t.add_column("Iterations", justify="right")
+    t.add_column("Input tok", justify="right")
+    t.add_column("Output tok", justify="right")
+    t.add_column("Cost (USD)", justify="right")
+    t.add_column("Wall (s)", justify="right")
+    for mode, m in per_mode.items():
+        t.add_row(
+            mode,
+            str(m["iterations"]),
+            str(m["input_tokens"]),
+            str(m["output_tokens"]),
+            f"${float(m['cost_usd']):.4f}",
+            f"{float(m['wall_time_seconds']):.1f}",
+        )
+    if len(per_mode) > 1:
+        t.add_row(
+            "[bold]TOTAL[/]",
+            str(grand_total["iterations"]),
+            str(grand_total["input_tokens"]),
+            str(grand_total["output_tokens"]),
+            f"${float(grand_total['cost_usd']):.4f}",
+            f"{float(grand_total['wall_time_seconds']):.1f}",
+        )
+    console.print(t)
     console.print()
 
 
@@ -1746,15 +1916,20 @@ def lineage(
 
     entries: list[dict[str, Any]] = lineage_data.get("entries", [])
 
-    # Merge agentic lineage if present
-    agentic_lineage_path = bundle_dir / "agentic_trace" / "agentic_lineage.json"
-    if agentic_lineage_path.exists():
-        al_data = _load_json(agentic_lineage_path, "agentic_lineage.json")
-        if al_data:
-            existing_ids = {e.get("candidate_id") for e in entries}
-            for ae in al_data.get("entries", []):
-                if ae.get("candidate_id") and ae["candidate_id"] not in existing_ids:
-                    entries.append(ae)
+    # Merge agentic lineage from each mode subdir (refine/, independent/) or
+    # legacy flat agentic_trace/ layout
+    existing_ids = {e.get("candidate_id") for e in entries}
+    for mode, mode_dir in _discover_agentic_mode_dirs(bundle_dir).items():
+        al_path = mode_dir / "agentic_lineage.json"
+        if not al_path.exists():
+            continue
+        al_data = _load_json(al_path, f"{mode}/agentic_lineage.json")
+        if not al_data:
+            continue
+        for ae in al_data.get("entries", []):
+            if ae.get("candidate_id") and ae["candidate_id"] not in existing_ids:
+                entries.append(ae)
+                existing_ids.add(ae["candidate_id"])
 
     # Build parent map: candidate_id -> entry
     by_id: dict[str, dict[str, Any]] = {}
@@ -1989,7 +2164,7 @@ def _node_label(node: dict[str, Any]) -> str:
     """Build a display label for a graph node."""
     cid = node.get("candidate_id", "?")
     bic = node.get("bic")
-    bic_str = f" BIC={bic:.1f}" if isinstance(bic, int | float) else ""
+    bic_str = f" BIC={bic:.1f}" if _is_real_number(bic) else ""
     rank = node.get("rank")
     rank_str = f" #{rank}" if rank else ""
 
