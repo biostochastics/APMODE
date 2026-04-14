@@ -78,6 +78,7 @@ class GatePolicy(BaseModel):
     gate1: Gate1Config
     gate2: Gate2Config
     gate2_5: Gate25Config | None = None
+    vpc_concordance_target: float = Field(default=0.90, ge=0.0, le=1.0)
 
     @model_validator(mode="after")
     def submission_excludes_node(self) -> Self:

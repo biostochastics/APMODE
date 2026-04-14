@@ -18,6 +18,7 @@ from typing import Annotated
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
@@ -112,7 +113,7 @@ def run(
     ] = None,
     timeout: Annotated[
         int,
-        typer.Option(help="Backend timeout in seconds."),
+        typer.Option(help="Backend timeout in seconds.", min=1),
     ] = 600,
     output: Annotated[
         Path,
@@ -133,15 +134,20 @@ def run(
     """
     import logging
 
-    from apmode.errors import BackendError
+    from apmode.errors import BackendError, CrashError
+
+    # --- Flag validation ---
+    if verbose and quiet:
+        err_console.print("[red bold]Error:[/] --verbose and --quiet are mutually exclusive.")
+        raise typer.Exit(code=1)
 
     # --- Input validation ---
-    if not dataset.exists():
-        err_console.print(f"[red bold]Error:[/] dataset not found: {dataset}")
+    if not dataset.is_file():
+        err_console.print(f"[red bold]Error:[/] dataset not found: {escape(str(dataset))}")
         raise typer.Exit(code=1)
 
     if policy is not None and not policy.is_file():
-        err_console.print(f"[red bold]Error:[/] policy file not found: {policy}")
+        err_console.print(f"[red bold]Error:[/] policy file not found: {escape(str(policy))}")
         raise typer.Exit(code=1)
 
     # --- Logging setup ---
@@ -150,21 +156,22 @@ def run(
     log_level = logging.DEBUG if verbose else logging.WARNING if quiet else logging.INFO
     configure_logging(json_output=False, level=log_level)
 
+    # --- Imports (outside try so ImportError is not masked) ---
+    from apmode.backends.nlmixr2_runner import Nlmixr2Runner
+    from apmode.data.adapters import to_nlmixr2_format
+    from apmode.data.ingest import ingest_nonmem_csv
+    from apmode.orchestrator import Orchestrator, RunConfig
+
     # --- Ingestion ---
     if not quiet:
         console.print()
         console.rule("[bold]APMODE Pipeline[/]")
 
     try:
-        from apmode.backends.nlmixr2_runner import Nlmixr2Runner
-        from apmode.data.adapters import to_nlmixr2_format
-        from apmode.data.ingest import ingest_nonmem_csv
-        from apmode.orchestrator import Orchestrator, RunConfig
-
         with console.status("[bold cyan]Ingesting dataset...[/]", spinner="dots"):
             manifest, df = ingest_nonmem_csv(dataset)
     except Exception as e:
-        err_console.print(f"[red bold]Ingestion failed:[/] {e}")
+        err_console.print(f"[red bold]Ingestion failed:[/] {escape(str(e))}")
         err_console.print(
             "[dim]Check that the CSV has required columns: ID, TIME, DV, AMT, EVID, MDV[/]"
         )
@@ -174,7 +181,7 @@ def run(
         ingest_table = Table(show_header=False, box=None, padding=(0, 2))
         ingest_table.add_column(style="dim")
         ingest_table.add_column(style="bold")
-        ingest_table.add_row("Dataset", str(dataset.name))
+        ingest_table.add_row("Dataset", escape(str(dataset.name)))
         ingest_table.add_row("Subjects", str(manifest.n_subjects))
         ingest_table.add_row("Observations", str(manifest.n_observations))
         ingest_table.add_row("Doses", str(manifest.n_doses))
@@ -206,21 +213,24 @@ def run(
         ):
             result = asyncio.run(orchestrator.run(manifest, df, data_csv))
     except BackendError as e:
-        err_console.print(f"[red bold]Backend error:[/] {e}")
-        stderr_tail = getattr(e, "stderr_tail", None)
-        if stderr_tail:
-            err_console.print(Panel(str(stderr_tail), title="stderr", border_style="red"))
+        err_console.print(f"[red bold]Backend error:[/] {escape(str(e))}")
+        if isinstance(e, CrashError) and e.stderr_tail:
+            err_console.print(Panel(escape(e.stderr_tail), title="stderr", border_style="red"))
         raise typer.Exit(code=2) from None
     except KeyboardInterrupt:
         err_console.print("\n[yellow]Pipeline interrupted by user.[/]")
         raise typer.Exit(code=130) from None
     except Exception as e:
-        err_console.print(f"[red bold]Pipeline failed:[/] {e}")
+        err_console.print(f"[red bold]Pipeline failed:[/] {escape(str(e))}")
         if verbose:
             console.print_exception()
         else:
             err_console.print("[dim]Re-run with --verbose for full traceback.[/]")
         raise typer.Exit(code=1) from None
+    finally:
+        # Clean up temporary data file
+        if data_csv.exists():
+            data_csv.unlink()
 
     # --- Results summary ---
     if quiet:
@@ -232,8 +242,8 @@ def run(
     results_table = Table(show_header=False, box=None, padding=(0, 2))
     results_table.add_column(style="dim")
     results_table.add_column()
-    results_table.add_row("Run ID", f"[bold]{result.run_id}[/]")
-    results_table.add_row("Bundle", str(result.bundle_dir))
+    results_table.add_row("Run ID", f"[bold]{escape(result.run_id)}[/]")
+    results_table.add_row("Bundle", escape(str(result.bundle_dir)))
 
     if result.search_outcome:
         n_total = len(result.search_outcome.results)
@@ -252,7 +262,7 @@ def run(
     )
 
     if result.ranked:
-        ranked_str = ", ".join(result.ranked[:5])
+        ranked_str = ", ".join(escape(r) for r in result.ranked[:5])
         if len(result.ranked) > 5:
             ranked_str += f" [dim](+{len(result.ranked) - 5} more)[/]"
         results_table.add_row("Ranked", ranked_str)
@@ -268,6 +278,51 @@ def _pass_fraction(passed: int, total: int) -> str:
     return f"[{color}]{passed}[/]/{total} passed"
 
 
+# ---------------------------------------------------------------------------
+# Shared helpers for bundle parsing
+# ---------------------------------------------------------------------------
+
+
+def _load_json(path: Path, label: str) -> dict[str, object] | None:
+    """Load a JSON file, printing a warning on decode error."""
+    try:
+        data: dict[str, object] = json.loads(path.read_text())
+        return data
+    except json.JSONDecodeError as e:
+        console.print(f"  [yellow]Warning:[/] corrupt {escape(label)}: {escape(str(e))}")
+        return None
+
+
+def _validate_jsonl(path: Path) -> str | None:
+    """Validate that every non-blank line is valid JSON. Returns error or None."""
+    for i, line in enumerate(path.read_text().splitlines(), 1):
+        if line.strip():
+            try:
+                json.loads(line)
+            except json.JSONDecodeError as e:
+                return f"line {i}: {e}"
+    return None
+
+
+def _validate_file(path: Path, filename: str) -> tuple[str, str]:
+    """Validate a single bundle file. Returns (status_markup, note)."""
+    if filename.endswith(".jsonl"):
+        err = _validate_jsonl(path)
+        if err:
+            return "[red bold]BAD[/]", err
+        return "[green]OK[/]", ""
+    try:
+        json.loads(path.read_text())
+        return "[green]OK[/]", ""
+    except json.JSONDecodeError as e:
+        return "[red bold]BAD[/]", str(e)
+
+
+# ---------------------------------------------------------------------------
+# validate command
+# ---------------------------------------------------------------------------
+
+
 @app.command()
 def validate(
     bundle_dir: Annotated[
@@ -280,7 +335,8 @@ def validate(
     Checks required/optional JSON files and subdirectory contents.
     """
     if not bundle_dir.is_dir():
-        err_console.print(f"[red bold]Error:[/] not a directory: {bundle_dir}")
+        kind = "not found" if not bundle_dir.exists() else "not a directory"
+        err_console.print(f"[red bold]Error:[/] {kind}: {escape(str(bundle_dir))}")
         raise typer.Exit(code=1)
 
     required_files = [
@@ -311,19 +367,20 @@ def validate(
             errors.append(f)
             table.add_row("[red bold]MISS[/]", f, "required")
         else:
-            try:
-                json.loads(p.read_text())
-                table.add_row("[green]OK[/]", f, "required")
-            except json.JSONDecodeError as e:
+            status, note = _validate_file(p, f)
+            if "BAD" in status:
                 errors.append(f)
-                table.add_row("[red bold]BAD[/]", f, str(e))
+            table.add_row(status, f, note or "required")
 
     for f in optional_files:
         p = bundle_dir / f
-        if p.exists():
-            table.add_row("[green]OK[/]", f, "")
-        else:
+        if not p.exists():
             table.add_row("[dim]--[/]", f, "[dim]optional[/]")
+        else:
+            status, note = _validate_file(p, f)
+            if "BAD" in status:
+                errors.append(f)
+            table.add_row(status, f, note)
 
     for d in ["compiled_specs", "gate_decisions", "results"]:
         dp = bundle_dir / d
@@ -346,6 +403,11 @@ def validate(
     console.print("[green bold]Bundle valid.[/]")
 
 
+# ---------------------------------------------------------------------------
+# inspect command
+# ---------------------------------------------------------------------------
+
+
 @app.command()
 def inspect(
     bundle_dir: Annotated[
@@ -358,43 +420,46 @@ def inspect(
     Shows data manifest, evidence profile, search trajectory, and gate decisions.
     """
     if not bundle_dir.is_dir():
-        err_console.print(f"[red bold]Error:[/] not a directory: {bundle_dir}")
+        kind = "not found" if not bundle_dir.exists() else "not a directory"
+        err_console.print(f"[red bold]Error:[/] {kind}: {escape(str(bundle_dir))}")
         raise typer.Exit(code=1)
 
     console.print()
-    console.rule(f"[bold]Bundle: {bundle_dir.name}[/]")
+    console.rule(f"[bold]Bundle: {escape(bundle_dir.name)}[/]")
 
     sections_shown = 0
 
     # --- Data manifest ---
     dm_path = bundle_dir / "data_manifest.json"
     if dm_path.exists():
-        dm = json.loads(dm_path.read_text())
-        table = Table(show_header=False, box=None, padding=(0, 2))
-        table.add_column(style="dim")
-        table.add_column(style="bold")
-        table.add_row("Subjects", str(dm.get("n_subjects", "?")))
-        table.add_row("Observations", str(dm.get("n_observations", "?")))
-        table.add_row("Doses", str(dm.get("n_doses", "?")))
-        console.print(Panel(table, title="[bold]Data[/]", border_style="blue"))
-        sections_shown += 1
+        dm = _load_json(dm_path, "data_manifest.json")
+        if dm:
+            table = Table(show_header=False, box=None, padding=(0, 2))
+            table.add_column(style="dim")
+            table.add_column(style="bold")
+            table.add_row("Subjects", str(dm.get("n_subjects", "?")))
+            table.add_row("Observations", str(dm.get("n_observations", "?")))
+            table.add_row("Doses", str(dm.get("n_doses", "?")))
+            console.print(Panel(table, title="[bold]Data[/]", border_style="blue"))
+            sections_shown += 1
 
     # --- Evidence manifest ---
     em_path = bundle_dir / "evidence_manifest.json"
     if em_path.exists():
-        em = json.loads(em_path.read_text())
-        table = Table(show_header=False, box=None, padding=(0, 2))
-        table.add_column(style="dim")
-        table.add_column()
-        table.add_row("Richness", str(em.get("richness_category", "?")))
-        table.add_row("Nonlinear CL", _bool_badge(em.get("nonlinear_clearance_signature")))
-        table.add_row("BLQ burden", f"{em.get('blq_burden', '?')}")
-        if "absorption_coverage" in em:
-            table.add_row("Absorption", str(em["absorption_coverage"]))
-        if "protocol_heterogeneity" in em:
-            table.add_row("Protocol", str(em["protocol_heterogeneity"]))
-        console.print(Panel(table, title="[bold]Evidence Profile[/]", border_style="cyan"))
-        sections_shown += 1
+        em = _load_json(em_path, "evidence_manifest.json")
+        if em:
+            table = Table(show_header=False, box=None, padding=(0, 2))
+            table.add_column(style="dim")
+            table.add_column()
+            table.add_row("Richness", escape(str(em.get("richness_category", "?"))))
+            table.add_row("Nonlinear CL", _bool_badge(em.get("nonlinear_clearance_signature")))
+            table.add_row("BLQ burden", escape(str(em.get("blq_burden", "?"))))
+            if "absorption_coverage" in em:
+                table.add_row("Absorption", escape(str(em["absorption_coverage"])))
+            if "protocol_heterogeneity" in em:
+                table.add_row("Protocol", escape(str(em["protocol_heterogeneity"])))
+            console.print(Panel(table, title="[bold]Evidence Profile[/]", border_style="cyan"))
+            sections_shown += 1
 
     # --- Search trajectory ---
     traj_path = bundle_dir / "search_trajectory.jsonl"
@@ -402,18 +467,30 @@ def inspect(
         text = traj_path.read_text().strip()
         if text:
             lines = text.split("\n")
-            n_conv = sum(1 for line in lines if json.loads(line).get("converged"))
             n_total = len(lines)
-            bar = _mini_bar(n_conv, n_total)
-            console.print(
-                Panel(
-                    f"Evaluated [bold]{n_total}[/] candidates, "
-                    f"[bold green]{n_conv}[/] converged  {bar}",
-                    title="[bold]Search[/]",
-                    border_style="magenta",
+            n_conv = 0
+            parse_ok = True
+            for i, line in enumerate(lines, 1):
+                try:
+                    if json.loads(line).get("converged"):
+                        n_conv += 1
+                except json.JSONDecodeError:
+                    console.print(
+                        f"  [yellow]Warning:[/] search_trajectory.jsonl corrupt at line {i}"
+                    )
+                    parse_ok = False
+                    break
+            if parse_ok:
+                bar = _mini_bar(n_conv, n_total)
+                console.print(
+                    Panel(
+                        f"Evaluated [bold]{n_total}[/] candidates, "
+                        f"[bold green]{n_conv}[/] converged  {bar}",
+                        title="[bold]Search[/]",
+                        border_style="magenta",
+                    )
                 )
-            )
-            sections_shown += 1
+                sections_shown += 1
 
     # --- Gate decisions ---
     gd_dir = bundle_dir / "gate_decisions"
@@ -424,10 +501,20 @@ def inspect(
         table.add_column("Total")
         table.add_column("Rate")
 
-        for gate_name, pattern in [("Gate 1", "gate1_*.json"), ("Gate 2", "gate2_*.json")]:
+        for gate_name, pattern in [
+            ("Gate 1", "gate1_*.json"),
+            ("Gate 2", "gate2_*.json"),
+        ]:
             files = list(gd_dir.glob(pattern))
+            # Exclude gate2_5 files from gate2 count
+            if pattern == "gate2_*.json":
+                files = [f for f in files if not f.name.startswith("gate2_5")]
             if files:
-                n_pass = sum(1 for f in files if json.loads(f.read_text()).get("passed"))
+                n_pass = 0
+                for f in files:
+                    gd = _load_json(f, f.name)
+                    if gd and gd.get("passed"):
+                        n_pass += 1
                 table.add_row(
                     gate_name,
                     str(n_pass),
@@ -435,10 +522,25 @@ def inspect(
                     _pass_fraction(n_pass, len(files)),
                 )
 
+        # Gate 2.5 (credibility)
+        g25_files = list(gd_dir.glob("gate2_5_*.json"))
+        if g25_files:
+            n_pass = 0
+            for f in g25_files:
+                gd = _load_json(f, f.name)
+                if gd and gd.get("passed"):
+                    n_pass += 1
+            table.add_row(
+                "Gate 2.5",
+                str(n_pass),
+                str(len(g25_files)),
+                _pass_fraction(n_pass, len(g25_files)),
+            )
+
         g3 = list(gd_dir.glob("gate3_*.json"))
         if g3:
-            g3_data = json.loads(g3[0].read_text())
-            reason = g3_data.get("summary_reason", "N/A")
+            g3_data = _load_json(g3[0], "gate3")
+            reason = escape(str(g3_data.get("summary_reason", "N/A"))) if g3_data else "?"
             table.add_row("Gate 3", "[dim]--[/]", "[dim]--[/]", reason)
 
         if table.row_count > 0:
@@ -457,37 +559,46 @@ def inspect(
     # --- Ranking ---
     rank_path = bundle_dir / "ranking.json"
     if rank_path.exists():
-        ranking = json.loads(rank_path.read_text())
-        candidates = ranking.get("ranked_candidates", [])
-        if candidates:
-            table = Table(box=None, padding=(0, 1))
-            table.add_column("#", style="dim", width=3)
-            table.add_column("Candidate", style="bold")
-            table.add_column("BIC", justify="right")
-            table.add_column("AIC", justify="right")
-            table.add_column("Params", justify="right")
-            table.add_column("Backend", style="dim")
-            for c in candidates[:10]:
-                rank_str = str(c.get("rank", "?"))
-                bic = f"{c['bic']:.1f}" if c.get("bic") is not None else "--"
-                aic = f"{c['aic']:.1f}" if c.get("aic") is not None else "--"
-                table.add_row(
-                    rank_str,
-                    c.get("candidate_id", "?"),
-                    bic,
-                    aic,
-                    str(c.get("n_params", "?")),
-                    c.get("backend", "?"),
-                )
-            if len(candidates) > 10:
-                table.add_row("", f"[dim]... +{len(candidates) - 10} more[/]", "", "", "", "")
-            console.print(Panel(table, title="[bold]Ranking[/]", border_style="green"))
-            sections_shown += 1
+        ranking = _load_json(rank_path, "ranking.json")
+        if ranking:
+            candidates: list[object] = ranking.get("ranked_candidates", [])  # type: ignore[assignment]
+            if candidates:
+                table = Table(box=None, padding=(0, 1))
+                table.add_column("#", style="dim", width=3)
+                table.add_column("Candidate", style="bold")
+                table.add_column("BIC", justify="right")
+                table.add_column("AIC", justify="right")
+                table.add_column("Params", justify="right")
+                table.add_column("Backend", style="dim")
+                for c_raw in candidates[:10]:
+                    c: dict[str, object] = c_raw  # type: ignore[assignment]
+                    rank_str = str(c.get("rank", "?"))
+                    bic_val = c.get("bic")
+                    aic_val = c.get("aic")
+                    bic = f"{bic_val:.1f}" if isinstance(bic_val, float | int) else "--"
+                    aic = f"{aic_val:.1f}" if isinstance(aic_val, float | int) else "--"
+                    table.add_row(
+                        rank_str,
+                        escape(str(c.get("candidate_id", "?"))),
+                        bic,
+                        aic,
+                        str(c.get("n_params", "?")),
+                        escape(str(c.get("backend", "?"))),
+                    )
+                if len(candidates) > 10:
+                    table.add_row("", f"[dim]... +{len(candidates) - 10} more[/]", "", "", "", "")
+                console.print(Panel(table, title="[bold]Ranking[/]", border_style="green"))
+                sections_shown += 1
 
     if sections_shown == 0:
         console.print("[dim]Bundle is empty or contains no recognized artifacts.[/]")
 
     console.print()
+
+
+# ---------------------------------------------------------------------------
+# Formatting helpers
+# ---------------------------------------------------------------------------
 
 
 def _bool_badge(value: object) -> str:
@@ -503,5 +614,5 @@ def _mini_bar(passed: int, total: int, width: int = 20) -> str:
     """Render a tiny filled/empty bar."""
     if total == 0:
         return ""
-    filled = round(passed / total * width)
+    filled = min(width, round(passed / total * width))
     return f"[green]{'|' * filled}[/][dim]{'|' * (width - filled)}[/]"

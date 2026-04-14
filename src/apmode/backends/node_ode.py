@@ -176,7 +176,7 @@ class HybridPKODE(eqx.Module):
             solver,
             t0=times[0],
             t1=times[-1],
-            dt0=0.1,
+            dt0=None,
             y0=y0,
             saveat=saveat,
             stepsize_controller=stepsize_controller,

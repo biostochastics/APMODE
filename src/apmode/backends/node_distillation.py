@@ -94,36 +94,34 @@ def fit_parametric_surrogate(
 
     # Linear fit: y = a*x + b
     if len(x) >= 2:
-        a_lin, b_lin = float(np.polyfit(x, y, 1)[0]), float(np.polyfit(x, y, 1)[1])
+        _coeffs = np.polyfit(x, y, 1)
+        a_lin, b_lin = float(_coeffs[0]), float(_coeffs[1])
         y_lin = a_lin * x + b_lin
         ss_lin = float(np.sum((y - y_lin) ** 2))
         r2_lin = 1.0 - ss_lin / ss_tot if ss_tot > 0 else 0.0
     else:
         a_lin, b_lin, ss_lin, r2_lin = 0.0, 0.0, float("inf"), 0.0
 
-    # Michaelis-Menten fit: y = Vmax*x/(Km+x)
-    # Use Lineweaver-Burk linearization: 1/y = Km/(Vmax*x) + 1/Vmax
-    y_pos = y[y > 1e-10]
-    x_pos = x[: len(y_pos)] if len(y_pos) < len(y) else x[y > 1e-10]
+    # Michaelis-Menten fit: y = Vmax*x/(Km+x) via nonlinear least-squares
+    from scipy.optimize import curve_fit  # type: ignore[import-untyped]
 
-    if len(y_pos) >= 2 and np.all(x_pos > 0):
-        inv_y = 1.0 / y_pos
-        inv_x = 1.0 / x_pos
-        coeffs = np.polyfit(inv_x, inv_y, 1)
-        km_over_vmax = float(coeffs[0])
-        inv_vmax = float(coeffs[1])
-        if inv_vmax > 1e-10:
-            vmax = 1.0 / inv_vmax
-            km = km_over_vmax * vmax
-            if km > 0 and vmax > 0:
-                y_mm = vmax * x / (km + x)
-                ss_mm = float(np.sum((y - y_mm) ** 2))
-                r2_mm = 1.0 - ss_mm / ss_tot if ss_tot > 0 else 0.0
-            else:
-                vmax, km, ss_mm, r2_mm = 0.0, 0.0, float("inf"), 0.0
-        else:
-            vmax, km, ss_mm, r2_mm = 0.0, 0.0, float("inf"), 0.0
-    else:
+    def _mm_fn(x: np.ndarray, vmax: float, km: float) -> np.ndarray:
+        return vmax * x / (km + x)
+
+    try:
+        popt, _ = curve_fit(
+            _mm_fn,
+            x,
+            y,
+            p0=[float(np.max(y)), float(np.median(x))],
+            bounds=([0, 0], [np.inf, np.inf]),
+            maxfev=5000,
+        )
+        vmax, km = float(popt[0]), float(popt[1])
+        y_mm = _mm_fn(x, vmax, km)
+        ss_mm = float(np.sum((y - y_mm) ** 2))
+        r2_mm = 1.0 - ss_mm / ss_tot if ss_tot > 0 else 0.0
+    except (RuntimeError, ValueError):
         vmax, km, ss_mm, r2_mm = 0.0, 0.0, float("inf"), 0.0
 
     # Choose the better fit

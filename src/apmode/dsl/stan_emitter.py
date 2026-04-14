@@ -1,0 +1,658 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+"""Stan codegen emitter: DSL AST -> Stan program (PRD v0.3, Phase 2+).
+
+Generates a complete Stan program from a DSLSpec for probabilistic inference.
+Uses ODE-based models via Stan's `ode_rk45` integrator for non-linear dynamics,
+and analytical solutions (matrix exponential) for linear compartment models.
+
+Observation model:
+  - Proportional: y ~ lognormal(log(f), sigma)
+  - Additive:     y ~ normal(f, sigma)
+  - Combined:     y ~ normal(f, sqrt((sigma_prop * f)^2 + sigma_add^2))
+
+IIV is modeled via log-normal random effects:
+  theta_i = theta * exp(eta_i), eta_i ~ N(0, omega^2)
+
+NODE modules are not supported (Stan has no neural ODE support).
+BLQ M3/M4 and IOV are not yet implemented (marked as Phase 3).
+"""
+
+from __future__ import annotations
+
+from apmode.dsl.ast_models import (
+    BLQM3,
+    BLQM4,
+    IIV,
+    IOV,
+    TMDDQSS,
+    Additive,
+    Combined,
+    CovariateLink,
+    DSLSpec,
+    FirstOrder,
+    LaggedFirstOrder,
+    LinearElim,
+    MichaelisMenten,
+    MixedFirstZero,
+    OneCmt,
+    ParallelLinearMM,
+    Proportional,
+    ThreeCmt,
+    TimeVaryingElim,
+    TMDDCore,
+    Transit,
+    TwoCmt,
+    ZeroOrder,
+)
+
+
+def emit_stan(
+    spec: DSLSpec,
+    initial_estimates: dict[str, float] | None = None,
+) -> str:
+    """Emit a complete Stan program from a DSLSpec.
+
+    Args:
+        spec: The compiled DSL specification.
+        initial_estimates: Optional initial estimate overrides (used for
+            informative priors centered on NCA/classical estimates).
+
+    Returns:
+        A Stan program string.
+
+    Raises:
+        NotImplementedError: For NODE modules, BLQ M3/M4, or IOV.
+    """
+    if spec.has_node_modules():
+        raise NotImplementedError(
+            "NODE module codegen is not supported for Stan. "
+            "NODE backends use the JAX/Diffrax emitter."
+        )
+
+    for v in spec.variability:
+        if isinstance(v, IOV):
+            raise NotImplementedError("IOV is not yet supported in Stan codegen.")
+
+    if isinstance(spec.observation, (BLQM3, BLQM4)):
+        raise NotImplementedError("BLQ M3/M4 is not yet supported in Stan codegen.")
+
+    blocks: list[str] = []
+    blocks.append(f"// APMODE generated Stan model: {spec.model_id}")
+    blocks.append("")
+
+    needs_ode = _needs_ode(spec)
+
+    if needs_ode:
+        blocks.append(_emit_functions_block(spec))
+
+    blocks.append(_emit_data_block(spec))
+    blocks.append(_emit_transformed_data_block())
+    blocks.append(_emit_parameters_block(spec))
+    blocks.append(_emit_transformed_parameters_block(spec, needs_ode))
+    blocks.append(_emit_model_block(spec, initial_estimates))
+    blocks.append(_emit_generated_quantities_block(spec))
+
+    return "\n".join(blocks)
+
+
+# ---------------------------------------------------------------------------
+# Helper: does this spec require ODE integration?
+# ---------------------------------------------------------------------------
+
+
+def _needs_ode(spec: DSLSpec) -> bool:
+    """Determine if ODE form is needed (same logic as nlmixr2 emitter)."""
+    if isinstance(spec.elimination, (MichaelisMenten, ParallelLinearMM, TimeVaryingElim)):
+        return True
+    if isinstance(spec.distribution, (TMDDCore, TMDDQSS)):
+        return True
+    return isinstance(spec.absorption, (Transit, MixedFirstZero, ZeroOrder))
+
+
+# ---------------------------------------------------------------------------
+# functions {} block — ODE system definition
+# ---------------------------------------------------------------------------
+
+
+def _emit_functions_block(spec: DSLSpec) -> str:
+    """Emit the functions{} block with the ODE system."""
+    lines = ["functions {"]
+    lines.append("  vector ode_rhs(real t, vector y, array[] real theta,")
+    lines.append("                 array[] real x_r, array[] int x_i) {")
+
+    n_states = _n_states(spec)
+    lines.append(f"    vector[{n_states}] dydt;")
+    lines.append("")
+
+    # Unpack theta
+    lines.extend(_emit_theta_unpack(spec, indent=4))
+    lines.append("")
+
+    # State aliases
+    lines.extend(_emit_state_aliases(spec, indent=4))
+    lines.append("")
+
+    # Dynamics
+    lines.extend(_emit_ode_dynamics(spec, indent=4))
+    lines.append("")
+
+    lines.append("    return dydt;")
+    lines.append("  }")
+    lines.append("}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# data {} block
+# ---------------------------------------------------------------------------
+
+
+def _emit_data_block(spec: DSLSpec) -> str:
+    lines = ["data {"]
+    lines.append("  int<lower=1> N;              // total observations")
+    lines.append("  int<lower=1> N_subjects;     // number of subjects")
+    lines.append("  array[N] int<lower=1,upper=N_subjects> subject;  // subject index")
+    lines.append("  vector[N] time;              // observation times")
+    lines.append("  vector<lower=0>[N] dv;       // observed concentrations")
+    lines.append("  vector<lower=0>[N_subjects] dose;  // dose per subject")
+
+    # Covariates
+    cov_links = [v for v in spec.variability if isinstance(v, CovariateLink)]
+    cov_names = sorted({c.covariate for c in cov_links})
+    for cov in cov_names:
+        lines.append(f"  vector[N_subjects] {cov};")
+
+    lines.append("}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# transformed data {} block
+# ---------------------------------------------------------------------------
+
+
+def _emit_transformed_data_block() -> str:
+    lines = ["transformed data {"]
+    lines.append("  array[0] real x_r;")
+    lines.append("  array[0] int x_i;")
+    lines.append("}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# parameters {} block
+# ---------------------------------------------------------------------------
+
+
+def _emit_parameters_block(spec: DSLSpec) -> str:
+    lines = ["parameters {"]
+
+    # Structural params (log-domain)
+    for name in spec.structural_param_names():
+        lines.append(f"  real log_{name};")
+
+    # IIV omega
+    iiv_params = _iiv_params(spec)
+    for p in iiv_params:
+        lines.append(f"  real<lower=0> omega_{p};")
+
+    # Individual etas
+    if iiv_params:
+        lines.append(f"  matrix[N_subjects, {len(iiv_params)}] eta_raw;")
+
+    # Residual error
+    lines.extend(_emit_sigma_params(spec))
+
+    # Covariate coefficients
+    cov_links = [v for v in spec.variability if isinstance(v, CovariateLink)]
+    for cov in cov_links:
+        lines.append(f"  real beta_{cov.param}_{cov.covariate};")
+
+    lines.append("}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# transformed parameters {} block
+# ---------------------------------------------------------------------------
+
+
+def _emit_transformed_parameters_block(spec: DSLSpec, needs_ode: bool) -> str:
+    lines = ["transformed parameters {"]
+    lines.append("  vector<lower=0>[N] f;  // predicted concentrations")
+    lines.append("")
+
+    iiv_params = _iiv_params(spec)
+
+    lines.append("  for (i in 1:N_subjects) {")
+
+    # Back-transform structural params with IIV
+    for name in spec.structural_param_names():
+        eta_expr = ""
+        if name in iiv_params:
+            idx = iiv_params.index(name) + 1
+            eta_expr = f" + omega_{name} * eta_raw[i, {idx}]"
+
+        # Covariate effects
+        cov_expr = _covariate_expr(spec, name, "i")
+        lines.append(f"    real {name}_i = exp(log_{name}{eta_expr}{cov_expr});")
+
+    lines.append("")
+
+    if needs_ode:
+        lines.extend(_emit_ode_solve(spec, indent=4))
+    else:
+        lines.extend(_emit_analytical_solve(spec, indent=4))
+
+    lines.append("  }")
+    lines.append("}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# model {} block
+# ---------------------------------------------------------------------------
+
+
+def _emit_model_block(
+    spec: DSLSpec,
+    initial_estimates: dict[str, float] | None = None,
+) -> str:
+    lines = ["model {"]
+    ie = initial_estimates or {}
+
+    # Priors on structural params
+    lines.append("  // Priors on structural parameters")
+    for name in spec.structural_param_names():
+        center = ie.get(name)
+        if center is not None and center > 0:
+            lines.append(f"  log_{name} ~ normal({_log(center):.4f}, 1);")
+        else:
+            lines.append(f"  log_{name} ~ normal(0, 2);")
+
+    lines.append("")
+
+    # Priors on IIV
+    iiv_params = _iiv_params(spec)
+    for p in iiv_params:
+        lines.append(f"  omega_{p} ~ cauchy(0, 1);")
+
+    # Standard normal etas (non-centered parameterization)
+    if iiv_params:
+        lines.append("  to_vector(eta_raw) ~ std_normal();")
+
+    lines.append("")
+
+    # Priors on covariate coefficients
+    cov_links = [v for v in spec.variability if isinstance(v, CovariateLink)]
+    for cov in cov_links:
+        if cov.form == "power":
+            lines.append(f"  beta_{cov.param}_{cov.covariate} ~ normal(0.75, 0.5);")
+        else:
+            lines.append(f"  beta_{cov.param}_{cov.covariate} ~ normal(0, 1);")
+
+    # Sigma priors
+    lines.extend(_emit_sigma_priors(spec))
+
+    lines.append("")
+
+    # Likelihood
+    lines.append("  // Likelihood")
+    lines.extend(_emit_likelihood(spec))
+
+    lines.append("}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# generated quantities {} block
+# ---------------------------------------------------------------------------
+
+
+def _emit_generated_quantities_block(spec: DSLSpec) -> str:
+    lines = ["generated quantities {"]
+
+    # Log-likelihood for LOO-CV
+    lines.append("  vector[N] log_lik;")
+    lines.append("  for (n in 1:N) {")
+    lines.extend(_emit_log_lik(spec, indent=4))
+    lines.append("  }")
+
+    lines.append("}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+
+def _n_states(spec: DSLSpec) -> int:
+    """Number of ODE states."""
+    base = 1  # depot
+    dist = spec.distribution
+    if isinstance(dist, OneCmt):
+        return base + 1
+    if isinstance(dist, TwoCmt):
+        return base + 2
+    if isinstance(dist, ThreeCmt):
+        return base + 3
+    if isinstance(dist, TMDDCore):
+        return base + 3  # centr, R, RC
+    if isinstance(dist, TMDDQSS):
+        return base + 2  # Atot, Rtot
+    return base + 1
+
+
+def _iiv_params(spec: DSLSpec) -> list[str]:
+    """Collect IIV parameter names in order."""
+    params: list[str] = []
+    for v in spec.variability:
+        if isinstance(v, IIV):
+            for p in v.params:
+                if p not in params:
+                    params.append(p)
+    return params
+
+
+def _log(x: float) -> float:
+    import math
+
+    return math.log(max(x, 1e-10))
+
+
+def _covariate_expr(spec: DSLSpec, param: str, idx_var: str) -> str:
+    """Build covariate effect expression for a parameter."""
+    parts: list[str] = []
+    for v in spec.variability:
+        if isinstance(v, CovariateLink) and v.param == param:
+            coeff = f"beta_{v.param}_{v.covariate}"
+            if v.form == "power":
+                parts.append(f" + {coeff} * log({v.covariate}[{idx_var}] / 70)")
+            elif v.form in ("exponential", "categorical"):
+                parts.append(f" + {coeff} * {v.covariate}[{idx_var}]")
+            elif v.form == "linear":
+                parts.append(f" + log(1 + {coeff} * {v.covariate}[{idx_var}])")
+            elif v.form == "maturation":
+                raise NotImplementedError(
+                    f"Maturation covariate form not yet supported in Stan codegen "
+                    f"(param={v.param}, covariate={v.covariate})."
+                )
+    return "".join(parts)
+
+
+def _emit_sigma_params(spec: DSLSpec) -> list[str]:
+    obs = spec.observation
+    if isinstance(obs, Proportional):
+        return ["  real<lower=0> sigma_prop;"]
+    if isinstance(obs, Additive):
+        return ["  real<lower=0> sigma_add;"]
+    if isinstance(obs, Combined):
+        return ["  real<lower=0> sigma_prop;", "  real<lower=0> sigma_add;"]
+    return ["  real<lower=0> sigma_prop;"]
+
+
+def _emit_sigma_priors(spec: DSLSpec) -> list[str]:
+    obs = spec.observation
+    if isinstance(obs, Proportional):
+        return [f"  sigma_prop ~ cauchy(0, {obs.sigma_prop});"]
+    if isinstance(obs, Additive):
+        return [f"  sigma_add ~ cauchy(0, {obs.sigma_add});"]
+    if isinstance(obs, Combined):
+        return [
+            f"  sigma_prop ~ cauchy(0, {obs.sigma_prop});",
+            f"  sigma_add ~ cauchy(0, {obs.sigma_add});",
+        ]
+    return ["  sigma_prop ~ cauchy(0, 0.3);"]
+
+
+def _emit_likelihood(spec: DSLSpec) -> list[str]:
+    obs = spec.observation
+    if isinstance(obs, Proportional):
+        return ["  dv ~ lognormal(log(f), sigma_prop);"]
+    if isinstance(obs, Additive):
+        return ["  dv ~ normal(f, sigma_add);"]
+    if isinstance(obs, Combined):
+        return [
+            "  for (n in 1:N)",
+            "    dv[n] ~ normal(f[n], sqrt(square(sigma_prop * f[n]) + square(sigma_add)));",
+        ]
+    return ["  dv ~ lognormal(log(f), sigma_prop);"]
+
+
+def _emit_log_lik(spec: DSLSpec, indent: int = 4) -> list[str]:
+    pad = " " * indent
+    obs = spec.observation
+    if isinstance(obs, Proportional):
+        return [f"{pad}log_lik[n] = lognormal_lpdf(dv[n] | log(f[n]), sigma_prop);"]
+    if isinstance(obs, Additive):
+        return [f"{pad}log_lik[n] = normal_lpdf(dv[n] | f[n], sigma_add);"]
+    if isinstance(obs, Combined):
+        return [
+            f"{pad}log_lik[n] = normal_lpdf(dv[n] | f[n], "
+            f"sqrt(square(sigma_prop * f[n]) + square(sigma_add)));"
+        ]
+    return [f"{pad}log_lik[n] = lognormal_lpdf(dv[n] | log(f[n]), sigma_prop);"]
+
+
+def _emit_theta_unpack(spec: DSLSpec, indent: int = 4) -> list[str]:
+    """Unpack theta array in the ODE function."""
+    pad = " " * indent
+    lines: list[str] = []
+    names = spec.structural_param_names()
+    for idx, name in enumerate(names, 1):
+        lines.append(f"{pad}real {name} = theta[{idx}];")
+    return lines
+
+
+def _emit_state_aliases(spec: DSLSpec, indent: int = 4) -> list[str]:
+    """Emit state variable aliases."""
+    pad = " " * indent
+    lines: list[str] = []
+    lines.append(f"{pad}real depot = y[1];")
+
+    dist = spec.distribution
+    if isinstance(dist, (OneCmt, TMDDCore, TMDDQSS)):
+        lines.append(f"{pad}real centr = y[2];")
+    elif isinstance(dist, TwoCmt):
+        lines.append(f"{pad}real centr = y[2];")
+        lines.append(f"{pad}real periph = y[3];")
+    elif isinstance(dist, ThreeCmt):
+        lines.append(f"{pad}real centr = y[2];")
+        lines.append(f"{pad}real periph1 = y[3];")
+        lines.append(f"{pad}real periph2 = y[4];")
+
+    if isinstance(dist, TMDDCore):
+        lines.append(f"{pad}real R = y[3];")
+        lines.append(f"{pad}real RC = y[4];")
+    elif isinstance(dist, TMDDQSS):
+        lines.append(f"{pad}real Rtot = y[3];")
+
+    return lines
+
+
+def _emit_ode_dynamics(spec: DSLSpec, indent: int = 4) -> list[str]:
+    """Emit ODE RHS in the functions block."""
+    pad = " " * indent
+    lines: list[str] = []
+
+    abs_mod = spec.absorption
+    dist_mod = spec.distribution
+    elim_mod = spec.elimination
+
+    # Volume variable
+    vol = "V" if isinstance(dist_mod, (OneCmt, TMDDCore, TMDDQSS)) else "V1"
+
+    # Concentration
+    lines.append(f"{pad}real conc = centr / {vol};")
+
+    # Absorption rate
+    if isinstance(abs_mod, FirstOrder):
+        lines.append(f"{pad}dydt[1] = -ka * depot;")
+        abs_influx = "ka * depot"
+    elif isinstance(abs_mod, Transit):
+        lines.append(f"{pad}real mtt = (n + 1) / ktr;")
+        lines.append(f"{pad}// Transit compartment approximation")
+        lines.append(f"{pad}real ktr_eff = (n + 1) / mtt;")
+        lines.append(f"{pad}dydt[1] = ktr_eff * depot * exp(-ktr_eff * t) - ka * depot;")
+        abs_influx = "ka * depot"
+    else:
+        lines.append(f"{pad}dydt[1] = -ka * depot;")
+        abs_influx = "ka * depot"
+
+    # Elimination expression
+    elim_expr = _stan_elim_expr(elim_mod, "centr", vol)
+
+    # Central compartment
+    if isinstance(dist_mod, OneCmt):
+        lines.append(f"{pad}dydt[2] = {abs_influx} - {elim_expr};")
+    elif isinstance(dist_mod, TwoCmt):
+        lines.append(
+            f"{pad}dydt[2] = {abs_influx} - {elim_expr} - Q / V1 * centr + Q / V2 * periph;"
+        )
+        lines.append(f"{pad}dydt[3] = Q / V1 * centr - Q / V2 * periph;")
+    elif isinstance(dist_mod, ThreeCmt):
+        lines.append(
+            f"{pad}dydt[2] = {abs_influx} - {elim_expr}"
+            f" - Q2 / V1 * centr + Q2 / V2 * periph1"
+            f" - Q3 / V1 * centr + Q3 / V3 * periph2;"
+        )
+        lines.append(f"{pad}dydt[3] = Q2 / V1 * centr - Q2 / V2 * periph1;")
+        lines.append(f"{pad}dydt[4] = Q3 / V1 * centr - Q3 / V3 * periph2;")
+    elif isinstance(dist_mod, TMDDCore):
+        lines.append(f"{pad}real kel = CL / {vol};")
+        lines.append(f"{pad}real ksyn = koff * R0;")
+        lines.append(
+            f"{pad}dydt[2] = {abs_influx} - kel * centr"
+            f" - kon * conc * R * {vol} + koff * RC * {vol};"
+        )
+        lines.append(f"{pad}dydt[3] = ksyn - koff * R - kon * conc * R + koff * RC;")
+        lines.append(f"{pad}dydt[4] = kon * conc * R - koff * RC - kint * RC;")
+    elif isinstance(dist_mod, TMDDQSS):
+        lines.append(f"{pad}real kel = CL / {vol};")
+        lines.append(f"{pad}real ksyn = kint * R0;")
+        lines.append(
+            f"{pad}real Cfree = 0.5 * ((conc - Rtot - KD)"
+            f" + sqrt(square(conc - Rtot - KD) + 4 * KD * conc));"
+        )
+        lines.append(f"{pad}real Rfree = Rtot * KD / (KD + Cfree);")
+        lines.append(f"{pad}real RC_conc = conc - Cfree;")
+        lines.append(
+            f"{pad}dydt[2] = {abs_influx} - kel * Cfree * {vol} - kint * RC_conc * {vol};"
+        )
+        lines.append(f"{pad}dydt[3] = ksyn - kint * Rfree - kint * RC_conc;")
+
+    return lines
+
+
+def _stan_elim_expr(elim_mod: object, cmt: str, vol: str) -> str:
+    if isinstance(elim_mod, LinearElim):
+        return f"CL / {vol} * {cmt}"
+    if isinstance(elim_mod, MichaelisMenten):
+        return f"Vmax * ({cmt}/{vol}) / (Km + {cmt}/{vol})"
+    if isinstance(elim_mod, ParallelLinearMM):
+        return f"(CL / {vol} * {cmt} + Vmax * ({cmt}/{vol}) / (Km + {cmt}/{vol}))"
+    if isinstance(elim_mod, TimeVaryingElim):
+        return f"CL * exp(-kdecay * t) / {vol} * {cmt}"
+    return f"CL / {vol} * {cmt}"
+
+
+def _emit_ode_solve(spec: DSLSpec, indent: int = 4) -> list[str]:
+    """Emit ODE solve call within the transformed parameters loop."""
+    pad = " " * indent
+    lines: list[str] = []
+    n_states = _n_states(spec)
+    n_params = len(spec.structural_param_names())
+
+    # Pack theta
+    lines.append(f"{pad}array[{n_params}] real theta_i;")
+    for idx, name in enumerate(spec.structural_param_names(), 1):
+        lines.append(f"{pad}theta_i[{idx}] = {name}_i;")
+
+    # Initial state
+    lines.append(f"{pad}vector[{n_states}] y0 = rep_vector(0, {n_states});")
+    lines.append(f"{pad}y0[1] = dose[i];  // initial dose in depot")
+
+    # Observation times for this subject
+    lines.append(f"{pad}// Solve ODE for subject i")
+    lines.append(f"{pad}{{")
+    lines.append(f"{pad}  int obs_start = 1;")
+    lines.append(f"{pad}  int obs_end = N;")
+    lines.append(f"{pad}  // Find observation indices for subject i")
+    lines.append(f"{pad}  for (n in 1:N) {{")
+    lines.append(f"{pad}    if (subject[n] == i) {{")
+
+    # Volume for concentration conversion
+    vol = "V" if isinstance(spec.distribution, (OneCmt, TMDDCore, TMDDQSS)) else "V1"
+    lines.append(f"{pad}      // Solve at each observation time individually")
+    lines.append(f"{pad}      array[1] real ts = {{time[n]}};")
+    lines.append(f"{pad}      array[1] vector[{n_states}] y_sol =")
+    lines.append(f"{pad}        ode_rk45(ode_rhs, y0, 0.0, ts, theta_i, x_r, x_i);")
+    lines.append(f"{pad}      f[n] = fmax(y_sol[1, 2] / {vol}_i, 1e-10);")
+    lines.append(f"{pad}    }}")
+    lines.append(f"{pad}  }}")
+    lines.append(f"{pad}}}")
+
+    return lines
+
+
+def _emit_analytical_solve(spec: DSLSpec, indent: int = 4) -> list[str]:
+    """Emit analytical solution for linear compartment models."""
+    pad = " " * indent
+    lines: list[str] = []
+
+    abs_mod = spec.absorption
+    dist_mod = spec.distribution
+    elim_mod = spec.elimination
+
+    if not isinstance(elim_mod, LinearElim):
+        # Fall back to ODE for non-linear
+        return _emit_ode_solve(spec, indent)
+
+    lines.append(f"{pad}// Analytical solution for linear model")
+    lines.append(f"{pad}for (n in 1:N) {{")
+    lines.append(f"{pad}  if (subject[n] == i) {{")
+    lines.append(f"{pad}    real t_obs = time[n];")
+
+    if isinstance(dist_mod, OneCmt) and isinstance(abs_mod, (FirstOrder, LaggedFirstOrder)):
+        lines.append(f"{pad}    real ke = CL_i / V_i;")
+        if isinstance(abs_mod, LaggedFirstOrder):
+            lines.append(f"{pad}    real t_eff = fmax(t_obs - tlag_i, 0);")
+            t_var = "t_eff"
+        else:
+            t_var = "t_obs"
+        lines.append(
+            f"{pad}    real conc = dose[i] * ka_i / (V_i * (ka_i - ke))"
+            f" * (exp(-ke * {t_var}) - exp(-ka_i * {t_var}));"
+        )
+        lines.append(f"{pad}    f[n] = fmax(conc, 1e-10);")
+
+    elif isinstance(dist_mod, TwoCmt) and isinstance(abs_mod, FirstOrder):
+        lines.append(f"{pad}    real ke = CL_i / V1_i;")
+        lines.append(f"{pad}    real k12 = Q_i / V1_i;")
+        lines.append(f"{pad}    real k21 = Q_i / V2_i;")
+        lines.append(
+            f"{pad}    real a1 = 0.5 * ((ke + k12 + k21)"
+            f" + sqrt(square(ke + k12 + k21) - 4 * ke * k21));"
+        )
+        lines.append(
+            f"{pad}    real a2 = 0.5 * ((ke + k12 + k21)"
+            f" - sqrt(square(ke + k12 + k21) - 4 * ke * k21));"
+        )
+        lines.append(f"{pad}    real A = dose[i] * ka_i / V1_i;")
+        lines.append(
+            f"{pad}    real conc = A * ((k21 - a1) / ((ka_i - a1) * (a2 - a1)) * exp(-a1 * t_obs)"
+        )
+        lines.append(f"{pad}      + (k21 - a2) / ((ka_i - a2) * (a1 - a2)) * exp(-a2 * t_obs)")
+        lines.append(
+            f"{pad}      + (k21 - ka_i) / ((a1 - ka_i) * (a2 - ka_i)) * exp(-ka_i * t_obs));"
+        )
+        lines.append(f"{pad}    f[n] = fmax(conc, 1e-10);")
+    else:
+        # Fallback for complex linear models
+        return _emit_ode_solve(spec, indent)
+
+    lines.append(f"{pad}  }}")
+    lines.append(f"{pad}}}")
+
+    return lines

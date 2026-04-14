@@ -287,9 +287,13 @@ def _detect_curvature_nonlinearity(obs: pd.DataFrame) -> bool:
     concave: the slope is steeper at high concentrations (early, near Vmax)
     and shallower at low concentrations (late, near linear regime).
 
+    For TMDD kinetics, the inverse pattern occurs: target-mediated clearance
+    saturates at high concentrations (slow early decline) and dominates at low
+    concentrations (faster late decline), yielding ratio < 0.3.
+
     Computes the median ratio of |early slope| / |late slope| across subjects.
-    Linear PK (including multi-compartment) typically yields ratio ≤ 1.5;
-    MM kinetics yields ratio > 1.8.
+    Linear PK (including multi-compartment) typically yields 0.5 ≤ ratio ≤ 1.5;
+    MM kinetics yields ratio > 1.8; TMDD yields ratio < 0.3.
     """
     subjects = obs["NMID"].unique()
     ratios: list[float] = []
@@ -329,7 +333,10 @@ def _detect_curvature_nonlinearity(obs: pd.DataFrame) -> bool:
     if len(ratios) < 4:
         return False
 
-    return bool(float(np.median(ratios)) > 1.8)
+    median_ratio = float(np.median(ratios))
+    # MM kinetics: ratio > 1.8 (faster early decline)
+    # TMDD kinetics: ratio < 0.3 (slower early decline, faster late)
+    return median_ratio > 1.8 or median_ratio < 0.3
 
 
 def _nonlinear_clearance_confidence(obs: pd.DataFrame, doses: pd.DataFrame) -> float | None:
@@ -450,8 +457,9 @@ def _check_covariate_correlation(
 
     corr_matrix = numeric_covs.corr().abs()
     # Check if any off-diagonal element > 0.7
-    np.fill_diagonal(corr_matrix.values, 0)
-    return bool((corr_matrix > 0.7).any().any())
+    corr_arr = corr_matrix.to_numpy(copy=True)
+    np.fill_diagonal(corr_arr, 0)
+    return bool((corr_arr > 0.7).any())
 
 
 def _assess_covariate_missingness(

@@ -49,18 +49,19 @@ def is_cross_paradigm(survivors: list[BackendResult]) -> bool:
     return len(backends) > 1
 
 
-def compute_vpc_concordance(result: BackendResult) -> float:
+def compute_vpc_concordance(result: BackendResult, *, target: float = 0.90) -> float:
     """Compute VPC coverage concordance score for a candidate.
 
     Score is based on how close VPC coverage is to the ideal (percentile-matching).
-    Ideal: p5 coverage ~ 0.90, p50 coverage ~ 0.90-0.95, p95 coverage ~ 0.90.
+    Ideal: p5 coverage ~ target, p50 coverage ~ target, p95 coverage ~ target.
+
+    Args:
+        result: Backend result with VPC diagnostics.
+        target: VPC concordance target (default 0.90, configurable via GatePolicy).
     """
     vpc = result.diagnostics.vpc
     if vpc is None:
         return 0.0
-
-    # Target: each percentile band should have ~90% coverage
-    target = 0.90
     deviations = []
     for _band, coverage in vpc.coverage.items():
         dev = abs(coverage - target)
@@ -113,11 +114,14 @@ def compute_composite_score(
 
 def rank_cross_paradigm(
     survivors: list[BackendResult],
+    *,
+    vpc_concordance_target: float = 0.90,
 ) -> CrossParadigmRankingResult:
     """Rank candidates across paradigms using simulation-based metrics.
 
     Args:
         survivors: BackendResults that passed Gates 1+2+2.5.
+        vpc_concordance_target: VPC concordance target (from GatePolicy).
 
     Returns:
         CrossParadigmRankingResult with ranked candidates.
@@ -130,7 +134,7 @@ def rank_cross_paradigm(
 
     metrics: list[CrossParadigmMetrics] = []
     for result in survivors:
-        vpc_conc = compute_vpc_concordance(result)
+        vpc_conc = compute_vpc_concordance(result, target=vpc_concordance_target)
         npe = compute_npe(result)
         composite = compute_composite_score(vpc_conc, npe, result.bic)
         metrics.append(

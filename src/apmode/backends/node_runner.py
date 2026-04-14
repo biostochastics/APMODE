@@ -94,8 +94,22 @@ class NodeBackendRunner:
         ode_config = self._build_ode_config(spec, initial_estimates)
         key = jax.random.PRNGKey(seed)
 
-        # Build hybrid ODE model
-        hybrid_model = HybridPKODE(config=ode_config, key=key)
+        # Build hybrid ODE model with transfer learning
+        from apmode.backends.node_init import transfer_from_classical
+
+        transfer_result = transfer_from_classical(
+            ode_config,
+            classical_estimates=initial_estimates,
+            key=key,
+            use_pretrained=True,
+        )
+        hybrid_model = transfer_result.model
+        # Map transfer source to BackendResult's Literal type
+        init_source: str = (
+            "warm_start"
+            if transfer_result.source in ("pretrained", "classical_transfer")
+            else "fallback"
+        )
 
         # Load and prepare data for training
         subjects = self._prepare_subjects(data_path, data_manifest, initial_estimates)
@@ -116,7 +130,8 @@ class NodeBackendRunner:
             converged=result.converged,
             ofv=result.final_loss * 2,  # -2LL
             aic=result.final_loss * 2 + 2 * len(param_estimates),
-            bic=result.final_loss * 2 + np.log(len(subjects)) * len(param_estimates),
+            bic=result.final_loss * 2
+            + np.log(sum(len(s["observations"]) for s in subjects)) * len(param_estimates),
             parameter_estimates=param_estimates,
             eta_shrinkage={},
             convergence_metadata=ConvergenceMetadata(
@@ -149,7 +164,7 @@ class NodeBackendRunner:
                 "jax": str(jax.__version__),
                 "python": _python_version(),
             },
-            initial_estimate_source="nca",
+            initial_estimate_source=init_source,
         )
 
     def _build_ode_config(

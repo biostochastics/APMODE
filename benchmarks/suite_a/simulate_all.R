@@ -37,8 +37,14 @@ build_nonmem_output <- function(sim, et, n_id, covs, sigma_prop, sigma_add = 0) 
   # steps. We only want the observation times from the event table.
   obs_times <- sort(unique(et$TIME[et$EVID == 0]))
 
+  # rxode2 5.x uses 'id' when event table has 'id', 'sim.id' otherwise
+  if ("sim.id" %in% names(sim)) {
+    id_col <- sim$sim.id
+  } else {
+    id_col <- sim$id
+  }
   sim_df <- data.frame(
-    NMID = sim$sim.id,
+    NMID = id_col,
     TIME = sim$time,
     CP   = sim$cp
   )
@@ -347,9 +353,12 @@ a6_params <- c(lka = log(1.5), lV = log(70), lCL = log(5))
 a6_omega <- lotri(eta.ka ~ 0.09, eta.V ~ 0.04, eta.CL ~ 0.09)
 
 a6_et <- oral_event_table(N_SUBJECTS)
+# rxode2 5.x requires 'id' column for iCov
+a6_et$id <- a6_et$NMID
 # Generate covariates with RENAL indicator (~30% prevalence)
 a6_covs <- generate_covariates(N_SUBJECTS)
 a6_covs$RENAL <- as.integer(runif(N_SUBJECTS) < 0.3)
+a6_covs$id <- seq_len(N_SUBJECTS)
 
 a6_sim <- rxSolve(
   a6_mod, a6_params, a6_et,
@@ -358,12 +367,11 @@ a6_sim <- rxSolve(
   nSub = N_SUBJECTS, seed = SEED + 5
 )
 
+# RENAL is already in a6_covs; build_nonmem_output merges all covariates
 a6_out <- build_nonmem_output(a6_sim, a6_et, N_SUBJECTS, a6_covs,
                                sigma_prop = 0.12)
-# Add RENAL column to output (merge already includes WT, SEX from generate_covariates)
-a6_out <- merge(a6_out,
-                data.frame(NMID = seq_len(N_SUBJECTS), RENAL = a6_covs$RENAL),
-                by = "NMID")
+# Drop the 'id' column added for rxode2 iCov compatibility
+a6_out$id <- NULL
 write.csv(a6_out, file.path(output_dir, "a6_1cmt_covariates.csv"),
           row.names = FALSE)
 cat("  A6 done:", nrow(a6_out), "rows\n")

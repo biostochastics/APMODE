@@ -6,9 +6,9 @@ Licensed under GPL-2.0-or-later.
 
 ## Status
 
-**Phase 2 — IN PROGRESS.** 850 tests passing. `mypy --strict` clean (46 files). `ruff` clean.
+**Phase 2 — IN PROGRESS (~85%).** 940 tests passing. `mypy --strict` clean (48 files). `ruff` clean.
 
-Phase 1 complete (679 tests). Phase 2 NODE backend + governance + multi-backend dispatch + benchmarks implemented (171 new tests). Six rounds of multi-model code review completed; all critical and high-severity issues fixed.
+Phase 1 complete (679 tests). Phase 2 NODE backend + governance + multi-backend dispatch + benchmarks + Stan codegen + NODE init strategy implemented (261 new tests). Seven rounds of multi-model code review completed; all critical and high-severity issues fixed.
 
 ### What exists
 
@@ -18,6 +18,7 @@ Phase 1 complete (679 tests). Phase 2 NODE backend + governance + multi-backend 
 | **AST models** | `src/apmode/dsl/ast_models.py` | Typed Pydantic nodes: Absorption (6), Distribution (5+V), Elimination (5), Variability (3), Observation (5+BLQ composition) |
 | **Semantic validator** | `src/apmode/dsl/validator.py` | Constraint table enforcement (PRD §4.2.5) |
 | **nlmixr2 emitter** | `src/apmode/dsl/nlmixr2_emitter.py` | DSL AST → R code strings for nlmixr2/rxode2 |
+| **Stan emitter** | `src/apmode/dsl/stan_emitter.py` | DSL AST → Stan program for probabilistic inference |
 | **Nlmixr2Runner** | `src/apmode/backends/nlmixr2_runner.py` | Async subprocess backend with file-based IPC |
 | **R harness** | `src/apmode/r/harness.R` | R-side nlmixr2 SAEM/FOCEI estimation harness |
 | **Data ingestion** | `src/apmode/data/ingest.py` | NONMEM CSV → Pandera validation → DataManifest |
@@ -36,6 +37,7 @@ Phase 1 complete (679 tests). Phase 2 NODE backend + governance + multi-backend 
 | **Hybrid ODE** | `src/apmode/backends/node_ode.py` | Mechanistic PK skeleton + NODE sub-function, Diffrax Tsit5 solver |
 | **NODE trainer** | `src/apmode/backends/node_trainer.py` | Optax Adam training loop with early stopping, log-space params |
 | **NodeBackendRunner** | `src/apmode/backends/node_runner.py` | BackendRunner protocol impl for JAX/Diffrax NODE backend |
+| **NODE init strategy** | `src/apmode/backends/node_init.py` | Pre-trained weight library + transfer learning from classical fits |
 | **Functional distillation** | `src/apmode/backends/node_distillation.py` | Sub-function visualization, parametric surrogate fitting, AUC/Cmax BE fidelity |
 | **Credibility report** | `src/apmode/report/credibility.py` | ICH M15-aligned credibility assessment per candidate |
 | **Lane Router** | `src/apmode/routing.py` | Dispatch decisions by lane + evidence manifest constraints |
@@ -53,11 +55,12 @@ Phase 1 complete (679 tests). Phase 2 NODE backend + governance + multi-backend 
 
 | Suite | Count | Description |
 |-------|-------|-------------|
-| Unit tests | ~620 | All modules: DSL, data, backends (nlmixr2 + NODE), search, governance, gates, routing, bundle, benchmarks (A+B), distillation, credibility |
-| NODE backend tests | 74 | Constraints (32), sub-model (16), ODE (11), trainer (6), runner (6), distillation (13) |
+| Unit tests | ~690 | All modules: DSL, data, backends (nlmixr2 + NODE), search, governance, gates, routing, bundle, benchmarks (A+B), distillation, credibility, Stan emitter, NODE init |
+| NODE backend tests | 101 | Constraints (32), sub-model (16), ODE (11), trainer (6), runner (6), distillation (13), init strategy (27) |
+| Stan codegen + lowering | 43 | Stan emitter (25), cross-backend lowering validation (18) |
 | Gate 2.5 + cross-paradigm | 27 | ICH M15 credibility (11), cross-paradigm ranking (16) |
 | Integration tests | 30 | Mock R pipeline (3), Discovery lane dispatch (12), Suite B NODE validation (15) |
-| Suite A benchmark tests | 36 | Classical scenarios (24), NODE scenarios (3), specific property tests (9) |
+| Suite A benchmark tests | 48 | Classical scenarios A1-A4 (24), TMDD/covariate/NODE scenarios A5-A7 (15), property tests (9) |
 | Golden masters | 21 | Syrupy snapshots for pharmacometrician-validated R output |
 | R syntax validation | 168 | Balanced delimiters, eta/param consistency |
 | Property-based | ~30 | Hypothesis: roundtrip, JSON, NODE constraints |
@@ -92,7 +95,7 @@ uv sync --all-extras
 ## Testing
 
 ```bash
-uv run pytest tests/ -q                    # all 850 tests
+uv run pytest tests/ -q                    # all 940 tests
 uv run pytest tests/unit/ -q               # unit tests only
 uv run pytest tests/integration/ -q        # end-to-end mock R pipeline
 uv run pytest tests/property/ -q           # Hypothesis property-based
@@ -206,7 +209,7 @@ DSL text ──→ Lark parser ──→ DSLSpec  ──→       ├─ Warm-st
 - **Phase 1 Month 3-4** (complete): Data profiler, NCA estimates, automated search, data splitting
 - **Phase 1 Month 4-5** (complete): Governance gates (1+2+3), orchestrator, dispatch constraints, seed stability
 - **Phase 1 Month 5-6** (complete): CLI (Typer), structlog, Lane Router + dispatch wiring, seed stability (top-k, configurable CV), ranking persistence, boundary estimate check, multi-signal state trajectory, split integrity (SplitGOFMetrics), Phase 2 prep models, Benchmark Suite A CI + integration assertions
-- **Phase 2** (in progress): Hybrid NODE backend (JAX/Diffrax/Equinox), Bram-style MLP with RE on input-layer weights, 5 constraint templates, log-space mechanistic params, functional distillation (surrogate fitting + AUC/Cmax BE fidelity), Gate 2.5 ICH M15 credibility (5 checks), Gate 3 cross-paradigm ranking (VPC concordance + NPE + composite), credibility report generator, policy gate2_5 thresholds, execution_mode config, **SearchEngine multi-backend dispatch** (classical → nlmixr2, NODE → jax_node), **Discovery lane end-to-end** with both backends, **Benchmark Suite A completion** (A5 TMDD QSS, A6 covariates, A7 NODE absorption), **Benchmark Suite B** (B1-B3 NODE validation)
+- **Phase 2** (in progress ~85%): Hybrid NODE backend (JAX/Diffrax/Equinox), Bram-style MLP with RE on input-layer weights, 5 constraint templates, log-space mechanistic params, functional distillation (scipy curve_fit surrogate fitting + AUC/Cmax BE fidelity), Gate 2.5 ICH M15 credibility (5 checks), Gate 3 cross-paradigm ranking (VPC concordance + NPE + composite, configurable target), credibility report generator, policy gate2_5 thresholds, execution_mode config, **SearchEngine multi-backend dispatch** (classical → nlmixr2, NODE → jax_node), **Discovery lane end-to-end** with both backends, **NODE initial estimate strategy** (pre-trained weight library + transfer learning from classical fits), **Stan codegen emitter** (DSL → Stan program + per-backend lowering tests), **Benchmark Suite A complete** (A1-A7 all CSV fixtures generated via rxode2), **Benchmark Suite B** (B1-B3 NODE validation)
 
 ## Code Review Provenance
 
@@ -234,6 +237,6 @@ Six rounds of multi-model code review have been conducted:
 - SearchEngine multi-backend dispatch implemented; Discovery lane dispatches to both nlmixr2 and jax_node based on spec type
 - NODE training uses pooled population NLL (no per-subject RE); Laplace approximation deferred to Phase 3
 - NODE subject loop in trainer is Python-list based (not vmap); scales to ~50 subjects, not 500+
-- Functional distillation Lineweaver-Burk MM fit is approximate; nonlinear least-squares fit deferred
-- VPC concordance target (0.90) is hardcoded; policy-configurable target deferred
+- Orchestrator auto-generates context_of_use for Gate 2.5; real usage needs user-provided COU statement via CLI or config
+- Stan codegen does not yet support IOV or BLQ M3/M4 (marked Phase 3)
 - Agentic LLM backend is Phase 3
