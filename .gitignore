@@ -50,3 +50,4 @@ runs/
 # Internal docs (not for public repo)
 CLAUDE.md
 PRD_APMODE_*.md
+_smoke_bayes_work/

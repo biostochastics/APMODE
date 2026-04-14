@@ -191,8 +191,10 @@ class TestHistoricalBorrowingEmission:
         stan = emit_stan(spec)
         # MAP component Normal(1.5, 0.3) present
         assert "normal_lpdf(log_CL | 1.500000, 0.300000)" in stan
-        # Weak component Normal(0, 2) present
-        assert "normal_lpdf(log_CL | 0.000000, 2.000000)" in stan
+        # Weak component Normal(0, 10) present — wider than the too-narrow
+        # Normal(0, 2) default that gemini review flagged would penalize
+        # plausible PK parameter magnitudes on log scale.
+        assert "normal_lpdf(log_CL | 0.000000, 10.000000)" in stan
         # Weights: log(0.8) for MAP, log(0.2) for weak
         assert f"{math.log(0.8):.6f}" in stan
         assert f"{math.log(0.2):.6f}" in stan

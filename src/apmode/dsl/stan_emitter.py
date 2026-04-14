@@ -194,6 +194,9 @@ def _emit_user_prior(
     raise NotImplementedError(f"Unsupported prior family: {type(family).__name__}")
 
 
+_LOG_2 = 0.6931471805599453
+
+
 def _component_lpdf(
     stan_param: str,
     component: NormalPrior
@@ -210,6 +213,12 @@ def _component_lpdf(
 
     Used by _emit_mixture_prior and _emit_historical_borrowing_prior to build
     log_sum_exp form: target += log_sum_exp(log(w_k) + lpdf_k(...)).
+
+    For half-family components (HalfNormal, HalfCauchy) on a <lower=0> variable,
+    the correct normalized log-density is normal_lpdf(x | 0, sigma) + log(2).
+    The +log(2) MUST be retained in mixtures so that half-* components are not
+    artificially down-weighted by 50% relative to fully-supported components
+    like Gamma/InvGamma. (Per gemini-3.1-pro review, Issue 1.)
     """
     if isinstance(component, NormalPrior):
         return f"normal_lpdf({stan_param} | {component.mu:.6f}, {component.sigma:.6f})"
@@ -218,15 +227,11 @@ def _component_lpdf(
             return f"normal_lpdf({stan_param} | {component.mu:.6f}, {component.sigma:.6f})"
         return f"lognormal_lpdf({stan_param} | {component.mu:.6f}, {component.sigma:.6f})"
     if isinstance(component, HalfNormalPrior):
-        # On <lower=0> variable: half-normal lpdf = normal_lpdf + log(2), but since
-        # log(2) is a constant it drops out of the posterior (irrelevant to mixture
-        # within-component mass comparison only if both components are half-*).
-        # For mixing half- components we still need the normalizing constant term
-        # — but since both components add the same constant and mixture weights
-        # are pre-normalized, the log(2) cancels in the weighted log_sum_exp.
-        return f"normal_lpdf({stan_param} | 0, {component.sigma:.6f})"
+        # Half-Normal lpdf = normal_lpdf(x | 0, sigma) + log(2) on x>=0.
+        return f"(normal_lpdf({stan_param} | 0, {component.sigma:.6f}) + {_LOG_2:.6f})"
     if isinstance(component, HalfCauchyPrior):
-        return f"cauchy_lpdf({stan_param} | 0, {component.scale:.6f})"
+        # Half-Cauchy lpdf = cauchy_lpdf(x | 0, scale) + log(2) on x>=0.
+        return f"(cauchy_lpdf({stan_param} | 0, {component.scale:.6f}) + {_LOG_2:.6f})"
     if isinstance(component, GammaPrior):
         return f"gamma_lpdf({stan_param} | {component.alpha:.6f}, {component.beta:.6f})"
     if isinstance(component, InvGammaPrior):
@@ -247,19 +252,29 @@ def _emit_mixture_prior(
     """Emit a k-component mixture prior as target += log_sum_exp(...).
 
     See Stan User's Guide §13.1 (Mixture modeling). Weights are on the
-    simplex (validated in priors.py); we pre-log them so log_sum_exp is
-    numerically stable.
+    simplex (validated in priors.py); we pre-log them for numerical stability.
+
+    Zero-weight components are dropped (no need to emit log(0) placeholders);
+    if all components have zero weight the mixture is degenerate and this
+    function raises ValueError.
     """
     import math
 
+    active = [
+        (w, comp) for w, comp in zip(family.weights, family.components, strict=True) if w > 0.0
+    ]
+    if not active:
+        raise ValueError(
+            f"Mixture prior on {stan_param!r} has no active components (all weights zero)"
+        )
+
     terms = [
-        f"{math.log(max(w, 1e-300)):.6f} + "
-        f"{_component_lpdf(stan_param, comp, on_log_scale=on_log_scale)}"
-        for w, comp in zip(family.weights, family.components, strict=True)
+        f"{math.log(w):.6f} + {_component_lpdf(stan_param, comp, on_log_scale=on_log_scale)}"
+        for w, comp in active
     ]
     joined = ",\n    ".join(terms)
     return [
-        f"  // Mixture prior on {stan_param} (k={len(family.components)})",
+        f"  // Mixture prior on {stan_param} (k={len(active)})",
         f"  target += log_sum_exp([\n    {joined}\n  ]);",
     ]
 
@@ -285,7 +300,12 @@ def _emit_historical_borrowing_prior(
         )
 
     map_component = NormalPrior(mu=family.map_mean, sigma=family.map_sd)
-    weak_component = NormalPrior(mu=0.0, sigma=2.0)
+    # Weak component must span the plausible range of PK parameters on the log
+
+    # scale. V can easily exceed 100 L and CL can range 0.1-100 L/h, so a
+    # Normal(0, 2) log-scale prior (95% CI ≈ [0.02, 55]) is too narrow and would
+    # penalize true values. Use Normal(0, 10) instead. (Per gemini review.)
+    weak_component = NormalPrior(mu=0.0, sigma=10.0)
     mixture = MixturePrior(
         components=[map_component, weak_component],
         weights=[1.0 - family.robust_weight, family.robust_weight],

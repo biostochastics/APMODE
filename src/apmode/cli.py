@@ -299,6 +299,62 @@ def run(
             min=1,
         ),
     ] = 1,
+    backend: Annotated[
+        str,
+        typer.Option(
+            "--backend",
+            help=(
+                "Estimation backend. [dim]nlmixr2[/dim] (classical SAEM/FOCEi, default) "
+                "or [dim]bayesian_stan[/dim] (Stan+Torsten via cmdstanpy, Phase 2+ — "
+                "requires `uv sync --extra bayesian` and a CmdStan installation)."
+            ),
+        ),
+    ] = "nlmixr2",
+    bayes_chains: Annotated[
+        int,
+        typer.Option(
+            "--bayes-chains",
+            help="Number of NUTS chains (Bayesian backend only). Default 4.",
+            min=1,
+        ),
+    ] = 4,
+    bayes_warmup: Annotated[
+        int,
+        typer.Option(
+            "--bayes-warmup",
+            help="Warmup iterations per chain (Bayesian backend only). Default 1000.",
+            min=100,
+        ),
+    ] = 1000,
+    bayes_sampling: Annotated[
+        int,
+        typer.Option(
+            "--bayes-sampling",
+            help="Sampling iterations per chain (Bayesian backend only). Default 1000.",
+            min=100,
+        ),
+    ] = 1000,
+    bayes_adapt_delta: Annotated[
+        float,
+        typer.Option(
+            "--bayes-adapt-delta",
+            help=(
+                "NUTS target acceptance (Bayesian backend only). "
+                "Default 0.95; raise to 0.99 for funnels."
+            ),
+            min=0.5,
+            max=0.999,
+        ),
+    ] = 0.95,
+    bayes_max_treedepth: Annotated[
+        int,
+        typer.Option(
+            "--bayes-max-treedepth",
+            help="NUTS max treedepth (Bayesian backend only). Default 12.",
+            min=4,
+            max=20,
+        ),
+    ] = 12,
     verbose: Annotated[
         bool,
         typer.Option("--verbose", "-v", help="Show detailed pipeline logs."),
@@ -383,7 +439,42 @@ def run(
         max_concurrency=parallel_models,
     )
 
-    runner = Nlmixr2Runner(work_dir=output / "_work", estimation=["saem"])
+    # --- Backend selection ---
+    runner: BackendRunner
+    if backend == "bayesian_stan":
+        try:
+            from apmode.backends.bayesian_runner import BayesianRunner
+            from apmode.bundle.models import SamplerConfig
+        except ImportError as imp_exc:
+            err_console.print(
+                f"[red bold]Bayesian backend requires extras:[/] "
+                f"uv sync --extra bayesian ({imp_exc})"
+            )
+            raise typer.Exit(code=1) from None
+        sampler_cfg = SamplerConfig(
+            chains=bayes_chains,
+            warmup=bayes_warmup,
+            sampling=bayes_sampling,
+            adapt_delta=bayes_adapt_delta,
+            max_treedepth=bayes_max_treedepth,
+            seed=seed,
+        )
+        runner = BayesianRunner(
+            work_dir=output / "_work",
+            default_sampler_config=sampler_cfg,
+        )
+        if not quiet:
+            console.print(
+                f"[dim]Bayesian backend: chains={bayes_chains} warmup={bayes_warmup} "
+                f"sampling={bayes_sampling} adapt_delta={bayes_adapt_delta}[/]"
+            )
+    elif backend == "nlmixr2":
+        runner = Nlmixr2Runner(work_dir=output / "_work", estimation=["saem"])
+    else:
+        err_console.print(
+            f"[red bold]Unknown backend:[/] {backend!r} (expected nlmixr2 or bayesian_stan)"
+        )
+        raise typer.Exit(code=1)
 
     # --- Agentic LLM backend (Phase 3) ---
     agentic_runner_instance = None
@@ -398,7 +489,18 @@ def run(
             quiet=quiet,
         )
 
-    orchestrator = Orchestrator(runner, output, config, agentic_runner=agentic_runner_instance)
+    # Orchestrator currently types the primary runner as Nlmixr2Runner; the
+    # BayesianRunner shares the BackendRunner protocol so the cast is safe.
+    from typing import cast as _cast
+
+    from apmode.backends.nlmixr2_runner import Nlmixr2Runner as _Nlmixr2Runner
+
+    orchestrator = Orchestrator(
+        _cast("_Nlmixr2Runner", runner),
+        output,
+        config,
+        agentic_runner=agentic_runner_instance,
+    )
 
     # --- Pipeline execution ---
     # No global spinner: the orchestrator's structlog output reports each

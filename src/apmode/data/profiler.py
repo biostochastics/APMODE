@@ -66,6 +66,7 @@ def profile_data(
         covariate_correlated=_check_covariate_correlation(df, manifest),
         covariate_missingness=_assess_covariate_missingness(df, manifest),
         blq_burden=_compute_blq_burden(df),
+        lloq_value=_extract_lloq_value(df),
         protocol_heterogeneity=_assess_protocol_heterogeneity(df),
         absorption_phase_coverage=_assess_absorption_coverage(obs),
         elimination_phase_coverage=_assess_elimination_coverage(obs),
@@ -522,6 +523,36 @@ def _compute_blq_burden(df: pd.DataFrame) -> float:
         n_blq = int((obs["BLQ_FLAG"] == 1).sum())
         return n_blq / len(obs)
     return 0.0
+
+
+def _extract_lloq_value(df: pd.DataFrame) -> float | None:
+    """Extract the LLOQ value from data when BLQ observations exist.
+
+    Priority:
+      1. Explicit LLOQ column (takes most common value among BLQ rows)
+      2. DV value of BLQ rows (for M3-style where DV=LLOQ on censored rows)
+      3. None when no BLQ observations
+    """
+    obs = df[df["EVID"] == 0]
+    if obs.empty or "BLQ_FLAG" not in df.columns:
+        return None
+
+    blq_rows = obs[obs["BLQ_FLAG"] == 1]
+    if blq_rows.empty:
+        return None
+
+    if "LLOQ" in df.columns:
+        # Use the most common non-null LLOQ value across censored rows
+        lloq_values = blq_rows["LLOQ"].dropna()
+        if not lloq_values.empty:
+            return float(lloq_values.mode().iloc[0])
+
+    # Fallback: DV of censored rows (M3 convention sets DV=LLOQ)
+    dv_values = blq_rows["DV"].dropna()
+    if not dv_values.empty:
+        return float(dv_values.mode().iloc[0])
+
+    return None
 
 
 def _assess_protocol_heterogeneity(df: pd.DataFrame) -> str:

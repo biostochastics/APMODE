@@ -96,12 +96,6 @@ def apply_set_prior(spec: DSLSpec, transform: SetPrior) -> DSLSpec:
     if errors:
         raise ValueError(f"SetPrior validation failed: {'; '.join(errors)}")
 
-    if not hasattr(spec, "priors"):
-        raise AttributeError(
-            "DSLSpec does not have a `priors` field. "
-            "Complete the DSLSpec extension before applying SetPrior transforms."
-        )
-
     new_prior = PriorSpec(
         target=transform.target,
         family=transform.family,

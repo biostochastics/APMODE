@@ -11,6 +11,23 @@ from typing import Literal, Self
 from pydantic import BaseModel, Field, model_validator
 
 
+class BayesianThresholds(BaseModel):
+    """Gate-1 Bayesian MCMC disqualification thresholds (plan 2026-04-14 §3.6).
+
+    Applied only when ``BackendResult.backend == "bayesian_stan"`` — MLE-based
+    backends skip these checks. Defaults follow Vehtari et al. (2021)
+    rank-normalized R-hat recommendations and arviz default nominal ESS.
+    """
+
+    rhat_max: float = Field(default=1.01, gt=1.0, le=2.0)
+    ess_bulk_min: float = Field(default=400.0, gt=0.0)
+    ess_tail_min: float = Field(default=400.0, gt=0.0)
+    n_divergent_max: int = Field(default=0, ge=0)
+    max_treedepth_fraction_max: float = Field(default=0.01, ge=0.0, le=1.0)
+    ebfmi_min: float = Field(default=0.3, gt=0.0, le=1.0)
+    pareto_k_max: float = Field(default=0.7, gt=0.0, le=1.0)
+
+
 class Gate1Config(BaseModel):
     """Gate 1: Technical Validity thresholds (PRD §4.3.1)."""
 
@@ -29,6 +46,8 @@ class Gate1Config(BaseModel):
     cwres_sd_min: float = Field(default=0.50, gt=0.0)
     cwres_sd_max: float = Field(default=2.0, gt=0.0)
     gradient_norm_max: float = Field(default=100.0, gt=0.0)
+    # Bayesian-only thresholds (applied when backend == "bayesian_stan")
+    bayesian: BayesianThresholds = Field(default_factory=BayesianThresholds)
 
     @model_validator(mode="after")
     def vpc_bounds_ordered(self) -> Gate1Config:

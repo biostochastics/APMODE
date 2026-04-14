@@ -122,6 +122,7 @@ def _validate_swap_position(transform: SwapModule) -> str | None:
 
     pos_types: dict[str, tuple[type, ...]] = {
         "absorption": (
+            m.IVBolus,
             m.FirstOrder,
             m.ZeroOrder,
             m.LaggedFirstOrder,
@@ -293,6 +294,10 @@ def apply_transform(spec: DSLSpec, transform: FormularTransform) -> DSLSpec:
         # Return early — SetPrior does not touch structural modules or variability.
         return apply_set_prior(spec, transform)
 
+    # Preserve priors across all non-SetPrior transforms — structural swaps
+    # may orphan individual priors (pruned below via _prune_stale_variability),
+    # but other transforms (AddCovariateLink, AdjustVariability, SetTransitN,
+    # ToggleLag) keep the full prior set intact.
     new_spec = DSLSpec(
         model_id=new_id,
         absorption=absorption,
@@ -300,9 +305,10 @@ def apply_transform(spec: DSLSpec, transform: FormularTransform) -> DSLSpec:
         elimination=elimination,
         variability=variability,
         observation=observation,
+        priors=spec.priors,
     )
 
-    # Prune stale variability references after structural module swaps
+    # Prune stale variability AND priors after structural module swaps
     if isinstance(transform, (SwapModule, ReplaceWithNODE)):
         new_spec = _prune_stale_variability(new_spec)
 
@@ -310,9 +316,11 @@ def apply_transform(spec: DSLSpec, transform: FormularTransform) -> DSLSpec:
 
 
 def _prune_stale_variability(spec: DSLSpec) -> DSLSpec:
-    """Remove variability references to params that no longer exist in the spec.
+    """Remove variability AND priors referring to params that no longer exist.
 
-    Called after SwapModule/ReplaceWithNODE to keep IIV/CovariateLink consistent.
+    Called after SwapModule/ReplaceWithNODE to keep IIV/CovariateLink/priors
+    consistent. Preserves any priors that still target a valid parameter,
+    drops orphaned ones (e.g., prior on ``ka`` after swap to IVBolus).
     """
     valid_params = set(spec.structural_param_names())
     cleaned: list[object] = []
@@ -335,6 +343,9 @@ def _prune_stale_variability(spec: DSLSpec) -> DSLSpec:
         else:
             cleaned.append(item)
 
+    # Prune stale priors — priors targeting parameters removed by the structural swap.
+    pruned_priors = [p for p in spec.priors if _prior_target_still_valid(p.target, valid_params)]
+
     return DSLSpec(
         model_id=spec.model_id,
         absorption=spec.absorption,
@@ -342,7 +353,32 @@ def _prune_stale_variability(spec: DSLSpec) -> DSLSpec:
         elimination=spec.elimination,
         variability=cleaned,
         observation=spec.observation,
+        priors=pruned_priors,
     )
+
+
+def _prior_target_still_valid(target: str, structural_params: set[str]) -> bool:
+    """Check if a prior target still resolves to an existing parameter.
+
+    - structural targets (e.g. "CL"): must be in structural_params
+    - "omega_X" / "omega_iov_X": underlying X must be in structural_params
+    - "beta_X_COV": underlying X must be in structural_params
+    - "sigma_prop", "sigma_add", "corr_iiv": always kept (tied to obs/correlation block)
+    """
+    if target in structural_params:
+        return True
+    if target in ("sigma_prop", "sigma_add", "corr_iiv"):
+        return True
+    if target.startswith("omega_iov_"):
+        return target[len("omega_iov_") :] in structural_params
+    if target.startswith("omega_"):
+        return target[len("omega_") :] in structural_params
+    if target.startswith("beta_"):
+        # beta_<PARAM>_<COVARIATE>; param may contain digits/underscores.
+        # Conservative: keep if *any* structural param matches the prefix.
+        rest = target[len("beta_") :]
+        return any(rest.startswith(f"{p}_") for p in structural_params)
+    return False
 
 
 def _apply_adjust_variability(spec: DSLSpec, transform: AdjustVariability) -> list[object]:

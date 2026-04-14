@@ -153,6 +153,9 @@ class BayesianRunner:
         if self.torsten_path is not None:
             env["TORSTEN"] = str(self.torsten_path)
 
+        # start_new_session=True is the cross-platform equivalent of
+        # preexec_fn=os.setsid and avoids the thread-safety caveat of
+        # preexec_fn on forking platforms (per codex review).
         proc = await asyncio.create_subprocess_exec(
             self.python_executable,
             str(self.harness_path),
@@ -160,7 +163,7 @@ class BayesianRunner:
             str(response_path),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            preexec_fn=os.setsid,
+            start_new_session=True,
             env=env,
         )
 

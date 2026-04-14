@@ -136,6 +136,9 @@ class SearchSpace:
         if manifest.blq_burden > 0.20:
             space.force_blq_method = "m3"
             space.error_types = ["proportional", "combined"]  # BLQ composes with these
+            # Propagate actual LLOQ from data when available (default 1.0 is usually wrong)
+            if manifest.lloq_value is not None and manifest.lloq_value > 0:
+                space.lloq_value = manifest.lloq_value
 
         # Protocol heterogeneity → IOV must be tested
         if manifest.protocol_heterogeneity == "pooled-heterogeneous":

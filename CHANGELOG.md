@@ -7,7 +7,103 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
+### Added — Bayesian backend (5th paradigm, Phase 2+)
+- **Bayesian PK backend via Stan/Torsten** (`src/apmode/backends/bayesian_runner.py`,
+  `src/apmode/bayes/harness.py`). Joins classical NLME, automated search,
+  agentic LLM, and hybrid NODE to give APMODE **five paradigms**, covering
+  FDA's Jan 2026 draft guidance on Bayesian methodology for primary inference
+  (FDA-2025-D-3217) and the growing Project Optimus adoption of Bayesian
+  designs. Drives cmdstanpy through a subprocess harness; file-based JSON
+  request/response mirroring the `Nlmixr2Runner` pattern with asyncio +
+  `start_new_session=True` + SIGKILL on process-group timeout. End-to-end
+  smoke-tested against the Boeckmann 1994 theophylline dataset — posterior
+  recovered CL=2.55 L/h, V=38.75 L, ka=1.72 /h (literature values ~2.8, ~35,
+  ~1.5).
+- **DSL prior AST** (`src/apmode/dsl/priors.py`). Ten prior families
+  (Normal, LogNormal, HalfNormal, HalfCauchy, Gamma, InvGamma, Beta, LKJ,
+  Mixture, HistoricalBorrowing — Schmidli 2014 robust MAP) with a
+  parameterization-schema validator that rejects invalid (target, family)
+  pairs at compile time. FDA-aligned `PriorSpec.source` taxonomy
+  (uninformative / weakly_informative / historical_data / expert_elicitation
+  / meta_analysis) enforces justification rules via Pydantic validators.
+- **`SetPrior` as the 7th `FormularTransform`** (`src/apmode/dsl/prior_transforms.py`).
+  The agentic LLM can now propose priors under the DSL ceiling with full
+  audit trail; replace-or-append semantics on `DSLSpec.priors`.
+- **Stan emitter consumes user priors** (`src/apmode/dsl/stan_emitter.py`).
+  Emits user-declared priors on structural log-scale params, IIV omegas,
+  IOV omegas, residual sigmas, and covariate betas. Mixture priors compile
+  to numerically stable `target += log_sum_exp([log(w) + lpdf, ...])` form
+  (zero-weight components dropped). Robust-MAP historical borrowing compiles
+  to a two-component mixture with a wide (Normal(0, 10) on log-scale) weak
+  component.
+- **BackendResult extensions for Bayesian submissions**
+  (`src/apmode/bundle/models.py`): new backend literal `"bayesian_stan"`;
+  new `PosteriorDiagnostics` (R-hat max, ESS bulk/tail min, divergences,
+  max-treedepth hits, E-BFMI, MCSE, Pareto-k counts); new `SamplerConfig`
+  (chains/warmup/sampling/adapt_delta/max_treedepth + cmdstan_version /
+  stan_version / compiler_id for reproducibility). `ParameterEstimate` now
+  carries posterior summaries (posterior_sd, q05/q50/q95) alongside the
+  frequentist fields. New `PriorManifest` and `SimulationProtocol` models
+  for FDA-required prior-justification and prospective-simulation artifacts.
+- **Bayesian bundle artifacts** (`src/apmode/bundle/emitter.py`): new
+  `write_prior_manifest`, `write_simulation_protocol`, `write_mcmc_diagnostics`,
+  and `copy_posterior_draws` methods emit to a `bayesian/` subdirectory,
+  matching the existing per-candidate artifact pattern (credibility/, loro_cv/).
+- **Gate-1 Bayesian thresholds** (`src/apmode/governance/policy.py`):
+  `BayesianThresholds` config (R-hat ≤ 1.01, ESS ≥ 400, divergences = 0,
+  E-BFMI ≥ 0.3, Pareto-k ≤ 0.7) applied only when backend == "bayesian_stan",
+  following Vehtari et al. 2021 rank-normalized R-hat recommendations.
+- **CLI `--backend bayesian_stan` flag** (`src/apmode/cli.py`) plus
+  `--bayes-chains`, `--bayes-warmup`, `--bayes-sampling`, `--bayes-adapt-delta`,
+  `--bayes-max-treedepth` for sampler configuration. Installs via
+  `uv sync --extra bayesian` (cmdstanpy, arviz, pyarrow).
+- **Integration plan documentation** (`docs/plans/2026-04-14-phase2-bayesian-backend.md`).
+
+### Fixed — multi-model review sweep (gemini-3.1-pro, codex, droid, kimi via xen clink)
+- **CRITICAL: `_prune_stale_variability` silently dropped all priors** during
+  structural swaps (`SwapModule` / `ReplaceWithNODE`). The `DSLSpec` rebuild
+  omitted `priors=`, erasing user/agentic-declared priors. All non-SetPrior
+  transforms now carry priors forward; `_prune_stale_variability` additionally
+  prunes orphaned priors (e.g., a prior on `ka` after swap to `IVBolus`).
+  Regression tests in `tests/unit/test_prior_transforms.py::TestPriorsSurviveStructuralSwap`.
+- **`IVBolus` was missing from `_validate_swap_position`** — a valid
+  `AbsorptionModule` variant that couldn't be swapped to. Added.
+- **`SearchGraphNode.backend` literal was missing `"bayesian_stan"`** —
+  would have caused Pydantic validation failures on any search graph
+  containing a Bayesian candidate.
+- **Half-family lpdfs in mixture priors dropped the log(2) normalization
+  constant** (`src/apmode/dsl/stan_emitter.py::_component_lpdf`). When mixed
+  with fully-supported Gamma/InvGamma components, HalfNormal/HalfCauchy were
+  artificially down-weighted by 50%. Now emits
+  `(normal_lpdf(x | 0, sigma) + log(2))` for half-family components.
+- **HistoricalBorrowing weak component was too narrow**
+  (Normal(0, 2) on log scale ≈ 95% CI [0.02, 55]) — would penalize plausible
+  PK parameter values like V > 100 L or CL > 50 L/h. Widened to Normal(0, 10).
+- **Mixture weights floor replaced with zero-weight filter** — cleaner Stan
+  AST and avoids emitting `log(1e-300)` placeholders.
+- **`_compute_eta_shrinkage` assumed omega=1** — computed
+  `1 - var(eta_raw_mean)` instead of the correct
+  `1 - var(omega·eta_raw_mean) / E[omega²]`. Shrinkage gate decisions were
+  systematically wrong.
+- **Time-varying covariates silently collapsed to baseline** (first-per-subject
+  value) in the harness. Now detected and rejected with a clear error.
+- **ADDL/II/SS NMTRAN semantics silently ignored** in the harness —
+  multi-dose ADDL rows were dropped, steady-state rows were treated as
+  regular doses. Now rejected with a preprocessing prompt.
+- **DV=0 observations crashed the lognormal likelihood** (pre-dose baseline
+  rows in theophylline) — the harness now drops them with a warning pointing
+  to BLQM3/M4 as the correct handling.
+- **`preexec_fn=os.setsid` replaced with `start_new_session=True`** for
+  safer process-group isolation on macOS/Linux.
+- **Response write-path outside try/except** — disk failures would escape
+  error classification. Now caught with last-ditch stderr report.
+- **Widened ID column detection** — harness now accepts `ID`, `NMID`,
+  `USUBJID`, `SUBJECT_ID`, or `PATIENT_ID`.
+- **Covariate prior schema now accepts `Mixture` and `HistoricalBorrowing`**
+  (in addition to Normal) — enables meta-analytic priors on allometric
+  exponents and other covariate coefficients.
+
+### Added — Pre-Bayesian (unchanged from prior release candidate)
 - **Per-mode agentic trace inspection in CLI**: `apmode trace` gained a
   `--mode {refine|independent}` flag to filter which agentic mode's history
   is shown. Cost aggregation via `--cost` now reports per-mode breakdowns

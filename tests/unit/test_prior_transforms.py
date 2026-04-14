@@ -145,6 +145,65 @@ class TestFormularTransformIntegration:
         assert len(errors) >= 1
 
 
+class TestPriorsSurviveStructuralSwap:
+    """Regression test — priors must survive SwapModule / ReplaceWithNODE.
+
+    Before the fix, _prune_stale_variability rebuilt DSLSpec without passing
+    priors=, which silently dropped every user-declared prior.
+    """
+
+    def test_priors_preserved_through_swap_module(self) -> None:
+        from apmode.dsl.ast_models import TwoCmt
+        from apmode.dsl.transforms import SwapModule
+
+        spec = _base_spec()
+        # Declare two priors on CL and omega_CL
+        t_prior_cl = SetPrior(target="CL", family=NormalPrior(mu=1.5, sigma=0.3))
+        t_prior_omega = SetPrior(target="omega_CL", family=HalfCauchyPrior(scale=0.5))
+        spec = apply_transform(spec, t_prior_cl)
+        spec = apply_transform(spec, t_prior_omega)
+        assert {p.target for p in spec.priors} == {"CL", "omega_CL"}
+
+        # Now swap distribution OneCmt -> TwoCmt (structural swap that triggers pruning)
+        swap = SwapModule(position="distribution", new_module=TwoCmt(V1=20, V2=30, Q=5))
+        new_spec = apply_transform(spec, swap)
+
+        # CL is still a structural param, so its prior must be preserved.
+        # omega_CL should also survive because IIV on CL is kept (CL is valid).
+        targets = {p.target for p in new_spec.priors}
+        assert "CL" in targets, "Prior on CL was silently dropped during structural swap"
+        assert "omega_CL" in targets, "Prior on omega_CL was silently dropped"
+
+    def test_orphaned_priors_pruned_after_swap(self) -> None:
+        """A prior on a parameter removed by the swap should be pruned."""
+        from apmode.dsl.ast_models import TwoCmt
+        from apmode.dsl.transforms import SwapModule
+
+        spec = _base_spec()
+        # Declare a prior on V (OneCmt has V)
+        t = SetPrior(target="V", family=NormalPrior(mu=3.0, sigma=0.3))
+        spec = apply_transform(spec, t)
+        assert any(p.target == "V" for p in spec.priors)
+
+        # Swap OneCmt -> TwoCmt: V is replaced by V1, V2, Q
+        swap = SwapModule(position="distribution", new_module=TwoCmt(V1=20, V2=30, Q=5))
+        new_spec = apply_transform(spec, swap)
+
+        # V prior is orphaned — should be pruned.
+        targets = {p.target for p in new_spec.priors}
+        assert "V" not in targets, "Orphaned prior on V should have been pruned"
+
+    def test_ivbolus_absorption_swap_accepted(self) -> None:
+        """Regression — IVBolus must be a valid absorption module for SwapModule."""
+        from apmode.dsl.ast_models import IVBolus
+        from apmode.dsl.transforms import SwapModule, validate_transform
+
+        spec = _base_spec()
+        t = SwapModule(position="absorption", new_module=IVBolus())
+        errors = validate_transform(spec, t)
+        assert errors == [], f"IVBolus absorption swap rejected: {errors}"
+
+
 class TestSetPriorWithExoticFamilies:
     def test_mixture_prior_on_structural(self) -> None:
         spec = _base_spec()

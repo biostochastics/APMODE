@@ -8,7 +8,7 @@
 
   [![Phase](https://img.shields.io/badge/phase-3%20(P3.B)-blue)]()
 
-  [![Tests](https://img.shields.io/badge/tests-1163%20passing-success)]()
+  [![Tests](https://img.shields.io/badge/tests-1356%20passing-success)]()
   [![License](https://img.shields.io/badge/license-GPL--2.0--or--later-green)](LICENSE)
   [![Python](https://img.shields.io/badge/python-3.12%E2%80%933.14-yellow)]()
   [![mypy](https://img.shields.io/badge/mypy-strict%20%E2%9C%93-blue)]()
@@ -19,17 +19,17 @@
 
 ## What is APMODE?
 
-APMODE is a **governed meta-system** that composes four population PK modeling paradigms into a single discovery workflow — so pharmacometricians can evaluate classical, automated, neural, and hybrid approaches under one roof with consistent evidence standards.
+APMODE is a **governed meta-system** that composes five population PK modeling paradigms into a single discovery workflow — so pharmacometricians can evaluate classical, automated, neural, Bayesian, and hybrid approaches under one roof with consistent evidence standards.
 
-**Four paradigms, one pipeline.** Classical NLME (nlmixr2), automated structural search, hybrid mechanistic-NODE (JAX/Diffrax), and agentic LLM model construction (Phase 3) — each dispatched, evaluated, and ranked through a unified governance funnel.
+**Five paradigms, one pipeline.** Classical NLME (nlmixr2), automated structural search, hybrid mechanistic-NODE (JAX/Diffrax), agentic LLM model construction (Phase 3), and **Bayesian PK (Stan/Torsten via cmdstanpy, Phase 2+)** — each dispatched, evaluated, and ranked through a unified governance funnel.
 
-**Evidence gates.** Every candidate passes Gate 1 (technical validity), Gate 2 (lane admissibility), Gate 2.5 (ICH M15 credibility), and Gate 3 (cross-paradigm ranking) before it can be recommended. NODE models are never eligible for regulatory submission — this is a hard rule, not a tunable weight.
+**Evidence gates.** Every candidate passes Gate 1 (technical validity), Gate 2 (lane admissibility), Gate 2.5 (ICH M15 credibility), and Gate 3 (cross-paradigm ranking) before it can be recommended. The Bayesian backend adds MCMC-specific Gate 1 thresholds (R̂ ≤ 1.01, ESS ≥ 400, divergences = 0, E-BFMI ≥ 0.3, Pareto-k ≤ 0.7) and a Gate 2 prior-justification artifact aligned with FDA's Jan 2026 draft Bayesian methodology guidance (FDA-2025-D-3217). NODE models are never eligible for regulatory submission — this is a hard rule, not a tunable weight.
 
 **Reproducibility is the unit of output.** Every run emits a versioned JSON bundle — data manifest, search trajectory, gate decisions, candidate lineage DAG, compiled specs — so any result can be audited or replayed.
 
-**Formular — a typed PK DSL — is the control surface.** Models are specified in [Formular](docs/FORMULAR.md), a structured grammar (`Absorption x Distribution x Elimination x Variability x Observation`), compiled to a typed AST, validated against pharmacometric constraints, and lowered to backend-specific code. The agentic LLM backend (Phase 3) operates exclusively through Formular transforms — it cannot emit raw code.
+**Formular — a typed PK DSL — is the control surface.** Models are specified in [Formular](docs/FORMULAR.md), a structured grammar (`Absorption x Distribution x Elimination x Variability x Observation × Priors`), compiled to a typed AST, validated against pharmacometric constraints, and lowered to backend-specific code (nlmixr2 R, Stan/Torsten, JAX/Diffrax). The agentic LLM backend (Phase 3) operates exclusively through Formular transforms — including the new `SetPrior` transform for Bayesian workflows — it cannot emit raw code.
 
-> **Status**: Phase 3 in progress (P3.B LORO-CV complete). 1163 tests passing. `mypy --strict` clean (72 files). `ruff` clean. Supports Python 3.12–3.14.
+> **Status**: Phase 3 in progress (P3.B LORO-CV complete) + Phase 2+ Bayesian backend landed. 1356 tests passing (including 89 new Bayesian tests and end-to-end smoke verification on the Boeckmann 1994 theophylline dataset). `mypy --strict` clean. `ruff` clean. Supports Python 3.12–3.14.
 
 ---
 
@@ -39,7 +39,8 @@ APMODE is a **governed meta-system** that composes four population PK modeling p
 
 - **Python**: 3.12, 3.13, or 3.14
 - **Package manager**: [uv](https://docs.astral.sh/uv/)
-- **Optional**: R 4.4+ with `nlmixr2`, `rxode2`, `jsonlite`, `lotri` for real estimation (mock R subprocess tests work without R)
+- **Optional**: R 4.4+ with `nlmixr2`, `rxode2`, `jsonlite`, `lotri` for classical NLME (mock R subprocess tests work without R)
+- **Optional (Bayesian)**: CmdStan 2.36+ via `cmdstanpy.install_cmdstan()` for the Stan/Torsten backend
 
 ### Installation
 
@@ -71,12 +72,18 @@ uv run apmode explore Oral_1CPTMM -y -o ./runs
 ### Run the Full Pipeline
 
 ```bash
-# Run on your own NONMEM-format CSV
+# Run on your own NONMEM-format CSV (classical SAEM, default)
 uv run apmode run <dataset.csv> --lane submission
 
 # Download a dataset first, then run
 uv run apmode datasets theo_sd -o ./data
 uv run apmode run ./data/theo_sd.csv --lane discovery
+
+# Bayesian backend (requires bayesian extras + CmdStan)
+uv sync --extra bayesian
+uv run python -c "import cmdstanpy; cmdstanpy.install_cmdstan()"
+uv run apmode run ./data/theo_sd.csv --lane discovery \
+    --backend bayesian_stan --bayes-chains 4 --bayes-warmup 1000 --bayes-sampling 1000
 ```
 
 ### Inspect Results
@@ -107,9 +114,12 @@ uv run apmode graph <bundle_dir> --format dot -o dag.dot # Graphviz export
 ### Run the Test Suite
 
 ```bash
-uv run pytest tests/ -q                    # all 1145 tests
-uv run mypy src/apmode/ --strict           # type checking (0 errors)
+uv run pytest tests/ -q                    # 1356 passed, 7 skipped (live LLM)
+uv run mypy src/apmode/ --strict           # type checking
 uv run ruff check src/apmode/ tests/       # linting (0 errors)
+
+# Bayesian smoke test against Boeckmann 1994 theophylline (~5 min)
+uv run python scripts/bayesian_smoke_theophylline.py
 ```
 
 ---
@@ -141,13 +151,102 @@ model {
 
 | DSL Axis | Supported Modules |
 |----------|-------------------|
-| **Absorption** | FirstOrder, ZeroOrder, LaggedFirstOrder, Transit(n), MixedFirstZero, NODE_Absorption |
+| **Absorption** | IVBolus, FirstOrder, ZeroOrder, LaggedFirstOrder, Transit(n), MixedFirstZero, NODE_Absorption |
 | **Distribution** | OneCmt, TwoCmt, ThreeCmt, TMDD_Core, TMDD_QSS |
 | **Elimination** | Linear, MichaelisMenten, ParallelLinearMM, TimeVarying(kdecay, decay_fn), NODE_Elimination |
 | **Variability** | IIV (diagonal/block), IOV (ByStudy/ByVisit/ByDoseEpoch/Custom), CovariateLink (power/exponential/linear/categorical/maturation) |
 | **Observation** | Proportional, Additive, Combined, BLQ_M3, BLQ_M4 (with composable error_model) |
+| **Priors** (Bayesian) | Normal, LogNormal, HalfNormal, HalfCauchy, Gamma, InvGamma, Beta, LKJ, Mixture, HistoricalBorrowing (Schmidli 2014 robust MAP) |
 
 **NODE constraint templates:** `monotone_increasing`, `monotone_decreasing`, `bounded_positive`, `saturable`, `unconstrained_smooth` — with lane-dependent dim ceilings (≤8 Discovery, ≤4 Optimization, excluded from Submission).
+
+**Formular transforms** (agentic LLM admissible operations): `swap_module`, `add_covariate_link`, `adjust_variability`, `set_transit_n`, `toggle_lag`, `replace_with_node`, **`set_prior`** — seven typed transforms that produce new `DSLSpec` instances. `set_prior` is parameterization-schema validated: only HalfNormal/HalfCauchy/Gamma/InvGamma families are admissible on IIV ω and residual σ targets; only Normal/LogNormal/Mixture/HistoricalBorrowing on log-scale structural params; LKJ only on correlation matrices. Invalid pairs are rejected at compile time so the LLM cannot propose nonsense priors.
+
+---
+
+## How Candidate Models Are Generated
+
+Candidate generation is APMODE's core algorithmic contribution. It is an **evidence-driven, two-phase search with a fixed budget** that turns a dataset into 30-50 typed model specifications ready for backend fitting. The budget is deterministic (no tunable knobs, no unbounded iteration), pruned by what the profiler observed in the data, and grown once via warm-started children of the best root candidates.
+
+### Phase 1: Build the Search Space from Evidence
+
+The Data Profiler emits an `EvidenceManifest` describing what the dataset supports. `SearchSpace.from_manifest()` translates each flag into allowed modules and constraints:
+
+| Evidence flag | Effect on search space |
+|---------------|------------------------|
+| `nonlinear_clearance_signature=true` | Adds `MichaelisMenten` + `ParallelLinearMM` to elimination set |
+| `absorption_complexity="multi-phase"` | Adds `Transit(n)` + `LaggedFirstOrder` to absorption set |
+| `absorption_complexity="lag-signature"` | Adds `LaggedFirstOrder` |
+| `richness_category="sparse"` + `absorption_coverage="inadequate"` | Removes NODE from backends (data insufficient) |
+| `identifiability_ceiling="low"` | Caps compartment count at 1 |
+| `identifiability_ceiling="medium"` | Caps at 2 compartments |
+| `identifiability_ceiling="high"` | Allows up to 3 compartments |
+| `covariate_burden > 0` | Tracked for SCM search and Gate 2.5 credibility checks |
+| `blq_burden > 0.20` | Forces BLQ M3/M4 into all error models |
+| Lane = Submission | Hard-blocks NODE backends regardless of data |
+
+This is a **disqualifying filter**, not a weighted score. If the profiler says the data doesn't support 3-cmt estimation, no 3-cmt candidate is generated — saving hours of wasted fitting on unidentifiable models.
+
+### Phase 2: Generate Root Candidates
+
+`generate_root_candidates(space, base_params=nca_estimates)` enumerates the cross-product of allowed modules, seeded with parameter estimates from **NCA** (Naive Compartmental Analysis — derived from observed AUC, Cmax, half-life per subject and averaged):
+
+```
+for cmt in space.structural_cmt:              # e.g., [1, 2, 3]
+    for abs_type in space.absorption_types:   # [FirstOrder, Transit-3, Lagged]
+        for elim_type in space.elimination_types:  # [Linear, MM, ParallelLinearMM]
+            for error_type in space.error_types:   # [Proportional, Combined]
+                yield DSLSpec(...)
+```
+
+For a typical dataset with rich sampling, nonlinear CL, and high identifiability, this produces ~20-30 root candidates. NCA-seeded initial estimates dramatically reduce SAEM convergence time vs. fitting from arbitrary values.
+
+### Phase 3: Warm-Start Children (Fixed Budget, Max 18)
+
+After all root candidates are fit, the SearchEngine selects the **top-3 converged roots by BIC** and generates warm-started children from each. For each parent, it produces up to 2 children per error model type (proportional, additive, combined), giving a hard ceiling of **3 parents × 3 error types × 2 children = 18 child candidates**. Duplicates (deduplicated by `model_id`) are skipped, so the actual count is usually lower.
+
+Children **warm-start from their parent's fitted parameters** rather than NCA estimates. For an `ka`/`CL`/`V` 2-cmt parent that converged to `ka=0.8, CL=3.2, V1=45, V2=80, Q=9`, those values seed the child's initial estimates, cutting SAEM convergence time by ~3-5x. The child's structural modules can differ (e.g., different IIV structure or error model), but the shared structural parameters inherit the parent's fitted values.
+
+Every parent → child relationship is tracked in the **Search DAG** (`candidate_lineage.jsonl`), with edge labels like `"warm_start_combined"` indicating which error model drove the child.
+
+### Total Budget
+
+```
+total_budget = phase1_roots + phase3_children
+             ≤ |cmt| × |absorption| × |elimination| × |error_types|  +  18
+```
+
+For a typical rich dataset with nonlinear CL and multi-phase absorption:
+
+| Dimension | Typical size |
+|-----------|--------------|
+| Phase 1 roots | 20-30 (cross-product after `_build_spec()` filters inadmissible combos) |
+| Phase 3 children | up to 18 |
+| **Total** | **~30-50 candidates** |
+
+The search **does not** iterate until convergence, apply transforms beyond warm-start children, or have a user-tunable `--max-candidates` flag. The budget is fully determined by the Evidence Manifest. This makes wall time estimable as `total_budget × avg_fit_seconds / max_concurrency`.
+
+### What About DSL Transforms?
+
+The DSL supports typed transforms (`add_iiv`, `change_absorption`, `add_covariate`, etc.) documented in [`docs/FORMULAR.md`](docs/FORMULAR.md). These are used by the **agentic LLM backend** (Phase 3 of APMODE, see [Agentic LLM Backend](#agentic-llm-backend) below), which applies them iteratively based on LLM proposals up to `--max-iterations`. The **automated search engine does not apply transforms iteratively** — it only does the Phase 1 cross-product + Phase 3 warm-start children. If you want iterative transform-based exploration, enable the agentic backend with `apmode run --agentic --lane discovery`.
+
+### Example: What This Produces on Mavoglurant
+
+Running on the 120-subject Novartis mavoglurant dataset (`nlmixr2data::mavoglurant`), the profiler detects: nonlinear CL, rich sampling, 6 potential covariates, inadequate absorption-phase coverage. The resulting search:
+
+- **Phase 1 roots:** ~20-30 candidates = (1,2,3)-cmt × (FirstOrder, Transit, Lagged) × (Linear, MM, ParallelLinearMM) × (Proportional, Additive, Combined), minus `_build_spec()`-filtered combos
+- **Phase 3 children:** top-3 converged roots warm-start up to 18 children with varied error models (some dedup, usually 10-15 actual)
+- **Time per candidate:** 2-5 minutes SAEM on 120 subjects, parallelizable up to `max_concurrency`
+- **Total wall time:** ~60-90 minutes for a single-threaded submission-lane run
+- **Output:** `candidate_lineage.jsonl` (DAG edges), `search_trajectory.jsonl` (per-candidate BIC/OFV/convergence)
+
+### Why This Design
+
+1. **Evidence-driven pruning** — no wasted fits on models the data can't identify (saves 10x+ runtime vs. full grid)
+2. **Deterministic budget** — reproducible runtime estimates, no runaway loops, no hyperparameters to tune
+3. **Warm-start efficiency** — children inherit converged parent parameters (3-5x faster SAEM)
+4. **Auditability** — every candidate has a logged origin: either a root (Phase 1) or a warm-start child of a specific parent (Phase 3). Use `apmode lineage <bundle> <candidate>` to trace it.
+5. **Typed safety boundary** — transforms exist as a finite, validated DSL operation set. The automated search uses a restricted subset (error-model variation via warm-start). The full transform set is available to the agentic LLM backend, which cannot emit raw code.
 
 ---
 

@@ -32,12 +32,15 @@ from apmode.bundle.models import (  # noqa: TC001 — used at runtime in method 
     GateResult,
     InitialEstimates,
     LOROCVResult,
+    PosteriorDiagnostics,
+    PriorManifest,
     Ranking,
     ReportProvenance,
     RunLineage,
     SearchGraph,
     SearchTrajectoryEntry,
     SeedRegistry,
+    SimulationProtocol,
     SplitManifest,
 )
 from apmode.dsl.ast_models import DSLSpec  # noqa: TC001 — used at runtime
@@ -282,3 +285,59 @@ class BundleEmitter:
         path = self.run_dir / "run_lineage.json"
         path.write_text(lineage.model_dump_json(indent=2))
         return path
+
+    # --- Bayesian artifacts (Phase 2+, plan 2026-04-14 §3.5) ---
+
+    def _bayesian_dir(self) -> Path:
+        """Ensure and return the bayesian/ subdirectory."""
+        bayes_dir = self.run_dir / "bayesian"
+        bayes_dir.mkdir(exist_ok=True)
+        return bayes_dir
+
+    def write_prior_manifest(self, manifest: PriorManifest, candidate_id: str) -> Path:
+        """Write bayesian/{candidate_id}_prior_manifest.json.
+
+        FDA 2026 draft guidance requires the prior justification artifact to be
+        persisted with the run (kimi review Issue 2).
+        """
+        _validate_path_component(candidate_id, "candidate_id")
+        path = self._bayesian_dir() / f"{candidate_id}_prior_manifest.json"
+        path.write_text(manifest.model_dump_json(indent=2))
+        return path
+
+    def write_simulation_protocol(self, protocol: SimulationProtocol, candidate_id: str) -> Path:
+        """Write bayesian/{candidate_id}_simulation_protocol.json.
+
+        Prospective simulation protocol — locked before Gate 3 to prevent
+        metric shopping (per gpt-5.2 review and FDA 2026 operating-characteristics
+        requirement).
+        """
+        _validate_path_component(candidate_id, "candidate_id")
+        path = self._bayesian_dir() / f"{candidate_id}_simulation_protocol.json"
+        path.write_text(protocol.model_dump_json(indent=2))
+        return path
+
+    def write_mcmc_diagnostics(self, diagnostics: PosteriorDiagnostics, candidate_id: str) -> Path:
+        """Write bayesian/{candidate_id}_mcmc_diagnostics.json (kimi review Issue 4).
+
+        Deep-inspection tools expect diagnostics as a standalone artifact in
+        addition to the nested ``BackendResult.posterior_diagnostics`` field.
+        """
+        _validate_path_component(candidate_id, "candidate_id")
+        path = self._bayesian_dir() / f"{candidate_id}_mcmc_diagnostics.json"
+        path.write_text(diagnostics.model_dump_json(indent=2))
+        return path
+
+    def copy_posterior_draws(self, source: Path, candidate_id: str) -> Path:
+        """Copy posterior_draws.parquet from the harness work_dir into the bundle.
+
+        Returns the bundle-relative path that should be stored on
+        ``BackendResult.posterior_draws_path`` so the reference is durable.
+        (kimi review Issue 2.)
+        """
+        import shutil
+
+        _validate_path_component(candidate_id, "candidate_id")
+        dest = self._bayesian_dir() / f"{candidate_id}_draws.parquet"
+        shutil.copy2(source, dest)
+        return dest

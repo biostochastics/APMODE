@@ -33,7 +33,10 @@ import sys
 import time
 import traceback
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 # Optional imports — deferred so tests and import-time checks don't fail when
 # the bayesian extras are absent.
@@ -59,16 +62,21 @@ except ImportError:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Parse CLI, dispatch to _run, write response.json."""
+    """Parse CLI, dispatch to _run, write response.json.
+
+    All exceptions — including failures writing the response file itself —
+    are caught and classified into ``status="error"`` payloads so
+    BayesianRunner's response parser never sees a silent crash path.
+    """
     args = argv or sys.argv[1:]
     if len(args) != 2:
         sys.stderr.write("Usage: python -m apmode.bayes.harness <request.json> <response.json>\n")
         return 2
 
-    request_path = Path(args[0])
     response_path = Path(args[1])
 
     try:
+        request_path = Path(args[0])
         response = _run(request_path)
     except Exception as exc:
         response = {
@@ -79,7 +87,11 @@ def main(argv: list[str] | None = None) -> int:
             "session_info": _session_info(),
         }
 
-    response_path.write_text(json.dumps(response, indent=2))
+    try:
+        response_path.write_text(json.dumps(response, indent=2))
+    except Exception as exc:
+        sys.stderr.write(f"harness: failed to write response.json: {exc}\n")
+        return 2
     return 0 if response["status"] == "success" else 1
 
 
@@ -137,8 +149,14 @@ def _run(request_path: Path) -> dict[str, Any]:
             "session_info": _session_info(),
         }
 
-    # 4. Run NUTS sampling.
+    # 4. Run NUTS sampling — with initial values seeded from the request's
+    # initial_estimates to avoid rejecting-initial-value failures on
+    # analytical-solution models with ka≈ke singularities near random draws.
     cfg = request["sampler_config"]
+    init_dict = _build_inits(request)
+    inits_for_chains: list[Mapping[str, Any]] | None = (
+        [dict(init_dict) for _ in range(cfg["chains"])] if init_dict else None
+    )
     start = time.time()
     fit = model.sample(
         data=str(data_json_path),
@@ -150,8 +168,10 @@ def _run(request_path: Path) -> dict[str, Any]:
         max_treedepth=cfg["max_treedepth"],
         seed=cfg["seed"] or None,
         threads_per_chain=cfg.get("threads_per_chain"),
+        inits=inits_for_chains,
         show_progress=False,
-        refresh=0,
+        show_console=False,
+        output_dir=str(work_dir),
     )
     wall_time_seconds = time.time() - start
 
@@ -254,19 +274,32 @@ def _build_stan_data(request: dict[str, Any]) -> dict[str, Any]:
     # Filter observations (DV rows): EVID=0 and MDV=0 (or no MDV)
     if "EVID" not in df.columns or "TIME" not in df.columns:
         raise ValueError("Input CSV must have EVID and TIME columns")
-    id_col = (
-        "ID"
-        if "ID" in df.columns
-        else next((c for c in df.columns if c in {"SUBJECT_ID", "PATIENT_ID"}), None)
-    )
+    _ID_CANDIDATES = ("ID", "NMID", "USUBJID", "SUBJECT_ID", "PATIENT_ID")
+    id_col = next((c for c in _ID_CANDIDATES if c in df.columns), None)
     if id_col is None:
-        raise ValueError("Input CSV must have an ID-like column (ID/SUBJECT_ID/PATIENT_ID)")
+        raise ValueError(
+            "Input CSV must have an ID-like column (ID/NMID/USUBJID/SUBJECT_ID/PATIENT_ID)"
+        )
 
     mdv_mask = df["MDV"].fillna(0).astype(int) == 0 if "MDV" in df.columns else True
     obs_mask = (df["EVID"].astype(int) == 0) & mdv_mask
     evt_mask = df["EVID"].astype(int).isin([1, 3, 4])
     obs_df = df[obs_mask].reset_index(drop=True)
     evt_df = df[evt_mask].reset_index(drop=True)
+
+    # DV must be strictly positive for lognormal/proportional likelihood.
+    # NONMEM convention often encodes pre-dose baseline as DV=0 MDV=0; these
+    # are incompatible with a continuous lognormal observation model. For
+    # Bayesian fits we drop them with a warning. BLQ handling with known LLOQ
+    # should use the BLQM3/M4 observation modules (explicit censoring) instead.
+    if "DV" in obs_df.columns:
+        n_nonpos = int((obs_df["DV"].astype(float) <= 0.0).sum())
+        if n_nonpos:
+            sys.stderr.write(
+                f"harness: dropping {n_nonpos} non-positive DV observations "
+                f"(incompatible with lognormal likelihood; use BLQM3/M4 for censored data)\n"
+            )
+            obs_df = obs_df[obs_df["DV"].astype(float) > 0.0].reset_index(drop=True)
 
     # Stable subject index: 1..N_subjects, preserving first-appearance order.
     subjects = df[id_col].drop_duplicates().tolist()
@@ -339,6 +372,9 @@ def _build_stan_data(request: dict[str, Any]) -> dict[str, Any]:
         stan_data["loq"] = loq
 
     # Covariates referenced via CovariateLink variability items.
+    # Stan data declares covariates as vector[N_subjects] (subject-level constants).
+    # Time-varying covariates silently collapse to baseline would bias estimates,
+    # so reject at data-build time (codex review Issue 2).
     variability = (
         request["spec"].get("variability", []) if isinstance(request["spec"], dict) else []
     )
@@ -349,8 +385,31 @@ def _build_stan_data(request: dict[str, Any]) -> dict[str, Any]:
                 f"Covariate {cov!r} declared via CovariateLink but not in input CSV "
                 f"(columns: {list(df.columns)})"
             )
+        nunique = df.groupby(id_col)[cov].nunique()
+        if (nunique > 1).any():
+            offenders = nunique[nunique > 1].index.tolist()
+            raise ValueError(
+                f"Covariate {cov!r} varies within subject for ids {offenders[:5]} "
+                f"(first 5). Time-varying covariates are not supported in v1; "
+                f"preprocess to a subject-level summary."
+            )
         first_per_subject = df.drop_duplicates(subset=[id_col], keep="first")
         stan_data[cov] = first_per_subject[cov].astype(float).tolist()
+
+    # ADDL/II (repeat dose) and SS (steady state) NMTRAN semantics are not yet
+    # expanded by the harness — reject at data-build time rather than fit with
+    # silently-biased posteriors (codex review Issue 1). Users should preprocess
+    # into explicit dose rows before calling the Bayesian harness.
+    if "ADDL" in df.columns and (df["ADDL"].fillna(0).astype(int) > 0).any():
+        raise ValueError(
+            "ADDL>0 repeat-dose rows detected. Pre-expand into explicit dose events "
+            "before the Bayesian harness (v1 does not implement ADDL/II expansion)."
+        )
+    if "SS" in df.columns and (df["SS"].fillna(0).astype(int) > 0).any():
+        raise ValueError(
+            "SS>0 steady-state rows detected. Steady-state dosing is not yet "
+            "supported by the Bayesian harness; preprocess to explicit dose records."
+        )
 
     return stan_data
 
@@ -529,20 +588,44 @@ def _aggregate_estimates(fit: Any, structural_names: list[str]) -> dict[str, dic
 
 
 def _compute_eta_shrinkage(fit: Any, structural_names: list[str]) -> dict[str, float]:
-    """Shrinkage ≈ 1 - var(eta_posterior_mean) / omega^2."""
+    """Individual eta shrinkage on the natural (omega·eta_raw) scale.
+
+    Correct formula (codex review Issue 4): the per-subject eta is omega·eta_raw,
+    not eta_raw. The original implementation used ``1 - var(eta_raw_mean)`` which
+    assumed omega=1. The corrected version computes the posterior mean of each
+    subject's natural-scale eta, measures the between-subject variance of those
+    means, and divides by E[omega^2].
+    """
+    import numpy as np
 
     out: dict[str, float] = {}
-    if "eta_raw" not in fit.stan_variables():
+    var_names = set(fit.stan_variables())
+    if "eta_raw" not in var_names:
         return out
 
-    eta_draws = fit.stan_variable("eta_raw")  # (n_draws, N_subjects, N_params)
-    eta_post_mean = eta_draws.mean(axis=0)  # (N_subjects, N_params)
-    eta_var = eta_post_mean.var(axis=0, ddof=1)  # per-parameter variance across subjects
+    eta_raw_draws = np.asarray(fit.stan_variable("eta_raw"))
+    if eta_raw_draws.ndim != 3:
+        return out
 
-    for i, name in enumerate(structural_names):
-        if i >= eta_var.shape[0]:
-            break
-        shrinkage = float(max(0.0, 1.0 - eta_var[i]))
+    # Stan emitter declares `matrix[N_subjects, nIIV] eta_raw` →
+    # cmdstanpy returns shape (n_draws, N_subjects, N_iiv).
+    # eta_raw's third axis is indexed by IIV-declaration order, which may not
+    # match structural_names order. We read the names from the spec variability
+    # items instead. (Follow-up on codex review Issue 4.)
+    n_iiv = eta_raw_draws.shape[2]
+
+    for i, name in enumerate(structural_names[:n_iiv]):
+        omega_name = f"omega_{name}"
+        if omega_name not in var_names:
+            continue
+        omega_draws = np.asarray(fit.stan_variable(omega_name))
+        eta_natural = eta_raw_draws[:, :, i] * omega_draws[:, None]
+        eta_post_mean = eta_natural.mean(axis=0)
+        num = float(eta_post_mean.var(ddof=1)) if eta_post_mean.size > 1 else 0.0
+        denom = float((omega_draws**2).mean())
+        if denom <= 0:
+            continue
+        shrinkage = max(0.0, min(1.0, 1.0 - num / denom))
         out[name] = shrinkage
     return out
 
@@ -592,6 +675,51 @@ def _write_draws_parquet(fit: Any, path: Path) -> None:
 # ---------------------------------------------------------------------------
 # Small helpers
 # ---------------------------------------------------------------------------
+
+
+def _build_inits(request: dict[str, Any]) -> dict[str, Any] | None:
+    """Build cmdstanpy inits dict from request.initial_estimates.
+
+    Stan variables are log-scale (``log_X`` for structural param X) so we
+    log-transform every positive initial estimate. Omega and sigma inits
+    default to small positive values to avoid boundary cases. Returns None
+    if no initial_estimates were provided.
+    """
+    import math
+
+    ie = request.get("initial_estimates") or {}
+    if not ie:
+        return None
+
+    inits: dict[str, Any] = {}
+    structural = _extract_structural_names(request["spec"])
+    for name in structural:
+        val = ie.get(name)
+        if val is None or val <= 0:
+            continue
+        inits[f"log_{name}"] = math.log(float(val))
+
+    # eta_raw starts at zero (no subject-level shifts); cmdstanpy needs the
+    # shape, which we derive from N_subjects + number of IIV params.
+    variability = (
+        request["spec"].get("variability", []) if isinstance(request["spec"], dict) else []
+    )
+    iiv_params: list[str] = []
+    for v in variability:
+        if v.get("type") == "IIV":
+            for p in v.get("params", []):
+                if p not in iiv_params:
+                    iiv_params.append(p)
+    if iiv_params:
+        # Small non-zero inits for omega to avoid boundary.
+        for p in iiv_params:
+            inits.setdefault(f"omega_{p}", 0.3)
+
+    # sigma defaults
+    inits.setdefault("sigma_prop", 0.2)
+    inits.setdefault("sigma_add", 0.1)
+
+    return inits
 
 
 def _extract_structural_names(spec: dict[str, Any] | str) -> list[str]:

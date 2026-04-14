@@ -234,8 +234,13 @@ _VALID_FAMILIES: dict[TargetKind, frozenset[str]] = {
     "iiv_sd": frozenset({"HalfNormal", "HalfCauchy", "Gamma", "InvGamma"}),
     "iov_sd": frozenset({"HalfNormal", "HalfCauchy", "Gamma", "InvGamma"}),
     "residual_sd": frozenset({"HalfNormal", "HalfCauchy", "Gamma", "InvGamma"}),
+    # LKJ on corr_iiv is accepted by the schema; stan_emitter does not yet
+    # declare corr_iiv in the parameters block and will raise NotImplementedError
+    # if it sees it. Accepting here so agentic transforms can plan for it.
     "corr_iiv": frozenset({"LKJ"}),
-    "covariate": frozenset({"Normal"}),
+    # Covariate betas accept Normal (default) and meta-analytic robust priors
+    # (e.g., allometric exponents with external historical support).
+    "covariate": frozenset({"Normal", "Mixture", "HistoricalBorrowing"}),
 }
 
 

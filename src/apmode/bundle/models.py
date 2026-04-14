@@ -200,6 +200,8 @@ class BackendResult(BaseModel):
     posterior_diagnostics: PosteriorDiagnostics | None = None
     sampler_config: SamplerConfig | None = None
     posterior_draws_path: str | None = None  # relative to bundle root
+    prior_manifest_path: str | None = None  # bundle-relative path to prior_manifest.json
+    simulation_protocol_path: str | None = None  # bundle-relative path to simulation_protocol.json
 
 
 # --- Data Manifest ---
@@ -329,6 +331,7 @@ class EvidenceManifest(BaseModel):
     covariate_correlated: bool
     covariate_missingness: CovariateSpec | None = None
     blq_burden: float = Field(ge=0.0, le=1.0)
+    lloq_value: float | None = Field(default=None, ge=0.0)
     protocol_heterogeneity: Literal["single-study", "pooled-similar", "pooled-heterogeneous"]
     absorption_phase_coverage: Literal["adequate", "inadequate"]
     elimination_phase_coverage: Literal["adequate", "inadequate"]
@@ -410,7 +413,7 @@ class SearchGraphNode(BaseModel):
 
     candidate_id: str
     parent_id: str | None = None
-    backend: Literal["nlmixr2", "jax_node", "agentic_llm"] = "nlmixr2"
+    backend: Literal["nlmixr2", "jax_node", "agentic_llm", "bayesian_stan"] = "nlmixr2"
     converged: bool = False
     bic: float | None = None
     aic: float | None = None
