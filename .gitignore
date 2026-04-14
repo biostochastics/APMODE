@@ -46,3 +46,7 @@ Thumbs.db
 # APMODE runtime
 runs/
 *.log
+
+# Internal docs (not for public repo)
+CLAUDE.md
+PRD_APMODE_*.md

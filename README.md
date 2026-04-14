@@ -1,12 +1,13 @@
 <div align="center">
 
-  <img src="apmode_logo.png" alt="APMODE Logo" width="200">
+  <img src="apmode_logo.png" alt="APMODE Logo" width="480">
 
   # APMODE
 
   **Adaptive Pharmacokinetic Model Discovery Engine**
 
-  [![Phase](https://img.shields.io/badge/phase-3%20(P3.B)-blue)](PRD_APMODE_v0.3.md)
+  [![Phase](https://img.shields.io/badge/phase-3%20(P3.B)-blue)]()
+
   [![Tests](https://img.shields.io/badge/tests-1145%20passing-success)]()
   [![License](https://img.shields.io/badge/license-GPL--2.0--or--later-green)](LICENSE)
   [![Python](https://img.shields.io/badge/python-3.12%2B-yellow)]()
@@ -311,9 +312,8 @@ uv run pytest tests/ --snapshot-update      # update snapshots after emitter cha
 
 | Document | Purpose |
 |----------|---------|
-| [`PRD_APMODE_v0.3.md`](PRD_APMODE_v0.3.md) | Product requirements (current source of truth) |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Technical architecture (v0.2) |
-| [`CLAUDE.md`](CLAUDE.md) | Contributor/AI guidance |
+| [`docs/FORMULAR.md`](docs/FORMULAR.md) | Formular DSL full reference |
 | [`policies/*.json`](policies/) | Gate threshold policy files per lane |
 
 ---
@@ -363,7 +363,7 @@ Plus 9 simulated ground-truth datasets (1/2-cmt, oral/IV/infusion, linear/MM).
 - **Context of use**: Orchestrator auto-generates COU for Gate 2.5; production use needs user-provided COU via CLI or config
 - **Agentic LLM backend**: Phase 3 scope
 
-See the full list in [`PRD_APMODE_v0.3.md` §10](PRD_APMODE_v0.3.md).
+See `ARCHITECTURE.md` for the full design rationale.
 
 ---
 
@@ -378,8 +378,7 @@ The primary engine is nlmixr2 (R), which is GPL-2 licensed. This license choice 
 <div align="center">
 
 **[Quick Start](#quick-start)** &bull;
-**[DSL Reference](#the-pk-dsl)** &bull;
-**[Architecture](#architecture)** &bull;
-**[PRD](PRD_APMODE_v0.3.md)**
+**[Formular DSL](#formular--the-pk-dsl)** &bull;
+**[Architecture](#architecture)**
 
 </div>
