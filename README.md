@@ -4,8 +4,8 @@
 
   **Adaptive Pharmacokinetic Model Discovery Engine**
 
-  [![Phase](https://img.shields.io/badge/phase-2%20(85%25)-blue)](PRD_APMODE_v0.3.md)
-  [![Tests](https://img.shields.io/badge/tests-940%20passing-success)]()
+  [![Phase](https://img.shields.io/badge/phase-2%20(90%25)-blue)](PRD_APMODE_v0.3.md)
+  [![Tests](https://img.shields.io/badge/tests-949%20passing-success)]()
   [![License](https://img.shields.io/badge/license-GPL--2.0--or--later-green)](LICENSE)
   [![Python](https://img.shields.io/badge/python-3.12%2B-yellow)]()
   [![mypy](https://img.shields.io/badge/mypy-strict%20%E2%9C%93-blue)]()
@@ -26,7 +26,7 @@ APMODE is a **governed meta-system** that composes four population PK modeling p
 
 **A typed PK DSL is the control surface.** Models are specified in a structured grammar (`Absorption x Distribution x Elimination x Variability x Observation`), compiled to a typed AST, validated against pharmacometric constraints, and lowered to backend-specific code. The agentic LLM backend (Phase 3) operates exclusively through DSL transforms — it cannot emit raw code.
 
-> **Status**: Phase 2 in progress (~85%). 940 tests passing. `mypy --strict` clean. `ruff` clean. Seven rounds of multi-model code review completed; all critical and high-severity issues fixed.
+> **Status**: Phase 2 in progress (~90%). 949 tests passing. `mypy --strict` clean (49 files). `ruff` clean. Eight rounds of multi-model code review completed.
 
 ---
 
@@ -51,23 +51,52 @@ uv sync --all-extras
 uv run apmode --help
 ```
 
-### Run a Discovery Pipeline
+### Explore a Public Dataset (Interactive)
 
 ```bash
-# Validate a NONMEM-format dataset
-uv run apmode validate <dataset.csv>
+# Browse 14 available PK datasets (real clinical + simulated ground-truth)
+uv run apmode datasets
 
-# Run the full pipeline (ingest → profile → NCA → search → gates → bundle)
+# Interactive exploration: fetch → profile → NCA → search space preview
+uv run apmode explore theo_sd
+uv run apmode explore mavoglurant --lane discovery
+
+# Non-interactive (CI): runs full pipeline automatically
+uv run apmode explore Oral_1CPTMM -y -o ./runs
+```
+
+### Run the Full Pipeline
+
+```bash
+# Run on your own NONMEM-format CSV
 uv run apmode run <dataset.csv> --lane submission
 
-# Inspect a reproducibility bundle
+# Download a dataset first, then run
+uv run apmode datasets theo_sd -o ./data
+uv run apmode run ./data/theo_sd.csv --lane discovery
+```
+
+### Inspect Results
+
+```bash
+# Bundle summary
 uv run apmode inspect <bundle_dir>
+
+# Top 3 candidates with parameter estimates
+uv run apmode log <bundle_dir> --top 3
+
+# Gate failure analysis
+uv run apmode log <bundle_dir> --failed
+uv run apmode log <bundle_dir> --gate gate1
+
+# Compare two runs side-by-side
+uv run apmode diff ./runs/run_a ./runs/run_b
 ```
 
 ### Run the Test Suite
 
 ```bash
-uv run pytest tests/ -q                    # all 940 tests
+uv run pytest tests/ -q                    # all 949 tests
 uv run mypy src/apmode/ --strict           # type checking (0 errors)
 uv run ruff check src/apmode/ tests/       # linting (0 errors)
 ```
@@ -156,7 +185,8 @@ DSL text ──→ Lark parser ──→ AST ──→        Search Engine
 | Search engine | `src/apmode/search/engine.py` | Multi-backend dispatch, BIC scoring, Pareto frontier |
 | Orchestrator | `src/apmode/orchestrator/` | Full pipeline: ingest → gates → bundle |
 | Bundle emitter | `src/apmode/bundle/` | All reproducibility bundle artifacts per PRD §5 |
-| CLI | `src/apmode/cli.py` | Typer CLI: `run`, `validate`, `inspect` |
+| Dataset registry | `src/apmode/data/datasets.py` | 14 public PK datasets from nlmixr2data with auto-fetch |
+| CLI | `src/apmode/cli.py` | Typer CLI: `run`, `explore`, `datasets`, `inspect`, `log`, `diff`, `validate` |
 
 ---
 
@@ -219,10 +249,10 @@ Rscript benchmarks/suite_a/simulate_all.R [output_dir]
 
 ## Test Suite
 
-940 tests across multiple strategies:
+949 tests across multiple strategies:
 
 ```bash
-uv run pytest tests/unit/ -q               # ~690 unit tests
+uv run pytest tests/unit/ -q               # ~700 unit tests
 uv run pytest tests/integration/ -q         # 30 integration tests (mock R pipeline + Discovery lane)
 uv run pytest tests/property/ -q            # ~30 Hypothesis property-based tests
 uv run pytest tests/golden/ -q              # 21 syrupy golden master snapshots
@@ -231,9 +261,9 @@ uv run pytest tests/ --snapshot-update      # update snapshots after emitter cha
 
 | Category | Count | Coverage |
 |----------|-------|----------|
-| Unit tests | ~690 | All modules: DSL, data, backends, search, governance, routing, bundle, benchmarks |
-| NODE backend | 101 | Constraints, sub-model, ODE, trainer, runner, distillation, init strategy |
-| Stan codegen | 43 | Stan emitter + cross-backend lowering validation |
+| Unit tests | ~700 | All modules: DSL, data, backends, search, governance, routing, bundle, benchmarks |
+| NODE backend | 103 | Constraints, sub-model, ODE (incl. CL independence), trainer, runner, distillation, init strategy |
+| Stan codegen | 48 | Stan emitter (incl. IOV + BLQ M3/M4) + cross-backend lowering validation |
 | Gate 2.5 + ranking | 27 | ICH M15 credibility + cross-paradigm ranking |
 | Integration | 30 | Mock R pipeline, Discovery lane dispatch, Suite B NODE validation |
 | Suite A benchmarks | 48 | All 7 scenarios (A1-A7) with property tests |
@@ -248,7 +278,7 @@ uv run pytest tests/ --snapshot-update      # update snapshots after emitter cha
 |-------|-------|--------|
 | **Phase 0** | Schemas, protocols, grammar, error taxonomy, sparkid integration | Complete |
 | **Phase 1** (6 months) | DSL + compiler, classical NLME backend, automated search, Gates 1-3, reproducibility bundle, CLI, Suite A | Complete (679 tests) |
-| **Phase 2** (4 months) | Hybrid NODE backend, functional distillation, Discovery lane, cross-paradigm ranking, Suite B, Stan codegen | In progress (~85%, 261 new tests) |
+| **Phase 2** (4 months) | Hybrid NODE backend, functional distillation, Discovery lane, cross-paradigm ranking, Suite B, Stan codegen (IOV + BLQ), NODE init strategy, dataset registry, interactive CLI | In progress (~90%, 270 new tests) |
 | **Phase 3** (4 months) | Agentic LLM backend (DSL transforms only), Optimization lane + LORO-CV, report generator, Suite C, API | Planned |
 
 ---
@@ -275,11 +305,44 @@ uv run pytest tests/ --snapshot-update      # update snapshots after emitter cha
 
 ---
 
+## CLI Reference
+
+| Command | Description |
+|---------|-------------|
+| `apmode run <csv> --lane <lane>` | Full pipeline: ingest → profile → NCA → search → gates → bundle |
+| `apmode explore <name-or-csv>` | Interactive wizard: step-by-step data exploration with optional pipeline launch |
+| `apmode datasets [name]` | Browse or download 14 public PK datasets from nlmixr2data |
+| `apmode inspect <bundle>` | Print summary of a reproducibility bundle |
+| `apmode log <bundle> --top N` | Show top-N ranked candidates with parameter estimates |
+| `apmode log <bundle> --failed` | List failed candidates with gate + reason |
+| `apmode log <bundle> --gate gate1` | Per-check pass/fail details for a specific gate |
+| `apmode diff <bundle-a> <bundle-b>` | Side-by-side comparison of evidence, rankings, gate pass rates |
+| `apmode validate <bundle>` | Validate bundle completeness |
+| `apmode version` | Print version |
+
+**Exit codes:** `0` success, `1` input/validation error, `2` backend error, `130` user interrupt.
+
+### Public Dataset Registry
+
+14 datasets available via `apmode datasets`, including 5 real clinical datasets:
+
+| Dataset | Subjects | Route | Elimination | Covariates |
+|---------|----------|-------|-------------|------------|
+| `theo_sd` | 12 | oral | linear | WT |
+| `warfarin` | 32 | oral | linear | WT, age, sex |
+| `mavoglurant` | 120 | oral | unknown | AGE, SEX, WT, HT |
+| `pheno_sd` | 59 | IV | linear | WT, APGR |
+| `nimoData` | 40 | IV infusion | unknown | WT |
+
+Plus 9 simulated ground-truth datasets (1/2-cmt, oral/IV/infusion, linear/MM).
+
+---
+
 ## Known Limitations
 
 - **NODE training**: Pooled population NLL (no per-subject RE); Laplace approximation deferred to Phase 3
 - **NODE scaling**: Python-list subject loop (not vmap); scales to ~50 subjects, not 500+
-- **Stan codegen**: Does not yet support IOV or BLQ M3/M4 (Phase 3)
+- **Stan codegen**: Maturation covariate form not yet supported (raises `NotImplementedError`)
 - **TMDD QSS**: Uses KD as approximation for KSS; when kint >> koff, this can overestimate complex formation
 - **TimeVaryingElim**: Only `exponential` decay supported; `half_life` and `linear` rejected by validator
 - **Context of use**: Orchestrator auto-generates COU for Gate 2.5; production use needs user-provided COU via CLI or config
@@ -291,7 +354,7 @@ See the full list in [`PRD_APMODE_v0.3.md` §10](PRD_APMODE_v0.3.md).
 
 ## Code Review Provenance
 
-Seven rounds of multi-model code review completed:
+Eight rounds of multi-model code review completed:
 
 | Round | Models | Focus |
 |-------|--------|-------|
@@ -301,7 +364,8 @@ Seven rounds of multi-model code review completed:
 | R4 | codex, gemini, crush, opencode, droid | Lane Router, Gate 3, Gate 2.5, CLI, dispatch constraints |
 | R5 | codex, gemini, crush, opencode, droid | Orchestrator wiring, seed stability, ranking |
 | R6 | gemini-3.1-pro | Phase 2 NODE backend, Gate 2.5, cross-paradigm ranking |
-| R7 | multi-model consensus | Full Phase 2 review; all critical/high-severity issues fixed |
+| R7 | multi-model consensus | Phase 2 NODE init, Stan codegen, limitation fixes |
+| R8 | mimo consensus | CLI enhancement prioritization (Tier 1-3 implementation) |
 
 ---
 
