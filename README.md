@@ -357,7 +357,18 @@ Plus 9 simulated ground-truth datasets (1/2-cmt, oral/IV/infusion, linear/MM).
 
 The agentic backend is a **closed-loop model improvement system** where an LLM proposes typed PK model transforms based on diagnostic feedback, operating exclusively within the Formular DSL grammar.
 
-### How It Works
+### Operating Modes
+
+The orchestrator runs the agentic stage **after** classical search, in two modes:
+
+| Mode | Starting Spec | What the LLM Does |
+|------|--------------|-------------------|
+| **Refine** | Best classical candidate from search | Targeted improvement — add covariates, swap modules, adjust variability |
+| **Independent** | Minimal 1-cmt oral spec | Build from scratch — LLM discovers structure through transforms |
+
+In discovery/optimization lanes, the LLM can also propose `replace_with_node` transforms to introduce Neural ODE modules. All agentic candidates enter the same governance gate funnel as classical candidates.
+
+### Iteration Loop
 
 ```
 AgenticRunner.run(initial_spec, data)
@@ -433,6 +444,22 @@ uv run pytest tests/integration/test_llm_providers_live.py -m live -v
 - **Agentic LLM backend**: Requires funded API keys (Anthropic/OpenAI) or local Ollama with a chat-capable model (≥4B params recommended)
 
 See `ARCHITECTURE.md` for the full design rationale.
+
+---
+
+## Citation
+
+If you use APMODE in your research, please cite:
+
+```bibtex
+@software{apmode2026,
+  title        = {APMODE: Adaptive Pharmacokinetic Model Discovery Engine},
+  author       = {Kornilov, Sergey A.},
+  year         = {2026},
+  url          = {https://github.com/biostochastics/apmode},
+  license      = {GPL-2.0-or-later}
+}
+```
 
 ---
 
