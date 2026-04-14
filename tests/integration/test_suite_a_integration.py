@@ -60,6 +60,9 @@ CSV_FILES: dict[str, str] = {
     "A2": "a2_2cmt_iv_parallel_mm.csv",
     "A3": "a3_transit_1cmt_linear.csv",
     "A4": "a4_1cmt_oral_mm.csv",
+    "A5": "a5_tmdd_qss.csv",
+    "A6": "a6_1cmt_covariates.csv",
+    "A7": "a7_2cmt_node_absorption.csv",
 }
 
 
@@ -71,12 +74,18 @@ def _load_policy(lane: str) -> GatePolicy:
     return GatePolicy.model_validate(json.loads((POLICY_DIR / f"{lane}.json").read_text()))
 
 
+def _backend_for_spec(spec: DSLSpec) -> str:
+    """Return appropriate backend name based on spec type."""
+    return "jax_node" if spec.has_node_modules() else "nlmixr2"
+
+
 def _make_mock_fit(
     spec: DSLSpec,
     reference: dict[str, float],
     bias_fraction: float = 0.02,
 ) -> BackendResult:
     """Mock BackendResult with small bias simulating estimation noise."""
+    backend = _backend_for_spec(spec)
     estimates = {
         n: ParameterEstimate(
             name=n,
@@ -92,7 +101,7 @@ def _make_mock_fit(
     }
     return BackendResult(
         model_id=spec.model_id,
-        backend="nlmixr2",
+        backend=backend,
         converged=True,
         ofv=500.0,
         aic=520.0,
@@ -100,7 +109,7 @@ def _make_mock_fit(
         parameter_estimates=estimates,
         eta_shrinkage={"CL": 0.05, "V": 0.08},
         convergence_metadata=ConvergenceMetadata(
-            method="saem",
+            method="saem" if backend == "nlmixr2" else "adam",
             converged=True,
             iterations=300,
             gradient_norm=0.0005,
@@ -125,7 +134,11 @@ def _make_mock_fit(
             blq=BLQHandling(method="none", n_blq=0, blq_fraction=0.0),
         ),
         wall_time_seconds=60.0,
-        backend_versions={"nlmixr2": "3.0.0", "R": "4.4.1"},
+        backend_versions=(
+            {"nlmixr2": "3.0.0", "R": "4.4.1"}
+            if backend == "nlmixr2"
+            else {"jax": "0.9.2", "python": "3.12.0"}
+        ),
         initial_estimate_source="nca",
     )
 
@@ -185,6 +198,14 @@ class TestSuiteAStructureCoverage:
             "distribution": "OneCmt",
             "elimination": "MichaelisMenten",
         },
+        "A5": {
+            "absorption": "FirstOrder",
+            "distribution": "TMDD_QSS",
+            "elimination": "Linear",
+        },
+        "A6": {"absorption": "FirstOrder", "distribution": "OneCmt", "elimination": "Linear"},
+        # A7: NODE absorption — not tested via structural search space (NODE specs
+        # are generated separately, not by generate_root_candidates)
     }
 
     ABS_TYPE_MAP = {
@@ -200,9 +221,9 @@ class TestSuiteAStructureCoverage:
     }
     CMT_MAP = {1: "OneCmt", 2: "TwoCmt", 3: "ThreeCmt"}
 
-    @pytest.mark.parametrize("name", ["A1", "A3"])
+    @pytest.mark.parametrize("name", ["A1", "A3", "A6"])
     def test_linear_scenarios_covered(self, name: str) -> None:
-        """A1/A3 have linear elimination — profiler always covers these."""
+        """A1/A3/A6 have linear elimination — profiler always covers these."""
         manifest, df = ingest_nonmem_csv(_csv_path(name))
         evidence = profile_data(df, manifest)
         space = SearchSpace.from_manifest(evidence)
@@ -240,6 +261,21 @@ class TestSuiteAStructureCoverage:
         candidates = generate_root_candidates(space, base_params=REFERENCE_PARAMS[name])
         found = any(c.elimination.type == truth["elimination"] for c in candidates)
         assert found, f"{name}: search space missing {truth['elimination']}"
+
+    @pytest.mark.parametrize("name", ["A5"])
+    def test_tmdd_scenario_profiled(self, name: str) -> None:
+        """A5 (TMDD QSS) — profiler should detect nonlinear PK signature.
+
+        TMDD produces concentration-dependent clearance which should trigger
+        the nonlinear clearance heuristic. The true model is TMDD_QSS, but
+        the search space will include MichaelisMenten as a simpler alternative.
+        """
+        manifest, df = ingest_nonmem_csv(_csv_path(name))
+        evidence = profile_data(df, manifest)
+        # TMDD produces nonlinear PK
+        assert evidence.nonlinear_clearance_signature, (
+            f"{name}: profiler failed to detect TMDD nonlinear PK"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -280,7 +316,7 @@ class TestSuiteAParameterBias:
 
 @pytest.mark.integration
 class TestSuiteAGatePassage:
-    """Correctly-fit models pass Gate 1 + Gate 2 (submission lane)."""
+    """Correctly-fit models pass Gate 1 + Gate 2."""
 
     @pytest.mark.parametrize("name,factory", ALL_SCENARIOS)
     def test_passes_gate1(self, name: str, factory: object) -> None:
@@ -293,10 +329,31 @@ class TestSuiteAGatePassage:
         g1 = evaluate_gate1(result, policy, seed_results=[seed1, seed2])
         assert g1.passed, f"{name} failed Gate 1: {g1.summary_reason}"
 
-    @pytest.mark.parametrize("name,factory", ALL_SCENARIOS)
+    @pytest.mark.parametrize(
+        "name,factory",
+        [(n, f) for n, f in ALL_SCENARIOS if n != "A7"],
+    )
     def test_passes_gate2_submission(self, name: str, factory: object) -> None:
+        """Non-NODE scenarios pass Gate 2 in submission lane."""
         spec = factory()  # type: ignore[operator]
         result = _make_mock_fit(spec, REFERENCE_PARAMS[name])
         policy = _load_policy("submission")
         g2 = evaluate_gate2(result, policy, lane="submission")
         assert g2.passed, f"{name} failed Gate 2: {g2.summary_reason}"
+
+    def test_a7_passes_gate2_discovery(self) -> None:
+        """A7 (NODE spec) passes Gate 2 in discovery lane, not submission."""
+        from apmode.benchmarks.suite_a import scenario_a7
+
+        spec = scenario_a7()
+        result = _make_mock_fit(spec, REFERENCE_PARAMS["A7"])
+
+        # NODE should pass Gate 2 in discovery lane
+        policy_disc = _load_policy("discovery")
+        g2_disc = evaluate_gate2(result, policy_disc, lane="discovery")
+        assert g2_disc.passed, f"A7 failed Gate 2 discovery: {g2_disc.summary_reason}"
+
+        # NODE should fail Gate 2 in submission lane
+        policy_sub = _load_policy("submission")
+        g2_sub = evaluate_gate2(result, policy_sub, lane="submission")
+        assert not g2_sub.passed, "A7 (NODE) should not pass submission Gate 2"

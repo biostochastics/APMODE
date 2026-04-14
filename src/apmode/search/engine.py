@@ -1,13 +1,14 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Automated search engine (PRD §4.2.3, ARCHITECTURE.md §6 Phase 1 Month 3-4).
+"""Automated search engine (PRD §4.2.3, ARCHITECTURE.md §6 Phase 2).
 
 Generates candidate models from the search space, dispatches them to the
-backend runner, collects results, and identifies Pareto-optimal candidates
+appropriate backend runner (nlmixr2 for classical specs, jax_node for NODE
+specs), collects results, and identifies Pareto-optimal candidates
 (parsimony vs. fit).
 
 Search flow:
   1. Generate root candidates from SearchSpace x NCA initial estimates
-  2. Dispatch each to Nlmixr2Runner (or mock)
+  2. Dispatch each to the appropriate BackendRunner based on spec type
   3. Score: BIC (primary), AIC (secondary)
   4. Log search trajectory entry for each candidate
   5. Identify Pareto frontier: n_params vs. BIC
@@ -28,7 +29,7 @@ from apmode.search.candidates import SearchDAG, SearchSpace, generate_root_candi
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from apmode.backends.nlmixr2_runner import Nlmixr2Runner
+    from apmode.backends.protocol import BackendRunner
     from apmode.bundle.emitter import BundleEmitter
     from apmode.bundle.models import BackendResult, DataManifest, EvidenceManifest
     from apmode.dsl.ast_models import DSLSpec
@@ -63,31 +64,39 @@ class SearchOutcome:
 class SearchEngine:
     """Automated structural search engine.
 
-    Generates candidates from the search space, dispatches to backend,
-    scores, and identifies the Pareto frontier.
+    Generates candidates from the search space, dispatches to the
+    appropriate backend runner, scores, and identifies the Pareto frontier.
+
+    Phase 2: Accepts multiple backend runners keyed by name. Dispatches
+    NODE specs to ``jax_node`` runner and classical specs to ``nlmixr2``.
     """
 
     def __init__(
         self,
-        runner: Nlmixr2Runner,
+        runner: BackendRunner,
         data_manifest: DataManifest,
         data_path: Path,
         seed: int,
         timeout_seconds: int | None = None,
         allowed_backends: list[str] | None = None,
         split_manifest: dict[str, object] | None = None,
+        runners: dict[str, BackendRunner] | None = None,
     ) -> None:
-        self._runner = runner
         self._data_manifest = data_manifest
         self._data_path = data_path
         self._seed = seed
         self._timeout = timeout_seconds
-        # From Lane Router dispatch — constrains which backends are used.
-        # Phase 1: only nlmixr2 is implemented, so this is informational.
-        # Phase 2: SearchEngine will dispatch to multiple BackendRunners
-        # based on this list.
         self._allowed_backends = allowed_backends or ["nlmixr2"]
         self._split_manifest = split_manifest
+
+        # Phase 2: multiple runners keyed by backend name.
+        # ``runner`` is the default (nlmixr2); ``runners`` overrides.
+        if runners is not None:
+            self._runners = runners
+        else:
+            self._runners = {"nlmixr2": runner}
+        # Keep a default runner reference for seed-stability re-runs
+        self._default_runner = runner
 
     async def run(
         self,
@@ -201,12 +210,34 @@ class SearchEngine:
             best_bic=best,
         )
 
+    def _select_runner(self, spec: DSLSpec) -> tuple[BackendRunner, str]:
+        """Select the appropriate backend runner for a spec.
+
+        NODE specs → jax_node runner (if available and allowed).
+        Classical specs → nlmixr2 runner.
+
+        Returns:
+            (runner, backend_name) tuple.
+        """
+        if spec.has_node_modules():
+            if "jax_node" in self._allowed_backends and "jax_node" in self._runners:
+                return self._runners["jax_node"], "jax_node"
+            # NODE spec but no NODE runner available — skip
+            msg = (
+                f"Spec {spec.model_id} has NODE modules but jax_node runner "
+                f"not available (allowed={self._allowed_backends})"
+            )
+            raise _BackendNotAvailable(msg)
+
+        # Classical spec → default runner
+        return self._default_runner, "nlmixr2"
+
     async def _evaluate_candidate(
         self,
         spec: DSLSpec,
         initial_estimates: dict[str, float],
     ) -> SearchResult:
-        """Dispatch a single candidate to the backend and collect result."""
+        """Dispatch a single candidate to the appropriate backend."""
         from apmode.errors import BackendError
 
         # Filter metadata keys from initial estimates
@@ -214,7 +245,19 @@ class SearchEngine:
 
         n_params = len(spec.structural_param_names())
         try:
-            result = await self._runner.run(
+            runner, backend_name = self._select_runner(spec)
+        except _BackendNotAvailable as e:
+            logger.info("Skipping %s: %s", spec.model_id, e)
+            return SearchResult(
+                candidate_id=spec.model_id,
+                spec=spec,
+                result=None,
+                error=str(e),
+                n_params=n_params,
+            )
+
+        try:
+            result = await runner.run(
                 spec=spec,
                 data_manifest=self._data_manifest,
                 initial_estimates=clean_estimates,
@@ -233,7 +276,7 @@ class SearchEngine:
                 n_params=n_params,
             )
         except BackendError as e:
-            logger.warning("Candidate %s backend error: %s", spec.model_id, e)
+            logger.warning("Candidate %s (%s) backend error: %s", spec.model_id, backend_name, e)
             return SearchResult(
                 candidate_id=spec.model_id,
                 spec=spec,
@@ -242,7 +285,13 @@ class SearchEngine:
                 n_params=n_params,
             )
         except Exception as e:
-            logger.error("Candidate %s unexpected error: %s", spec.model_id, e, exc_info=True)
+            logger.error(
+                "Candidate %s (%s) unexpected error: %s",
+                spec.model_id,
+                backend_name,
+                e,
+                exc_info=True,
+            )
             return SearchResult(
                 candidate_id=spec.model_id,
                 spec=spec,
@@ -258,10 +307,11 @@ class SearchEngine:
         parent_id: str | None,
     ) -> None:
         """Write a search trajectory JSONL entry."""
+        backend = sr.result.backend if sr.result else "unknown"
         entry = SearchTrajectoryEntry(
             candidate_id=sr.candidate_id,
             parent_id=parent_id,
-            backend="nlmixr2",
+            backend=backend,
             converged=sr.converged,
             ofv=sr.result.ofv if sr.result else None,
             aic=sr.aic,
@@ -270,6 +320,10 @@ class SearchEngine:
             timestamp=datetime.now(tz=UTC).isoformat(),
         )
         emitter.append_search_trajectory(entry)
+
+
+class _BackendNotAvailable(Exception):
+    """Raised when a spec requires a backend that is not configured."""
 
 
 def _pareto_frontier(results: list[SearchResult]) -> list[SearchResult]:

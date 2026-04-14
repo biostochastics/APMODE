@@ -46,6 +46,7 @@ if TYPE_CHECKING:
     import pandas as pd  # type: ignore[import-untyped]
 
     from apmode.backends.nlmixr2_runner import Nlmixr2Runner
+    from apmode.backends.protocol import BackendRunner
     from apmode.bundle.models import DataManifest, EvidenceManifest
     from apmode.routing import DispatchDecision
     from apmode.search.engine import SearchOutcome
@@ -92,12 +93,12 @@ class Orchestrator:
         runner: Nlmixr2Runner,
         bundle_base_dir: Path,
         config: RunConfig | None = None,
-        node_runner: object | None = None,
+        node_runner: BackendRunner | None = None,
     ) -> None:
         self._runner = runner
         self._bundle_base = bundle_base_dir
         self._config = config or RunConfig()
-        self._node_runner = node_runner  # Phase 2: NodeBackendRunner
+        self._node_runner = node_runner
 
     async def run(
         self,
@@ -185,6 +186,10 @@ class Orchestrator:
 
         # --- Stage 5: Automated Search ---
         split_manifest_dict = split.model_dump()
+        # Build multi-backend runner map for SearchEngine
+        runners: dict[str, BackendRunner] = {"nlmixr2": self._runner}
+        if self._node_runner is not None and "jax_node" in dispatch.backends:
+            runners["jax_node"] = self._node_runner
         search_engine = SearchEngine(
             runner=self._runner,
             data_manifest=manifest,
@@ -193,6 +198,7 @@ class Orchestrator:
             timeout_seconds=self._config.timeout_seconds,
             allowed_backends=dispatch.backends,
             split_manifest=split_manifest_dict,
+            runners=runners,
         )
         search_outcome = await search_engine.run(
             evidence_manifest=evidence,
@@ -251,10 +257,14 @@ class Orchestrator:
                         cand_estimates = {
                             k: v for k, v in nca_estimates.items() if not k.startswith("_")
                         }
+                    # Select runner based on spec type
+                    seed_runner: BackendRunner = self._runner
+                    if sr.spec.has_node_modules() and self._node_runner is not None:
+                        seed_runner = self._node_runner
                     seed_runs: list[BRModel] = []
                     for seed_offset in range(1, seed_n):
                         try:
-                            seed_result = await self._runner.run(
+                            seed_result = await seed_runner.run(
                                 spec=sr.spec,
                                 data_manifest=manifest,
                                 initial_estimates=cand_estimates,

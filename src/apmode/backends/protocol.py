@@ -37,4 +37,5 @@ class BackendRunner(Protocol):
         timeout_seconds: int | None = None,
         *,
         data_path: Path | None = None,
+        split_manifest: dict[str, object] | None = None,
     ) -> BackendResult: ...

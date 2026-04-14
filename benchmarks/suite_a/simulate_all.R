@@ -265,6 +265,152 @@ write.csv(a4_out, file.path(output_dir, "a4_1cmt_oral_mm.csv"),
 cat("  A4 done:", nrow(a4_out), "rows\n")
 
 
+# ===== Scenario A5: TMDD quasi-steady-state (SC monoclonal antibody) =====
+cat("Simulating A5...\n")
+
+# TMDD QSS model (Gibiansky 2008). Target-mediated clearance produces
+# nonlinear PK: dominates at low concentrations, saturates at high.
+# This tests whether APMODE can distinguish TMDD from 2-cmt distribution.
+a5_mod <- rxode2({
+  ka   <- exp(lka + eta.ka)
+  V    <- exp(lV + eta.V)
+  CL   <- exp(lCL + eta.CL)
+  R0   <- exp(lR0)
+  KD   <- exp(lKD)
+  kint <- exp(lkint)
+
+  d/dt(depot) <- -ka * depot
+  Cfree <- centr / V
+  # QSS target-mediated elimination: kint * R0 * Cfree / (KD + Cfree)
+  tmdd_rate <- kint * R0 * Cfree / (KD + Cfree)
+  d/dt(centr) <- ka * depot - CL * Cfree - tmdd_rate * V
+  cp <- Cfree
+})
+
+a5_params <- c(lka = log(0.02), lV = log(3.5), lCL = log(0.015),
+               lR0 = log(10), lKD = log(1), lkint = log(0.03))
+a5_omega <- lotri(eta.ka ~ 0.04, eta.V ~ 0.04, eta.CL ~ 0.09)
+
+# SC mAb dosing: 150 mg SC, observations over 8 weeks (hours)
+sc_event_table <- function(n_id) {
+  # Observation at days 1,3,7,14,21,28,42,56 (in hours)
+  times <- c(24, 72, 168, 336, 504, 672, 1008, 1344)
+  dose_amt <- 150
+
+  rows <- list()
+  for (id in seq_len(n_id)) {
+    rows[[length(rows) + 1]] <- data.frame(
+      NMID = id, TIME = 0, DV = 0, MDV = 1, EVID = 1,
+      AMT = dose_amt, CMT = 1
+    )
+    for (t in times) {
+      rows[[length(rows) + 1]] <- data.frame(
+        NMID = id, TIME = t, DV = NA_real_, MDV = 0, EVID = 0,
+        AMT = 0, CMT = 1
+      )
+    }
+  }
+  do.call(rbind, rows)
+}
+
+a5_et <- sc_event_table(N_SUBJECTS)
+a5_covs <- generate_covariates(N_SUBJECTS)
+
+a5_sim <- rxSolve(
+  a5_mod, a5_params, a5_et,
+  omega = a5_omega,
+  nSub = N_SUBJECTS, seed = SEED + 4
+)
+
+a5_out <- build_nonmem_output(a5_sim, a5_et, N_SUBJECTS, a5_covs,
+                               sigma_prop = 0.15)
+write.csv(a5_out, file.path(output_dir, "a5_tmdd_qss.csv"),
+          row.names = FALSE)
+cat("  A5 done:", nrow(a5_out), "rows\n")
+
+
+# ===== Scenario A6: 1-cmt oral with covariate effects =====
+cat("Simulating A6...\n")
+
+# Allometric WT on CL (exponent 0.75) and V (exponent 1.0).
+# Categorical RENAL impairment reduces CL by 40%.
+a6_mod <- rxode2({
+  ka   <- exp(lka + eta.ka)
+  CL   <- exp(lCL + eta.CL) * (WT / 70)^0.75 * (1 - 0.4 * RENAL)
+  V    <- exp(lV + eta.V) * (WT / 70)
+  d/dt(depot) <- -ka * depot
+  d/dt(centr) <- ka * depot - CL / V * centr
+  cp <- centr / V
+})
+
+a6_params <- c(lka = log(1.5), lV = log(70), lCL = log(5))
+a6_omega <- lotri(eta.ka ~ 0.09, eta.V ~ 0.04, eta.CL ~ 0.09)
+
+a6_et <- oral_event_table(N_SUBJECTS)
+# Generate covariates with RENAL indicator (~30% prevalence)
+a6_covs <- generate_covariates(N_SUBJECTS)
+a6_covs$RENAL <- as.integer(runif(N_SUBJECTS) < 0.3)
+
+a6_sim <- rxSolve(
+  a6_mod, a6_params, a6_et,
+  omega = a6_omega,
+  iCov = a6_covs,
+  nSub = N_SUBJECTS, seed = SEED + 5
+)
+
+a6_out <- build_nonmem_output(a6_sim, a6_et, N_SUBJECTS, a6_covs,
+                               sigma_prop = 0.12)
+# Add RENAL column to output (merge already includes WT, SEX from generate_covariates)
+a6_out <- merge(a6_out,
+                data.frame(NMID = seq_len(N_SUBJECTS), RENAL = a6_covs$RENAL),
+                by = "NMID")
+write.csv(a6_out, file.path(output_dir, "a6_1cmt_covariates.csv"),
+          row.names = FALSE)
+cat("  A6 done:", nrow(a6_out), "rows\n")
+
+
+# ===== Scenario A7: 2-cmt with nonlinear (saturable) absorption =====
+cat("Simulating A7...\n")
+
+# Ground truth: Michaelis-Menten absorption (depot → central).
+# This is NOT representable by classical DSL absorption modules
+# (first-order, zero-order, transit). The hybrid NODE should learn
+# this nonlinear absorption rate function.
+a7_mod <- rxode2({
+  Vmax_abs <- exp(lVmax_abs)
+  Km_abs   <- exp(lKm_abs)
+  V1       <- exp(lV1 + eta.V1)
+  V2       <- exp(lV2)
+  Q        <- exp(lQ)
+  CL       <- exp(lCL + eta.CL)
+
+  # Saturable absorption: dA_depot/dt = -Vmax_abs * depot / (Km_abs + depot)
+  d/dt(depot)  <- -Vmax_abs * depot / (Km_abs + depot)
+  d/dt(centr)  <- Vmax_abs * depot / (Km_abs + depot) - CL / V1 * centr - Q / V1 * centr + Q / V2 * periph
+  d/dt(periph) <- Q / V1 * centr - Q / V2 * periph
+  cp <- centr / V1
+})
+
+a7_params <- c(lVmax_abs = log(50), lKm_abs = log(20),
+               lV1 = log(50), lV2 = log(80), lQ = log(10), lCL = log(4))
+a7_omega <- lotri(eta.CL ~ 0.09, eta.V1 ~ 0.04)
+
+a7_et <- oral_event_table(N_SUBJECTS)
+a7_covs <- generate_covariates(N_SUBJECTS)
+
+a7_sim <- rxSolve(
+  a7_mod, a7_params, a7_et,
+  omega = a7_omega,
+  nSub = N_SUBJECTS, seed = SEED + 6
+)
+
+a7_out <- build_nonmem_output(a7_sim, a7_et, N_SUBJECTS, a7_covs,
+                               sigma_prop = 0.1, sigma_add = 0.3)
+write.csv(a7_out, file.path(output_dir, "a7_2cmt_node_absorption.csv"),
+          row.names = FALSE)
+cat("  A7 done:", nrow(a7_out), "rows\n")
+
+
 # ===== Reference Parameters =====
 ref_params <- list(
   A1 = list(ka = 1.5, V = 70, CL = 5,
@@ -278,6 +424,21 @@ ref_params <- list(
             sigma = list(prop = 0.12)),
   A4 = list(ka = 1.2, V = 65, Vmax = 80, Km = 8,
             omega = list(Vmax = 0.09, V = 0.04, ka = 0.09),
+            sigma = list(prop = 0.1, add = 0.3)),
+  A5 = list(ka = 0.02, V = 3.5, R0 = 10, KD = 1, kint = 0.03, CL = 0.015,
+            omega = list(ka = 0.04, V = 0.04, CL = 0.09),
+            sigma = list(prop = 0.15)),
+  A6 = list(ka = 1.5, V = 70, CL = 5,
+            covariates = list(
+              WT_on_CL = list(form = "power", exponent = 0.75, reference = 70),
+              WT_on_V = list(form = "power", exponent = 1.0, reference = 70),
+              RENAL_on_CL = list(form = "categorical", factor = 0.6)
+            ),
+            omega = list(ka = 0.09, V = 0.04, CL = 0.09),
+            sigma = list(prop = 0.12)),
+  A7 = list(V1 = 50, V2 = 80, Q = 10, CL = 4,
+            absorption = list(type = "saturable_mm", Vmax_abs = 50, Km_abs = 20),
+            omega = list(CL = 0.09, V1 = 0.04),
             sigma = list(prop = 0.1, add = 0.3))
 )
 

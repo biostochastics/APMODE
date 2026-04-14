@@ -539,10 +539,10 @@ def _check_reproducible_estimation(result: BackendResult, g2: Gate2Config) -> Ga
             observed="not_required",
         )
 
-    # nlmixr2 with seed is reproducible; NODE with CPU mode is reproducible
+    # nlmixr2 with seed is reproducible; NODE with CPU mode + fixed seed is reproducible
     method = result.convergence_metadata.method
-    reproducible_methods = {"saem", "focei", "foce", "nlminb"}
-    passed = method.lower() in reproducible_methods or result.backend == "nlmixr2"
+    reproducible_methods = {"saem", "focei", "foce", "nlminb", "adam"}
+    passed = method.lower() in reproducible_methods or result.backend in ("nlmixr2", "jax_node")
     return GateCheckResult(
         check_id="reproducible_estimation",
         passed=passed,

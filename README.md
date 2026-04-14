@@ -6,9 +6,9 @@ Licensed under GPL-2.0-or-later.
 
 ## Status
 
-**Phase 2 — IN PROGRESS.** 797 tests passing. `mypy --strict` clean. `ruff` clean.
+**Phase 2 — IN PROGRESS.** 850 tests passing. `mypy --strict` clean (46 files). `ruff` clean.
 
-Phase 1 complete (679 tests). Phase 2 NODE backend + governance implemented (118 new tests). Six rounds of multi-model code review completed; all critical and high-severity issues fixed.
+Phase 1 complete (679 tests). Phase 2 NODE backend + governance + multi-backend dispatch + benchmarks implemented (171 new tests). Six rounds of multi-model code review completed; all critical and high-severity issues fixed.
 
 ### What exists
 
@@ -25,7 +25,7 @@ Phase 1 complete (679 tests). Phase 2 NODE backend + governance implemented (118
 | **NCA estimator** | `src/apmode/data/initial_estimates.py` | NCA with multi-dose AUC_tau, extrapolation fraction check |
 | **Data splitter** | `src/apmode/data/splitter.py` | Subject-level splitting, k-fold, LORO-CV |
 | **Search candidates** | `src/apmode/search/candidates.py` | Automated search space, candidate generation, SearchDAG |
-| **Search engine** | `src/apmode/search/engine.py` | Candidate dispatch, BIC scoring, Pareto frontier |
+| **Search engine** | `src/apmode/search/engine.py` | Multi-backend candidate dispatch (nlmixr2 + jax_node), BIC scoring, Pareto frontier |
 | **Gate 1 evaluator** | `src/apmode/governance/gates.py` | Technical Validity: 7 checks (convergence, plausibility, CWRES, VPC, seed stability) |
 | **Gate 2 evaluator** | `src/apmode/governance/gates.py` | Lane Admissibility: 6 checks (interpretability, shrinkage, identifiability, NODE exclusion) |
 | **Gate 2.5 evaluator** | `src/apmode/governance/gates.py` | Credibility Qualification (ICH M15): 5 checks (COU, data adequacy, ML transparency) |
@@ -39,23 +39,25 @@ Phase 1 complete (679 tests). Phase 2 NODE backend + governance implemented (118
 | **Functional distillation** | `src/apmode/backends/node_distillation.py` | Sub-function visualization, parametric surrogate fitting, AUC/Cmax BE fidelity |
 | **Credibility report** | `src/apmode/report/credibility.py` | ICH M15-aligned credibility assessment per candidate |
 | **Lane Router** | `src/apmode/routing.py` | Dispatch decisions by lane + evidence manifest constraints |
-| **Orchestrator** | `src/apmode/orchestrator/__init__.py` | Full pipeline: ingest → profile → NCA → split → search → gates 1/2/2.5/3 → bundle |
+| **Orchestrator** | `src/apmode/orchestrator/__init__.py` | Full pipeline: ingest → profile → NCA → split → search (multi-backend) → gates 1/2/2.5/3 → bundle |
 | **Bundle emitter** | `src/apmode/bundle/emitter.py` | All reproducibility bundle artifacts per §5 |
 | **Bundle models** | `src/apmode/bundle/models.py` | All Pydantic schemas (BackendResult, EvidenceManifest, etc.) |
 | **Gate policies** | `src/apmode/governance/policy.py` | Gate 1, 2, 2.5 policy file schemas |
 | **Lane policies** | `policies/*.json` | Default gate thresholds per lane |
 | **CLI** | `src/apmode/cli.py` | Typer CLI: `apmode run`, `apmode validate`, `apmode inspect` |
 | **Structured logging** | `src/apmode/logging.py` | structlog JSON configuration, context-bound loggers |
-| **Benchmark Suite A** | `benchmarks/suite_a/` | rxode2 simulation for 4 recovery scenarios |
+| **Benchmark Suite A** | `benchmarks/suite_a/`, `src/apmode/benchmarks/suite_a.py` | 7 recovery scenarios (A1-A7): classical, TMDD, covariates, NODE absorption |
+| **Benchmark Suite B** | `src/apmode/benchmarks/suite_b.py` | NODE-specific validation: absorption recovery (B1), sparse data dispatch (B2), cross-paradigm ranking (B3) |
 
 ### Test suite
 
 | Suite | Count | Description |
 |-------|-------|-------------|
-| Unit tests | ~600 | All modules: DSL, data, backends (nlmixr2 + NODE), search, governance, gates, routing, bundle, benchmarks, distillation, credibility |
+| Unit tests | ~620 | All modules: DSL, data, backends (nlmixr2 + NODE), search, governance, gates, routing, bundle, benchmarks (A+B), distillation, credibility |
 | NODE backend tests | 74 | Constraints (32), sub-model (16), ODE (11), trainer (6), runner (6), distillation (13) |
 | Gate 2.5 + cross-paradigm | 27 | ICH M15 credibility (11), cross-paradigm ranking (16) |
-| Integration tests | 3 | End-to-end mock R pipeline (success, convergence error, crash) |
+| Integration tests | 30 | Mock R pipeline (3), Discovery lane dispatch (12), Suite B NODE validation (15) |
+| Suite A benchmark tests | 36 | Classical scenarios (24), NODE scenarios (3), specific property tests (9) |
 | Golden masters | 21 | Syrupy snapshots for pharmacometrician-validated R output |
 | R syntax validation | 168 | Balanced delimiters, eta/param consistency |
 | Property-based | ~30 | Hypothesis: roundtrip, JSON, NODE constraints |
@@ -90,7 +92,7 @@ uv sync --all-extras
 ## Testing
 
 ```bash
-uv run pytest tests/ -q                    # all 797 tests
+uv run pytest tests/ -q                    # all 850 tests
 uv run pytest tests/unit/ -q               # unit tests only
 uv run pytest tests/integration/ -q        # end-to-end mock R pipeline
 uv run pytest tests/property/ -q           # Hypothesis property-based
@@ -116,6 +118,19 @@ Rscript benchmarks/suite_a/simulate_all.R [output_dir]
 | A2 | 2-cmt IV, parallel linear+MM elim | Compartment count + nonlinear CL |
 | A3 | Transit (n=3), 1-cmt, linear elim | Transit chain detection |
 | A4 | 1-cmt oral, MM elimination | Nonlinear clearance detection |
+| A5 | TMDD quasi-steady-state (SC mAb) | TMDD vs. 2-cmt confusion |
+| A6 | 1-cmt oral + allometric WT + renal covariate | Covariate structure recovery |
+| A7 | 2-cmt + NODE saturable absorption | NODE shape recovery + surrogate fidelity |
+
+## Benchmark Suite B
+
+NODE-specific validation (Phase 2).
+
+| Scenario | Test | Key Assertion |
+|----------|------|---------------|
+| B1 | NODE absorption recovery | Mock NODE fit passes Gate 1+2 discovery |
+| B2 | Sparse data + NODE dispatch | Lane Router blocks NODE when data insufficient |
+| B3 | Cross-paradigm ranking | Gate 3 correctly ranks mixed nlmixr2 + jax_node candidates |
 
 ## Architecture
 
@@ -145,23 +160,33 @@ DSL text ──→ Lark parser ──→ DSLSpec  ──→       ├─ Warm-st
                         Semantic validator      └─ BIC scoring
                                 │                      │
                         split_subjects()               ↓
-                        (k-fold, LORO)        Nlmixr2Runner.run()
-                                               (async subprocess)
+                        (k-fold, LORO)     SearchEngine._select_runner()
+                                            ├─ Classical → Nlmixr2Runner
+                                            └─ NODE     → NodeBackendRunner
                                                        │
                                                BackendResult
                                                        │
-                                          ┌────────────┤
-                                          ↓            ↓
-                                    Gate 1:       Gate 2:
-                                    Technical     Lane
-                                    Validity      Admissibility
-                                    (7 checks)    (6 checks)
-                                          │            │
-                                          ↓            ↓
+                                          ┌────────────┼────────────┐
+                                          ↓            ↓            ↓
+                                    Gate 1:       Gate 2:      Gate 2.5:
+                                    Technical     Lane         Credibility
+                                    Validity      Admissibility (ICH M15)
+                                    (7 checks)    (6 checks)   (5 checks)
+                                          │            │            │
+                                          └────────────┴────────────┘
+                                                       │
+                                                  Gate 3:
+                                                  Ranking
+                                            (within-paradigm BIC
+                                             or cross-paradigm
+                                             VPC/NPE composite)
+                                                       │
+                                                       ↓
                                     BundleEmitter → JSON/JSONL artifacts
                                     (evidence_manifest, initial_estimates,
                                      gate_decisions, search_trajectory,
-                                     failed_candidates, candidate_lineage)
+                                     failed_candidates, candidate_lineage,
+                                     ranking, credibility_report)
 ```
 
 ### Pharmacometric references
@@ -181,7 +206,7 @@ DSL text ──→ Lark parser ──→ DSLSpec  ──→       ├─ Warm-st
 - **Phase 1 Month 3-4** (complete): Data profiler, NCA estimates, automated search, data splitting
 - **Phase 1 Month 4-5** (complete): Governance gates (1+2+3), orchestrator, dispatch constraints, seed stability
 - **Phase 1 Month 5-6** (complete): CLI (Typer), structlog, Lane Router + dispatch wiring, seed stability (top-k, configurable CV), ranking persistence, boundary estimate check, multi-signal state trajectory, split integrity (SplitGOFMetrics), Phase 2 prep models, Benchmark Suite A CI + integration assertions
-- **Phase 2** (in progress): Hybrid NODE backend (JAX/Diffrax/Equinox), Bram-style MLP with RE on input-layer weights, 5 constraint templates, log-space mechanistic params, functional distillation (surrogate fitting + AUC/Cmax BE fidelity), Gate 2.5 ICH M15 credibility (5 checks), Gate 3 cross-paradigm ranking (VPC concordance + NPE + composite), credibility report generator, policy gate2_5 thresholds, execution_mode config
+- **Phase 2** (in progress): Hybrid NODE backend (JAX/Diffrax/Equinox), Bram-style MLP with RE on input-layer weights, 5 constraint templates, log-space mechanistic params, functional distillation (surrogate fitting + AUC/Cmax BE fidelity), Gate 2.5 ICH M15 credibility (5 checks), Gate 3 cross-paradigm ranking (VPC concordance + NPE + composite), credibility report generator, policy gate2_5 thresholds, execution_mode config, **SearchEngine multi-backend dispatch** (classical → nlmixr2, NODE → jax_node), **Discovery lane end-to-end** with both backends, **Benchmark Suite A completion** (A5 TMDD QSS, A6 covariates, A7 NODE absorption), **Benchmark Suite B** (B1-B3 NODE validation)
 
 ## Code Review Provenance
 
@@ -206,7 +231,7 @@ Six rounds of multi-model code review have been conducted:
 - Route certainty assessment is conservative: CMT=1 without RATE/DUR is classified as "inferred" not "confirmed"
 - Gate 1 split integrity: checks train/test CWRES divergence via `SplitGOFMetrics`; `split_manifest` is passed from orchestrator to runner for all estimation and seed stability calls
 - Automated search warm-start explores error model + IIV structure variants; structural/covariate expansion deferred
-- Lane Router dispatches to nlmixr2 only in Phase 1; NODE dispatch wired but SearchEngine multi-backend is Phase 2 completion
+- SearchEngine multi-backend dispatch implemented; Discovery lane dispatches to both nlmixr2 and jax_node based on spec type
 - NODE training uses pooled population NLL (no per-subject RE); Laplace approximation deferred to Phase 3
 - NODE subject loop in trainer is Python-list based (not vmap); scales to ~50 subjects, not 500+
 - Functional distillation Lineweaver-Burk MM fit is approximate; nonlinear least-squares fit deferred
