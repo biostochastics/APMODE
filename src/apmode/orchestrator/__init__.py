@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import platform
 from dataclasses import dataclass, field
 from datetime import UTC
 from pathlib import Path
@@ -36,6 +37,7 @@ from apmode.bundle.models import (
 from apmode.data.initial_estimates import NCAEstimator, build_initial_estimates_bundle
 from apmode.data.profiler import profile_data
 from apmode.data.splitter import loro_cv_splits, split_subjects
+from apmode.errors import BackendError
 from apmode.evaluation.loro_cv import evaluate_loro_cv
 from apmode.governance.gates import (
     evaluate_gate1,
@@ -44,6 +46,7 @@ from apmode.governance.gates import (
     evaluate_gate3,
 )
 from apmode.governance.policy import GatePolicy
+from apmode.report.credibility import generate_credibility_report
 from apmode.routing import route
 
 if TYPE_CHECKING:
@@ -51,7 +54,7 @@ if TYPE_CHECKING:
 
     from apmode.backends.nlmixr2_runner import Nlmixr2Runner
     from apmode.backends.protocol import BackendRunner
-    from apmode.bundle.models import BackendResult, DataManifest, EvidenceManifest
+    from apmode.bundle.models import BackendResult, DataManifest, EvidenceManifest, Ranking
     from apmode.dsl.ast_models import DSLSpec
     from apmode.routing import DispatchDecision
     from apmode.search.engine import SearchOutcome, SearchResult
@@ -148,12 +151,10 @@ class Orchestrator:
         )
 
         # Write backend versions
-        import sys
-
         emitter.write_backend_versions(
             BackendVersions(
                 apmode_version="0.2.0-dev",
-                python_version=f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+                python_version=platform.python_version(),
             )
         )
 
@@ -260,6 +261,7 @@ class Orchestrator:
         from apmode.bundle.models import BackendResult as BRModel
 
         gate12_survivors: list[BRModel] = []
+        ranking: Ranking | None = None
 
         if policy:
             # Stage 6a: Pre-screen Gate 1 (without seed stability) to
@@ -309,17 +311,21 @@ class Orchestrator:
                                 split_manifest=split_manifest_dict,
                             )
                             return cid, seed_offset, result
-                        except Exception:
-                            logger.warning("Seed run %d failed for %s", seed_offset, cid)
+                        except BackendError as e:
+                            logger.warning("Seed run %d failed for %s: %s", seed_offset, cid, e)
                             return cid, seed_offset, None
 
-                # Build all seed tasks for all top-k candidates
-                seed_tasks = [
-                    _seed_run(sr, offset)
-                    for sr in converged_srs[:top_k]
-                    for offset in range(1, seed_n)
-                ]
-                seed_outcomes = await asyncio.gather(*seed_tasks)
+                # Build all seed tasks for all top-k candidates.
+                # TaskGroup provides structured cancellation if any inner
+                # coroutine raises unexpectedly (_seed_run catches its own
+                # failures, so this is a defensive boundary).
+                async with asyncio.TaskGroup() as tg:
+                    seed_task_handles = [
+                        tg.create_task(_seed_run(sr, offset))
+                        for sr in converged_srs[:top_k]
+                        for offset in range(1, seed_n)
+                    ]
+                seed_outcomes = [t.result() for t in seed_task_handles]
 
                 # Collect results per candidate
                 for cid, seed_offset, result in seed_outcomes:
@@ -420,8 +426,6 @@ class Orchestrator:
                     continue
 
                 # Passed gates 1, 2, 2.5 — emit credibility report
-                from apmode.report.credibility import generate_credibility_report
-
                 cred_report = generate_credibility_report(
                     sr_result,
                     lane=self._config.lane,
@@ -473,7 +477,7 @@ class Orchestrator:
                 manifest=manifest,
                 evidence=evidence,
                 ranked=gate12_survivors,
-                ranking=ranking if "ranking" in dir() else None,
+                ranking=ranking,
                 credibility_reports=cred_reports,
                 failed_count=len(search_outcome.results) - len(gate12_survivors),
                 total_candidates=len(search_outcome.results),
@@ -490,7 +494,7 @@ class Orchestrator:
                 apmode_version="0.2.0-dev",
                 generator="apmode.orchestrator",
                 component_versions={
-                    "python": f"{sys.version_info.major}.{sys.version_info.minor}",
+                    "python": platform.python_version(),
                     "pipeline": "Phase3",
                 },
             )
@@ -527,9 +531,20 @@ class Orchestrator:
         """
         assert self._agentic_runner is not None
 
+        from apmode.backends.agentic_runner import AgenticRunner
         from apmode.search.engine import SearchResult as SR
 
+        # Cast to concrete type — orchestrator stores as BackendRunner protocol
+        # but needs AgenticRunner-specific attributes (trace_dir) here.
+        assert isinstance(self._agentic_runner, AgenticRunner)
+        agentic = self._agentic_runner
+
         results: list[SR] = []
+
+        # Preserve the base trace_dir so we can redirect each mode to its own
+        # subdirectory (refine/ and independent/). Otherwise both modes
+        # overwrite each other's iter_*.json files.
+        base_trace_dir = agentic._trace_dir
 
         # --- Mode 1: Refine best classical candidate ---
         converged_srs = sorted(
@@ -549,6 +564,7 @@ class Orchestrator:
                 best_sr.candidate_id,
                 best_sr.bic or 0,
             )
+            agentic._trace_dir = base_trace_dir / "refine"
             try:
                 agentic_result = await self._agentic_runner.run(
                     spec=best_sr.spec,
@@ -575,7 +591,9 @@ class Orchestrator:
                     agentic_result.bic or 0,
                     best_sr.bic or 0,
                 )
-            except Exception as e:
+            except (BackendError, RuntimeError) as e:
+                # BackendError: inner runner failed; RuntimeError: agentic loop
+                # exhausted iterations without a converged result.
                 logger.warning("Agentic refine failed: %s", e)
 
         # --- Mode 2: Independent — start from a minimal base spec ---
@@ -603,6 +621,7 @@ class Orchestrator:
             "CL": nca_estimates.get("CL", 3.0),
         }
         logger.info("Agentic independent: starting from base 1-cmt oral spec")
+        agentic._trace_dir = base_trace_dir / "independent"
         try:
             independent_result = await self._agentic_runner.run(
                 spec=base_spec,
@@ -628,8 +647,11 @@ class Orchestrator:
                 independent_result.model_id,
                 independent_result.bic or 0,
             )
-        except Exception as e:
+        except (BackendError, RuntimeError) as e:
             logger.warning("Agentic independent failed: %s", e)
+        finally:
+            # Restore original trace_dir in case the runner is reused
+            agentic._trace_dir = base_trace_dir
 
         return results
 
@@ -714,7 +736,7 @@ class Orchestrator:
                         seed=self._config.seed,
                         timeout_seconds=self._config.timeout_seconds,
                     )
-                except Exception:
+                except BackendError:
                     logger.warning(
                         "loro_cv_candidate_failed",
                         candidate=cand_result.model_id,
@@ -722,7 +744,11 @@ class Orchestrator:
                     )
                     return cand_result.model_id, None
 
-        gathered = await asyncio.gather(*[_eval_one(c) for c in candidates])
+        # Structured concurrency: _eval_one catches its own failures;
+        # TaskGroup surfaces any unexpected leaks as an ExceptionGroup.
+        async with asyncio.TaskGroup() as tg:
+            loro_task_handles = [tg.create_task(_eval_one(c)) for c in candidates]
+        gathered = [t.result() for t in loro_task_handles]
 
         # Post-gather: write artifacts and collect metrics (sequential, no races)
         loro_map: dict[str, LOROMetrics] = {}
