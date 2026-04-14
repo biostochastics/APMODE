@@ -21,8 +21,9 @@ _EVID_SORT_PRIORITY: dict[int, int] = {
     3: 0,  # reset
     4: 1,  # reset + dose
     1: 2,  # dose (bolus or infusion start)
-    2: 3,  # other
-    0: 4,  # observation
+    9: 3,  # infusion stop (synthetic)
+    2: 4,  # other
+    0: 5,  # observation
 }
 
 # Internal event types for infusion bookkeeping
@@ -168,10 +169,13 @@ def expand_infusion_events(
 
     if stop_rows:
         stops = pd.DataFrame(stop_rows)
-        # Fill missing columns with defaults
+        # Fill missing columns with defaults (DV=NaN for synthetic events)
         for col in result.columns:
             if col not in stops.columns:
-                stops[col] = 0 if result[col].dtype in ("int64", "int32") else 0.0
+                if col in ("DV",):
+                    stops[col] = np.nan
+                else:
+                    stops[col] = 0 if result[col].dtype in ("int64", "int32") else 0.0
         result = pd.concat([result, stops], ignore_index=True)
 
     return _sort_event_table(result, col_id=col_id, col_time=col_time, col_evid=col_evid)

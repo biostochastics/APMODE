@@ -295,4 +295,5 @@ class TestAggregateLoroMetrics:
         ]
         metrics = _aggregate_loro_metrics(folds)
         assert metrics.overall_pass is False  # Not all folds converged
-        assert metrics.vpc_coverage_concordance == 0.5  # 1/2 converged
+        # VPC concordance is 0.0 when no VPC data (missing evidence = fail)
+        assert metrics.vpc_coverage_concordance == 0.0

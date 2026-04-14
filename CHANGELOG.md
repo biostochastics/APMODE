@@ -7,8 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Full multi-dose support across all backends (ADDL/II/SS)**
+  - **Data schema**: Added optional ADDL (additional doses), II (inter-dose interval),
+    SS (steady-state flag) columns to CanonicalPKSchema with cross-column validation
+    (ADDL>0 requires II>0, SS in {1,2} requires dose EVID, ADDL only on dose rows)
+  - **Data manifest**: Added `has_multidose` and `has_steady_state` flags to DataManifest
+    for downstream backend dispatch decisions
+  - **Dose expansion** (`apmode.data.dosing`): New module with `expand_addl()` to
+    materialize ADDL/II into explicit dose rows, `expand_infusion_events()` for
+    infusion stop event generation, `build_event_table()` for complete event table
+    construction with deterministic EVID-priority sorting
+  - **nlmixr2 backend**: Pass-through support — rxode2 handles ADDL/II/SS natively;
+    columns are passed through in the data without code changes
+  - **Stan emitter**: Event-based piecewise ODE integration with merged dose+observation
+    timeline (chronological single-pass loop). Analytical solutions use superposition
+    principle with reset-awareness (EVID=3/4 invalidate prior dose contributions)
+  - **NODE/JAX backend**: Piecewise eager integration via `_solve_multidose_eager()` with
+    merged dose+observation chronological timeline. Single-dose-at-t=0 uses legacy JIT
+    path. Multi-dose/delayed-dose/reset subjects use event-driven Python control flow.
+    Infusion data explicitly rejected with clear error until Phase 3
+  - **Tests**: 19 new unit tests for dosing module covering expand_addl, infusion events,
+    event table construction, subject extraction, and schema validation
+
 ### Fixed
-- **NODE backend: 14 fixes from multi-model code review** (droid, crush, gemini, codex)
+- **NODE backend: 14 fixes from code review**
   - **[Critical]** 2-cmt y0 dimension: runner now builds 3-element state vector for
     2-compartment models (was always 2-element, causing shape crash)
   - **[Critical]** BIC/AIC parameter count: uses actual trainable param count from model
@@ -44,7 +67,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Phase 3 P3.B: LORO-CV for Optimization lane** (PRD §3.3)
   - `LOROFoldResult`, `LOROMetrics`, `LOROCVResult` Pydantic models in bundle/models.py
   - `loro_cv_splits()` fold generation with regimen-signature grouping (modal dose
-    per subject, not total AMT — per GPT-5.2-Pro pharmacometrics review)
+    per subject, not total AMT)
   - Gate 2 `_check_loro_requirement` now evaluates real LORO thresholds:
     pooled NPDE mean/variance, VPC coverage concordance, minimum fold count
   - LORO policy fields in `Gate2Config`: `loro_npde_mean_max`, `loro_npde_variance_min/max`,
@@ -53,10 +76,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     law of total variance for pooled variance (E[Var] + Var[E])
   - `write_loro_cv_result()` emitter writing to `loro_cv/{candidate_id}.json`
   - New `src/apmode/evaluation/` package for cross-validation and predictive performance
+  - Orchestrator wiring: LORO-CV runs between Gate 1 and Gate 2 for optimization lane,
+    budget-capped by `loro_budget_top_n`, regimen labels preserved for auditability
   - Evidence-grounded design: Khandokar (2025 Uppsala) CV for PK model selection,
     Comets et al. (2008) NPDE, Bergstrand et al. (2011) pcVPC
-  - Multi-model reviewed: Codex GPT-5.3, Gemini 3.1 Pro, GPT-5.2-Pro, GLM-5, Droid
-  - 31 new tests: fold generation (13), Gate 2 LORO (11), execution engine (7)
+  - Multi-model consensus reviewed (MIMO-v2-Pro, GPT-5.2-Pro):
+    - Fixed variance proxy formula (use cwres_sd² consistently, not outlier_fraction)
+    - VPC missing-evidence → fail-closed (0.0, not convergence fraction fallback)
+    - Gate 2 NaN safety: explicit `np.isfinite` checks prevent silent pass
+    - Gate 2.5 no longer overwrites Gate 2 artifact (gate_number=25)
+    - `_find_spec_for_candidate` replaced with typed `_spec_map` dict
+  - 39 new tests: fold generation (13), Gate 2 LORO (14), execution engine (7),
+    Hypothesis property tests (5)
 - `TimeVaryingElim.kdecay` as first-class AST field (was phantom parameter
   with hardcoded initial estimate); grammar accepts optional `kdecay=` syntax
 - BLQ grammar extended: `BLQ_M3`/`BLQ_M4` now accept optional `error_model`,
@@ -138,7 +169,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Benchmark Suites A (7 scenarios) + B (3 NODE validation)
 - 679 tests (Phase 1) + 270 new tests (Phase 2) = 949 total
 - mypy --strict clean, ruff clean
-- Seven rounds of multi-model code review
+- Seven rounds of code review
 
 [Unreleased]: https://github.com/biostochastics/APMODE/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/biostochastics/APMODE/releases/tag/v0.1.0

@@ -196,7 +196,7 @@ Simple column rename: NMID -> ID.
 
 ## Task 6: Fix Known Limitations
 
-**Goal:** Address 3 high-priority issues from multi-model review.
+**Goal:** Address 3 high-priority issues from code review.
 
 **Files:**
 - Modify: `src/apmode/bundle/emitter.py`

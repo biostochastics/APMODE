@@ -50,6 +50,7 @@ async def evaluate_loro_cv(
     initial_estimates: dict[str, float],
     seed: int,
     timeout_seconds: int = 600,
+    regimen_labels: list[str] | None = None,
 ) -> LOROCVResult:
     """Run LORO-CV for a single candidate across all folds.
 
@@ -88,7 +89,11 @@ async def evaluate_loro_cv(
         test_subjects = {a.subject_id for a in fold_manifest.assignments if a.fold == "test"}
         train_subjects = {a.subject_id for a in fold_manifest.assignments if a.fold == "train"}
 
-        regimen_label = f"fold_{fold_idx}"
+        # Use actual regimen group name for auditability
+        if regimen_labels is not None and fold_idx < len(regimen_labels):
+            regimen_label = regimen_labels[fold_idx]
+        else:
+            regimen_label = f"fold_{fold_idx}"
         regimen_groups.append(regimen_label)
 
         logger.info(
@@ -165,15 +170,15 @@ def _extract_fold_metrics(
     proxy for NPDE. True NPDE requires Monte Carlo simulation of the
     predictive distribution; this is a planned future enhancement.
     """
-    # Prefer split-aware diagnostics (test-set CWRES) when available
+    # Prefer split-aware test-set CWRES mean when available;
+    # always use overall CWRES SD² for variance (split_gof lacks test_cwres_sd)
     sgof = result.diagnostics.split_gof
     if sgof is not None:
         test_cwres_mean = sgof.test_cwres_mean
-        test_cwres_var = sgof.test_cwres_mean**2 + (1.0 - sgof.test_outlier_fraction)
     else:
-        # Fall back to overall GOF (less precise — includes training data)
         test_cwres_mean = result.diagnostics.gof.cwres_mean
-        test_cwres_var = result.diagnostics.gof.cwres_sd**2
+    # Variance: always from overall GOF cwres_sd (the only SD available)
+    test_cwres_var = result.diagnostics.gof.cwres_sd**2
 
     # Extract VPC coverage for this fold (min across bands)
     vpc = result.diagnostics.vpc
@@ -257,14 +262,14 @@ def _aggregate_loro_metrics(fold_results: list[LOROFoldResult]) -> LOROMetrics:
     else:
         pooled_var = 1.0
 
-    # VPC concordance: weighted average of per-fold min VPC coverage
-    # Falls back to convergence fraction if no VPC data available
+    # VPC concordance: weighted average of per-fold min VPC coverage.
+    # Missing VPC evidence → 0.0 (fail-closed: missing evidence must fail
+    # to prevent false Gate 2 pass)
     if vpc_coverages:
         vpc_w_arr = np.array(vpc_weights, dtype=float)
         vpc_concordance = float(np.average(vpc_coverages, weights=vpc_w_arr))
     else:
-        # No VPC data from backend — use convergence fraction as fallback
-        vpc_concordance = n_converged / len(fold_results) if fold_results else 0.0
+        vpc_concordance = 0.0
 
     # Worst fold tracking
     worst_mean_idx = int(np.argmax(np.abs(m_arr)))

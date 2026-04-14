@@ -563,7 +563,7 @@ def _check_loro_requirement(
 
     Evaluates pooled NPDE (CWRES proxy) and VPC coverage concordance from
     LORO-CV against policy-driven thresholds. Uses law of total variance for
-    pooled variance (per multi-model review: crush/GLM-5, Gemini 3.1 Pro).
+    pooled variance.
     """
     if not g2.loro_required or lane != "optimization":
         return GateCheckResult(
@@ -585,12 +585,16 @@ def _check_loro_requirement(
     if loro_metrics.n_folds < g2.loro_min_folds:
         issues.append(f"insufficient_folds ({loro_metrics.n_folds}<{g2.loro_min_folds})")
 
-    if abs(loro_metrics.pooled_npde_mean) > g2.loro_npde_mean_max:
-        issues.append(f"npde_mean={loro_metrics.pooled_npde_mean:.3f}")
+    # NaN safety: abs(nan) > x is False in Python, so NaN would silently pass.
+    # Explicit finite check: abs(nan) > x is False in Python.
+    npde_mean = loro_metrics.pooled_npde_mean
+    if not np.isfinite(npde_mean) or abs(npde_mean) > g2.loro_npde_mean_max:
+        issues.append(f"npde_mean={npde_mean:.3f}" if np.isfinite(npde_mean) else "npde_mean=NaN")
 
     npde_var = loro_metrics.pooled_npde_variance
-    if not (g2.loro_npde_variance_min <= npde_var <= g2.loro_npde_variance_max):
-        issues.append(f"npde_var={npde_var:.3f}")
+    var_in_range = g2.loro_npde_variance_min <= npde_var <= g2.loro_npde_variance_max
+    if not np.isfinite(npde_var) or not var_in_range:
+        issues.append(f"npde_var={npde_var:.3f}" if np.isfinite(npde_var) else "npde_var=NaN")
 
     if loro_metrics.vpc_coverage_concordance < g2.loro_vpc_coverage_min:
         issues.append(f"vpc_cov={loro_metrics.vpc_coverage_concordance:.3f}")

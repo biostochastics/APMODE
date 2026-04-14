@@ -3,7 +3,6 @@
 > **Date:** 2026-04-14
 > **Status:** In progress (P3.B partially complete)
 > **Evidence sources:** Exa research (Khandokar 2025, Comets 2008, PAGE 2025 Typst/Quarto)
-> **Multi-model consensus:** Codex GPT-5.3-codex + Gemini 3.1 Pro + GPT-5.2-Pro review
 
 ---
 
@@ -35,7 +34,7 @@ P3.D (Suite C)                    [last, needs external data]
 - [ ] P3.B-6: Integration + property tests
 
 ### Key Design Decisions
-- **Regimen signature**: Modal dose amount per subject (not total AMT, per GPT-5.2-Pro review)
+- **Regimen signature**: Modal dose amount per subject (not total AMT)
 - **Evaluation mode**: Fixed-parameter held-out eval (fast, default). Refit mode available for strict CV.
 - **LORO only for Gate 1 survivors**: Computational efficiency; budget cap via policy
 - **Separate bundle artifact**: loro_cv/{candidate_id}.json (not modifying SplitManifest)

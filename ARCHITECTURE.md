@@ -1,9 +1,9 @@
 # APMODE Technical Architecture
 
-**Version:** 0.2 — Revised per GPT-5.2-Pro review  
+**Version:** 0.2  
 **Date:** 2026-04-13  
 **Status:** Draft  
-**Derived from:** PRD v0.3 (§3-§8), multi-model consensus (MiniMax M2.7, GLM-5, Kimi K2.5, MIMO-v2-Pro, Gemini 3.1 Pro), GPT-5.2-Pro review
+**Derived from:** PRD v0.3 (§3-§8)
 
 ---
 

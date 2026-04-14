@@ -166,3 +166,24 @@ class TestCheckLoroRequirement:
         assert check.passed is False
         assert "npde_mean" in str(check.observed)
         assert "vpc_cov" in str(check.observed)
+
+    def test_fails_nan_npde_mean(self) -> None:
+        """NaN metrics must fail Gate 2 (not silently pass)."""
+        g2 = _default_g2()
+        metrics = _good_metrics().model_copy(update={"pooled_npde_mean": float("nan")})
+        check = _check_loro_requirement(_mock_result(), g2, "optimization", loro_metrics=metrics)
+        assert check.passed is False
+        assert "NaN" in str(check.observed)
+
+    def test_fails_nan_npde_variance(self) -> None:
+        g2 = _default_g2()
+        metrics = _good_metrics().model_copy(update={"pooled_npde_variance": float("nan")})
+        check = _check_loro_requirement(_mock_result(), g2, "optimization", loro_metrics=metrics)
+        assert check.passed is False
+
+    def test_fails_zero_vpc_coverage(self) -> None:
+        """Missing VPC evidence (concordance=0) must fail."""
+        g2 = _default_g2()
+        metrics = _good_metrics().model_copy(update={"vpc_coverage_concordance": 0.0})
+        check = _check_loro_requirement(_mock_result(), g2, "optimization", loro_metrics=metrics)
+        assert check.passed is False

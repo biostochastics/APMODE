@@ -211,6 +211,21 @@ class BundleEmitter:
         path.write_text(provenance.model_dump_json(indent=2))
         return path
 
+    # --- Credibility reports (per-candidate, Phase 2+) ---
+
+    def _credibility_dir(self) -> Path:
+        """Ensure and return the credibility/ subdirectory."""
+        cred_dir = self.run_dir / "credibility"
+        cred_dir.mkdir(exist_ok=True)
+        return cred_dir
+
+    def write_credibility_report(self, report: CredibilityReport) -> Path:
+        """Write credibility/{candidate_id}.json."""
+        _validate_path_component(report.candidate_id, "candidate_id")
+        path = self._credibility_dir() / f"{report.candidate_id}.json"
+        path.write_text(report.model_dump_json(indent=2))
+        return path
+
     # --- LORO-CV results (Phase 3, Optimization lane) ---
 
     def _loro_cv_dir(self) -> Path:

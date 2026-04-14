@@ -1,6 +1,6 @@
 # PRD: Adaptive Pharmacokinetic Model Discovery Engine (APMODE)
 
-**Version:** 0.3 — Revised per multi-model stress-test review
+**Version:** 0.3
 **Date:** 2026-04-13
 **Status:** RFC
 

@@ -49,9 +49,10 @@ if TYPE_CHECKING:
 
     from apmode.backends.nlmixr2_runner import Nlmixr2Runner
     from apmode.backends.protocol import BackendRunner
-    from apmode.bundle.models import DataManifest, EvidenceManifest
+    from apmode.bundle.models import BackendResult, DataManifest, EvidenceManifest
+    from apmode.dsl.ast_models import DSLSpec
     from apmode.routing import DispatchDecision
-    from apmode.search.engine import SearchOutcome
+    from apmode.search.engine import SearchOutcome, SearchResult
 
 logger = structlog.get_logger(__name__)
 
@@ -103,6 +104,7 @@ class Orchestrator:
         self._config = config or RunConfig()
         self._node_runner = node_runner
         self._agentic_runner = agentic_runner
+        self._spec_map: dict[str, DSLSpec] = {}  # candidate_id → DSLSpec
 
     async def run(
         self,
@@ -144,7 +146,7 @@ class Orchestrator:
 
         emitter.write_backend_versions(
             BackendVersions(
-                apmode_version="0.1.0-dev",
+                apmode_version="0.2.0-dev",
                 python_version=f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
             )
         )
@@ -213,7 +215,8 @@ class Orchestrator:
             covariate_names=self._config.covariate_names,
         )
         outcome.search_outcome = search_outcome
-        self._last_search_outcome = search_outcome  # for LORO spec lookup
+        # Build candidate→spec mapping for LORO-CV spec lookup
+        self._spec_map = {sr.candidate_id: sr.spec for sr in search_outcome.results}
 
         # Write candidate lineage
         lineage_entries = [
@@ -288,7 +291,7 @@ class Orchestrator:
                         seed_results_map[cid] = seed_runs
 
             # Stage 6b: Gate 1 evaluation (collect survivors)
-            gate1_survivors: list[tuple[object, BRModel]] = []  # (search_result, backend_result)
+            gate1_survivors: list[tuple[SearchResult, BRModel]] = []
             for sr in search_outcome.results:
                 if sr.result is None:
                     continue
@@ -329,7 +332,7 @@ class Orchestrator:
                 )
 
             # Stage 6c: Gate 2 + Gate 2.5 evaluation (with LORO metrics)
-            for sr, sr_result in gate1_survivors:
+            for _sr, sr_result in gate1_survivors:
                 loro_m = loro_metrics_map.get(sr_result.model_id)
 
                 g2 = evaluate_gate2(sr_result, policy, self._config.lane, loro_metrics=loro_m)
@@ -364,7 +367,7 @@ class Orchestrator:
                     ),
                 )
                 g25 = evaluate_gate2_5(sr_result, policy, credibility_context=cred_ctx)
-                emitter.write_gate_decision(g25, gate_number=2)
+                emitter.write_gate_decision(g25, gate_number=25)
 
                 if not g25.passed:
                     emitter.append_failed_candidate(
@@ -379,7 +382,16 @@ class Orchestrator:
                     )
                     continue
 
-                # Passed gates 1, 2, 2.5
+                # Passed gates 1, 2, 2.5 — emit credibility report
+                from apmode.report.credibility import generate_credibility_report
+
+                cred_report = generate_credibility_report(
+                    sr_result,
+                    lane=self._config.lane,
+                    n_observations=manifest.n_observations,
+                )
+                emitter.write_credibility_report(cred_report)
+
                 outcome.recommended.append(sr_result.model_id)
                 gate12_survivors.append(sr_result)
 
@@ -410,17 +422,39 @@ class Orchestrator:
                 )
                 emitter.write_ranking(ranking)
 
-        # --- Stage 7: Report Provenance ---
+        # --- Stage 7: Render human-readable report ---
+        if gate12_survivors:
+            from apmode.report.renderer import render_run_report
+
+            cred_reports = [
+                generate_credibility_report(r, self._config.lane, manifest.n_observations)
+                for r in gate12_survivors
+            ]
+            report_md = render_run_report(
+                run_id=emitter.run_id,
+                lane=self._config.lane,
+                manifest=manifest,
+                evidence=evidence,
+                ranked=gate12_survivors,
+                ranking=ranking if "ranking" in dir() else None,
+                credibility_reports=cred_reports,
+                failed_count=len(search_outcome.results) - len(gate12_survivors),
+                total_candidates=len(search_outcome.results),
+            )
+            report_path = emitter.run_dir / "report.md"
+            report_path.write_text(report_md)
+
+        # --- Stage 7b: Report Provenance ---
         from apmode.bundle.models import ReportProvenance
 
         emitter.write_report_provenance(
             ReportProvenance(
                 generated_at=datetime.now(tz=UTC).isoformat(),
-                apmode_version="0.1.0-dev",
+                apmode_version="0.2.0-dev",
                 generator="apmode.orchestrator",
                 component_versions={
                     "python": f"{sys.version_info.major}.{sys.version_info.minor}",
-                    "pipeline": "Phase1",
+                    "pipeline": "Phase3",
                 },
             )
         )
@@ -450,14 +484,14 @@ class Orchestrator:
         Returns a map of candidate_id → LOROMetrics for use by Gate 2.
         Respects policy.gate2.loro_budget_top_n to limit computation.
         """
-        from apmode.bundle.models import BackendResult as BRModel
-
         import numpy as np
 
         # Generate LORO folds from the data
         try:
             folds = loro_cv_splits(
-                df, seed=self._config.seed, min_folds=policy.gate2.loro_min_folds,
+                df,
+                seed=self._config.seed,
+                min_folds=policy.gate2.loro_min_folds,
             )
         except ValueError:
             logger.warning("loro_cv_insufficient_regimens", min_folds=policy.gate2.loro_min_folds)
@@ -495,12 +529,10 @@ class Orchestrator:
                 if pe.category == "structural"
             }
             if not warm_estimates:
-                warm_estimates = {
-                    k: v for k, v in nca_estimates.items() if not k.startswith("_")
-                }
+                warm_estimates = {k: v for k, v in nca_estimates.items() if not k.startswith("_")}
 
             # Need the candidate's DSLSpec — find it from search results
-            spec = self._find_spec_for_candidate(cand_result.model_id)
+            spec = self._spec_map.get(cand_result.model_id)
             if spec is None:
                 logger.warning("loro_cv_no_spec", candidate=cand_result.model_id)
                 continue
@@ -533,20 +565,6 @@ class Orchestrator:
                 )
 
         return loro_map
-
-    def _find_spec_for_candidate(self, model_id: str) -> DSLSpec | None:
-        """Find the DSLSpec for a candidate from the search outcome.
-
-        This is a lookup helper — the spec is stored in the SearchResult
-        objects during the search phase.
-        """
-        # The spec is available via the search outcome, which the orchestrator
-        # holds. We store a reference to the latest search outcome for this.
-        if hasattr(self, "_last_search_outcome") and self._last_search_outcome is not None:
-            for sr in self._last_search_outcome.results:
-                if sr.candidate_id == model_id:
-                    return sr.spec
-        return None
 
     def _load_policy(self) -> GatePolicy | None:
         """Load gate policy from file or default."""

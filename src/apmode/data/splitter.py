@@ -113,8 +113,8 @@ def loro_cv_splits(
     then generates K folds where K = number of unique regimen groups.
     Each fold holds out one regimen group as "test", rest as "train".
 
-    Per GPT-5.2-Pro review: uses regimen signature (modal dose per subject)
-    rather than total AMT to better capture true regimen identity.
+    Uses regimen signature (modal dose per subject) rather than total AMT
+    to better capture true regimen identity.
 
     Args:
         df: Validated PK DataFrame with NMID, EVID, AMT columns.

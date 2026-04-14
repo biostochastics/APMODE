@@ -1,5 +1,7 @@
 <div align="center">
 
+  <img src="apmode_logo.png" alt="APMODE Logo" width="200">
+
   # APMODE
 
   **Adaptive Pharmacokinetic Model Discovery Engine**
@@ -26,7 +28,7 @@ APMODE is a **governed meta-system** that composes four population PK modeling p
 
 **A typed PK DSL is the control surface.** Models are specified in a structured grammar (`Absorption x Distribution x Elimination x Variability x Observation`), compiled to a typed AST, validated against pharmacometric constraints, and lowered to backend-specific code. The agentic LLM backend (Phase 3) operates exclusively through DSL transforms — it cannot emit raw code.
 
-> **Status**: Phase 3 in progress (P3.B LORO-CV complete). 1145 tests passing. `mypy --strict` clean (62 files). `ruff` clean. Multi-model reviewed (Codex, Gemini, GPT-5.2-Pro, GLM-5, Droid).
+> **Status**: Phase 3 in progress (P3.B LORO-CV complete). 1145 tests passing. `mypy --strict` clean (62 files). `ruff` clean.
 
 ---
 
@@ -179,6 +181,7 @@ DSL text ──→ Lark parser ──→ AST ──→        Search Engine
 | nlmixr2 emitter | `src/apmode/dsl/nlmixr2_emitter.py` | DSL AST → R code for nlmixr2/rxode2 |
 | Stan emitter | `src/apmode/dsl/stan_emitter.py` | DSL AST → Stan program |
 | Data pipeline | `src/apmode/data/` | Ingestion, profiling, NCA estimates, splitting |
+| Dose expansion | `src/apmode/data/dosing.py` | ADDL/II expansion, infusion events, event table builder |
 | Classical backend | `src/apmode/backends/nlmixr2_runner.py` | Async subprocess runner with file-based IPC |
 | NODE backend | `src/apmode/backends/node_*.py` | Bram-style hybrid MLP, Diffrax ODE, Optax training |
 | Governance | `src/apmode/governance/` | Gates 1/2/2.5/3, cross-paradigm ranking, policy files |
@@ -340,6 +343,8 @@ Plus 9 simulated ground-truth datasets (1/2-cmt, oral/IV/infusion, linear/MM).
 
 ## Known Limitations
 
+- **Multi-dose**: ADDL/II expansion supported across all backends; SS (steady-state) pass-through for nlmixr2 only — Stan/NODE reject SS!=0
+- **NODE infusions**: NODE backend rejects infusion data (RATE>0); use nlmixr2 for infusion dosing
 - **NODE training**: Pooled population NLL (no per-subject RE); Laplace approximation deferred to Phase 3
 - **NODE scaling**: Python-list subject loop (not vmap); scales to ~50 subjects, not 500+
 - **Stan codegen**: Maturation covariate form not yet supported (raises `NotImplementedError`)

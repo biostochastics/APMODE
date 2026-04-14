@@ -4,10 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository Status
 
-**Phase 3 — in progress.** 1145 tests passing. `mypy --strict` clean (62 files). `ruff` clean.
+**Phase 3 — in progress.** 1137 tests passing. `mypy --strict` clean (63 files). `ruff` clean.
 
 - `PRD_APMODE_v0.2.md` — Initial RFC (2026-04-11)
-- `PRD_APMODE_v0.3.md` — Revised per multi-model stress-test (2026-04-13, **current**)
+- `PRD_APMODE_v0.3.md` — Current PRD (2026-04-13, **current**)
 - `ARCHITECTURE.md` — Technical architecture (v0.2, derived from PRD v0.3)
 
 ## Build, Test, and Run Commands

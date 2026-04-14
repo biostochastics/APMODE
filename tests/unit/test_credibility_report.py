@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from apmode.bundle.models import (
     BackendResult,
     BLQHandling,
@@ -100,3 +102,47 @@ class TestCredibilityReportGenerator:
         report = generate_credibility_report(result, "discovery", n_observations=100)
         assert len(report.limitations) > 0
         assert any("NODE" in lim for lim in report.limitations)
+
+
+class TestCredibilityReportEmitter:
+    """Tests for bundle emission of credibility reports."""
+
+    def test_write_credibility_report(self, tmp_path: Path) -> None:
+
+        from apmode.bundle.emitter import BundleEmitter
+
+        emitter = BundleEmitter(tmp_path)
+        emitter.initialize()
+
+        result = _make_result("nlmixr2")
+        report = generate_credibility_report(result, "submission", n_observations=100)
+        path = emitter.write_credibility_report(report)
+
+        assert path.exists()
+        assert path.parent.name == "credibility"
+        assert path.name == "test_model.json"
+
+        import json
+
+        data = json.loads(path.read_text())
+        assert data["candidate_id"] == "test_model"
+        assert "submission" in data["context_of_use"]
+        assert data["data_adequacy"] == "adequate"
+
+    def test_write_multiple_reports(self, tmp_path: Path) -> None:
+
+        from apmode.bundle.emitter import BundleEmitter
+
+        emitter = BundleEmitter(tmp_path)
+        emitter.initialize()
+
+        for backend, cid in [("nlmixr2", "classical_1"), ("jax_node", "node_1")]:
+            r = _make_result(backend)
+            # Override model_id for unique filenames
+            r = r.model_copy(update={"model_id": cid})
+            report = generate_credibility_report(r, "discovery", n_observations=100)
+            emitter.write_credibility_report(report)
+
+        cred_dir = emitter.run_dir / "credibility"
+        files = sorted(f.name for f in cred_dir.glob("*.json"))
+        assert files == ["classical_1.json", "node_1.json"]

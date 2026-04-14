@@ -545,7 +545,7 @@ class LOROMetrics(BaseModel):
 
     Gate 2 in the Optimization lane evaluates these against policy thresholds.
     Pooled variance uses the law of total variance (E[Var] + Var[E]) per
-    multi-model review (crush/GLM-5, gemini 3.1 Pro).
+    review.
     """
 
     n_folds: int = Field(ge=1)

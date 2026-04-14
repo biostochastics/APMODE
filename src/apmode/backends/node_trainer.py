@@ -60,41 +60,59 @@ def _solve_multidose_eager(
     obs_times: jax.Array,
     dose_events: list[tuple[float, float, int, int]],
 ) -> jax.Array:
-    """Piecewise ODE integration with dose events (eager mode, NOT JIT-safe).
+    """Piecewise ODE integration with merged dose+observation timeline.
 
-    Used for multi-dose subjects loaded from CSV. Dose events are Python
-    tuples (time, amt, cmt, evid) to avoid JAX tracer issues.
+    Merges dose events and observation times into a single chronological
+    timeline. Integrates forward segment-by-segment, applying state jumps
+    at dose events and recording predicted state at observation times.
+
+    This function uses concrete Python values for control flow (not traced),
+    so it works with eager JAX execution but NOT inside JIT.
 
     Returns predicted states at obs_times (shape: [n_obs, n_states]).
     """
     n_states = int(y0.shape[0])
+    n_obs = int(obs_times.shape[0])
 
-    if not dose_events:
+    if not dose_events and n_obs > 0:
         return model.solve(y0, obs_times)
+
+    # Build merged chronological timeline: (time, type, index)
+    # type: 'dose' or 'obs'; index: into dose_events or obs_times
+    timeline: list[tuple[float, str, int]] = []
+    for i, (t, _amt, _cmt, _evid) in enumerate(dose_events):
+        timeline.append((t, "dose", i))
+    for i in range(n_obs):
+        timeline.append((float(obs_times[i]), "obs", i))
+
+    # Stable sort: doses before obs at same time (process dose first)
+    timeline.sort(key=lambda x: (x[0], 0 if x[1] == "dose" else 1))
 
     state = y0
     t_current = 0.0
+    predictions = [jnp.zeros(n_states)] * n_obs  # placeholder
 
-    for t_dose, amt, cmt, evid in dose_events:
-        # Integrate from t_current to t_dose
-        if t_dose > t_current + 1e-12:
-            sol = model.solve(state, jnp.array([t_dose]), t0=t_current)
+    for t_event, event_type, idx in timeline:
+        # Integrate to this event time if needed
+        if t_event > t_current + 1e-12:
+            sol = model.solve(state, jnp.array([t_event]), t0=t_current)
             state = sol[0]
-            t_current = t_dose
+            t_current = t_event
 
-        # Apply reset (EVID=3 or 4)
-        if evid in (3, 4):
-            state = jnp.zeros(n_states)
+        if event_type == "dose":
+            _t_dose, amt, cmt, evid = dose_events[idx]
+            # Apply reset (EVID=3 or 4)
+            if evid in (3, 4):
+                state = jnp.zeros(n_states)
+            # Apply dose (EVID=1 or 4)
+            if evid in (1, 4) and amt > 0:
+                cmt_idx = max(0, min(cmt - 1, n_states - 1))
+                state = state.at[cmt_idx].add(amt)
+        else:
+            # Record state at observation time
+            predictions[idx] = state
 
-        # Apply dose (EVID=1 or 4)
-        if evid in (1, 4) and amt > 0:
-            cmt_idx = max(0, min(cmt - 1, n_states - 1))
-            state = state.at[cmt_idx].add(amt)
-
-    if int(obs_times.shape[0]) > 0:
-        return model.solve(state, obs_times, t0=t_current)
-
-    return jnp.zeros((0, n_states))
+    return jnp.stack(predictions)
 
 
 def _population_nll(

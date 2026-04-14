@@ -275,9 +275,19 @@ class NodeBackendRunner:
 
         subjects: list[dict[str, jax.Array]] = []
 
+        # Reject infusions for NODE (not yet consumed in piecewise solver)
+        rate_col = cm.rate or "RATE"
+        if rate_col in event_df.columns and (event_df[rate_col].fillna(0) > 0).any():
+            raise InvalidSpecError(
+                "NODE backend does not yet support infusion dosing (RATE > 0). "
+                "Use the nlmixr2 backend for infusion data.",
+                spec_id="node_runner",
+            )
+
         for _sid, sdf in event_df.groupby(cm.subject_id):
             obs_rows = sdf[sdf[cm.evid] == 0].sort_values(cm.time)
-            dose_rows = sdf[sdf[cm.evid].isin([1, 4])].sort_values(cm.time)
+            # Include EVID=3 (resets) in event extraction
+            event_rows = sdf[sdf[cm.evid].isin([1, 3, 4])].sort_values(cm.time)
 
             if len(obs_rows) == 0:
                 continue
@@ -285,71 +295,70 @@ class NodeBackendRunner:
             times = jnp.array(obs_rows[cm.time].values, dtype=jnp.float32)
             observations = jnp.array(obs_rows[cm.dv].values, dtype=jnp.float32)
             n_states = 3 if n_cmt == 2 else 2
+            cmt_col = cm.cmt or "CMT"
 
-            if len(dose_rows) == 0:
-                # No doses — zero initial state
+            if len(event_rows) == 0:
+                # No doses/events — zero initial state
                 y0 = jnp.zeros(n_states, dtype=jnp.float32)
-            elif len(dose_rows) == 1:
-                # Single dose — legacy path (dose in y0, JIT-compatible)
-                dose_amt = float(dose_rows[cm.amt].iloc[0])
-                cmt_col = cm.cmt or "CMT"
-                dose_cmt = int(dose_rows[cmt_col].iloc[0]) if cmt_col in dose_rows.columns else 1
-                y0 = jnp.zeros(n_states, dtype=jnp.float32)
-                cmt_idx = max(0, min(dose_cmt - 1, n_states - 1))
-                y0 = y0.at[cmt_idx].set(dose_amt)
-            else:
-                # Multi-dose — store dose events for piecewise integration
-                # Pre-apply doses at t=0, store remaining for event-driven path
-                y0 = jnp.zeros(n_states, dtype=jnp.float32)
-                dose_times_list = dose_rows[cm.time].values.tolist()
-                dose_amts_list = dose_rows[cm.amt].values.tolist()
-                cmt_col = cm.cmt or "CMT"
-                dose_cmts_list = (
-                    dose_rows[cmt_col].values.tolist()
-                    if cmt_col in dose_rows.columns
-                    else [1] * len(dose_rows)
-                )
-                dose_evids_list = dose_rows[cm.evid].values.tolist()
-
-                # Apply initial doses (at t <= first obs time) into y0
-                first_obs_time = float(times[0])
-                remaining_doses: list[tuple[float, float, int, int]] = []
-                for dt, da, dc, de in zip(
-                    dose_times_list,
-                    dose_amts_list,
-                    dose_cmts_list,
-                    dose_evids_list,
-                    strict=True,
-                ):
-                    if float(dt) <= first_obs_time and float(dt) == 0.0:
-                        cmt_idx = max(0, min(int(dc) - 1, n_states - 1))
-                        if int(de) in (3, 4):
-                            y0 = jnp.zeros(n_states, dtype=jnp.float32)
-                        if int(de) in (1, 4):
-                            y0 = y0.at[cmt_idx].add(float(da))
-                    else:
-                        remaining_doses.append((float(dt), float(da), int(dc), int(de)))
-
-                if remaining_doses:
-                    # Store as Python lists (not JAX arrays) for non-JIT access
-                    subj_dict: dict[str, object] = {
+                subjects.append(
+                    {
                         "times": times,
                         "observations": observations,
                         "y0": y0,
                         "obs_cmt": jnp.array(1),
-                        "dose_events": remaining_doses,  # Python list of tuples
                     }
-                    subjects.append(subj_dict)  # type: ignore[arg-type]
-                    continue
+                )
+                continue
 
-            subjects.append(
-                {
-                    "times": times,
-                    "observations": observations,
-                    "y0": y0,
-                    "obs_cmt": jnp.array(1),
-                }
+            # Check if we can use the legacy single-dose JIT path:
+            # exactly 1 dose event at TIME=0 with EVID=1 and no resets
+            dose_events_only = event_rows[event_rows[cm.evid].isin([1, 4])]
+            has_resets = (event_rows[cm.evid] == 3).any()
+            single_dose_at_zero = (
+                len(dose_events_only) == 1
+                and not has_resets
+                and float(dose_events_only[cm.time].iloc[0]) == 0.0
+                and int(dose_events_only[cm.evid].iloc[0]) == 1
             )
+
+            if single_dose_at_zero:
+                # Legacy path: dose in y0 (JIT-compatible)
+                dose_amt = float(dose_events_only[cm.amt].iloc[0])
+                dose_cmt = (
+                    int(dose_events_only[cmt_col].iloc[0])
+                    if cmt_col in dose_events_only.columns
+                    else 1
+                )
+                y0 = jnp.zeros(n_states, dtype=jnp.float32)
+                idx = max(0, min(dose_cmt - 1, n_states - 1))
+                y0 = y0.at[idx].set(dose_amt)
+                subjects.append(
+                    {
+                        "times": times,
+                        "observations": observations,
+                        "y0": y0,
+                        "obs_cmt": jnp.array(1),
+                    }
+                )
+            else:
+                # Multi-dose / delayed dose / reset: use event-driven piecewise path
+                y0 = jnp.zeros(n_states, dtype=jnp.float32)
+                all_events: list[tuple[float, float, int, int]] = []
+                for _, row in event_rows.iterrows():
+                    evid = int(row[cm.evid])
+                    amt = float(row[cm.amt]) if evid in (1, 4) else 0.0
+                    cmt_val = int(row[cmt_col]) if cmt_col in row.index else 1
+                    all_events.append((float(row[cm.time]), amt, cmt_val, evid))
+
+                subjects.append(
+                    {
+                        "times": times,
+                        "observations": observations,
+                        "y0": y0,
+                        "obs_cmt": jnp.array(1),
+                        "dose_events": all_events,
+                    }
+                )  # type: ignore[dict-item]
 
         return subjects
 
