@@ -8,128 +8,85 @@ Copy this into your next Claude Code session to continue Phase 2 completion and 
 Continue APMODE Phase 2 completion + Phase 3 prep.
 
 Key docs:
-  - PRD_APMODE_v0.3.md — source of truth (SS4.2.4 NODE, SS4.3.1 Gates, SS5 Suites, SS8 Phase 2/3)
-  - ARCHITECTURE.md — technical architecture (SS6 Phase 2/3 scope)
-  - docs/plans/2026-04-13-phase2-node-discovery-lane.md — Phase 2 plan (all 13 tasks completed)
+  - PRD_APMODE_v0.3.md — source of truth (§4.2.4 NODE, §4.3.1 Gates, §5 Suites, §8 Phases)
+  - ARCHITECTURE.md — technical architecture
   - README.md — current status
 
-## Current state (as of 2026-04-13)
+## Current state (as of 2026-04-14)
 
-Phase 1 complete. Phase 2 NODE backend + governance implemented.
-797 tests passing, mypy --strict clean (45 files), ruff clean.
-All changes UNCOMMITTED — working tree is dirty (16 modified, 17 untracked).
+Phase 1 complete. Phase 2 ~70% complete.
+850 tests passing, mypy --strict clean (46 files), ruff clean.
+All changes committed and pushed (main branch).
 
-### Phase 2 implemented (this session):
-  - JAX/Diffrax/Equinox/Optax dependencies (jax 0.9.2, diffrax 0.7.2, equinox 0.13.6)
-  - NODE constraint templates: 5 types in node_constraints.py (monotone+/-, bounded, saturable, smooth)
-  - Bram-style NODE sub-model: node_model.py (MLP with RE on input-layer weights)
-  - Hybrid ODE system: node_ode.py (mechanistic PK skeleton + NODE, Diffrax Tsit5)
-    - Log-space mechanistic params (ka, V, V2, Q) for positivity during optimization
-    - Trainable Saturable.scale as jax.Array
-    - Static n_cmt/node_position fields for JAX tracing compatibility
-  - NODE training loop: node_trainer.py (Optax Adam, early stopping, population NLL)
-  - NodeBackendRunner: node_runner.py (BackendRunner protocol, DSLSpec -> BackendResult)
-  - Functional distillation: node_distillation.py (visualization, MM surrogate, AUC/Cmax BE fidelity)
-  - Gate 2.5: Real ICH M15 credibility qualification (5 checks replacing Phase 1 scaffold)
-    - context_of_use, limitation_to_risk, data_adequacy, sensitivity, ml_transparency
-  - Gate 3: Cross-paradigm ranking (ranking.py)
-    - VPC concordance + NPE + composite score for mixed-backend survivors
-    - Within-paradigm BIC preserved for single-backend
-    - Qualified comparison flag for cross-paradigm
-  - Credibility report generator: report/credibility.py
-  - Policy updates: gate2_5 thresholds in discovery.json + optimization.json
-  - Orchestrator: Gate 2.5 wired between Gate 2 and Gate 3, execution_mode in RunConfig
-  - Bundle models: CredibilityContext added
+### Phase 2 implemented (prior sessions):
+  - JAX/Diffrax/Equinox/Optax NODE backend (6 modules: constraints, model, ode, trainer, runner, distillation)
+  - Gate 2.5 ICH M15 credibility qualification (5 checks)
+  - Gate 3 cross-paradigm ranking (VPC concordance + NPE + composite)
+  - Credibility report generator
+  - SearchEngine multi-backend dispatch (classical → nlmixr2, NODE → jax_node)
+  - BackendRunner protocol updated with split_manifest
+  - Orchestrator wires both runners; seed-stability dispatches to correct runner
+  - Gate 2 reproducible_estimation recognizes adam/jax_node
+  - Discovery lane end-to-end integration (12 tests)
+  - Benchmark Suite A completion (A5 TMDD QSS, A6 covariates, A7 NODE absorption)
+  - Benchmark Suite B (B1 absorption recovery, B2 sparse dispatch, B3 cross-paradigm ranking)
+  - R simulation code for A5-A7 in simulate_all.R (not yet run — needs R 4.4+)
 
-### Phase 2 code review applied (Gemini 3.1 Pro):
-  - Log-space mechanistic params (prevents negative ka/V during optimization)
-  - Trainable Saturable scale (jax.Array, not static float)
-  - ss_tot computed unconditionally in distillation (prevents UnboundLocalError)
-  - ParameterEstimate return type restored (fixes type erasure)
-  - Pooled NLL docstring clarified (Phase 2 limitation)
+### Key files for remaining work:
+  - src/apmode/search/engine.py — SearchEngine with _select_runner(), runners dict
+  - src/apmode/orchestrator/__init__.py — Orchestrator with node_runner param
+  - src/apmode/backends/node_runner.py — NodeBackendRunner
+  - src/apmode/backends/node_trainer.py — train_node()
+  - src/apmode/backends/node_distillation.py — distill_node()
+  - src/apmode/governance/gates.py — evaluate_gate1/2/2_5/3
+  - src/apmode/governance/ranking.py — cross-paradigm ranking
+  - src/apmode/benchmarks/suite_a.py — 7 scenarios (A1-A7)
+  - src/apmode/benchmarks/suite_b.py — 3 NODE validation scenarios
 
-### 118 new tests across 8 test files:
-  - test_node_constraints.py (32)
-  - test_node_model.py (16)
-  - test_node_ode.py (11)
-  - test_node_trainer.py (6) — slow ~14s
-  - test_node_runner.py (6) — slow ~25s
-  - test_node_distillation.py (13)
-  - test_cross_paradigm_ranking.py (16)
-  - test_credibility_report.py (7)
-  - Gate 2.5 tests added to test_gates.py (11)
+## Phase 2 remaining items:
 
-## IMMEDIATE: Commit the working tree
-
-All Phase 2 work is uncommitted. First action: review changes and commit.
-
-## Phase 2 completion (remaining items from ARCHITECTURE.md SS6):
-
-### P2.A — SearchEngine multi-backend dispatch (HIGH PRIORITY)
-SearchEngine currently only dispatches to nlmixr2. Needs:
-  - Accept dict[str, BackendRunner] keyed by backend name
-  - When candidate spec has NODE modules, dispatch to node_runner
-  - When classical, dispatch to nlmixr2_runner
-  - Orchestrator passes both runners to SearchEngine
-  - Integration test: discovery lane dispatches both backends
-  - File: src/apmode/search/engine.py (modify _evaluate_candidate)
-  - File: src/apmode/orchestrator/__init__.py (pass node_runner to SearchEngine)
-  - Test: tests/integration/test_discovery_lane.py (new)
-
-### P2.B — Discovery lane integration test
-End-to-end test with mock backends:
-  - Mock Nlmixr2Runner returns classical BackendResult
-  - Mock NodeBackendRunner returns NODE BackendResult
-  - Orchestrator runs discovery lane with both
-  - Verify: Gate 2.5 runs, cross-paradigm Gate 3 ranking produced
-  - Verify: NODE excluded from submission lane
-  - File: tests/integration/test_discovery_lane.py
-
-### P2.C — NODE initial estimate strategy (ARCHITECTURE.md SS2.5)
-NODE backends need pre-trained weight initialization:
+### P2.C — NODE initial estimate strategy (ARCHITECTURE.md §2.5)
+NODE backends need pre-trained weight initialization for faster convergence:
   - Pre-trained weight library for 1-cmt/2-cmt reference dynamics
-  - Transfer learning from classical backend's best-fit
+  - Transfer learning from classical backend's best-fit parameter estimates
   - File: src/apmode/backends/node_init.py (new)
+  - Tests: tests/unit/test_node_init.py (new)
 
-### P2.D — Benchmark Suite A expansion (A5-A8) + Suite B
-PRD SS5 defines 8 Suite A scenarios (we have 4):
-  - A5: 2-cmt + IOV
-  - A6: 1-cmt + parallel linear+MM + BLQ
-  - A7: 2-cmt + NODE nonlinear absorption (ground truth custom function)
-  - A8: 1-cmt + time-varying clearance + covariate
-Suite B (NODE-specific):
-  - B1: NODE absorption recovery
-  - B2: NODE elimination under sparse data (should produce data_insufficient)
-  - B3: Cross-paradigm ranking correctness
-  - Files: benchmarks/suite_a/simulate_all.R, benchmarks/suite_b/ (new)
-  - Files: src/apmode/benchmarks/suite_b.py (new)
+### P2.D-fixture — Generate Suite A CSV fixtures for A5-A7
+  - R simulation scripts are written in benchmarks/suite_a/simulate_all.R
+  - Need to run: Rscript benchmarks/suite_a/simulate_all.R tests/fixtures/suite_a
+  - This generates a5_tmdd_qss.csv, a6_1cmt_covariates.csv, a7_2cmt_node_absorption.csv
+  - 20 integration tests are currently SKIPPED because these fixtures don't exist yet
+  - Requires R 4.4+ with rxode2, jsonlite, lotri
 
-### P2.E — DSL -> Stan codegen + lowering test suite
+### P2.E — DSL → Stan codegen + lowering test suite
 Deferred from Phase 1 to Phase 2+ per v0.3 changes:
-  - Per-backend lowering test suite
-  - Stan codegen emitter
+  - Per-backend lowering test suite (ensure DSLSpec → backend code is correct)
+  - Stan codegen emitter for probabilistic backends
   - File: src/apmode/dsl/stan_emitter.py (new)
+  - Tests: tests/unit/test_stan_emitter.py (new)
 
 ### P2.F — Basic web UI
-Minimal interface for run configuration and results viewing.
+Minimal interface for run configuration and results viewing:
   - Not started. Consider Streamlit or Panel for MVP.
+  - Should support: upload CSV, select lane, view results, browse bundle
 
 ### P2.G — Flowcept + Aim integration
   - Flowcept (ORNL): W3C PROV-compliant task lineage
   - Aim v3.29: self-hosted experiment tracking
-  - Both are Phase 2 scope per ARCHITECTURE.md SS2.8
+  - Both are Phase 2 scope per ARCHITECTURE.md §2.8
+  - Can be deferred if time-constrained
 
 ## Known Phase 2 limitations to address:
 
-1. NODE training uses pooled NLL (no per-subject RE). Laplace approximation for RE on
-   input-layer weights is the next step for population-level mixed-effects NODE.
+1. NODE training uses pooled NLL (no per-subject RE). Laplace approximation
+   for RE on input-layer weights is the Phase 3 step for population-level NODE.
 
-2. NODE subject loop in trainer is Python-list based (not jax.vmap). Scales to ~50
-   subjects but will OOM/slow-compile for larger datasets. Fix: pad to uniform length,
-   use jax.vmap over subject dimension.
+2. NODE subject loop in trainer is Python-list based (not jax.vmap). Scales
+   to ~50 subjects. Fix: pad to uniform length, use jax.vmap over subject dim.
 
-3. VPC concordance target (0.90) is hardcoded in ranking.py. Should be configurable
-   via GatePolicy.
+3. VPC concordance target (0.90) is hardcoded in ranking.py. Should be
+   configurable via GatePolicy.
 
 4. Orchestrator auto-generates context_of_use for Gate 2.5. Real usage needs
    user-provided COU statement via CLI or config.
@@ -139,34 +96,31 @@ Minimal interface for run configuration and results viewing.
 
 6. dt0=0.1 hardcoded in Diffrax solver. Should use dt0=None for auto-selection.
 
-## Phase 3 scope (PRD SS8, for planning only):
+## Phase 3 scope (PRD §8, for planning only):
 
-- Agentic LLM backend (DSL transforms only, <=25 iterations/run)
-- Langfuse self-hosted (prompt/response/cost logging) + redaction layer
-- LLM model-version escrow in bundle (agentic_trace/)
-- temperature=0 + verbatim output caching
-- run_lineage.json for multi-run provenance
+- Agentic LLM backend (DSL transforms only, ≤25 iterations/run)
+  - Agent operates exclusively through typed DSL transforms
+  - Cannot emit raw code; every proposal validated before compilation
+  - Langfuse self-hosted (prompt/response/cost logging) + redaction layer
+  - temperature=0 + verbatim output caching
+  - LLM model-version escrow in bundle (agentic_trace/)
+  - run_lineage.json for multi-run provenance
 - Optimization lane with LORO-CV
-- Report generator with credibility framework
-- Benchmark Suite C
+- Report generator with credibility framework (extend existing report/credibility.py)
+- Benchmark Suite C (expert comparison pilot)
 - REST API
 
-## Open questions from PRD SS10 affecting remaining work:
+## Open questions from PRD §10 affecting remaining work:
 
-- Q2: Cross-paradigm NLPD comparability — simulation-based metrics implemented,
-  but VPC concordance binning strategy needs pharmacometrician sign-off
+- Q2: VPC concordance binning strategy needs pharmacometrician sign-off
 - Q3: DSL extensibility process — affects Stan codegen and new NODE constraint templates
-- Q4: Covariate missingness — NODE trainer uses complete-case for covariate inputs;
-  full-information likelihood deferred
-- Q5: Regulatory engagement timing — after Phase 2 benchmarks, before Phase 3 NODE integration
+- Q4: Covariate missingness — NODE trainer uses complete-case; full-information likelihood deferred
+- Q5: Regulatory engagement timing — after Phase 2 benchmarks
 
 ## Recommended build order for remaining Phase 2:
-1. COMMIT all current work (immediate)
-2. P2.A SearchEngine multi-backend dispatch
-3. P2.B Discovery lane integration test
-4. P2.D Suite A expansion + Suite B (validates NODE backend)
-5. P2.C NODE initial estimate strategy
-6. P2.E Stan codegen (parallel track)
-7. P2.F Web UI (last)
-8. P2.G Flowcept/Aim (can be deferred)
+1. P2.C NODE initial estimate strategy
+2. P2.D-fixture Generate A5-A7 CSV fixtures (if R available)
+3. P2.E Stan codegen (parallel track)
+4. P2.F Web UI (last, MVP only)
+5. P2.G Flowcept/Aim (can defer to Phase 3)
 ```
