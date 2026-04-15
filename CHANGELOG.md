@@ -37,17 +37,29 @@ also `slow`; skipped by default) close those gaps:
   parent/metabolite DVID scheme + every contaminating column
   (`CENS`/`LIMIT`/`BLQ_FLAG`/`RATE`/`DUR`/`SS`/`II`) on source rows,
   proving the guards actually fire on plausible multi-analyte data.
+- **`test_frem_fits_on_theophylline_with_induced_missingness`** —
+  canonical Boeckmann/Sheiner/Beal 1994 theophylline benchmark
+  (nlmixr2data::theo_sd, 12 subjects × 11 obs, WT covariate). Drops
+  WT for 3 subjects to induce the missingness scenario, runs the
+  full Python emitter pipeline (`summarize_covariates` →
+  `prepare_frem_data` → `emit_nlmixr2_frem`), and asserts nlmixr2
+  compiles the model with the expected joint Ω size. Scope stops at
+  compile because FOCE-I on a 144-row FREM-augmented dataset
+  regularly exceeds 15 min even with minimal iteration caps — that
+  belongs to a nightly benchmark. The compile path still exercises
+  DSL emit → prepare_frem_data → nlmixr2 parse/validate → rxode2
+  model generation, which is the critical emitter-correctness chain.
 
-Full suite: **1490 tests passing** (62 new on top of the prior 1428).
-`mypy --strict` clean across 79 source files; `ruff format` + `check`
-clean.
+Full suite: **1490 fast-path tests passing** (62 new in the missing-data
+sweep) + 6 live nlmixr2 integration tests (2 fit, 2 compile-only, 1
+multi-analyte, 1 contamination guard). `mypy --strict` clean across 79
+source files; `ruff format` + `check` clean.
 
 Residual not covered by this live test pass:
-- **Benchmark PK datasets** (theophylline / mavoglurant / Suite A–C)
-  through the FREM path remain a future integration milestone. They
-  require nlmixr2data-backed data fixtures plus wall-time budget above
-  ~10 minutes per dataset, so they belong in a nightly/weekly suite
-  rather than the fast-path unit suite.
+- **Mavoglurant / Suite A–C datasets** through the FREM path remain
+  a future integration milestone — theophylline is covered, these
+  larger benchmarks require multi-minute FOCE-I fits that belong in
+  a nightly/weekly suite.
 - **Full `_run_frem_stage` live orchestrator test** was prototyped
   during this sweep but excluded from CI because FOCE-I with the
   covariance step on even tiny FREM-augmented data regularly exceeds
