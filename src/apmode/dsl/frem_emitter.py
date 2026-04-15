@@ -57,12 +57,21 @@ if TYPE_CHECKING:
     import pandas as pd
 
 
-# DVID offset for FREM covariate observations. PK observations keep
-# their native DVID (typically 1 if present, or absent for single-DV data;
-# the emitter treats absence as DVID==1 via the default endpoint). Covariate
-# observations get DVID = 10 + covariate_index to avoid collisions with any
-# realistic multi-analyte DVID scheme.
-_FREM_DVID_OFFSET: int = 10
+# DVID assignment for FREM covariate observations.
+#
+# nlmixr2 assigns each endpoint an integer DVID in declaration order: the PK
+# endpoint (declared first) becomes DVID 1, the first covariate endpoint
+# becomes DVID 2, and so on. The emitter must therefore hand the imputer a
+# ``FREMCovariate`` list whose ``dvid`` values start at 2 and advance by 1
+# per covariate — otherwise the data written by ``prepare_frem_data`` would
+# not match nlmixr2's implicit endpoint numbering and routing would fail
+# (verified live against nlmixr2 5.0, 2026-04-14).
+#
+# ``prepare_frem_data`` raises a collision error when source data already
+# uses any DVID in this range; callers with multi-analyte data must remap
+# their PK DVID scheme to stay at 1 (or below the covariate range) before
+# augmentation.
+_FREM_DVID_OFFSET: int = 2
 
 # Default residual error SD for covariate observations. Must be >0 so the
 # likelihood is well-defined; kept small so the random-effect component
@@ -481,49 +490,30 @@ def _strip_covariate_links(spec: DSLSpec) -> DSLSpec:
 # ---------------------------------------------------------------------------
 
 
-def _append_dvid_pipe(line: str, dvid: int) -> str:
-    """Append ``| DVID==<dvid>`` to an endpoint line that does not already
-    carry a pipe condition.
-
-    The base emitter's PK endpoint (``cp ~ prop(...)``) is unqualified
-    because single-DV data does not need routing; under FREM the same
-    model file carries multiple endpoints, so nlmixr2 requires an
-    explicit DVID condition to disambiguate the PK endpoint from the
-    covariate endpoints (Codex review 2026-04-14).
-    """
-    if "|" in line:
-        return line
-    return f"{line} | DVID=={dvid}"
-
-
 def _emit_frem_model(
     spec: DSLSpec,
     covariates: Sequence[FREMCovariate],
-    *,
-    pk_dvid: int = 1,
 ) -> list[str]:
     """Emit the model block with FREM covariate-observation endpoints.
 
-    The PK portion is delegated to the base emitter, then post-processed
-    to attach an explicit ``| DVID==<pk_dvid>`` condition on the PK
-    observation line. Covariate observations are then appended as
-    additional endpoints keyed on each covariate's DVID.
+    Endpoint-routing design (verified live against nlmixr2 5.0,
+    2026-04-14): nlmixr2's grammar requires a **bare symbol**
+    (compartment/endpoint name) after the ``|`` in an endpoint
+    definition — not a condition. ``| DVID==N`` is rejected with
+    ``the condition 'DVID == N' must be a simple name``. Instead,
+    each endpoint's DVID is assigned **implicitly by declaration
+    order** (PK first = DVID 1, first covariate = DVID 2, etc.),
+    and the runtime data must carry a matching ``DVID`` column.
+    ``prepare_frem_data`` writes the DVID column so routing is
+    data-driven, not model-driven.
+
+    The base PK endpoint line is emitted unchanged.
     """
     frem_spec = _strip_covariate_links(spec)
     base_lines = _emit_model(frem_spec)
 
-    # The PK observation line is the tail of the base emitter's output.
-    # Look for any ``<name> ~ <residual-spec>`` line (no leading "#") and
-    # attach the PK DVID condition. There is exactly one PK endpoint in
-    # the base emitter today, so a single match is expected.
-    patched: list[str] = []
-    for line in base_lines:
-        stripped = line.lstrip()
-        is_endpoint = "~" in stripped and not stripped.startswith("#") and "d/dt" not in stripped
-        patched.append(_append_dvid_pipe(line, pk_dvid) if is_endpoint else line)
-
     cov_lines: list[str] = [""]
-    cov_lines.append("# FREM covariate observation endpoints")
+    cov_lines.append("# FREM covariate observation endpoints (routed via DVID column in data)")
     for cov in covariates:
         name = _sanitize_r_name(cov.name)
         # Predicted covariate value: mean + subject-specific eta. For
@@ -532,9 +522,9 @@ def _emit_frem_model(
         # algebraic form applies — the scale is carried by the data, not
         # by the emitted model expression.
         cov_lines.append(f"{name}_pred <- mu_{name} + eta.cov.{name}")
-        cov_lines.append(f"{name}_pred ~ add(sig_cov_{name}) | DVID=={cov.dvid}")
+        cov_lines.append(f"{name}_pred ~ add(sig_cov_{name})")
 
-    return patched + cov_lines
+    return base_lines + cov_lines
 
 
 # ---------------------------------------------------------------------------

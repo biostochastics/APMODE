@@ -94,7 +94,7 @@ class TestResolveDirective:
     def test_correlated_covariates_use_missforest(self) -> None:
         cov = CovariateSpec(pattern="MAR", fraction_incomplete=0.10, strategy="MI-PMM")
         d = resolve_directive(MissingDataPolicy(), _manifest(cov_spec=cov, correlated=True))
-        assert d.covariate_method == "MI-missForest"
+        assert d.covariate_method == "MI-missRanger"
 
     def test_blq_threshold_selects_m3(self) -> None:
         d = resolve_directive(MissingDataPolicy(), _manifest(blq_burden=0.25))

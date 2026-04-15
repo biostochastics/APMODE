@@ -16,8 +16,9 @@ Decision logic (consensus from droid/crush/gemini/codex/opencode review):
      - Time-varying + frem_for_time_varying → FREM (Nyberg 2024)
      - %-missing > frem_preferred_above → FREM
      - %-missing in (mi_pmm_max_missingness, frem_preferred_above] → FREM
-     - Else → MI-PMM (default), escalate to MI-missForest if covariate_correlated
-       and missforest_fallback is set (nonlinear relations; Bräm CPT:PSP 2022)
+     - Else → MI-PMM (default), escalate to MI-missRanger if covariate_correlated
+       and missforest_fallback is set (nonlinear relations; Bräm CPT:PSP 2022
+       concept, implemented with ranger-backed missRanger v2.6+ for speed)
 
   3. m budget: policy.m_imputations; adaptive_m carries through to the
      stability manifest builder which decides escalation up to m_max.
@@ -87,13 +88,15 @@ def resolve_directive(
         )
         m_imputations = None
     else:
-        # MI path: PMM default, missForest fallback if covariates are correlated
-        # (nonlinear relations benefit from RF imputation; Bräm 2022).
+        # MI path: PMM default, missRanger (ranger-backed RF) fallback when
+        # covariates are correlated — nonlinear relations benefit from RF
+        # imputation (Bräm 2022 concept; missRanger 2.6.x is the modern
+        # fast implementation, Mayer CRAN).
         if policy.missforest_fallback and manifest.covariate_correlated:
-            covariate_method = "MI-missForest"
+            covariate_method = "MI-missRanger"
             rationale.append(
                 "Correlated covariates + missforest_fallback=True: "
-                "missForest captures nonlinear relationships."
+                "missRanger captures nonlinear relationships (ranger-backed RF + PMM)."
             )
         else:
             covariate_method = "MI-PMM"

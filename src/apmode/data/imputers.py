@@ -4,12 +4,14 @@
 Concrete implementations of the ``ImputationProvider`` protocol defined
 in ``apmode.search.stability``. Each provider spawns an Rscript process
 against ``src/apmode/r/impute.R``, which invokes ``mice`` (PMM) or
-``missForest`` and returns m imputed CSV paths.
+``missRanger`` (ranger-backed random forest + PMM, Mayer CRAN 2.6.x)
+and returns m imputed CSV paths.
 
 FREM is a structural model path rather than a preprocessor; a
 placeholder provider is included so that routing/backends can be wired
-uniformly, but calling its ``impute`` raises ``NotImplementedError``
-pointing to the nlmixr2 emitter work still needed.
+uniformly, but calling its ``impute`` raises ``NotImplementedError`` and
+points at ``apmode.dsl.frem_emitter.emit_nlmixr2_frem`` for the correct
+execution route.
 """
 
 from __future__ import annotations
@@ -81,7 +83,7 @@ async def _spawn_rscript(
 
 @dataclass
 class _RImputerBase:
-    """Shared state for mice/missForest imputation providers."""
+    """Shared state for mice/missRanger imputation providers."""
 
     work_dir: Path
     covariates: Sequence[str]
@@ -174,15 +176,20 @@ class R_MiceImputer(_RImputerBase):
 
 
 @dataclass
-class R_MissForestImputer(_RImputerBase):
-    """Random-forest imputation via the R `missForest` package.
+class R_MissRangerImputer(_RImputerBase):
+    """Random-forest imputation via the R ``missRanger`` package.
 
-    Produces an m-draw ensemble (each draw uses a different seed).
-    Coverage is comparable to PMM under MAR for nonlinear covariate
-    relations; not a formal Rubin-decomposable multiple imputation.
+    ``missRanger`` (Mayer, CRAN 2.6.x) is a ranger-backed fast
+    alternative to ``missForest`` that iterates RF imputation until the
+    out-of-bag error stops improving, then applies predictive mean
+    matching (``pmm.k`` nearest neighbours) to keep imputed values
+    in-range and restore variance. For multiple imputation we run m
+    independent draws with different seeds at ``pmm.k = 10`` — the
+    pattern recommended by the ``missRanger`` multiple-imputation
+    vignette — so the resulting ensemble is Rubin-poolable.
     """
 
-    method: str = "missForest"
+    method: str = "missRanger"
 
 
 @dataclass

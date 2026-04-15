@@ -62,6 +62,7 @@ class Nlmixr2Runner:
         *,
         data_path: Path | None = None,
         split_manifest: dict[str, object] | None = None,
+        compiled_code_override: str | None = None,
     ) -> BackendResult:
         """Run nlmixr2 estimation via R subprocess.
 
@@ -70,6 +71,12 @@ class Nlmixr2Runner:
 
         Args:
             data_path: Absolute path to the nlmixr2-ready CSV file. Required.
+            compiled_code_override: Optional pre-compiled R model code to use
+                instead of ``emit_nlmixr2(spec)``. Used by the FREM path
+                where the model is produced by ``emit_nlmixr2_frem`` with
+                augmented covariate endpoints. When provided, ``spec``
+                still supplies ``model_id`` and ``data_manifest`` for
+                metadata, but its AST is not re-emitted.
 
         Raises:
             BackendTimeoutError: If R process exceeds timeout.
@@ -85,8 +92,13 @@ class Nlmixr2Runner:
         run_dir = self.work_dir / request_id
         run_dir.mkdir(parents=True, exist_ok=True)
 
-        # Compile R code from DSL spec
-        compiled_r_code = emit_nlmixr2(spec, initial_estimates=initial_estimates)
+        # Compile R code from DSL spec (unless the caller pre-compiled, e.g.
+        # the FREM path).
+        compiled_r_code = (
+            compiled_code_override
+            if compiled_code_override is not None
+            else emit_nlmixr2(spec, initial_estimates=initial_estimates)
+        )
 
         # Build and write request
         request = RSubprocessRequest(

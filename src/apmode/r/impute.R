@@ -8,7 +8,7 @@
 #   {
 #     "source_csv": "/abs/path/data.csv",
 #     "output_dir": "/abs/path/imputed",
-#     "method":    "pmm" | "missForest",
+#     "method":    "pmm" | "missRanger",
 #     "m":         integer >= 1,
 #     "seed":      integer,
 #     "covariates": ["WT", "AGE", ...],     # columns to impute (subject-level)
@@ -22,20 +22,22 @@
 #     "message":      NULL | "<details>",
 #     "imputed_csvs": [ "/abs/path/imp_1.csv", ... ],
 #     "m":            integer,
-#     "method":       "pmm" | "missForest"
+#     "method":       "pmm" | "missRanger"
 #   }
 #
 # Method semantics:
 #   - pmm: FCS via the mice package with Predictive Mean Matching.
 #     The covariate imputation is performed on per-subject rows; imputed
 #     values are then broadcast back onto the full observation-level data.
-#   - missForest: single-imputation random-forest imputation applied m
-#     times with different seeds to produce an ensemble usable under the
-#     MI framework (Bräm CPT:PSP 2022). Not "true" MI because each run is
-#     independent, but appropriate for nonlinear covariate structure.
+#   - missRanger: ranger-backed random-forest imputation with PMM
+#     (pmm.k = 10, num.trees = 100) — fast alternative to missForest,
+#     Mayer CRAN 2.6.x. For multiple imputation we run m independent
+#     calls with different seeds following the missRanger multiple-
+#     imputation vignette; the PMM step restores between-imputation
+#     variance so Rubin's rules apply downstream.
 #
 # Security: no arbitrary R code is evaluated — only mice::mice() and
-# missForest::missForest() are invoked with typed arguments.
+# missRanger::missRanger() are invoked with typed arguments.
 
 suppressPackageStartupMessages({
   library(jsonlite)
@@ -137,25 +139,31 @@ tryCatch({
       imputed_csvs <- c(imputed_csvs, normalizePath(out_path))
     }
 
-  } else if (method == "missForest") {
-    if (!requireNamespace("missForest", quietly = TRUE)) {
+  } else if (method == "missRanger") {
+    if (!requireNamespace("missRanger", quietly = TRUE)) {
       .write_response(response_path, "error", "package_missing",
-                      "missForest package required for RF imputation")
+                      "missRanger package required for ranger-backed RF imputation")
       quit(status = 1, save = "no")
     }
 
-    # missForest is not natively multiple-imputation. We run m independent
-    # draws with different seeds and treat the ensemble as MI. Coverage
-    # properties are comparable to PMM for MAR covariates (Bräm 2022) but
-    # do not satisfy Rubin's within/between decomposition exactly.
+    # missRanger is a fast ranger-backed alternative to missForest (Mayer,
+    # CRAN 2.6.x). It iterates RF imputation until out-of-bag error stops
+    # improving, then applies predictive mean matching (pmm.k neighbours)
+    # to keep imputed values in-range and restore variance. For multiple
+    # imputation we run m independent calls with different seeds, as
+    # recommended by the missRanger multiple-imputation vignette — large
+    # pmm.k (~10) at that call site restores between-imputation variance.
     for (i in seq_len(m)) {
       local_seed <- seed + i - 1L
       set.seed(local_seed)
-      imp_out <- missForest::missForest(
+      completed <- missRanger::missRanger(
         subj_df[, cov_names, drop = FALSE],
-        verbose = FALSE
+        num.trees = 100,
+        pmm.k = 10,
+        seed = local_seed,
+        verbose = 0
       )
-      completed <- as.data.frame(imp_out$ximp)
+      completed <- as.data.frame(completed)
       merged <- full_df
       for (cn in cov_names) {
         lookup <- setNames(completed[[cn]], subj_df[[id_col]])

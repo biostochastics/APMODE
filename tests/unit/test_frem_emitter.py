@@ -65,7 +65,10 @@ class TestSummarizeCovariates:
         assert len(summaries) == 1
         assert summaries[0].mu_init == pytest.approx(70.0)
         assert summaries[0].sigma_init == pytest.approx(10.0, rel=1e-3)
-        assert summaries[0].dvid == 10
+        # DVID offset is 2 (PK endpoint claims DVID=1, first covariate
+        # endpoint gets DVID=2 via nlmixr2's implicit declaration-order
+        # numbering). See _FREM_DVID_OFFSET.
+        assert summaries[0].dvid == 2
         assert summaries[0].transform == "identity"
 
     def test_skips_missing_subjects(self) -> None:
@@ -197,11 +200,13 @@ class TestEmitNlmixr2FREM:
         # Covariate residual error is fixed (BSV/residual confound at 1 obs/subject)
         assert "sig_cov_WT <- fix(0.01)" in code
         assert "sig_cov_AGE <- fix(0.01)" in code
-        # Endpoints conditioned on DVID
-        assert "WT_pred ~ add(sig_cov_WT) | DVID==10" in code
-        assert "AGE_pred ~ add(sig_cov_AGE) | DVID==11" in code
-        # PK endpoint now carries an explicit DVID==1 pipe for multi-endpoint routing
-        assert "| DVID==1" in code
+        # Endpoints: nlmixr2 routes by data-side DVID (column), NOT by
+        # an inline ``| DVID==N`` condition (grammar rejects conditions
+        # after ``|``). Endpoint RHS is a bare residual spec only.
+        assert "WT_pred ~ add(sig_cov_WT)" in code
+        assert "AGE_pred ~ add(sig_cov_AGE)" in code
+        # Defensive: the old broken ``| DVID==N`` form must not appear.
+        assert "| DVID==" not in code
         # PK portion still present
         assert "lCL" in code
         assert "lV" in code
@@ -234,3 +239,152 @@ class TestEmitNlmixr2FREM:
         # PK var(V), cross(CL,WT)=0, cross(V,WT)=0, var(WT)=9.0
         # We just verify the structural presence of zeros in the block.
         assert "~ c(" in code
+
+
+# --- Live nlmixr2 integration tests ---------------------------------------
+# These tests spawn Rscript against a real nlmixr2 install to verify that
+# the emitted code is not just a string match but an object the nlmixr2
+# compiler accepts. They are tagged ``live`` so they are skipped in the
+# default fast path (``-m "not live"``), and skipped individually when R
+# or nlmixr2 is not installed on the host.
+
+import shutil  # noqa: E402
+import subprocess  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+
+def _rscript_available() -> bool:
+    return shutil.which("Rscript") is not None
+
+
+def _r_package_installed(pkg: str) -> bool:
+    if not _rscript_available():
+        return False
+    out = subprocess.run(
+        ["Rscript", "-e", f'cat(requireNamespace("{pkg}", quietly=TRUE))'],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    return out.stdout.strip() == "TRUE"
+
+
+_NLMIXR2_AVAILABLE = _r_package_installed("nlmixr2")
+
+
+@pytest.mark.live
+@pytest.mark.skipif(not _NLMIXR2_AVAILABLE, reason="nlmixr2 not installed on this host")
+class TestFREMLiveIntegration:
+    """End-to-end: feed emitted code into real nlmixr2 and check acceptance."""
+
+    def test_nlmixr2_accepts_emitted_frem(self, tmp_path: Path) -> None:
+        """nlmixr2() must parse and compile the emitted FREM function.
+
+        Regression guard for the Codex-flagged ``| DVID==N`` pipe bug: the
+        emitter previously wrote a condition on the endpoint RHS that
+        nlmixr2 5.0 rejects ("the condition 'DVID == N' must be a simple
+        name"). Fix: no pipe at all; routing is data-driven via DVID.
+        """
+        spec = _simple_spec()
+        covs = [
+            FREMCovariate(name="WT", mu_init=70.0, sigma_init=10.0, dvid=2),
+            FREMCovariate(name="AGE", mu_init=40.0, sigma_init=15.0, dvid=3),
+        ]
+        code = emit_nlmixr2_frem(spec, covs)
+        model_path = tmp_path / "frem_model.R"
+        model_path.write_text(code)
+
+        script = f"""
+suppressPackageStartupMessages({{ library(nlmixr2) }})
+fn <- eval(parse(text = readLines('{model_path}')))
+ui <- nlmixr2(fn)
+cat("COMPILE_OK endpoints=", nrow(ui$predDf), "\\n")
+"""
+        script_path = tmp_path / "drive.R"
+        script_path.write_text(script)
+
+        result = subprocess.run(
+            ["Rscript", str(script_path)],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+        # nlmixr2 emits info messages to stderr even on success; success is
+        # determined by exit code and the COMPILE_OK sentinel in stdout.
+        assert result.returncode == 0, (
+            f"nlmixr2 rejected emitted FREM code:\n"
+            f"stdout: {result.stdout}\nstderr: {result.stderr}"
+        )
+        assert "COMPILE_OK endpoints= 3" in result.stdout, (
+            f"Expected 3 endpoints (PK + 2 covariates). stdout: {result.stdout}"
+        )
+
+    @pytest.mark.slow
+    def test_nlmixr2_fits_emitted_frem(self, tmp_path: Path) -> None:
+        """End-to-end FREM fit via FOCE-I on tiny synthetic data.
+
+        SAEM is NOT reliable for static subject-level endpoints (it treats
+        each observation as a dynamic sampling target and collapses the
+        random-effect variance). FOCE-I is the supported estimator for
+        FREM with this emitter.
+        """
+        spec = _simple_spec()
+        covs = [
+            FREMCovariate(name="WT", mu_init=70.0, sigma_init=10.0, dvid=2),
+        ]
+        code = emit_nlmixr2_frem(spec, covs)
+        model_path = tmp_path / "frem_model.R"
+        model_path.write_text(code)
+
+        script = f"""
+suppressPackageStartupMessages({{ library(nlmixr2); library(rxode2) }})
+fn <- eval(parse(text = readLines('{model_path}')))
+
+set.seed(42)
+n <- 25
+wt <- rnorm(n, 70, 10)
+wt_obs <- wt; wt_obs[sample(n, 5)] <- NA
+cl <- 5 * (wt/70)^0.75
+conc <- function(t, c, v=50) 100/v * exp(-c/v * t)
+times <- c(0.5, 1, 2, 4, 8, 12, 24)
+rows <- list()
+for (i in seq_len(n)) {{
+  rows[[length(rows)+1]] <- data.frame(ID=i, TIME=0, EVID=1, AMT=100, DV=NA_real_, DVID=1)
+  for (t in times) rows[[length(rows)+1]] <- data.frame(
+    ID=i, TIME=t, EVID=0, AMT=0,
+    DV=conc(t, cl[i]) * exp(rnorm(1, 0, 0.1)), DVID=1)
+  if (!is.na(wt_obs[i])) rows[[length(rows)+1]] <- data.frame(
+    ID=i, TIME=0, EVID=0, AMT=0, DV=wt_obs[i], DVID=2)
+}}
+d <- do.call(rbind, rows); d <- d[order(d$ID, d$TIME, d$DVID), ]
+fit <- nlmixr2(fn, d, est="focei",
+               control=foceiControl(print=0, maxInnerIterations=10, maxOuterIterations=30))
+# Success signal: finite OFV and non-degenerate eta.cov.WT
+ofv <- fit$objDf$OBJF[1]
+omega_wt <- diag(fit$omega)[["eta.cov.WT"]]
+cat(sprintf("FIT_OK ofv=%.2f omega_wt=%.4f\\n", ofv, omega_wt))
+"""
+        script_path = tmp_path / "drive.R"
+        script_path.write_text(script)
+        result = subprocess.run(
+            ["Rscript", str(script_path)],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=False,
+        )
+        assert result.returncode == 0, (
+            f"FREM fit failed:\nstdout: {result.stdout}\nstderr: {result.stderr[-1000:]}"
+        )
+        assert "FIT_OK" in result.stdout, f"Expected FIT_OK sentinel. stdout: {result.stdout}"
+        # Parse omega_wt from output; must be > 1 (nonzero between-subject
+        # variance learned from the covariate observations).
+        import re as _re
+
+        m = _re.search(r"omega_wt=([0-9.]+)", result.stdout)
+        assert m is not None
+        assert float(m.group(1)) > 1.0, (
+            f"eta.cov.WT variance collapsed to {m.group(1)}; FREM learned nothing."
+        )

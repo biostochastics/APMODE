@@ -313,7 +313,7 @@ CovariateStrategy = Literal[
     "full-information",
     "exclude",
     "MI-PMM",
-    "MI-missForest",
+    "MI-missRanger",
     "FREM",
     "FFEM",
 ]

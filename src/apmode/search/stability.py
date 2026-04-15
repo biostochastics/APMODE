@@ -60,7 +60,8 @@ class ImputationProvider(Protocol):
     """Produces m imputed CSVs from a source dataset.
 
     Implementations: ``R_MiceImputer`` (mice package, PMM default) and
-    ``R_MissForestImputer`` (missForest). See ``apmode.data.imputers``.
+    ``R_MissRangerImputer`` (ranger-backed RF + PMM). See
+    ``apmode.data.imputers``.
     """
 
     async def impute(

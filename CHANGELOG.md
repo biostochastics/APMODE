@@ -113,8 +113,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   covering `FREMCovariate` validation, `summarize_covariates` (identity
   + log transforms, duplicates, baseline), `prepare_frem_data` (DVID
   collisions, log-scale DV, missing-subject handling), and
-  `emit_nlmixr2_frem` (joint Ω block, fixed residuals, PK `| DVID==1`
-  pipe, covariate-link stripping). Full suite: 1389 passing.
+  `emit_nlmixr2_frem` (joint Ω block, fixed residuals, covariate-link
+  stripping). Full suite: 1389 passing.
+
+### Changed — End-to-end validation + live fixes
+- **nlmixr2 endpoint syntax fixed** (`src/apmode/dsl/frem_emitter.py`).
+  The prior release emitted `| DVID==N` on the endpoint RHS; nlmixr2
+  5.0 rejects this with *"the condition 'DVID == N' must be a simple
+  name"* (Codex review, empirically confirmed 2026-04-14). The emitter
+  now omits the pipe entirely and routes via the DVID column in the
+  augmented data. `_FREM_DVID_OFFSET` changed from 10 to 2 to match
+  nlmixr2's implicit declaration-order endpoint numbering (PK = 1,
+  first covariate = 2, …).
+- **Live nlmixr2 tests** (`tests/unit/test_frem_emitter.py`, new
+  `TestFREMLiveIntegration`). Marked `live`/`slow`; spawns real
+  Rscript against the emitted model code:
+  - `test_nlmixr2_accepts_emitted_frem`: regression guard for the
+    DVID-pipe bug; asserts nlmixr2 compiles the FREM model and sees
+    the expected number of endpoints.
+  - `test_nlmixr2_fits_emitted_frem`: end-to-end FOCE-I fit on tiny
+    synthetic data; asserts a non-degenerate `eta.cov.WT` variance
+    (catches the SAEM-collapse failure mode observed in development).
+- **Imputer swap missForest → missRanger** (user-requested; verified
+  against missRanger 2.6.1 docs via ref.tools). missRanger is a fast
+  ranger-backed random-forest imputer with predictive mean matching
+  that's the modern successor to missForest for MI workflows.
+  - `src/apmode/r/impute.R` now dispatches to
+    `missRanger::missRanger(num.trees=100, pmm.k=10, seed=...)`.
+  - Python adapter renamed `R_MissForestImputer` →
+    `R_MissRangerImputer` with method string `"missRanger"`.
+  - `MissingDataDirective.covariate_method` literal updated:
+    `MI-missForest` → `MI-missRanger`.
+- **Live imputer tests** (`tests/unit/test_imputers_live.py`, new).
+  Marked `live`; spawns real Rscript against `mice` and `missRanger`.
+  Verifies 3 imputed CSVs are produced, no residual NaN in imputed
+  columns, and between-imputation variance across draws (proves MI
+  is actually functioning, not collapsing to a single imputation).
+- **FREM runner** (`src/apmode/backends/frem_runner.py`, new).
+  `run_frem_fit()` composes `summarize_covariates` +
+  `prepare_frem_data` + `emit_nlmixr2_frem` with
+  `Nlmixr2Runner.run(compiled_code_override=...)` for a single-call
+  FREM fit. `Nlmixr2Runner.run` gains `compiled_code_override` kwarg
+  so the FREM path supplies its own R code without monkey-patching
+  the emitter.
+- **Live FREM runner test** (`tests/unit/test_frem_runner_live.py`,
+  new). End-to-end: synthesizes a tiny PK dataset with induced WT
+  missingness, runs `run_frem_fit` through real nlmixr2 FOCE-I, and
+  asserts convergence plus the augmented CSV is written to the
+  bundle.
+
+### Known constraints
+- **SAEM is not supported for FREM** endpoints. nlmixr2 SAEM treats
+  subject-level covariate observations as dynamic sampling targets and
+  collapses the random-effect variance to zero (verified 2026-04-14).
+  The FREM runner must use `estimation=["focei"]`.
 
 ### Fixed — NCA unit-scaling on heterogeneous-unit datasets
 - **NCA initial estimates are now unit-aware** (`src/apmode/data/initial_estimates.py`).

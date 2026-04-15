@@ -219,16 +219,21 @@ Missing data is resolved by a **lane-tiered policy** (`policies/{submission,disc
 
 **Ω-pooling caveats**. Whenever MI is used, the credibility report automatically appends three Rubin/log-Cholesky/EBE caveats to the limitations block for Gate 2.5 ingestion (ICH M15 alignment).
 
-**R harness**. Imputation uses `src/apmode/r/impute.R`, which dispatches to `mice::mice(method="pmm")` or `missForest::missForest`. Python-side providers are `R_MiceImputer` and `R_MissForestImputer` (`src/apmode/data/imputers.py`).
+**R harness**. Imputation uses `src/apmode/r/impute.R`, which dispatches to `mice::mice(method="pmm")` or `missRanger::missRanger(num.trees=100, pmm.k=10)` — the ranger-backed fast alternative to missForest (Mayer CRAN 2.6.x). Python-side providers are `R_MiceImputer` and `R_MissRangerImputer` (`src/apmode/data/imputers.py`); both are covered by live tests in `tests/unit/test_imputers_live.py` that spawn real Rscript against installed `mice`/`missRanger` and verify (a) imputed CSVs appear, (b) no residual NaN in imputed columns, (c) between-imputation variance proves MI is functioning.
 
-**FREM emitter**. The FREM path is implemented in `src/apmode/dsl/frem_emitter.py`. Public API:
+**FREM emitter**. The FREM path is implemented in `src/apmode/dsl/frem_emitter.py` and executed via `src/apmode/backends/frem_runner.py::run_frem_fit`. Public API:
 
 - `FREMCovariate(name, mu_init, sigma_init, dvid, epsilon_sd, transform)` — per-covariate metadata. `transform="log"` recommended for positive/right-skewed covariates so the joint Ω stays well conditioned.
 - `summarize_covariates(df, names, transforms=...)` — compute baseline (min TIME) mean + SD per covariate; rejects duplicates and covariates with <2 observed subjects.
 - `prepare_frem_data(df, covariates)` — pivot to DVID-multiplexed long format; adds one observation row per subject per covariate at the subject's baseline time, rejects DVID collisions with any existing multi-analyte scheme.
-- `emit_nlmixr2_frem(spec, covariates, initial_estimates=...)` — emits the augmented nlmixr2 model function with a joint Ω block (PK IIV etas + covariate etas), estimable covariate means, fixed covariate residuals (`fix(...)`) so the eta absorbs all BSV, explicit `| DVID==1` on the PK endpoint, and `| DVID==<cov.dvid>` pipes on each covariate endpoint.
+- `emit_nlmixr2_frem(spec, covariates, initial_estimates=...)` — emits the augmented nlmixr2 model function with a joint Ω block (PK IIV etas + covariate etas), estimable covariate means, fixed covariate residuals (`fix(...)`) so the eta absorbs all BSV, and one observation endpoint per covariate. **Routing is data-driven via the `DVID` column**: nlmixr2 assigns endpoints DVID 1 (PK), 2, 3, … in declaration order, and `prepare_frem_data` writes matching DVIDs. No `| DVID==N` pipe is emitted — nlmixr2 5.0 rejects conditions on the endpoint RHS (verified live 2026-04-14).
+- `run_frem_fit(spec_template, df, covariate_names, runner, ...)` — composes the above with `Nlmixr2Runner` for a single-call FREM fit.
 
-Scope is static subject-level continuous covariates (categorical and time-varying are documented as future work). End-to-end orchestrator hookup writes `missing_data_directive.json` to the bundle and logs the resolved directive; fully-driven MI/FREM execution through the orchestrator loop is a follow-up PR (use `apmode.search.stability.run_with_imputations` / `emit_nlmixr2_frem` directly in the meantime).
+Scope is static subject-level continuous covariates (categorical and time-varying are documented as future work). Live end-to-end tests in `tests/unit/test_frem_emitter.py::TestFREMLiveIntegration` spawn real Rscript + nlmixr2 and verify (a) the emitted model compiles, (b) FOCE-I actually fits the joint Ω and learns a non-degenerate `eta.cov.WT` variance on tiny synthetic data.
+
+**Estimator requirement**: FREM requires **FOCE-I**. nlmixr2 SAEM treats subject-level covariate observations as dynamic sampling targets and collapses the random-effect variance to zero. The FREM runner must be constructed with `Nlmixr2Runner(estimation=["focei"])`.
+
+**Orchestrator hookup status**: `missing_data_directive.json` is written to every run's reproducibility bundle and the directive is logged with its rationale. Actual MI execution through the orchestrator loop (calling `run_with_imputations`) and FREM refit-on-best after classical search are not yet invoked by the default `apmode run` pipeline — use `run_with_imputations` / `run_frem_fit` directly in the meantime.
 
 ### Phase 2: Generate Root Candidates
 

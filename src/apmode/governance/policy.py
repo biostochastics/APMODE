@@ -114,7 +114,9 @@ class MissingDataPolicy(BaseModel):
     frem_for_time_varying: bool = True
     # Minimum %-missing to trigger FREM preference over MI-PMM for static covariates.
     frem_preferred_above: float = Field(default=0.30, ge=0.0, le=1.0)
-    # Fallback when missForest is preferred over PMM (nonlinear covariate relations).
+    # Fallback when missRanger (ranger-backed RF + PMM) is preferred over
+    # plain PMM for nonlinear covariate relations. Legacy field name
+    # preserved for policy-file backwards compatibility.
     missforest_fallback: bool = True
 
     # Number of imputations (m) for MI methods.
