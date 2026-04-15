@@ -75,7 +75,7 @@ if TYPE_CHECKING:
 # ``FREMCovariate`` list whose ``dvid`` values start at 2 and advance by 1
 # per covariate — otherwise the data written by ``prepare_frem_data`` would
 # not match nlmixr2's implicit endpoint numbering and routing would fail
-# (verified live against nlmixr2 5.0, 2026-04-14).
+# (verified against nlmixr2 5.0).
 #
 # ``prepare_frem_data`` raises a collision error when source data already
 # uses any DVID in this range; callers with multi-analyte data must remap

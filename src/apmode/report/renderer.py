@@ -35,9 +35,9 @@ def render_markdown_to_html(markdown_text: str, *, title: str = "APMODE Run Repo
     terminal report. Produces inline-styled, self-contained HTML —
     no external CSS or JS needed, safe to email or host statically.
 
-    rc1 scope: terminal-style HTML rendering. For full web-native HTML
-    (anchors, responsive tables, collapsible sections), pipe ``report.md``
-    through ``pandoc`` or a static-site generator.
+    For full web-native HTML (anchors, responsive tables, collapsible
+    sections), pipe ``report.md`` through ``pandoc`` or a static-site
+    generator.
     """
     from rich.console import Console
     from rich.markdown import Markdown

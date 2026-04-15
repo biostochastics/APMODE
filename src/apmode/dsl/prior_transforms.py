@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""SetPrior transform — the 7th FormularTransform (plan 2026-04-14 §3.2).
+"""SetPrior transform — the 7th FormularTransform (Phase 2+, PRD §4.2.5).
 
 Extends the agentic LLM's admissible transform set so it can propose and
 justify priors within the DSL ceiling, preserving the audit trail.

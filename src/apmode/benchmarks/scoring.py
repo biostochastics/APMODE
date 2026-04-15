@@ -122,8 +122,8 @@ def score_parameter_coverage(
     """Check if 95% CI contains the true parameter value.
 
     Returns None for parameters where CI is unavailable (e.g., SAEM
-    covariance step failure). Per GPT-5.2-pro: missing CI is unscorable,
-    not a free pass — aggregators decide whether it's a failure.
+    covariance step failure). Missing CI is unscorable, not a free pass —
+    aggregators decide whether it counts as a failure.
     """
     coverage: dict[str, bool | None] = {}
     for param_name, ref_value in case.reference_params.items():

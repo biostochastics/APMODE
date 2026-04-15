@@ -1,13 +1,11 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Bayesian backend runner via Stan/Torsten (plan 2026-04-14).
+"""Bayesian backend runner via Stan/Torsten (Phase 2+, PRD §4.2.2).
 
 Compiles DSLSpec -> Stan via stan_emitter.emit_stan, spawns a Python harness
 subprocess that drives cmdstanpy, parses draws + diagnostics into BackendResult.
 
 Mirrors the Nlmixr2Runner pattern: file-based JSON request/response, asyncio
 subprocess with SIGKILL on process-group timeout, no shell.
-
-See plan doc: docs/plans/2026-04-14-phase2-bayesian-backend.md
 """
 
 from __future__ import annotations

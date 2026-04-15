@@ -343,7 +343,7 @@ class BundleEmitter:
         path.write_text(lineage.model_dump_json(indent=2))
         return path
 
-    # --- Bayesian artifacts (Phase 2+, plan 2026-04-14 §3.5) ---
+    # --- Bayesian artifacts (Phase 2+) ---
 
     def _bayesian_dir(self) -> Path:
         """Ensure and return the bayesian/ subdirectory."""
@@ -366,8 +366,7 @@ class BundleEmitter:
         """Write bayesian/{candidate_id}_simulation_protocol.json.
 
         Prospective simulation protocol — locked before Gate 3 to prevent
-        metric shopping (per gpt-5.2 review and FDA 2026 operating-characteristics
-        requirement).
+        metric shopping (FDA 2026 operating-characteristics requirement).
         """
         _validate_path_component(candidate_id, "candidate_id")
         path = self._bayesian_dir() / f"{candidate_id}_simulation_protocol.json"

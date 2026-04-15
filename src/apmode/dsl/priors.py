@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Prior AST models for the PK DSL (Phase 2+, plan 2026-04-14).
+"""Prior AST models for the PK DSL (Phase 2+).
 
 Priors are a first-class DSL field on `DSLSpec.priors`. They are consumed by
 `stan_emitter` (inject into model block) and ignored by `nlmixr2_emitter`,
@@ -198,7 +198,7 @@ class PriorSpec(BaseModel):
       - "beta_<param>_<covariate>" → "covariate" target
 
     `justification` is required for any `source` other than uninformative/weakly_informative.
-    This is an FDA Gate 2 requirement (see plan §3.6).
+    This is an FDA Gate 2 requirement (PRD §4.3.1).
     """
 
     model_config = ConfigDict(frozen=True)

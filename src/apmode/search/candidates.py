@@ -119,11 +119,10 @@ class SearchSpace:
 
         # Absorption complexity. Note: do NOT remove "transit" when the
         # detector reports "simple" — the prominence-based peak detector
-        # (post 2026-04-15 refactor) correctly classifies transit-chain
-        # absorption datasets (which produce a smooth single peak with a
-        # delayed apex) as "simple" rather than "multi-phase". Transit
-        # candidates must remain discoverable through the search space so
-        # the structural search can still recover them via BIC ranking.
+        # correctly classifies transit-chain absorption datasets (which
+        # produce a smooth single peak with a delayed apex) as "simple"
+        # rather than "multi-phase". Transit candidates must remain
+        # discoverable so the structural search can recover them via BIC.
         if manifest.absorption_complexity == "multi-phase":
             # Multi-phase absorption often requires transit compartment models
             if "transit" not in space.absorption_types:
@@ -154,11 +153,10 @@ class SearchSpace:
         else:
             space.elimination_types = ["linear"]
 
-        # Error-model preference from profiler heuristic (Beal 2001, Ahn 2008,
-        # multi-agent consensus). Supersedes the legacy ``blq_burden > 0.20``
-        # override when present; the heuristic triggers BLQ_M3 at 10% BLQ and
-        # also prunes additive-only candidates that otherwise let add.sd absorb
-        # censored variance.
+        # Error-model preference from profiler heuristic (Beal 2001, Ahn 2008).
+        # Supersedes the legacy ``blq_burden > 0.20`` override when present;
+        # the heuristic triggers BLQ_M3 at 10% BLQ and prunes additive-only
+        # candidates that otherwise let add.sd absorb censored variance.
         pref = manifest.error_model_preference
         if pref is not None:
             if pref.primary in ("blq_m3", "blq_m4"):

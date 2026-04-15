@@ -6,7 +6,7 @@ on real clinical PK datasets. The primary metric is:
 
     fraction-beats-median-expert >= 60%
 
-Methodology (per GPT-5.2-pro consultation 2026-04-14):
+Methodology:
   1. For each dataset d, obtain K expert final models (K=3-5).
   2. Score each expert model using the same harness applied to APMODE.
   3. Compute the median expert score for that dataset.

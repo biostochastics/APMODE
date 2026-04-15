@@ -127,7 +127,7 @@ class DiagnosticBundle(BaseModel):
 
 
 class PosteriorDiagnostics(BaseModel):
-    """MCMC convergence and reliability diagnostics (plan 2026-04-14 §3.4).
+    """MCMC convergence and reliability diagnostics.
 
     Populated by the Bayesian backend; None otherwise.
 
@@ -384,8 +384,7 @@ class EvidenceManifest(BaseModel):
     #   none     = no signal triggered
     # Replaces the legacy boolean ``nonlinear_clearance_signature`` field
     # which produced false positives on multi-cmt linear drugs (warfarin:
-    # 0/24 candidate convergence). Multi-model consensus (gpt-5.2-pro,
-    # gemini-3-pro, mimo-v2-pro, glm-5): drop the bool entirely.
+    # 0/24 candidate convergence).
     nonlinear_clearance_evidence_strength: Literal["none", "weak", "moderate", "strong"]
     nonlinear_clearance_confidence: float | None = None
     # True when a subject has ≥2 dose events (EVID==1, AMT>0). Drives the
@@ -925,8 +924,7 @@ class LOROMetrics(BaseModel):
     """Aggregated LORO-CV predictive performance metrics.
 
     Gate 2 in the Optimization lane evaluates these against policy thresholds.
-    Pooled variance uses the law of total variance (E[Var] + Var[E]) per
-    review.
+    Pooled variance uses the law of total variance (E[Var] + Var[E]).
     """
 
     n_folds: int = Field(ge=1)
@@ -1005,9 +1003,9 @@ class PriorManifestEntry(BaseModel):
 
 
 class PriorManifest(BaseModel):
-    """prior_manifest.json — versioned record of all declared priors (plan §3.5).
+    """prior_manifest.json — versioned record of all declared priors.
 
-    This is the FDA-required prior justification artifact. Every prior on
+    FDA-required prior justification artifact. Every prior on a
     non-uninformative/weakly-informative source must carry a non-empty
     justification; historical_data must also carry historical_refs.
     """
@@ -1034,10 +1032,10 @@ class SimulationScenario(BaseModel):
 
 
 class SimulationProtocol(BaseModel):
-    """simulation_protocol.json — prospective-simulation specification (plan §3.5).
+    """simulation_protocol.json — prospective-simulation specification.
 
     Required for FDA 2026 operating-characteristics evaluation. Locked before
-    Gate 3 execution to prevent metric shopping (per gpt-5.2 review note).
+    Gate 3 execution to prevent metric shopping.
     """
 
     model_config = ConfigDict(frozen=True)

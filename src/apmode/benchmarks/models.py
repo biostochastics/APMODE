@@ -9,7 +9,7 @@ models for the three-tier benchmark system:
   Suite B:  Real-data anchors with controlled perturbations
   Suite C:  Expert head-to-head comparison
 
-Architecture follows GPT-5.2-pro consultation (2026-04-14):
+Architecture:
   - Each benchmark *case* = (dataset, preprocessing, perturbation, lane, policy, split, scoring)
   - Dataset cards describe provenance, access tier, and canonicalization
   - Scoring harness is backend-agnostic

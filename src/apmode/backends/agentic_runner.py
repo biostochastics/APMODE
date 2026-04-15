@@ -178,9 +178,9 @@ class AgenticRunner:
         exists in ``stability_manifest`` for the current candidate, the
         LLM receives pooled/stability diagnostics only — never per-
         imputation results. This is the structural guard against
-        imputation cherry-picking (PRD §4.2.1, consensus review
-        2026-04-14). When either argument is absent the runner falls
-        back to the classical per-fit diagnostic summary.
+        imputation cherry-picking (PRD §4.2.1). When either argument is
+        absent the runner falls back to the classical per-fit diagnostic
+        summary.
         """
         pooled_only = directive is not None and directive.llm_pooled_only
         stability_by_candidate: dict[str, Any] = (

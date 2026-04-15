@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field, model_validator
 
 
 class BayesianThresholds(BaseModel):
-    """Gate-1 Bayesian MCMC disqualification thresholds (plan 2026-04-14 §3.6).
+    """Gate-1 Bayesian MCMC disqualification thresholds (PRD §4.3.1).
 
     Applied only when ``BackendResult.backend == "bayesian_stan"`` — MLE-based
     backends skip these checks. Defaults follow Vehtari et al. (2021)

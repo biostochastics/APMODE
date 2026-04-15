@@ -10,7 +10,7 @@ Extends the original Suite B (B1-B3) with real-data scenarios (B4-B9):
   B8: Mavoglurant null covariate FP rate — add 5 random covariates
   B9: Gentamicin IOV challenge — inter-occasion variability on CL
 
-Architecture (per GPT-5.2-pro consultation 2026-04-14):
+Architecture:
   - Real datasets enter as *anchors* for controlled perturbations
   - One dataset can generate many cases via different recipes
   - Each case has expected assertions (dispatch, FP rate, rank stability)

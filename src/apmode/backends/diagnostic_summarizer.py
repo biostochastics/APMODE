@@ -39,8 +39,8 @@ _LLM_ALLOWED_TOP_LEVEL_KEYS: frozenset[str] = frozenset(
         "split_gof",
         "identifiability_warning",
         # Pooled / stability summary fields (MI runs, directive.llm_pooled_only=True).
-        # These replace per-imputation diagnostics so the LLM cannot cherry-pick
-        # a "lucky" imputation (PRD §4.2.1, consensus review 2026-04-14).
+        # These replace per-imputation diagnostics so the agentic backend cannot
+        # cherry-pick a "lucky" imputation (PRD §4.2.1).
         "pooled_ofv",
         "pooled_aic",
         "pooled_bic",
