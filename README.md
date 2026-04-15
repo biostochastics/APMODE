@@ -521,7 +521,7 @@ policy artifact so runs are reproducible without touching Python source:
 
 - **Source of truth**: [`policies/profiler.json`](policies/profiler.json)
 - **Loader**: [`src/apmode/data/policy.py`](src/apmode/data/policy.py) — `get_policy()` returns a typed frozen `ProfilerPolicy` dataclass; `policy_sha256` is embedded in every `EvidenceManifest`.
-- **Current version**: `profiler/v2.0.0` (`manifest_schema_version = 2`)
+- **Current version**: `profiler/v2.0.0` (`manifest_schema_version = 3`; structured `nonlinear_clearance_signals` replaces the flat scalars/masks)
 
 | Group | Parameter | Default | Purpose |
 |-------|-----------|---------|---------|

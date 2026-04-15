@@ -235,6 +235,7 @@ def _evidence_manifest() -> EvidenceManifest:
         protocol_heterogeneity="single-study",
         absorption_phase_coverage="adequate",
         elimination_phase_coverage="adequate",
+        node_dim_budget=8,
     )
 
 

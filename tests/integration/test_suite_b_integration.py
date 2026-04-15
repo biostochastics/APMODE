@@ -142,6 +142,7 @@ class TestSuiteBSparseData:
             protocol_heterogeneity="single-study",
             absorption_phase_coverage="adequate",
             elimination_phase_coverage="adequate",
+            node_dim_budget=8,
         )
         dispatch = route("discovery", manifest)
         assert "jax_node" in dispatch.backends

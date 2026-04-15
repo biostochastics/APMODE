@@ -7,9 +7,51 @@ Models are validated before writing to disk.
 
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+
+
+class SignalId(StrEnum):
+    """Stable identifiers for nonlinear-clearance voting signals.
+
+    These strings are the de-facto public API for downstream consumers
+    (Lane Router, report renderer, external audit tooling). New signals
+    append new members; existing values MUST NOT change.
+    """
+
+    CURVATURE_RATIO = "curvature_ratio"
+    TERMINAL_MONOEXP = "terminal_monoexp"
+    DOSE_PROPORTIONALITY_SMITH = "dose_proportionality_smith"
+
+
+class NonlinearClearanceSignal(BaseModel):
+    """One voting signal for nonlinear-clearance classification.
+
+    Each signal carries enough provenance to reproduce the dispatch
+    decision offline: the algorithm family, a bibliographic citation,
+    a JSON-pointer into ``policies/profiler.json`` identifying the
+    threshold used, the observed value + 90% CI where available, and
+    the eligibility rationale when the signal abstained.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    signal_id: SignalId
+    algorithm: str
+    citation: str
+    policy_key: str
+    threshold_value: float | None = None
+    observed_value: float | None = None
+    ci90_low: float | None = None
+    ci90_high: float | None = None
+    eligible: bool
+    eligibility_reason: str | None = None
+    voted: bool
+    n_subjects: int = Field(default=0, ge=0)
+    extras: dict[str, float | int | str | bool | None] = Field(default_factory=dict)
+
 
 # --- Sub-models for BackendResult (ARCHITECTURE.md §4.1) ---
 
@@ -374,11 +416,13 @@ class EvidenceManifest(BaseModel):
 
     # Schema version. Bumped when fields are added/removed/changed
     # semantically. Lane Router fails fast on an unknown version.
-    # v2 =  refactor (Smith 2000, Huang
-    # 2025 lambda_z, BLQ-aware shape, R3 unification, R7 compartmentality
-    # decoupling, R10 SS gating, R12 NODE-readiness, R14 flip-flop,
-    # R15 Wagner-Nelson ka, signal eligibility audit fields).
-    manifest_schema_version: int = 2
+    # v3 = structured nonlinear-clearance signal provenance: the scattered
+    # scalar fields (curvature_ratio_median/_ci90_*, terminal_fit_adj_r2_
+    # median, dose_proportionality_*, signal_eligibility_mask, signal_votes)
+    # collapse into ``nonlinear_clearance_signals: dict[SignalId, NonlinearClearanceSignal]``
+    # carrying per-signal algorithm / citation / policy_key / threshold /
+    # value+CI / eligibility reason / vote. Enables ICH M15 traceability.
+    manifest_schema_version: int = 3
     data_sha256: HexSHA256 | None = None
     route_certainty: Literal["confirmed", "inferred", "ambiguous"]
     absorption_complexity: Literal["simple", "multi-phase", "lag-signature", "unknown"]
@@ -407,19 +451,12 @@ class EvidenceManifest(BaseModel):
         Literal["one_compartment", "two_compartment", "multi_compartment_likely", "insufficient"]
         | None
     ) = None
-    # Continuous diagnostic signals supporting the categorical fields above.
-    # Median across analyzable subjects of: terminal monoexp adj R², AUC
-    # extrapolation fraction, early/late post-Cmax log-slope ratio, and
-    # fraction of subjects with prominent secondary peaks. Optional so older
-    # bundles continue to deserialize.
-    terminal_fit_adj_r2_median: float | None = Field(default=None, ge=-1.0, le=1.0)
+    # Continuous diagnostic signals not tied to the NLC voting pipeline.
+    # (Voting-related diagnostics — terminal monoexp R², curvature ratio,
+    # Smith 2000 beta — now live inside ``nonlinear_clearance_signals`` with
+    # full provenance; see SignalId enum.)
     auc_extrap_fraction_median: float | None = Field(default=None, ge=0.0, le=1.0)
     lambda_z_analyzable_fraction: float | None = Field(default=None, ge=0.0, le=1.0)
-    curvature_ratio_median: float | None = Field(default=None, ge=0.0)
-    # Follow-up: population-level bootstrap
-    # CI on the per-subject curvature ratio median (B=1000, 90% CI).
-    curvature_ratio_ci90_low: float | None = Field(default=None, ge=0.0)
-    curvature_ratio_ci90_high: float | None = Field(default=None, ge=0.0)
     peak_prominence_fraction: float | None = Field(default=None, ge=0.0, le=1.0)
     richness_category: Literal["sparse", "moderate", "rich"]
     identifiability_ceiling: Literal["low", "medium", "high"]
@@ -442,22 +479,16 @@ class EvidenceManifest(BaseModel):
     dv_cv_percent: float | None = Field(default=None, ge=0.0)
     terminal_log_residual_mad: float | None = Field(default=None, ge=0.0)
 
-    # ---- v2 fields ----
+    # ---- Structured nonlinear-clearance signal provenance (v3) ----
 
-    # Smith 2000 power-model beta coefficient on log(AUC)=alpha+beta·log(dose).
-    # None when design ineligible (<3 dose levels OR dose ratio <3-fold).
-    dose_proportionality_beta: float | None = None
-    dose_proportionality_beta_ci90_low: float | None = None
-    dose_proportionality_beta_ci90_high: float | None = None
-    dose_proportionality_dose_ratio: float | None = None
-    # Smith 2000 translated bounds derived from default [θ_L,θ_H]=[0.80,1.25]
-    dose_proportionality_smith_low: float | None = None
-    dose_proportionality_smith_high: float | None = None
-    # Audit fields: which signals were eligible to vote and which fired.
-    # Lets downstream consumers reproduce dispatch decisions and
-    # distinguish "abstained" from "voted against".
-    signal_eligibility_mask: dict[str, bool] = Field(default_factory=dict)
-    signal_votes: dict[str, bool] = Field(default_factory=dict)
+    # One record per signal: algorithm, citation, policy_key (JSON pointer
+    # into policies/profiler.json), threshold, observed value + 90% CI,
+    # eligibility bool with human-readable reason when ineligible, and
+    # whether it voted for nonlinearity. Keyed by SignalId for O(1) access
+    # by Lane Router and deterministic JSON ordering.
+    nonlinear_clearance_signals: dict[SignalId, NonlinearClearanceSignal] = Field(
+        default_factory=dict
+    )
     # R6 + R10: Huang 2025 best-lambda_z window stats for auditability.
     lambda_z_used_points_median: float | None = Field(default=None, ge=0.0)
     lambda_z_adj_r2_median: float | None = Field(default=None, ge=-1.0, le=1.0)

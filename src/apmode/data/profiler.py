@@ -21,7 +21,13 @@ import numpy as np
 import pandas as pd  # noqa: TC002
 from scipy.signal import find_peaks
 
-from apmode.bundle.models import CovariateSpec, ErrorModelPreference, EvidenceManifest
+from apmode.bundle.models import (
+    CovariateSpec,
+    ErrorModelPreference,
+    EvidenceManifest,
+    NonlinearClearanceSignal,
+    SignalId,
+)
 from apmode.data.policy import get_policy
 from apmode.data.types import (
     TerminalPhase,
@@ -169,14 +175,10 @@ def profile_data(
         nonlinear_clearance_evidence_strength=nlc_strength,
         multi_dose_detected=multi_dose,
         compartmentality=_assess_compartmentality(obs, doses, multi_dose=multi_dose),
-        terminal_fit_adj_r2_median=nlc_signals["terminal_fit_adj_r2_median"],
         auc_extrap_fraction_median=_auc_extrap_fraction_median(obs, doses, multi_dose=multi_dose),
         lambda_z_analyzable_fraction=_lambda_z_analyzable_fraction(
             obs, doses, multi_dose=multi_dose
         ),
-        curvature_ratio_median=_to_float(nlc_signals.get("curvature_ratio_median")),
-        curvature_ratio_ci90_low=_to_float(nlc_signals.get("curvature_ratio_ci90_low")),
-        curvature_ratio_ci90_high=_to_float(nlc_signals.get("curvature_ratio_ci90_high")),
         peak_prominence_fraction=_peak_prominence_fraction(obs, doses, multi_dose=multi_dose),
         richness_category=richness,
         identifiability_ceiling=_assess_identifiability(obs, n_subjects),
@@ -193,21 +195,8 @@ def profile_data(
         cmax_p95_p05_ratio=cmax_p95_p05_ratio,
         dv_cv_percent=dv_cv_percent,
         terminal_log_residual_mad=terminal_log_mad,
-        # ---- v2 fields ----
-        dose_proportionality_beta=_to_float(nlc_signals.get("dose_proportionality_beta")),
-        dose_proportionality_beta_ci90_low=_to_float(
-            nlc_signals.get("dose_proportionality_beta_ci90_low")
-        ),
-        dose_proportionality_beta_ci90_high=_to_float(
-            nlc_signals.get("dose_proportionality_beta_ci90_high")
-        ),
-        dose_proportionality_dose_ratio=_to_float(
-            nlc_signals.get("dose_proportionality_dose_ratio")
-        ),
-        dose_proportionality_smith_low=_to_float(nlc_signals.get("smith_low")),
-        dose_proportionality_smith_high=_to_float(nlc_signals.get("smith_high")),
-        signal_eligibility_mask=cast("dict[str, bool]", nlc_signals.get("eligibility_mask", {})),
-        signal_votes=cast("dict[str, bool]", nlc_signals.get("votes_mask", {})),
+        # ---- v3 structured signal provenance ----
+        nonlinear_clearance_signals=nlc_signals,
         lambda_z_used_points_median=lambda_z_meta.get("used_points_median"),
         lambda_z_adj_r2_median=lambda_z_meta.get("adj_r2_median"),
         flip_flop_risk=flip_flop,
@@ -411,14 +400,6 @@ def _assess_tad_consistency(
     if fraction_in < threshold:
         return "contaminated"
     return "clean"
-
-
-def _to_float(v: object) -> float | None:
-    """Coerce diagnostic-dict values to float for manifest fields. Strings
-    (rationales) collapse to None so the typed manifest stays numeric."""
-    if v is None or isinstance(v, str):
-        return None
-    return float(v)  # type: ignore[arg-type]
 
 
 def _filter_pk_observations_with_count(df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
@@ -1160,7 +1141,10 @@ def _classify_nonlinear_clearance_evidence_strength(
     doses: pd.DataFrame,
     *,
     multi_dose: bool,
-) -> tuple[Literal["none", "weak", "moderate", "strong"], dict[str, object]]:
+) -> tuple[
+    Literal["none", "weak", "moderate", "strong"],
+    dict[SignalId, NonlinearClearanceSignal],
+]:
     """Multi-signal voting for nonlinear-clearance evidence (PRD §10 Q2 follow-up).
 
     Returns ``(strength, signals)`` where ``signals`` carries the median
@@ -1191,91 +1175,129 @@ def _classify_nonlinear_clearance_evidence_strength(
     strongest single discriminator when present; abstains when design
     cannot support the test or pre-SS contamination is suspected.
     """
-    # Mixed numeric/text diagnostics — keep value type permissive so the
-    # rationale string from Smith 2000 ineligibility coexists with float
-    # diagnostic values.
-    # Mixed numeric / text / dict diagnostics — eligibility_mask and
-    # votes_mask are dict[str,bool]; everything else is float|str|None.
-    signals: dict[str, object] = {
-        "curvature_ratio_median": None,
-        "curvature_ratio_ci90_low": None,
-        "curvature_ratio_ci90_high": None,
-        "terminal_fit_adj_r2_median": None,
-        "dose_proportionality_beta": None,
-        "dose_proportionality_beta_ci90_low": None,
-        "dose_proportionality_beta_ci90_high": None,
-        "dose_proportionality_dose_ratio": None,
-        "dose_proportionality_rationale": None,
-        "smith_low": None,
-        "smith_high": None,
-    }
+    signals: dict[SignalId, NonlinearClearanceSignal] = {}
     votes = 0
     eligible = 0
-    # Per-signal eligibility + vote mask for manifest auditability
-    # .
-    eligibility_mask: dict[str, bool] = {
-        "curvature_ratio": False,
-        "terminal_monoexp": False,
-        "dose_proportionality_smith": False,
-    }
-    votes_mask: dict[str, bool] = {
-        "curvature_ratio": False,
-        "terminal_monoexp": False,
-        "dose_proportionality_smith": False,
-    }
 
-    # Signal 1: curvature ratio + population bootstrap CI (Follow-up:).
+    # Signal 1: curvature ratio + population bootstrap CI.
     ratios = _curvature_ratios_per_subject(obs, doses, multi_dose=multi_dose)
-    if len(ratios) >= 4:
+    n_curv = len(ratios)
+    if n_curv >= 4:
         eligible += 1
-        eligibility_mask["curvature_ratio"] = True
         ci = bootstrap_median_ci(ratios)
+        ci_low: float | None
+        ci_high: float | None
         if ci is not None:
             median_ratio, ci_low, ci_high = ci
-            signals["curvature_ratio_median"] = median_ratio
-            signals["curvature_ratio_ci90_low"] = ci_low
-            signals["curvature_ratio_ci90_high"] = ci_high
         else:
             median_ratio = float(np.median(ratios))
-            signals["curvature_ratio_median"] = median_ratio
-        # Vote on the point estimate (threshold tuned against the median,
-        # not the CI lower bound, to preserve sensitivity).
-        if median_ratio > _NONLINEAR_MM_CURVATURE_RATIO:
+            ci_low = ci_high = None
+        voted = median_ratio > _NONLINEAR_MM_CURVATURE_RATIO
+        if voted:
             votes += 1
-            votes_mask["curvature_ratio"] = True
+        signals[SignalId.CURVATURE_RATIO] = NonlinearClearanceSignal(
+            signal_id=SignalId.CURVATURE_RATIO,
+            algorithm="early_vs_late_post_cmax_log_slope_ratio",
+            citation="Richardson 2025 (Commun Med 5:327)",
+            policy_key="policies/profiler.json#/mm_curvature_ratio",
+            threshold_value=_NONLINEAR_MM_CURVATURE_RATIO,
+            observed_value=median_ratio,
+            ci90_low=ci_low,
+            ci90_high=ci_high,
+            eligible=True,
+            voted=voted,
+            n_subjects=n_curv,
+        )
+    else:
+        signals[SignalId.CURVATURE_RATIO] = NonlinearClearanceSignal(
+            signal_id=SignalId.CURVATURE_RATIO,
+            algorithm="early_vs_late_post_cmax_log_slope_ratio",
+            citation="Richardson 2025 (Commun Med 5:327)",
+            policy_key="policies/profiler.json#/mm_curvature_ratio",
+            threshold_value=_NONLINEAR_MM_CURVATURE_RATIO,
+            eligible=False,
+            eligibility_reason=(
+                f"fewer than 4 analyzable subjects (n={n_curv}); "
+                "insufficient for population-median voting"
+            ),
+            voted=False,
+            n_subjects=n_curv,
+        )
 
     # Signal 2: terminal monoexponential fit.
     r2s = _per_subject_terminal_monoexp_r2(obs, doses, multi_dose=multi_dose)
-    if len(r2s) >= 4:
+    n_r2 = len(r2s)
+    if n_r2 >= 4:
         eligible += 1
-        eligibility_mask["terminal_monoexp"] = True
         median_r2 = float(np.median(r2s))
-        signals["terminal_fit_adj_r2_median"] = median_r2
-        if median_r2 < _TERMINAL_MONOEXP_R2_LINEAR_THRESHOLD:
+        voted = median_r2 < _TERMINAL_MONOEXP_R2_LINEAR_THRESHOLD
+        if voted:
             votes += 1
-            votes_mask["terminal_monoexp"] = True
+        signals[SignalId.TERMINAL_MONOEXP] = NonlinearClearanceSignal(
+            signal_id=SignalId.TERMINAL_MONOEXP,
+            algorithm="huang_2025_lambda_z_adj_r2",
+            citation="Huang 2025 (nlmixr2autoinit::find_best_lambdaz)",
+            policy_key="policies/profiler.json#/terminal_monoexp_r2_linear_threshold",
+            threshold_value=_TERMINAL_MONOEXP_R2_LINEAR_THRESHOLD,
+            observed_value=median_r2,
+            eligible=True,
+            voted=voted,
+            n_subjects=n_r2,
+        )
+    else:
+        signals[SignalId.TERMINAL_MONOEXP] = NonlinearClearanceSignal(
+            signal_id=SignalId.TERMINAL_MONOEXP,
+            algorithm="huang_2025_lambda_z_adj_r2",
+            citation="Huang 2025 (nlmixr2autoinit::find_best_lambdaz)",
+            policy_key="policies/profiler.json#/terminal_monoexp_r2_linear_threshold",
+            threshold_value=_TERMINAL_MONOEXP_R2_LINEAR_THRESHOLD,
+            eligible=False,
+            eligibility_reason=(f"fewer than 4 subjects with fittable terminal phase (n={n_r2})"),
+            voted=False,
+            n_subjects=n_r2,
+        )
 
-    # Signal 3: Smith 2000 dose-proportionality with SS gating (R2 + R10).
+    # Signal 3: Smith 2000 dose-proportionality with SS gating.
     triples = _get_dose_auc_triples(obs, doses)
     ss_gated_pairs = _filter_triples_to_ss_subjects(obs, doses, triples)
     smith_fit = fit_dose_proportionality(ss_gated_pairs)
+    smith_extras: dict[str, float | int | str | bool | None] = {
+        "dose_ratio": smith_fit.dose_ratio,
+        "beta_smith_low": smith_fit.beta_smith_low,
+        "beta_smith_high": smith_fit.beta_smith_high,
+        "n_pairs": len(ss_gated_pairs),
+    }
     if smith_fit.eligible:
         eligible += 1
-        eligibility_mask["dose_proportionality_smith"] = True
-        signals["dose_proportionality_beta"] = smith_fit.beta
-        signals["dose_proportionality_beta_ci90_low"] = smith_fit.beta_ci90_low
-        signals["dose_proportionality_beta_ci90_high"] = smith_fit.beta_ci90_high
-        signals["dose_proportionality_dose_ratio"] = smith_fit.dose_ratio
-        signals["smith_low"] = smith_fit.beta_smith_low
-        signals["smith_high"] = smith_fit.beta_smith_high
-        if smith_fit.saturation_flag:
+        voted = bool(smith_fit.saturation_flag)
+        if voted:
             votes += 1
-            votes_mask["dose_proportionality_smith"] = True
+        signals[SignalId.DOSE_PROPORTIONALITY_SMITH] = NonlinearClearanceSignal(
+            signal_id=SignalId.DOSE_PROPORTIONALITY_SMITH,
+            algorithm="smith_2000_power_model",
+            citation="Smith 2000 (Clin Pharmacokinet 38:1-16)",
+            policy_key="policies/profiler.json#/smith_theta_bounds",
+            threshold_value=smith_fit.beta_smith_high,
+            observed_value=smith_fit.beta,
+            ci90_low=smith_fit.beta_ci90_low,
+            ci90_high=smith_fit.beta_ci90_high,
+            eligible=True,
+            voted=voted,
+            n_subjects=len(ss_gated_pairs),
+            extras=smith_extras,
+        )
     else:
-        signals["dose_proportionality_rationale"] = smith_fit.rationale
-
-    signals["eligibility_mask"] = eligibility_mask
-    signals["votes_mask"] = votes_mask
+        signals[SignalId.DOSE_PROPORTIONALITY_SMITH] = NonlinearClearanceSignal(
+            signal_id=SignalId.DOSE_PROPORTIONALITY_SMITH,
+            algorithm="smith_2000_power_model",
+            citation="Smith 2000 (Clin Pharmacokinet 38:1-16)",
+            policy_key="policies/profiler.json#/smith_theta_bounds",
+            eligible=False,
+            eligibility_reason=smith_fit.rationale,
+            voted=False,
+            n_subjects=len(ss_gated_pairs),
+            extras=smith_extras,
+        )
 
     # Strength is the fraction of *eligible* signals that fired, not an
     # absolute count out of three. This avoids misclassifying single-dose

@@ -15,7 +15,12 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from apmode.bundle.models import ColumnMapping, CovariateMetadata, DataManifest  # noqa: E402
+from apmode.bundle.models import (  # noqa: E402
+    ColumnMapping,
+    CovariateMetadata,
+    DataManifest,
+    SignalId,
+)
 from apmode.data.profiler import profile_data  # noqa: E402
 
 
@@ -53,9 +58,7 @@ def _stub_manifest(df: pd.DataFrame) -> DataManifest:
         n_subjects=int(df["NMID"].nunique()),
         n_observations=int((df["EVID"] == 0).sum()),
         n_doses=int((df["EVID"] == 1).sum()),
-        has_multidose=bool(
-            (df.groupby("NMID")["EVID"].apply(lambda s: (s == 1).sum() >= 2).any())
-        ),
+        has_multidose=bool(df.groupby("NMID")["EVID"].apply(lambda s: (s == 1).sum() >= 2).any()),
         covariates=cov_specs,
     )
 
@@ -89,10 +92,20 @@ def main() -> None:
             print(f"SKIP {name}: file missing at {path}")
             continue
         df = pd.read_csv(path)
-        # Profiler now applies DVID-based PK-observation filter internally
-        # with logging — no manual filtering needed.
         manifest = _stub_manifest(df)
         ev = profile_data(df, manifest)
+        term = ev.nonlinear_clearance_signals.get(SignalId.TERMINAL_MONOEXP)
+        curv = ev.nonlinear_clearance_signals.get(SignalId.CURVATURE_RATIO)
+        term_r2 = (
+            f"{term.observed_value:.3f}"
+            if term is not None and term.observed_value is not None
+            else "-"
+        )
+        curv_ratio = (
+            f"{curv.observed_value:.2f}"
+            if curv is not None and curv.observed_value is not None
+            else "-"
+        )
         rows.append(
             (
                 name,
@@ -101,12 +114,8 @@ def main() -> None:
                 ev.compartmentality,
                 ev.nonlinear_clearance_evidence_strength,
                 ev.multi_dose_detected,
-                f"{ev.terminal_fit_adj_r2_median:.3f}"
-                if ev.terminal_fit_adj_r2_median is not None
-                else "-",
-                f"{ev.curvature_ratio_median:.2f}"
-                if ev.curvature_ratio_median is not None
-                else "-",
+                term_r2,
+                curv_ratio,
                 f"{ev.lambda_z_analyzable_fraction:.2f}"
                 if ev.lambda_z_analyzable_fraction is not None
                 else "-",
