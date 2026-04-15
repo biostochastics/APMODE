@@ -87,6 +87,14 @@ class RunConfig:
     # per-subject NCA exclusion exceeds 50% — prevents SAEM from seeding on
     # degenerate defaults when a reliable prior is known.
     fallback_estimates: dict[str, float] | None = None
+    # Per-column binary encoding overrides for categorical covariates whose
+    # auto-detected polarity is wrong for the analysis (e.g., overriding
+    # the alphabetic-default mapping of two unknown string levels). Maps
+    # column name → {raw_value: 0 or 1}. Threaded through to
+    # ``summarize_covariates`` and ``prepare_frem_data`` for FREM and MI
+    # paths. See ``apmode.data.categorical_encoding.EXPECTED_BINARY_FORMAT``
+    # for the convention APMODE auto-detects.
+    binary_encode_overrides: dict[str, dict[object, int]] | None = None
 
     def __post_init__(self) -> None:
         self.max_concurrency = max(1, self.max_concurrency)
@@ -919,6 +927,7 @@ class Orchestrator:
             seed=self._config.seed,
             timeout_seconds=self._config.timeout_seconds,
             initial_estimates=init,
+            binary_encode_overrides=self._config.binary_encode_overrides,
         )
         return _SR(
             candidate_id=frem_spec.model_id,

@@ -58,6 +58,7 @@ async def run_frem_fit(
     seed: int,
     timeout_seconds: int | None = None,
     transforms: dict[str, str] | None = None,
+    binary_encode_overrides: dict[str, dict[object, int]] | None = None,
     initial_estimates: dict[str, float] | None = None,
 ) -> BackendResult:
     """Execute a single FREM fit end-to-end.
@@ -95,7 +96,12 @@ async def run_frem_fit(
     """
     del data_path  # kept in signature for symmetry with classical fits
 
-    summaries = summarize_covariates(df, list(covariate_names), transforms=transforms)
+    summaries = summarize_covariates(
+        df,
+        list(covariate_names),
+        transforms=transforms,
+        binary_encode_overrides=binary_encode_overrides,
+    )
     augmented = prepare_frem_data(df, summaries)
 
     aug_path = work_dir / "frem_augmented.csv"
