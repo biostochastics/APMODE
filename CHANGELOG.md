@@ -81,6 +81,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   decomposition, `None` SE degradation, misaligned-input validation,
   end-to-end aggregate pooling from `PerImputationFit` rows.
 
+### Fixed — CLI hardening + multi-model review (2026-04-15)
+
+Two rounds of clink review (droid, crush, gemini, kimi, codex) on the
+Typer CLI surface uncovered a class of JSON-parsing and exit-code bugs
+that were never CLI-tested. All fixed; the new `tests/unit/test_cli.py`
+(60 tests, ~0.8s wall time) now covers every top-level command.
+
+- **`log --top` was unusable without the flag** — default=0 collided
+  with `min=1`, so every invocation returned Typer exit 2. Lowered
+  `min=0` and documented `0 = disabled`.
+- **`_load_json` crashed on missing files and non-dict JSON** — only
+  `JSONDecodeError` was caught, so a missing optional artifact raised
+  `FileNotFoundError`, and a `ranking.json` containing `[1,2,3]` (valid
+  JSON, not an object) crashed every `.get()` call downstream. Now
+  returns `None` with a warning on `FileNotFoundError`, `PermissionError`,
+  `IsADirectoryError`, `OSError`, `JSONDecodeError`, and non-dict values.
+- **JSONL consumers crashed on non-object rows** — every `json.loads(line).get(...)`
+  path in `inspect`, `log --failed`, `_show_bundle_overview`, and the
+  agentic trace parsers has been routed through a new `_parse_json_dict_row`
+  helper that validates the row is a dict.
+- **Empty JSONL reported "1 total, 0 converged"** — `"".split("\n") == [""]`
+  made `_show_bundle_overview` count a blank trajectory as one candidate.
+- **`_launch_run` swallowed all non-zero exit codes** —
+  `contextlib.suppress(SystemExit)` meant `apmode explore -y` returned
+  0 even when the inner pipeline failed. Also: `typer.Exit` is
+  `click.exceptions.Exit` (a `RuntimeError` subclass), NOT `SystemExit`,
+  so the old suppressor never fired on the actual error path. The new
+  handler catches both types explicitly and propagates non-zero codes.
+- **`_validate_file` / `_validate_jsonl` crashed on adversarial bundles** —
+  neither caught `OSError`. A required path being a directory or
+  unreadable file now reports a clean validation failure.
+- **`graph --output nested/path/out.json` crashed** — parent dirs were
+  never created before `write_text`.
+- **`graph` did not distinguish missing vs. malformed `search_graph.json`** —
+  missing still exits 0 (non-agentic bundle); malformed now exits 1.
+- **`explore` discarded `fetch_dataset`'s returned path** and ran
+  profile / NCA / search-space generation unguarded. All three stages
+  are now wrapped with clean error messages and exit 1 on failure.
+- **Dead code**: the standalone `_show_trace_cost` (59 LOC) was never
+  called — all sites used `_show_trace_cost_multi`. Deleted.
+- **CLI docs in CLAUDE.md were wrong**: `--agentic anthropic` (actually
+  a boolean flag + `--provider`), `validate <dataset.csv>` (actually
+  `<bundle_dir>`). Fixed.
+
+Net delta: `src/apmode/cli.py` ~-30 LOC after deleting dead code and
+centralising JSON parsing through helpers. `mypy --strict` and `ruff`
+remain clean. Full unit suite 1297 passing.
+
 ### Fixed — multi-agent review of orchestrator MI/FREM wiring (2026-04-14)
 
 Five consensus-level bugs surfaced by crush, codex, and gemini reviews

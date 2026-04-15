@@ -583,13 +583,24 @@ def _pass_fraction(passed: int, total: int) -> str:
 
 
 def _load_json(path: Path, label: str) -> dict[str, Any] | None:
-    """Load a JSON file, printing a warning on decode error."""
+    """Load a JSON file, returning None if missing, unreadable, or not a JSON object."""
     try:
-        data: dict[str, Any] = json.loads(path.read_text())
-        return data
-    except json.JSONDecodeError as e:
-        console.print(f"  [yellow]Warning:[/] corrupt {escape(label)}: {escape(str(e))}")
+        raw = json.loads(path.read_text())
+    except FileNotFoundError:
         return None
+    except (PermissionError, IsADirectoryError, OSError) as e:
+        if label:
+            console.print(f"  [yellow]Warning:[/] cannot read {escape(label)}: {escape(str(e))}")
+        return None
+    except json.JSONDecodeError as e:
+        if label:
+            console.print(f"  [yellow]Warning:[/] corrupt {escape(label)}: {escape(str(e))}")
+        return None
+    if not isinstance(raw, dict):
+        if label:
+            console.print(f"  [yellow]Warning:[/] {escape(label)} is not a JSON object")
+        return None
+    return raw
 
 
 def _discover_agentic_mode_dirs(bundle_dir: Path) -> dict[str, Path]:
@@ -621,14 +632,31 @@ def _discover_agentic_mode_dirs(bundle_dir: Path) -> dict[str, Path]:
     return mode_dirs
 
 
+def _parse_json_dict_row(line: str) -> dict[str, Any] | None:
+    """Parse a single JSONL row; return the dict or None if missing/malformed."""
+    if not line.strip():
+        return None
+    try:
+        raw = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    return raw if isinstance(raw, dict) else None
+
+
 def _validate_jsonl(path: Path) -> str | None:
-    """Validate that every non-blank line is valid JSON. Returns error or None."""
-    for i, line in enumerate(path.read_text().splitlines(), 1):
+    """Validate that every non-blank line is a valid JSON object. Returns error or None."""
+    try:
+        text = path.read_text()
+    except OSError as e:
+        return str(e)
+    for i, line in enumerate(text.splitlines(), 1):
         if line.strip():
             try:
-                json.loads(line)
+                raw = json.loads(line)
             except json.JSONDecodeError as e:
                 return f"line {i}: {e}"
+            if not isinstance(raw, dict):
+                return f"line {i}: expected JSON object, got {type(raw).__name__}"
     return None
 
 
@@ -640,10 +668,14 @@ def _validate_file(path: Path, filename: str) -> tuple[str, str]:
             return "[red bold]BAD[/]", err
         return "[green]OK[/]", ""
     try:
-        json.loads(path.read_text())
-        return "[green]OK[/]", ""
+        raw = json.loads(path.read_text())
+    except OSError as e:
+        return "[red bold]BAD[/]", str(e)
     except json.JSONDecodeError as e:
         return "[red bold]BAD[/]", str(e)
+    if not isinstance(raw, dict):
+        return "[red bold]BAD[/]", f"expected JSON object, got {type(raw).__name__}"
+    return "[green]OK[/]", ""
 
 
 # ---------------------------------------------------------------------------
@@ -838,15 +870,17 @@ def inspect(
             n_conv = 0
             parse_ok = True
             for i, line in enumerate(lines, 1):
-                try:
-                    if json.loads(line).get("converged"):
-                        n_conv += 1
-                except json.JSONDecodeError:
-                    console.print(
-                        f"  [yellow]Warning:[/] search_trajectory.jsonl corrupt at line {i}"
-                    )
-                    parse_ok = False
-                    break
+                row = _parse_json_dict_row(line)
+                if row is None:
+                    if line.strip():
+                        console.print(
+                            f"  [yellow]Warning:[/] search_trajectory.jsonl corrupt at line {i}"
+                        )
+                        parse_ok = False
+                        break
+                    continue
+                if row.get("converged"):
+                    n_conv += 1
             if parse_ok:
                 bar = _mini_bar(n_conv, n_total)
                 console.print(
@@ -1155,7 +1189,7 @@ def explore(
         else:
             with console.status(f"[cyan]Fetching {dataset} from nlmixr2data...[/]"):
                 try:
-                    fetch_dataset(dataset, cache_dir)
+                    cached = fetch_dataset(dataset, cache_dir)
                 except RuntimeError as e:
                     err_console.print(f"[red bold]Fetch failed:[/] {escape(str(e))}")
                     raise typer.Exit(code=1) from None
@@ -1186,15 +1220,23 @@ def explore(
     console.print(Panel(t, title="[bold]Data Summary[/]", border_style="blue"))
 
     # --- Step 3: Profile ---
-    with console.status("[cyan]Profiling data...[/]"):
-        evidence = profile_data(df, manifest)
+    try:
+        with console.status("[cyan]Profiling data...[/]"):
+            evidence = profile_data(df, manifest)
+    except Exception as e:
+        err_console.print(f"[red bold]Profiling failed:[/] {escape(str(e))}")
+        raise typer.Exit(code=1) from None
 
     _print_evidence_panel(evidence)
 
     # --- Step 4: NCA estimates ---
-    with console.status("[cyan]Computing NCA estimates...[/]"):
-        nca = NCAEstimator(df, manifest)
-        estimates = nca.estimate_per_subject()
+    try:
+        with console.status("[cyan]Computing NCA estimates...[/]"):
+            nca = NCAEstimator(df, manifest)
+            estimates = nca.estimate_per_subject()
+    except Exception as e:
+        err_console.print(f"[red bold]NCA failed:[/] {escape(str(e))}")
+        raise typer.Exit(code=1) from None
 
     t = Table(show_header=True, box=None, padding=(0, 2))
     t.add_column("Parameter", style="bold")
@@ -1204,8 +1246,12 @@ def explore(
     console.print(Panel(t, title="[bold]NCA Initial Estimates[/]", border_style="cyan"))
 
     # --- Step 5: Search space preview ---
-    space = SearchSpace.from_manifest(evidence)
-    candidates = generate_root_candidates(space, base_params=estimates)
+    try:
+        space = SearchSpace.from_manifest(evidence)
+        candidates = generate_root_candidates(space, base_params=estimates)
+    except Exception as e:
+        err_console.print(f"[red bold]Search space generation failed:[/] {escape(str(e))}")
+        raise typer.Exit(code=1) from None
 
     _print_search_space_panel(space, candidates, lane.value)
 
@@ -1289,10 +1335,12 @@ def _launch_run(
     output: Path,
     parallel_models: int = 1,
 ) -> None:
-    """Delegate to the run command by invoking it directly."""
-    import contextlib
+    """Delegate to the run command by invoking it directly.
 
-    with contextlib.suppress(SystemExit):
+    Propagates any non-zero exit code from the underlying pipeline so
+    ``explore -y`` does not lie about success.
+    """
+    try:
         run(
             dataset=csv_path,
             lane=lane,
@@ -1303,6 +1351,20 @@ def _launch_run(
             verbose=False,
             quiet=False,
         )
+    except typer.Exit as e:
+        # Typer's Exit is a RuntimeError subclass, not SystemExit.
+        if e.exit_code != 0:
+            raise
+    except SystemExit as e:
+        # Defense in depth: inner code might raise SystemExit directly.
+        raw = e.code
+        code = (
+            0
+            if raw is None
+            else (raw if isinstance(raw, int) and not isinstance(raw, bool) else 1)
+        )
+        if code != 0:
+            raise typer.Exit(code=code) from None
 
 
 # ---------------------------------------------------------------------------
@@ -1415,7 +1477,12 @@ def log_cmd(
     ] = False,
     top: Annotated[
         int,
-        typer.Option("--top", "-n", help="Show top N ranked candidates with parameters.", min=1),
+        typer.Option(
+            "--top",
+            "-n",
+            help="Show top N ranked candidates with parameters (0 = disabled).",
+            min=0,
+        ),
     ] = 0,
 ) -> None:
     """Query logs, gate decisions, and parameters from a bundle.
@@ -1456,15 +1523,15 @@ def log_cmd(
         t.add_column("Reason")
 
         for line in text.split("\n"):
-            try:
-                rec = json.loads(line)
-                t.add_row(
-                    rec.get("model_id", "?"),
-                    rec.get("failed_gate", "?"),
-                    rec.get("reason", "-")[:60],
-                )
-            except json.JSONDecodeError:
+            rec = _parse_json_dict_row(line)
+            if rec is None:
                 continue
+            reason = rec.get("reason", "-")
+            t.add_row(
+                rec.get("model_id", "?"),
+                rec.get("failed_gate", "?"),
+                reason[:60] if isinstance(reason, str) else str(reason),
+            )
         console.print(t)
         return
 
@@ -1585,8 +1652,13 @@ def _show_bundle_overview(bundle_dir: Path) -> None:
     # Search trajectory
     st_path = bundle_dir / "search_trajectory.jsonl"
     if st_path.exists():
-        lines = st_path.read_text().strip().split("\n")
-        n_conv = sum(1 for ln in lines if json.loads(ln).get("converged", False))
+        text = st_path.read_text().strip()
+        lines = text.split("\n") if text else []
+        n_conv = 0
+        for ln in lines:
+            row = _parse_json_dict_row(ln)
+            if row and row.get("converged", False):
+                n_conv += 1
         t.add_row("Candidates", f"{len(lines)} total, {n_conv} converged")
 
     # Gate decisions
@@ -1710,18 +1782,25 @@ def _show_trace_summary_multi(mode_dirs: dict[str, Path], as_json: bool) -> None
 
 
 def _read_iterations_jsonl(trace_dir: Path) -> list[dict[str, Any]]:
-    """Parse agentic_iterations.jsonl, skipping corrupt lines."""
+    """Parse agentic_iterations.jsonl, skipping corrupt or non-dict lines."""
     iters_path = trace_dir / "agentic_iterations.jsonl"
     if not iters_path.exists():
         return []
     entries: list[dict[str, Any]] = []
-    for i, line in enumerate(iters_path.read_text().strip().split("\n"), 1):
+    text = iters_path.read_text().strip()
+    if not text:
+        return entries
+    for i, line in enumerate(text.split("\n"), 1):
         if not line.strip():
             continue
-        try:
-            entries.append(json.loads(line))
-        except json.JSONDecodeError:
-            console.print(f"  [yellow]Warning:[/] corrupt line {i} in {escape(str(iters_path))}")
+        row = _parse_json_dict_row(line)
+        if row is None:
+            console.print(
+                f"  [yellow]Warning:[/] corrupt or non-object line {i} in "
+                f"{escape(str(iters_path))}"
+            )
+            continue
+        entries.append(row)
     return entries
 
 
@@ -1732,14 +1811,7 @@ def _show_trace_summary(trace_dir: Path, as_json: bool) -> None:
         console.print("[dim]No agentic_iterations.jsonl found.[/]")
         return
 
-    entries: list[dict[str, Any]] = []
-    for i, line in enumerate(iters_path.read_text().strip().split("\n"), 1):
-        if not line.strip():
-            continue
-        try:
-            entries.append(json.loads(line))
-        except json.JSONDecodeError:
-            console.print(f"  [yellow]Warning:[/] corrupt line {i} in agentic_iterations.jsonl")
+    entries = _read_iterations_jsonl(trace_dir)
 
     if not entries:
         console.print("[dim]No iterations recorded.[/]")
@@ -1878,15 +1950,13 @@ def _show_trace_cost_multi(mode_dirs: dict[str, Path], as_json: bool) -> None:
         tot_cost = 0.0
         tot_time = 0.0
         for f in meta_files:
-            try:
-                meta = json.loads(f.read_text())
-            except json.JSONDecodeError:
-                console.print(f"  [yellow]Warning:[/] corrupt meta file: {escape(f.name)}")
+            meta = _load_json(f, f.name)
+            if meta is None:
                 continue
-            tot_in += meta.get("input_tokens", 0)
-            tot_out += meta.get("output_tokens", 0)
-            tot_cost += meta.get("cost_usd", 0.0)
-            tot_time += meta.get("wall_time_seconds", 0.0)
+            tot_in += int(meta.get("input_tokens", 0) or 0)
+            tot_out += int(meta.get("output_tokens", 0) or 0)
+            tot_cost += float(meta.get("cost_usd", 0.0) or 0.0)
+            tot_time += float(meta.get("wall_time_seconds", 0.0) or 0.0)
         per_mode[mode] = {
             "iterations": len(meta_files),
             "input_tokens": tot_in,
@@ -1939,67 +2009,6 @@ def _show_trace_cost_multi(mode_dirs: dict[str, Path], as_json: bool) -> None:
             f"{float(grand_total['wall_time_seconds']):.1f}",
         )
     console.print(t)
-    console.print()
-
-
-def _show_trace_cost(trace_dir: Path, as_json: bool) -> None:
-    """Aggregate token/cost across all iterations."""
-    meta_files = sorted(trace_dir.glob("iter_*_meta.json"))
-    if not meta_files:
-        console.print("[dim]No meta files found.[/]")
-        return
-
-    total_input = 0
-    total_output = 0
-    total_cost = 0.0
-    total_time = 0.0
-
-    for f in meta_files:
-        try:
-            meta = json.loads(f.read_text())
-        except json.JSONDecodeError:
-            console.print(f"  [yellow]Warning:[/] corrupt meta file: {f.name}")
-            continue
-        total_input += meta.get("input_tokens", 0)
-        total_output += meta.get("output_tokens", 0)
-        total_cost += meta.get("cost_usd", 0.0)
-        total_time += meta.get("wall_time_seconds", 0.0)
-
-    if as_json:
-        console.print(
-            json.dumps(
-                {
-                    "iterations": len(meta_files),
-                    "input_tokens": total_input,
-                    "output_tokens": total_output,
-                    "total_tokens": total_input + total_output,
-                    "cost_usd": round(total_cost, 4),
-                    "wall_time_seconds": round(total_time, 1),
-                },
-                indent=2,
-            )
-        )
-        return
-
-    console.print()
-    console.rule("[bold]Agentic Cost Summary[/]")
-    t = Table(show_header=False, box=None, padding=(0, 2))
-    t.add_column(style="dim")
-    t.add_column(style="bold")
-    t.add_row("Iterations", str(len(meta_files)))
-    t.add_row("Input tokens", f"{total_input:,}")
-    t.add_row("Output tokens", f"{total_output:,}")
-    t.add_row("Total tokens", f"{total_input + total_output:,}")
-    t.add_row("Cost", f"${total_cost:.4f}")
-    t.add_row("Wall time", f"{total_time:.1f}s")
-    console.print(
-        Panel(
-            t,
-            title="[bold]Cost[/]",
-            border_style="yellow",
-            subtitle=f"${total_cost:.2f} across {len(meta_files)} iterations",
-        )
-    )
     console.print()
 
 
@@ -2111,7 +2120,9 @@ def lineage(
             if spec and specs_dir.is_dir():
                 spec_path = specs_dir / f"{step['candidate_id']}.json"
                 if spec_path.exists():
-                    step_data["spec"] = json.loads(spec_path.read_text())
+                    spec_data = _load_json(spec_path, f"spec {step['candidate_id']}")
+                    if spec_data is not None:
+                        step_data["spec"] = spec_data
             result_entries.append(step_data)
         console.print(json.dumps(result_entries, indent=2))
         return
@@ -2155,9 +2166,10 @@ def lineage(
         if spec and specs_dir.is_dir():
             spec_path = specs_dir / f"{cid}.json"
             if spec_path.exists():
-                spec_data = json.loads(spec_path.read_text())
-                spec_summary = _spec_one_liner(spec_data)
-                current_branch.add(f"[dim]{spec_summary}[/]")
+                spec_data = _load_json(spec_path, f"spec {cid}")
+                if spec_data is not None:
+                    spec_summary = _spec_one_liner(spec_data)
+                    current_branch.add(f"[dim]{spec_summary}[/]")
 
     console.print(tree)
     console.print()
@@ -2246,7 +2258,9 @@ def graph(
 
     graph_data = _load_json(graph_path, "search_graph.json")
     if not graph_data:
-        return
+        # File exists but is unreadable / corrupt / not a JSON object:
+        err_console.print("[red bold]Error:[/] search_graph.json is empty or malformed.")
+        raise typer.Exit(code=1)
 
     nodes: list[dict[str, Any]] = graph_data.get("nodes", [])
     edges: list[dict[str, Any]] = graph_data.get("edges", [])
@@ -2270,11 +2284,16 @@ def graph(
         )
         raise typer.Exit(code=1)
 
+    def _write(text: str, label: str) -> None:
+        assert output is not None
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(text)
+        console.print(f"[green]{label} written to {escape(str(output))}[/]")
+
     if fmt == "json":
         text = json.dumps({"nodes": nodes, "edges": edges}, indent=2)
         if output:
-            output.write_text(text)
-            console.print(f"[green]Written to {escape(str(output))}[/]")
+            _write(text, "JSON")
         else:
             console.print(text)
         return
@@ -2282,8 +2301,7 @@ def graph(
     if fmt == "dot":
         text = _graph_to_dot(nodes, edges)
         if output:
-            output.write_text(text)
-            console.print(f"[green]DOT written to {escape(str(output))}[/]")
+            _write(text, "DOT")
         else:
             console.print(text)
         return
@@ -2291,8 +2309,7 @@ def graph(
     if fmt == "mermaid":
         text = _graph_to_mermaid(nodes, edges)
         if output:
-            output.write_text(text)
-            console.print(f"[green]Mermaid written to {escape(str(output))}[/]")
+            _write(text, "Mermaid")
         else:
             console.print(text)
         return

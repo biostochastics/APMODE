@@ -432,10 +432,10 @@ Rscript benchmarks/suite_a/simulate_all.R [output_dir]
 
 ## Test Suite
 
-1145+ tests across multiple strategies:
+1290+ tests across multiple strategies:
 
 ```bash
-uv run pytest tests/unit/ -q               # ~700 unit tests
+uv run pytest tests/unit/ -q               # ~1290 unit tests
 uv run pytest tests/integration/ -q         # 30 integration tests (mock R pipeline + Discovery lane)
 uv run pytest tests/property/ -q            # ~30 Hypothesis property-based tests
 uv run pytest tests/golden/ -q              # 21 syrupy golden master snapshots
@@ -444,7 +444,8 @@ uv run pytest tests/ --snapshot-update      # update snapshots after emitter cha
 
 | Category | Count | Coverage |
 |----------|-------|----------|
-| Unit tests | ~700 | All modules: DSL, data, backends, search, governance, routing, bundle, benchmarks |
+| Unit tests | ~1290 | All modules: DSL, data, backends, search, governance, routing, bundle, benchmarks |
+| CLI (Typer) | 60 | Every top-level command: arg parsing, option dispatch, exit codes, error paths |
 | NODE backend | 180 | Constraints, sub-model, ODE, trainer, runner, distillation, init strategy, real-data (theo_sd) |
 | Stan codegen | 48 | Stan emitter (incl. IOV + BLQ M3/M4) + cross-backend lowering validation |
 | Gate 2.5 + ranking | 27 | ICH M15 credibility + cross-paradigm ranking |
