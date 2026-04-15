@@ -110,9 +110,8 @@ DATASETS: list[dict[str, object]] = [
         "filter_cmt": None,  # keep PK only (dvid/cmt filtering done below)
         "covariates": ["wt", "age", "sex"],
         "transforms": {"wt": "log", "sex": "binary"},
-        # warfarin encodes sex as the strings "1"/"2" / "male"/"female"
-        # depending on the source release; remap to canonical 0/1.
-        "binary_encode": {"sex": {"male": 1, "female": 0, "1": 1, "2": 0, 1: 1, 2: 0}},
+        # SEX is "male"/"female" strings; auto-detected and remapped by
+        # apmode.data.categorical_encoding (no per-dataset config needed).
         "drop_fraction": 0.20,
     },
     {
@@ -122,9 +121,8 @@ DATASETS: list[dict[str, object]] = [
         "canonicalize_evid": False,
         "covariates": ["WT", "AGE", "SEX"],
         "transforms": {"WT": "log", "SEX": "binary"},
-        # mavoglurant encodes SEX with 1-indexed integers (1/2). Remap to
-        # 0/1 so the binary FREM endpoint validator accepts them.
-        "binary_encode": {"SEX": {1: 0, 2: 1}},
+        # SEX uses 1-indexed integers (1/2); auto-detected and remapped
+        # by apmode.data.categorical_encoding (no per-dataset config).
         "drop_fraction": 0.15,
     },
 ]
@@ -179,18 +177,13 @@ write.csv(df, '{csv_path}', row.names = FALSE)
     if cfg.get("canonicalize_evid", False) and "EVID" in df.columns:
         df.loc[df["EVID"] == 101, "EVID"] = 1
 
-    # Apply per-dataset binary encoding for categorical covariates whose
-    # native representation is not 0/1 (warfarin: "male"/"female";
-    # mavoglurant: 1/2 1-indexed). The FREM emitter's ``binary``
-    # transform requires {0, 1} so the additive-normal endpoint
-    # interpretation as a linear group association is well-defined.
-    binary_encode = cfg.get("binary_encode", {})
-    for col, mapping in binary_encode.items():
-        if col not in df.columns:
-            continue
-        # ``map`` returns NaN for unmapped values; coerce explicitly so
-        # downstream summarize_covariates ignores those rows via dropna.
-        df[col] = df[col].map(mapping)
+    # Native categorical encodings ("male"/"female", 1/2, etc.) are
+    # auto-detected and remapped to {0, 1} by
+    # ``apmode.data.categorical_encoding.auto_remap_binary_columns``,
+    # invoked transparently by ``summarize_covariates`` when the
+    # ``binary`` transform is requested. The sweep harness no longer
+    # needs to know about per-dataset encoding quirks — that's the
+    # whole point of the auto-detection module.
     return df
 
 

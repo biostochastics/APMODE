@@ -25,6 +25,7 @@ from apmode.bundle.models import (  # noqa: TC001 — used at runtime in method 
     BackendResult,
     BackendVersions,
     CandidateLineage,
+    CategoricalEncodingProvenance,
     CredibilityReport,
     DataManifest,
     EvidenceManifest,
@@ -168,6 +169,22 @@ class BundleEmitter:
         """Write imputation_stability.json (MI runs only)."""
         path = self.run_dir / "imputation_stability.json"
         path.write_text(manifest.model_dump_json(indent=2))
+        return path
+
+    def write_categorical_encoding_provenance(
+        self, provenance: CategoricalEncodingProvenance
+    ) -> Path:
+        """Write categorical_encoding_provenance.json.
+
+        Captures every column the auto-encoding pass inspected + the
+        polarity actually applied. Lets reviewers trace exactly how a
+        raw ``"male"`` / ``"female"`` column became 0/1 in the
+        downstream FREM joint Ω entry, including whether the polarity
+        came from auto-detection or a caller override (PRD §4.2.0,
+        multi-CLI review consensus 2026-04-15).
+        """
+        path = self.run_dir / "categorical_encoding_provenance.json"
+        path.write_text(provenance.model_dump_json(indent=2))
         return path
 
     # --- Compiled specs ---

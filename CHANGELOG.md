@@ -7,6 +7,83 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Categorical encoding auto-detection + provenance recording
+APMODE now detects and remaps non-canonical binary categorical
+covariate encodings automatically, with a documented format contract
+and an explicit override path. Closes the "we should be able to let
+people know what format we are expecting and how to override" gap
+flagged after the benchmark sweep needed per-dataset
+``binary_encode`` configs.
+
+- **`src/apmode/data/categorical_encoding.py`** (new, ~430 LOC).
+  - `detect_encoding(series)` classifies a column as one of:
+    `binary_zero_one` (no remap), `binary_one_two` (1-indexed),
+    `binary_string_pair` (recognized M/F, Yes/No, etc., or
+    deterministic alphabetic-order default with `UserWarning` for
+    unknown pairs), `binary_boolean`, `multi_level`, `continuous`,
+    `constant`, `all_missing`.
+  - `auto_remap_binary_columns(df, columns, overrides=..., apply=...)`
+    applies the remap (or just inspects when `apply=False`) with
+    **completeness validation**: silent NaN-on-incomplete-remap was
+    the highest-impact bug both crush and codex flagged in the
+    multi-CLI review; we now raise `ValueError` if any observed
+    non-null value would be left unmapped, or if any target value
+    is outside `{0, 1}`.
+  - **Case-folded deduplication**: `["M", "m", "F"]` → recognized as
+    binary M/F with the `m` variant remapping to the same target as
+    `M`, instead of falsely classifying as multi-level.
+  - **Mixed-type columns rejected**: `["M", 1]` (string + int) now
+    returns a multi-level diagnostic with an actionable rationale,
+    rather than an alphabetic mis-remap.
+  - Recognized string pairs: `M/F`, `Male/Female`, `Yes/No`, `Y/N`,
+    `True/False`, `Pos/Neg`, `Positive/Negative`, `Absent/Present`,
+    `Control/Case`, `Placebo/Active`. Unknown pairs default to
+    alphabetic-order with an explicit `UserWarning` so programmatic
+    callers see the polarity choice.
+  - Module exports `EXPECTED_BINARY_FORMAT` — a single-source
+    docstring describing the contract for the README and CLI
+    `inspect`.
+- **Wired into the FREM pipeline**:
+  `summarize_covariates(transforms={"sex": "binary"})` and
+  `prepare_frem_data` both invoke `auto_remap_binary_columns`
+  transparently. The orchestrator no longer needs per-dataset
+  encoding hacks; the benchmark sweep harness was simplified
+  accordingly (its `binary_encode` per-dataset config is gone).
+- **Provenance recording**:
+  - New `CategoricalEncodingEntry` and `CategoricalEncodingProvenance`
+    Pydantic models in `src/apmode/bundle/models.py`.
+  - New `BundleEmitter.write_categorical_encoding_provenance` writes
+    `categorical_encoding_provenance.json` so reviewers can trace
+    exactly how every raw categorical value (e.g., `"male"` /
+    `"female"`) was mapped to 0/1, whether the polarity came from
+    auto-detection or a caller override, and what the per-column
+    rationale was.
+  - `summarize_covariates` accepts an optional
+    `encoding_hints_out: list | None = None` sink that the
+    orchestrator can pass to capture every encoding decision for
+    the bundle artifact (in-place append; backward-compatible).
+- **22 new unit tests** in `tests/unit/test_categorical_encoding.py`
+  covering every encoding kind, validation guards, the case-folded
+  reduction, mixed-type rejection, override polarity, the
+  alphabetic warning, and end-to-end integration with
+  `summarize_covariates`. Total fast-path suite: **1512 passing**.
+- **Benchmark sweep regenerated** with auto-detection: theophylline
+  (12 subj, WT), warfarin (32 subj, sex strings, auto-remapped),
+  mavoglurant (120 subj, SEX 1/2 codes, auto-remapped) — all 3 ✓
+  with **zero per-dataset configuration**, the original purpose of
+  the auto-detection module.
+
+Multi-CLI review (crush + codex) consensus issues fixed in this pass:
+- HIGH: silent NaN on incomplete override remap → `ValueError`
+- HIGH: `summarize` and `prepare` could disagree on polarity when
+  override supplied → both now share the same auto/override logic
+- MED: case-sensitive uniqueness counted `["M", "m", "F"]` as
+  multi-level → case-folded dedup reduces to binary
+- MED: mixed-type two-level columns got bogus alphabetic remap →
+  rejected with multi-level diagnostic
+- MED: silent alphabetic-order default on unknown pairs →
+  `UserWarning` so programmatic callers see the polarity choice
+
 ### Added — FREM benchmark sweep across the nlmixr2data corpus
 - **`scripts/benchmark_frem_sweep.py`** (new, 350 LOC). Runnable
   benchmark harness that exercises the full FREM emitter pipeline

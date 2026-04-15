@@ -8,7 +8,7 @@
 
   [![Phase](https://img.shields.io/badge/phase-3%20(P3.B)-blue)]()
 
-  [![Tests](https://img.shields.io/badge/tests-1490%20passing-success)]()
+  [![Tests](https://img.shields.io/badge/tests-1525%20passing-success)]()
   [![License](https://img.shields.io/badge/license-GPL--2.0--or--later-green)](LICENSE)
   [![Python](https://img.shields.io/badge/python-3.12%E2%80%933.14-yellow)]()
   [![mypy](https://img.shields.io/badge/mypy-strict%20%E2%9C%93-blue)]()
@@ -29,7 +29,7 @@ APMODE is a **governed meta-system** that composes five population PK modeling p
 
 **Formular — a typed PK DSL — is the control surface.** Models are specified in [Formular](docs/FORMULAR.md), a structured grammar (`Absorption x Distribution x Elimination x Variability x Observation × Priors`), compiled to a typed AST, validated against pharmacometric constraints, and lowered to backend-specific code (nlmixr2 R, Stan/Torsten, JAX/Diffrax). The agentic LLM backend (Phase 3) operates exclusively through Formular transforms — including the new `SetPrior` transform for Bayesian workflows — it cannot emit raw code.
 
-> **Status**: Phase 3 in progress (P3.B LORO-CV complete) + Phase 2+ Bayesian backend + missing-data pipeline (MI / FREM / Rubin pooling) landed. 1490 fast-path tests passing; additionally 6 live nlmixr2/mice/missRanger integration tests covering binary + time-varying FREM, end-to-end Rubin pooling with real m=3 fits, and a theophylline FREM compile check. **Benchmark sweep** (`scripts/benchmark_frem_sweep.py`, results in [`docs/FREM_BENCHMARK_RESULTS.md`](docs/FREM_BENCHMARK_RESULTS.md)) compiles the FREM pipeline through the full nlmixr2data corpus — theophylline (12 subjects), warfarin (32, binary sex), mavoglurant (120, binary sex) — all 3 ✓ in ~30 s wall time. `mypy --strict` clean. `ruff` clean. Supports Python 3.12–3.14.
+> **Status**: Phase 3 in progress (P3.B LORO-CV complete) + Phase 2+ Bayesian backend + missing-data pipeline (MI / FREM / Rubin pooling) landed. 1525 tests collected; additionally live nlmixr2/mice/missRanger integration tests covering binary + time-varying FREM, end-to-end Rubin pooling with real m=3 fits, and a theophylline FREM compile check. **Benchmark sweep** (`scripts/benchmark_frem_sweep.py`, results in [`docs/FREM_BENCHMARK_RESULTS.md`](docs/FREM_BENCHMARK_RESULTS.md)) compiles the FREM pipeline through the full nlmixr2data corpus — theophylline (12 subjects), warfarin (32, binary sex), mavoglurant (120, binary sex) — all 3 ✓ in ~30 s wall time. `mypy --strict` clean. `ruff` clean. Supports Python 3.12–3.14.
 
 ---
 
@@ -114,7 +114,7 @@ uv run apmode graph <bundle_dir> --format dot -o dag.dot # Graphviz export
 ### Run the Test Suite
 
 ```bash
-uv run pytest tests/ -q                    # 1356 passed, 7 skipped (live LLM)
+uv run pytest tests/ -q                    # 1525 collected (skip live tests with -m "not live")
 uv run mypy src/apmode/ --strict           # type checking
 uv run ruff check src/apmode/ tests/       # linting (0 errors)
 
@@ -228,6 +228,37 @@ Missing data is resolved by a **lane-tiered policy** (`policies/{submission,disc
 **Agentic LLM cherry-picking guard**. The stability manifest is the *only* per-imputation artifact the LLM sees. When `directive.llm_pooled_only=true` (default), `diagnostic_summarizer.summarize_stability_for_llm` substitutes pooled scores + stability scores for raw per-imputation diagnostics — the LLM cannot observe individual imputation draws, so it cannot select transforms that exploit a single lucky imputation.
 
 **Ω-pooling caveats**. Whenever MI is used, the credibility report automatically appends three Rubin/log-Cholesky/EBE caveats to the limitations block for Gate 2.5 ingestion (ICH M15 alignment).
+
+**Categorical covariate format + auto-detection**. APMODE expects binary categorical covariates encoded as canonical `{0, 1}`. Real-world PK data routinely uses other conventions; `apmode.data.categorical_encoding.auto_remap_binary_columns` recognises and remaps the following automatically (no per-dataset configuration required):
+
+| Native form | Example datasets | Mapping |
+|-------------|------------------|---------|
+| `{0, 1}` | (canonical) | identity, no remap |
+| `{1, 2}` 1-indexed integers | mavoglurant SEX | 1 → 0, 2 → 1 |
+| `{True, False}` booleans | clinical screening flags | `False` → 0, `True` → 1 |
+| `M`/`F`, `Male`/`Female` (any case) | warfarin sex | `f`/`female` → 0, `m`/`male` → 1 |
+| `Yes`/`No`, `Y`/`N` | adherence flags | `no`/`n` → 0, `yes`/`y` → 1 |
+| `True`/`False`, `Pos`/`Neg`, `Positive`/`Negative` | screening | smaller → 0 |
+| `Absent`/`Present`, `Control`/`Case`, `Placebo`/`Active` | trial arms | smaller → 0 |
+| Unknown two-level string pair | (any) | alphabetic-order default + `UserWarning` |
+
+Multi-level categorical covariates (>2 distinct values) are **not** auto-remapped — they need k-1 one-hot binary indicators chosen and named by the analyst. Mixed-type columns (e.g., `["M", 1]` mixing strings and numbers) are rejected with an actionable diagnostic.
+
+**Override the polarity** when the auto-detected one is wrong:
+
+```python
+from apmode.dsl.frem_emitter import summarize_covariates
+
+covs = summarize_covariates(
+    df, ["SEX"],
+    transforms={"SEX": "binary"},
+    binary_encode_overrides={"SEX": {"male": 0, "female": 1}},  # opposite polarity
+)
+```
+
+Or call `auto_remap_binary_columns(df, ["SEX"], overrides={...})` directly before passing the DataFrame into the FREM pipeline.
+
+**Provenance**: Every encoding decision (column, detected kind, applied remap, source = `auto`/`override`/`no_remap`, rationale) is captured in `categorical_encoding_provenance.json` in the run bundle so reviewers can trace exactly how each raw categorical value was mapped to 0/1.
 
 **R harness**. Imputation uses `src/apmode/r/impute.R`, which dispatches to `mice::mice(method="pmm")` or `missRanger::missRanger(num.trees=100, pmm.k=10)` — the ranger-backed fast alternative to missForest (Mayer CRAN 2.6.x). Python-side providers are `R_MiceImputer` and `R_MissRangerImputer` (`src/apmode/data/imputers.py`); both are covered by live tests in `tests/unit/test_imputers_live.py` that spawn real Rscript against installed `mice`/`missRanger` and verify (a) imputed CSVs appear, (b) no residual NaN in imputed columns, (c) between-imputation variance proves MI is functioning.
 
@@ -432,27 +463,23 @@ Rscript benchmarks/suite_a/simulate_all.R [output_dir]
 
 ## Test Suite
 
-1290+ tests across multiple strategies:
+1525 tests across multiple strategies:
 
 ```bash
-uv run pytest tests/unit/ -q               # ~1290 unit tests
-uv run pytest tests/integration/ -q         # 30 integration tests (mock R pipeline + Discovery lane)
-uv run pytest tests/property/ -q            # ~30 Hypothesis property-based tests
-uv run pytest tests/golden/ -q              # 21 syrupy golden master snapshots
-uv run pytest tests/ --snapshot-update      # update snapshots after emitter changes
+uv run pytest tests/unit/ -q               # unit tests
+uv run pytest tests/integration/ -q        # integration tests
+uv run pytest tests/property/ -q           # Hypothesis property-based tests
+uv run pytest tests/golden/ -q             # syrupy golden master snapshots
+uv run pytest tests/ --snapshot-update     # update snapshots after emitter changes
 ```
 
-| Category | Count | Coverage |
-|----------|-------|----------|
-| Unit tests | ~1290 | All modules: DSL, data, backends, search, governance, routing, bundle, benchmarks |
-| CLI (Typer) | 60 | Every top-level command: arg parsing, option dispatch, exit codes, error paths |
-| NODE backend | 180 | Constraints, sub-model, ODE, trainer, runner, distillation, init strategy, real-data (theo_sd) |
-| Stan codegen | 48 | Stan emitter (incl. IOV + BLQ M3/M4) + cross-backend lowering validation |
-| Gate 2.5 + ranking | 27 | ICH M15 credibility + cross-paradigm ranking |
-| Integration | 42 | Mock R pipeline, Discovery lane, Suite B NODE, real-data NODE (theo_sd, Oral_2CPT) |
-| Suite A benchmarks | 48 | All 7 scenarios (A1-A7) with property tests |
-| Golden masters | 21 | Syrupy snapshots for pharmacometrician-validated R output |
-| R syntax validation | 168 | Balanced delimiters, eta/param consistency |
+| Directory | Coverage |
+|-----------|----------|
+| `tests/unit/` | All modules: DSL, data, backends, search, governance, routing, bundle |
+| `tests/integration/` | Mock R pipeline, Discovery lane, LLM providers |
+| `tests/property/` | Hypothesis property-based tests |
+| `tests/golden/` | Syrupy snapshots for emitter output |
+| `tests/r_syntax/` | R code syntax validation |
 
 ---
 
@@ -461,7 +488,7 @@ uv run pytest tests/ --snapshot-update      # update snapshots after emitter cha
 | Phase | Scope | Status |
 |-------|-------|--------|
 | **Phase 0** | Schemas, protocols, grammar, error taxonomy, sparkid integration | Complete |
-| **Phase 1** (6 months) | DSL + compiler, classical NLME backend, automated search, Gates 1-3, reproducibility bundle, CLI, Suite A | Complete (679 tests) |
+| **Phase 1** (6 months) | DSL + compiler, classical NLME backend, automated search, Gates 1-3, reproducibility bundle, CLI, Suite A | Complete |
 | **Phase 2** (4 months) | Hybrid NODE backend, functional distillation, Discovery lane, cross-paradigm ranking, Suite B, Stan codegen (IOV + BLQ), NODE init strategy, dataset registry, interactive CLI | Complete |
 | **Phase 3** (4 months) | Agentic LLM backend (DSL transforms only), Optimization lane + LORO-CV, report generator, Suite C, API | In progress |
 

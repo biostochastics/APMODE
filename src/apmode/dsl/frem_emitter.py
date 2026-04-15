@@ -178,6 +178,8 @@ def summarize_covariates(
     id_col: str = "NMID",
     time_col: str = "TIME",
     transforms: dict[str, str] | None = None,
+    binary_encode_overrides: dict[str, dict[object, int]] | None = None,
+    encoding_hints_out: list[object] | None = None,
 ) -> list[FREMCovariate]:
     """Compute per-covariate ``(mu_init, sigma_init)`` from observed data.
 
@@ -188,6 +190,16 @@ def summarize_covariates(
     that covariate's mean/SD only — this matches the FREM likelihood
     treatment of missingness (those subjects simply have no observation
     row for that covariate).
+
+    Binary categorical covariates (``transforms[name] == "binary"``) are
+    auto-remapped to ``{0, 1}`` via
+    ``apmode.data.categorical_encoding.auto_remap_binary_columns`` before
+    summary statistics are computed. Recognised forms include booleans,
+    1-indexed integers, and standard string pairs (M/F, Yes/No, etc.);
+    unknown two-level string pairs get a deterministic alphabetic-order
+    remap with a warning logged via the encoding hint. Override the
+    auto-detected polarity with ``binary_encode_overrides``, e.g.
+    ``{"SEX": {"male": 0, "female": 1}}``.
 
     Args:
         df: Source DataFrame.
@@ -202,6 +214,11 @@ def summarize_covariates(
             ``"identity"``. Positive/right-skewed covariates (body weight,
             creatinine, etc.) are typically better modeled on the log
             scale so the joint Ω is well conditioned (Yngman 2022).
+        binary_encode_overrides: Optional per-column explicit remap dict
+            applied before summary statistics. Takes precedence over the
+            auto-detection. Use when the auto-detected polarity is
+            wrong for the analysis (rare; auto-detection is
+            alphabetically deterministic).
 
     Returns:
         One ``FREMCovariate`` per name, in the same order as
@@ -217,6 +234,29 @@ def summarize_covariates(
         raise ValueError(msg)
 
     tr_map = transforms or {}
+
+    # Auto-remap binary categorical columns to canonical {0, 1} *before*
+    # baseline summarization. Without this the downstream
+    # ``binary``-transform validator would reject native string pairs
+    # (warfarin's ``"male"``/``"female"``) or 1-indexed integers
+    # (mavoglurant's ``1``/``2``) — both common pharmacometric
+    # conventions. Auto-detection logic + override surface live in
+    # ``apmode.data.categorical_encoding`` so the same rules can be
+    # surfaced via the CLI ``inspect`` / ``validate`` reports.
+    binary_targets = [n for n, t in tr_map.items() if t == "binary" and n in df.columns]
+    if binary_targets:
+        from apmode.data.categorical_encoding import auto_remap_binary_columns
+
+        df, _hints = auto_remap_binary_columns(
+            df, binary_targets, overrides=binary_encode_overrides, apply=True
+        )
+        # Provenance capture: when the caller supplies a list, surface
+        # every encoding decision so the orchestrator can write
+        # ``categorical_encoding_provenance.json`` in the run bundle.
+        # The list is appended to in place for backward-compatible API.
+        if encoding_hints_out is not None:
+            encoding_hints_out.extend(_hints)
+
     baseline_idx = df.groupby(id_col)[time_col].idxmin()
     per_subj = df.loc[baseline_idx].set_index(id_col)
 
@@ -382,6 +422,21 @@ def prepare_frem_data(
     augmentation rows.
     """
     import pandas as pd  # local runtime import (pd is only a TYPE_CHECKING name at module level)
+
+    # Auto-remap any covariate marked as ``transform="binary"`` whose
+    # source values are not yet canonical {0, 1}. summarize_covariates
+    # already does this for the *summary* statistics it computes, but
+    # operates on a local copy; the caller's DataFrame still carries
+    # the native encoding when it reaches here. The remap is idempotent
+    # for already-canonical data and ensures the per-subject row
+    # writer below sees 0/1 floats instead of strings or 1/2 codes.
+    binary_targets = [
+        c.name for c in covariates if c.transform == "binary" and c.name in df.columns
+    ]
+    if binary_targets:
+        from apmode.data.categorical_encoding import auto_remap_binary_columns
+
+        df, _hints = auto_remap_binary_columns(df, binary_targets, apply=True)
 
     out = df.copy()
     if "DVID" not in out.columns:

@@ -4,6 +4,6 @@ Exercises the FREM emitter pipeline (`summarize_covariates` → `prepare_frem_da
 
 | Dataset | Subjects | Rows | Covariates (binary / TV) | Missing induced | Emit (s) | Compile (s) | Status |
 |---------|---------:|-----:|---------------------------|----------------:|---------:|------------:|:------:|
-| `nlmixr2data_theophylline` | 12 | 144 | WT | 3 | 0.00 | 0.77 | ✓ |
-| `nlmixr2data_warfarin` | 32 | 515 | wt, age, sex (bin=sex) | 6 | 0.01 | 0.77 | ✓ |
-| `nlmixr2data_mavoglurant` | 120 | 2678 | WT, AGE, SEX (bin=SEX) | 18 | 0.01 | 0.77 | ✓ |
+| `nlmixr2data_theophylline` | 12 | 144 | WT | 3 | 0.01 | 0.88 | ✓ |
+| `nlmixr2data_warfarin` | 32 | 515 | wt, age, sex (bin=sex) | 6 | 0.01 | 0.74 | ✓ |
+| `nlmixr2data_mavoglurant` | 120 | 2678 | WT, AGE, SEX (bin=SEX) | 18 | 0.01 | 0.73 | ✓ |

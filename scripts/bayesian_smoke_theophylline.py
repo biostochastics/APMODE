@@ -29,9 +29,9 @@ from pathlib import Path
 from apmode.backends.bayesian_runner import BayesianRunner
 from apmode.bundle.models import SamplerConfig
 from apmode.dsl.ast_models import (
+    IIV,
     DSLSpec,
     FirstOrder,
-    IIV,
     LinearElim,
     OneCmt,
     Proportional,
@@ -100,12 +100,14 @@ async def main() -> int:
 
     runner = BayesianRunner(work_dir=work, default_sampler_config=cfg)
 
-    print(f"\n=== APMODE Bayesian smoke test on theophylline ===")
+    print("\n=== APMODE Bayesian smoke test on theophylline ===")
     print(f"  Dataset:  {data}")
     print(f"  Model:    {spec.model_id}")
     print(f"  Priors:   {len(spec.priors)} declared (see script)")
-    print(f"  Sampler:  chains={cfg.chains} warmup={cfg.warmup} "
-          f"sampling={cfg.sampling} adapt_delta={cfg.adapt_delta}")
+    print(
+        f"  Sampler:  chains={cfg.chains} warmup={cfg.warmup} "
+        f"sampling={cfg.sampling} adapt_delta={cfg.adapt_delta}"
+    )
 
     try:
         result = await runner.run(
@@ -135,7 +137,7 @@ async def main() -> int:
 
     if result.posterior_diagnostics:
         pd = result.posterior_diagnostics
-        print(f"\n=== MCMC diagnostics ===")
+        print("\n=== MCMC diagnostics ===")
         print(f"  R-hat max:           {pd.rhat_max:.3f}  (want <= 1.01)")
         print(f"  ESS bulk min:        {pd.ess_bulk_min:.0f} (want >= 400)")
         print(f"  ESS tail min:        {pd.ess_tail_min:.0f} (want >= 400)")
@@ -145,15 +147,17 @@ async def main() -> int:
         if pd.pareto_k_max is not None:
             print(f"  Pareto-k max:        {pd.pareto_k_max:.3f} (want <= 0.7)")
 
-    print(f"\n=== Structural parameters (posterior summaries) ===")
+    print("\n=== Structural parameters (posterior summaries) ===")
     print(f"  {'Param':10} {'Est':>10} {'SD':>10} {'q05':>10} {'q50':>10} {'q95':>10}")
     for name in ("CL", "V", "ka"):
         if name in result.parameter_estimates:
             p = result.parameter_estimates[name]
-            print(f"  {p.name:10} {p.estimate:10.3f} {(p.posterior_sd or 0):10.3f} "
-                  f"{(p.q05 or 0):10.3f} {(p.q50 or 0):10.3f} {(p.q95 or 0):10.3f}")
+            print(
+                f"  {p.name:10} {p.estimate:10.3f} {(p.posterior_sd or 0):10.3f} "
+                f"{(p.q05 or 0):10.3f} {(p.q50 or 0):10.3f} {(p.q95 or 0):10.3f}"
+            )
 
-    print(f"\n=== IIV omega + sigma ===")
+    print("\n=== IIV omega + sigma ===")
     for name in ("omega_CL", "omega_V", "omega_ka", "sigma_prop"):
         if name in result.parameter_estimates:
             p = result.parameter_estimates[name]
@@ -164,7 +168,7 @@ async def main() -> int:
         print(f"\nDraws parquet: {draws} (exists={draws.exists()})")
 
     # Literature-anchored sanity checks — not strict pass/fail, just alerts.
-    print(f"\n=== Literature sanity checks (Boeckmann 1994 / Upton 1982) ===")
+    print("\n=== Literature sanity checks (Boeckmann 1994 / Upton 1982) ===")
     checks = [
         ("CL", 2.8, 0.5, 10.0),
         ("V", 35.0, 5.0, 100.0),
@@ -175,7 +179,9 @@ async def main() -> int:
             est = result.parameter_estimates[name].estimate
             ok = lo <= est <= hi
             marker = "OK" if ok else "SUSPECT"
-            print(f"  [{marker}] {name} posterior mean {est:.2f} (reference ~{ref}, plausible {lo}-{hi})")
+            print(
+                f"  [{marker}] {name} posterior mean {est:.2f} (reference ~{ref}, plausible {lo}-{hi})"
+            )
 
     return 0
 

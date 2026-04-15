@@ -481,6 +481,53 @@ class ImputationStabilityManifest(BaseModel):
     omega_pooling_caveats: list[str] = Field(default_factory=list)
 
 
+# --- Categorical encoding provenance ---
+
+
+class CategoricalEncodingEntry(BaseModel):
+    """One column's encoding decision and remap, captured for audit."""
+
+    column: str
+    detected_encoding: Literal[
+        "binary_zero_one",
+        "binary_one_two",
+        "binary_string_pair",
+        "binary_boolean",
+        "multi_level",
+        "continuous",
+        "constant",
+        "all_missing",
+    ]
+    # Stringified for serialization stability — original values can be
+    # mixed types (str, int, bool) and JSON does not distinguish them.
+    unique_values: list[str] = Field(default_factory=list)
+    # Maps stringified original → 0/1 target. Empty when no remap was
+    # produced (already canonical, multi-level, continuous, etc.).
+    applied_remap: dict[str, int] = Field(default_factory=dict)
+    applied: bool = False
+    # ``"auto"`` when the auto-detector chose the polarity, ``"override"``
+    # when the caller supplied an explicit remap dict.
+    source: Literal["auto", "override", "no_remap"] = "no_remap"
+    rationale: str
+
+
+class CategoricalEncodingProvenance(BaseModel):
+    """categorical_encoding_provenance.json — bundle artifact.
+
+    Records every column inspected by the auto-encoding pipeline + the
+    polarity actually applied. Lets reviewers trace exactly how a raw
+    "male"/"female" column became 0/1 in the FREM joint Ω entry — a
+    safety guarantee analysts asked for after the multi-CLI review
+    flagged silent NaN-on-incomplete-remap and inconsistent
+    summarize-vs-prepare polarity as the highest-impact bugs in the
+    auto-detection pass (PRD §4.2.0).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    entries: list[CategoricalEncodingEntry] = Field(default_factory=list)
+
+
 # --- Initial Estimates ---
 
 
