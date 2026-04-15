@@ -12,6 +12,7 @@
   [![License](https://img.shields.io/badge/license-GPL--2.0--or--later-green)](LICENSE)
   [![Python](https://img.shields.io/badge/python-3.12%E2%80%933.14-yellow)]()
   [![mypy](https://img.shields.io/badge/mypy-strict%20%E2%9C%93-blue)]()
+  [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/biostochastics/APMODE)
 
 </div>
 
