@@ -11,6 +11,7 @@ Datasets:
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import jax
@@ -41,6 +42,13 @@ _R_AVAILABLE = True
 try:
     from apmode.data.datasets import fetch_dataset
 except ImportError:
+    _R_AVAILABLE = False
+
+# ``fetch_dataset`` imports cleanly without R, so the import check above
+# doesn't reflect actual runtime capability. Probe for the ``Rscript``
+# binary — CI runners without R fail deep inside ``subprocess.run``
+# otherwise.
+if _R_AVAILABLE and shutil.which("Rscript") is None:
     _R_AVAILABLE = False
 
 DATA_DIR = Path("/tmp/apmode_node_integration_tests")
