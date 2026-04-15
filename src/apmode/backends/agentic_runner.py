@@ -8,6 +8,7 @@ iterations per run. All LLM I/O cached in agentic_trace/ for reproducibility.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 from dataclasses import dataclass, field
@@ -35,9 +36,11 @@ from apmode.bundle.models import (
 )
 from apmode.dsl.transforms import apply_transform, validate_transform
 from apmode.dsl.validator import validate_dsl
+from apmode.errors import AgenticExhaustionError
 from apmode.ids import generate_candidate_id
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
     from pathlib import Path
 
     from apmode.backends.llm_client import LLMResponse
@@ -138,6 +141,21 @@ class AgenticRunner:
         self._llm = llm_client
         self._config = config
         self._trace_dir = trace_dir
+
+    @contextlib.contextmanager
+    def with_trace_dir(self, trace_dir: Path) -> Iterator[AgenticRunner]:
+        """Temporarily redirect trace output to ``trace_dir``.
+
+        Used by the orchestrator to isolate Mode 1 (refine) and Mode 2
+        (independent) trace artifacts into separate subdirectories
+        without mutating private attributes from the outside.
+        """
+        previous = self._trace_dir
+        self._trace_dir = trace_dir
+        try:
+            yield self
+        finally:
+            self._trace_dir = previous
 
     async def run(
         self,
@@ -622,7 +640,7 @@ class AgenticRunner:
         # Return best result, falling back to last result
         if best_result is None:
             msg = "Agentic runner: no converged results across all iterations"
-            raise RuntimeError(msg)
+            raise AgenticExhaustionError(msg, iterations=len(iteration_records))
 
         # Stamp the result as agentic_llm backend
         return BackendResult(

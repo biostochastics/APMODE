@@ -13,7 +13,7 @@ Search is bounded by EvidenceManifest constraints.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
 from apmode.dsl.ast_models import (
@@ -140,11 +140,28 @@ class SearchSpace:
             if "michaelis_menten" not in space.elimination_types:
                 space.elimination_types.append("michaelis_menten")
 
-        # BLQ burden > 0.20 → force BLQ-aware likelihood (M3/M4)
-        if manifest.blq_burden > 0.20:
+        # Error-model preference from profiler heuristic (Beal 2001, Ahn 2008,
+        # multi-agent consensus). Supersedes the legacy ``blq_burden > 0.20``
+        # override when present; the heuristic triggers BLQ_M3 at 10% BLQ and
+        # also prunes additive-only candidates that otherwise let add.sd absorb
+        # censored variance.
+        pref = manifest.error_model_preference
+        if pref is not None:
+            if pref.primary in ("blq_m3", "blq_m4"):
+                space.force_blq_method = "m3" if pref.primary == "blq_m3" else "m4"
+                # ``allowed`` is guaranteed non-empty by ErrorModelPreference; for
+                # BLQ primaries it is always ⊆ {proportional, combined} (never
+                # additive-only).
+                space.error_types = list(pref.allowed)
+                if manifest.lloq_value is not None and manifest.lloq_value > 0:
+                    space.lloq_value = manifest.lloq_value
+            else:
+                space.error_types = list(pref.allowed)
+        elif manifest.blq_burden > 0.20:
+            # Legacy fallback for manifests emitted before the heuristic was
+            # introduced (missing error_model_preference).
             space.force_blq_method = "m3"
-            space.error_types = ["proportional", "combined"]  # BLQ composes with these
-            # Propagate actual LLOQ from data when available (default 1.0 is usually wrong)
+            space.error_types = ["proportional", "combined"]
             if manifest.lloq_value is not None and manifest.lloq_value > 0:
                 space.lloq_value = manifest.lloq_value
 
@@ -184,23 +201,39 @@ class SearchSpace:
             change; additive/proportional error types remain available.
           - Anything else is passed through unchanged.
 
-        Returns ``self`` for chaining.
+        Returns a new :class:`SearchSpace` with the directive applied —
+        the receiver is not mutated. Previously this method mutated
+        ``self`` in place, which made multiple directive applications
+        accumulate state silently. Callers should use the returned
+        value.
         """
         blq = directive.blq_method
-        self.blq_strategy = blq
+
+        # Defaults: carry forward current state, override only where the
+        # directive speaks. Keep list fields distinct (no aliasing).
+        new_blq_strategy = blq
+        new_force_blq_method = self.force_blq_method
+        new_error_types = list(self.error_types)
+        new_lloq_value = self.lloq_value
 
         if blq in ("M3", "M4"):
-            self.force_blq_method = blq.lower()  # "m3" or "m4"
-            self.error_types = ["proportional", "combined"]  # BLQ composes with these
+            new_force_blq_method = blq.lower()  # "m3" or "m4"
+            new_error_types = ["proportional", "combined"]
             if manifest.lloq_value is not None and manifest.lloq_value > 0:
-                self.lloq_value = manifest.lloq_value
+                new_lloq_value = manifest.lloq_value
         elif blq in ("M7+", "M6+", "M1"):
-            # No DSL BLQ observation model for these — preprocessing handles them.
-            # Clear any force set by the from_manifest heuristic so the emitter
-            # does not inadvertently include a BLQ observation model.
-            self.force_blq_method = None
+            # No DSL BLQ observation model — preprocessing handles these.
+            # Clear any force set by the from_manifest heuristic so the
+            # emitter does not inadvertently include a BLQ observation model.
+            new_force_blq_method = None
 
-        return self
+        return replace(
+            self,
+            blq_strategy=new_blq_strategy,
+            force_blq_method=new_force_blq_method,
+            error_types=new_error_types,
+            lloq_value=new_lloq_value,
+        )
 
 
 # ---------------------------------------------------------------------------

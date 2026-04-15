@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Literal
 
 import structlog
 
+from apmode import __version__ as _apmode_version
 from apmode.bundle.emitter import BundleEmitter
 from apmode.bundle.models import (
     BackendVersions,
@@ -37,7 +38,7 @@ from apmode.bundle.models import (
 from apmode.data.initial_estimates import NCAEstimator, build_initial_estimates_bundle
 from apmode.data.profiler import profile_data
 from apmode.data.splitter import loro_cv_splits, split_subjects
-from apmode.errors import BackendError
+from apmode.errors import AgenticExhaustionError, BackendError
 from apmode.evaluation.loro_cv import evaluate_loro_cv
 from apmode.governance.gates import (
     evaluate_gate1,
@@ -54,10 +55,18 @@ if TYPE_CHECKING:
 
     from apmode.backends.nlmixr2_runner import Nlmixr2Runner
     from apmode.backends.protocol import BackendRunner
-    from apmode.bundle.models import BackendResult, DataManifest, EvidenceManifest, Ranking
+    from apmode.bundle.models import (
+        BackendResult,
+        DataManifest,
+        EvidenceManifest,
+        ImputationStabilityManifest,
+        MissingDataDirective,
+        Ranking,
+    )
     from apmode.dsl.ast_models import DSLSpec
     from apmode.routing import DispatchDecision
     from apmode.search.engine import SearchOutcome, SearchResult
+    from apmode.search.stability import ImputationProvider
 
 logger = structlog.get_logger(__name__)
 
@@ -73,6 +82,11 @@ class RunConfig:
     covariate_names: list[str] = field(default_factory=list)
     execution_mode: Literal["cpu_deterministic", "gpu_fast"] = "cpu_deterministic"
     max_concurrency: int = 1
+    # Literature priors (e.g., DatasetCard.published_model.key_estimates).
+    # When provided, NCAEstimator uses these as root initial estimates after
+    # per-subject NCA exclusion exceeds 50% — prevents SAEM from seeding on
+    # degenerate defaults when a reliable prior is known.
+    fallback_estimates: dict[str, float] | None = None
 
     def __post_init__(self) -> None:
         self.max_concurrency = max(1, self.max_concurrency)
@@ -107,12 +121,30 @@ class Orchestrator:
         config: RunConfig | None = None,
         node_runner: BackendRunner | None = None,
         agentic_runner: BackendRunner | None = None,
+        frem_runner: Nlmixr2Runner | None = None,
+        mi_provider: ImputationProvider | None = None,
     ) -> None:
+        """Construct the orchestrator.
+
+        Args:
+            frem_runner: Optional FOCE-I-configured ``Nlmixr2Runner`` used
+                for the FREM execution stage. When omitted but the
+                missing-data directive resolves to ``FREM``, the orchestrator
+                instantiates a default ``Nlmixr2Runner(estimation=["focei"])``
+                that shares the main runner's work directory. SAEM cannot
+                fit FREM endpoints, so the default explicitly forces FOCE-I.
+            mi_provider: Optional ``ImputationProvider`` used for the MI
+                execution stage. When omitted but the directive resolves to
+                ``MI-PMM`` / ``MI-missRanger``, the orchestrator instantiates
+                ``R_MiceImputer`` or ``R_MissRangerImputer`` automatically.
+        """
         self._runner = runner
         self._bundle_base = bundle_base_dir
         self._config = config or RunConfig()
         self._node_runner = node_runner
         self._agentic_runner = agentic_runner
+        self._frem_runner = frem_runner
+        self._mi_provider = mi_provider
         self._spec_map: dict[str, DSLSpec] = {}  # candidate_id → DSLSpec
 
     async def run(
@@ -153,7 +185,7 @@ class Orchestrator:
         # Write backend versions
         emitter.write_backend_versions(
             BackendVersions(
-                apmode_version="0.2.0-dev",
+                apmode_version=_apmode_version,
                 python_version=platform.python_version(),
             )
         )
@@ -214,11 +246,24 @@ class Orchestrator:
                 )
 
         # --- Stage 2: NCA Initial Estimates ---
-        estimator = NCAEstimator(df, manifest)
+        estimator = NCAEstimator(
+            df,
+            manifest,
+            fallback_estimates=self._config.fallback_estimates,
+        )
         nca_estimates = estimator.estimate_per_subject()
-        nca_entry = estimator.build_entry("root", source="nca")
+        nca_entry = estimator.build_entry("root", source="nca", estimates=nca_estimates)
         ie_bundle = build_initial_estimates_bundle([nca_entry])
         emitter.write_initial_estimates(ie_bundle)
+        if estimator.diagnostics:
+            emitter.write_nca_diagnostics(estimator.diagnostics)
+            estimator.emit_plots(emitter.nca_plots_dir())
+        logger.info(
+            "NCA initial estimates: source=%s, n_subjects=%d, n_excluded=%d",
+            estimator.fallback_source,
+            len(estimator.diagnostics),
+            sum(1 for d in estimator.diagnostics if d.excluded),
+        )
 
         # --- Stage 3: Data Splitting ---
         split = split_subjects(df, seed=self._config.seed)
@@ -272,6 +317,63 @@ class Orchestrator:
                 search_outcome.results.append(ar)
                 if ar.spec is not None:
                     self._spec_map[ar.candidate_id] = ar.spec
+
+        # --- Stage 5c: Missing-Data Execution (FREM single-fit or MI loop) ---
+        # When the policy resolves to FREM or MI-*, drive the corresponding
+        # execution helper with the best classical candidate (or the spec
+        # template) as the starting point. Bundle artifacts:
+        #   - frem_<id>_result.json     (FREM path, written via emitter)
+        #   - imputation_stability.json (MI path)
+        # Failures here are logged but do not abort the run — the classical
+        # search results remain available so governance can still rank them.
+        stability_manifest: ImputationStabilityManifest | None = None
+        if dispatch.missing_data_directive is not None:
+            directive = dispatch.missing_data_directive
+            covariate_names = self._config.covariate_names
+            if directive.covariate_method == "FREM" and covariate_names:
+                try:
+                    frem_result = await self._run_frem_stage(
+                        search_outcome=search_outcome,
+                        df=df,
+                        data_path=data_path,
+                        manifest=manifest,
+                        covariate_names=covariate_names,
+                        run_dir=run_dir,
+                        nca_estimates=nca_estimates,
+                    )
+                    if frem_result is not None:
+                        search_outcome.results.append(frem_result)
+                        if frem_result.spec is not None:
+                            self._spec_map[frem_result.candidate_id] = frem_result.spec
+                        if frem_result.result is not None:
+                            emitter.write_backend_result(frem_result.result)
+                except (
+                    BackendError,
+                    RuntimeError,
+                    ValueError,
+                    NotImplementedError,
+                ) as e:
+                    logger.warning("FREM execution failed: %s", e, exc_info=True)
+            elif directive.covariate_method.startswith("MI-") and covariate_names:
+                try:
+                    stability_manifest = await self._run_mi_stage(
+                        directive=directive,
+                        search_outcome=search_outcome,
+                        data_path=data_path,
+                        manifest=manifest,
+                        covariate_names=covariate_names,
+                        run_dir=run_dir,
+                        nca_estimates=nca_estimates,
+                    )
+                    if stability_manifest is not None:
+                        emitter.write_imputation_stability(stability_manifest)
+                except (
+                    BackendError,
+                    RuntimeError,
+                    ValueError,
+                    NotImplementedError,
+                ) as e:
+                    logger.warning("MI execution failed: %s", e, exc_info=True)
 
         # Write candidate lineage — classical entries come from the search DAG,
         # agentic entries from the _run_agentic_stage results (the DAG's
@@ -385,17 +487,28 @@ class Orchestrator:
                 emitter.write_backend_result(sr.result)
 
                 seed_results = seed_results_map.get(sr.candidate_id)
-                # The orchestrator does not yet drive the MI execution loop,
-                # so ``stability`` is None here. When MI is wired in, the
-                # per-candidate ``ImputationStabilityEntry`` should be looked
-                # up from the stability manifest and passed alongside the
-                # directive. The Gate 1 imputation-stability check marks
-                # itself ``not_applicable`` when either argument is missing.
+                # When MI is active, look up this candidate's per-imputation
+                # stability entry and pass it to Gate 1 — the imputation-
+                # stability check uses ``convergence_rate`` and
+                # ``rank_stability`` to disqualify candidates that flip
+                # across imputations. Non-MI runs leave both at None and
+                # the check marks itself ``not_applicable``.
+                stability_entry = None
+                if stability_manifest is not None:
+                    stability_entry = next(
+                        (
+                            e
+                            for e in stability_manifest.entries
+                            if e.candidate_id == sr.candidate_id
+                        ),
+                        None,
+                    )
                 g1 = evaluate_gate1(
                     sr.result,
                     policy,
                     seed_results=seed_results,
                     directive=dispatch.missing_data_directive,
+                    stability=stability_entry,
                 )
                 emitter.write_gate_decision(g1, gate_number=1)
                 outcome.gate1_results.append((sr.candidate_id, g1.passed))
@@ -553,7 +666,7 @@ class Orchestrator:
         emitter.write_report_provenance(
             ReportProvenance(
                 generated_at=datetime.now(tz=UTC).isoformat(),
-                apmode_version="0.2.0-dev",
+                apmode_version=_apmode_version,
                 generator="apmode.orchestrator",
                 component_versions={
                     "python": platform.python_version(),
@@ -596,40 +709,42 @@ class Orchestrator:
         from apmode.backends.agentic_runner import AgenticRunner
         from apmode.search.engine import SearchResult as SR
 
-        # Cast to concrete type — orchestrator stores as BackendRunner protocol
-        # but needs AgenticRunner-specific attributes (trace_dir) here.
-        assert isinstance(self._agentic_runner, AgenticRunner)
+        # Concrete-type check — orchestrator stores as BackendRunner protocol
+        # but needs AgenticRunner-specific trace-dir scoping here. Using an
+        # explicit TypeError (not `assert`) keeps the guard effective under
+        # ``python -O``, where assertions are stripped.
+        if not isinstance(self._agentic_runner, AgenticRunner):
+            msg = (
+                f"_run_agentic_stage requires AgenticRunner, got "
+                f"{type(self._agentic_runner).__name__}"
+            )
+            raise TypeError(msg)
         agentic = self._agentic_runner
+        base_trace_dir = agentic._trace_dir
 
         results: list[SR] = []
 
-        # Preserve the base trace_dir so we can redirect each mode to its own
-        # subdirectory (refine/ and independent/). The outer try/finally
-        # guarantees restoration even if an uncaught exception propagates
-        # from either mode.
-        base_trace_dir = agentic._trace_dir
-        try:
-            # --- Mode 1: Refine best classical candidate ---
-            converged_srs = sorted(
-                [sr for sr in search_outcome.results if sr.converged and sr.result is not None],
-                key=lambda r: r.bic if r.bic is not None else float("inf"),
+        # --- Mode 1: Refine best classical candidate ---
+        converged_srs = sorted(
+            [sr for sr in search_outcome.results if sr.converged and sr.result is not None],
+            key=lambda r: r.bic if r.bic is not None else float("inf"),
+        )
+        if converged_srs:
+            best_sr = converged_srs[0]
+            assert best_sr.result is not None
+            best_estimates = {
+                name: pe.estimate
+                for name, pe in best_sr.result.parameter_estimates.items()
+                if pe.category == "structural"
+            }
+            logger.info(
+                "Agentic refine: starting from %s (BIC=%.1f)",
+                best_sr.candidate_id,
+                best_sr.bic or 0,
             )
-            if converged_srs:
-                best_sr = converged_srs[0]
-                assert best_sr.result is not None
-                best_estimates = {
-                    name: pe.estimate
-                    for name, pe in best_sr.result.parameter_estimates.items()
-                    if pe.category == "structural"
-                }
-                logger.info(
-                    "Agentic refine: starting from %s (BIC=%.1f)",
-                    best_sr.candidate_id,
-                    best_sr.bic or 0,
-                )
-                agentic._trace_dir = base_trace_dir / "refine"
-                try:
-                    agentic_result = await self._agentic_runner.run(
+            try:
+                with agentic.with_trace_dir(base_trace_dir / "refine"):
+                    agentic_result = await agentic.run(
                         spec=best_sr.spec,
                         data_manifest=manifest,
                         initial_estimates=best_estimates,
@@ -638,53 +753,58 @@ class Orchestrator:
                         data_path=data_path,
                         split_manifest=split_manifest_dict,
                     )
-                    results.append(
-                        SR(
-                            candidate_id=agentic_result.model_id,
-                            spec=best_sr.spec,
-                            result=agentic_result,
-                            converged=agentic_result.converged,
-                            bic=agentic_result.bic,
-                            aic=agentic_result.aic,
-                        )
+                results.append(
+                    SR(
+                        candidate_id=agentic_result.model_id,
+                        spec=best_sr.spec,
+                        result=agentic_result,
+                        converged=agentic_result.converged,
+                        bic=agentic_result.bic,
+                        aic=agentic_result.aic,
                     )
-                    logger.info(
-                        "Agentic refine complete: %s BIC=%.1f (was %.1f)",
-                        agentic_result.model_id,
-                        agentic_result.bic or 0,
-                        best_sr.bic or 0,
-                    )
-                except (BackendError, RuntimeError) as e:
-                    logger.warning("Agentic refine failed: %s", e)
+                )
+                logger.info(
+                    "Agentic refine complete: %s BIC=%.1f (was %.1f)",
+                    agentic_result.model_id,
+                    agentic_result.bic or 0,
+                    best_sr.bic or 0,
+                )
+            except AgenticExhaustionError as e:
+                logger.warning(
+                    "Agentic refine exhausted: no converged result after %s iterations",
+                    e.iterations,
+                )
+            except BackendError as e:
+                logger.warning("Agentic refine failed (backend error): %s", e)
 
-            # --- Mode 2: Independent — start from a minimal base spec ---
-            from apmode.dsl.ast_models import (
-                IIV,
-                DSLSpec,
-                FirstOrder,
-                LinearElim,
-                OneCmt,
-                Proportional,
-            )
-            from apmode.ids import generate_candidate_id
+        # --- Mode 2: Independent — start from a minimal base spec ---
+        from apmode.dsl.ast_models import (
+            IIV,
+            DSLSpec,
+            FirstOrder,
+            LinearElim,
+            OneCmt,
+            Proportional,
+        )
+        from apmode.ids import generate_candidate_id
 
-            base_spec = DSLSpec(
-                model_id=generate_candidate_id(),
-                absorption=FirstOrder(ka=nca_estimates.get("ka", 1.0)),
-                distribution=OneCmt(V=nca_estimates.get("V", 50.0)),
-                elimination=LinearElim(CL=nca_estimates.get("CL", 3.0)),
-                variability=[IIV(params=["CL", "V"], structure="diagonal")],
-                observation=Proportional(sigma_prop=0.15),
-            )
-            base_estimates = {
-                "ka": nca_estimates.get("ka", 1.0),
-                "V": nca_estimates.get("V", 50.0),
-                "CL": nca_estimates.get("CL", 3.0),
-            }
-            logger.info("Agentic independent: starting from base 1-cmt oral spec")
-            agentic._trace_dir = base_trace_dir / "independent"
-            try:
-                independent_result = await self._agentic_runner.run(
+        base_spec = DSLSpec(
+            model_id=generate_candidate_id(),
+            absorption=FirstOrder(ka=nca_estimates.get("ka", 1.0)),
+            distribution=OneCmt(V=nca_estimates.get("V", 50.0)),
+            elimination=LinearElim(CL=nca_estimates.get("CL", 3.0)),
+            variability=[IIV(params=["CL", "V"], structure="diagonal")],
+            observation=Proportional(sigma_prop=0.15),
+        )
+        base_estimates = {
+            "ka": nca_estimates.get("ka", 1.0),
+            "V": nca_estimates.get("V", 50.0),
+            "CL": nca_estimates.get("CL", 3.0),
+        }
+        logger.info("Agentic independent: starting from base 1-cmt oral spec")
+        try:
+            with agentic.with_trace_dir(base_trace_dir / "independent"):
+                independent_result = await agentic.run(
                     spec=base_spec,
                     data_manifest=manifest,
                     initial_estimates=base_estimates,
@@ -693,28 +813,243 @@ class Orchestrator:
                     data_path=data_path,
                     split_manifest=split_manifest_dict,
                 )
-                results.append(
-                    SR(
-                        candidate_id=independent_result.model_id,
-                        spec=base_spec,
-                        result=independent_result,
-                        converged=independent_result.converged,
-                        bic=independent_result.bic,
-                        aic=independent_result.aic,
-                    )
+            results.append(
+                SR(
+                    candidate_id=independent_result.model_id,
+                    spec=base_spec,
+                    result=independent_result,
+                    converged=independent_result.converged,
+                    bic=independent_result.bic,
+                    aic=independent_result.aic,
                 )
-                logger.info(
-                    "Agentic independent complete: %s BIC=%.1f",
-                    independent_result.model_id,
-                    independent_result.bic or 0,
-                )
-            except (BackendError, RuntimeError) as e:
-                logger.warning("Agentic independent failed: %s", e)
-        finally:
-            # Always restore original trace_dir, even on uncaught exceptions
-            agentic._trace_dir = base_trace_dir
+            )
+            logger.info(
+                "Agentic independent complete: %s BIC=%.1f",
+                independent_result.model_id,
+                independent_result.bic or 0,
+            )
+        except AgenticExhaustionError as e:
+            logger.warning(
+                "Agentic independent exhausted: no converged result after %s iterations",
+                e.iterations,
+            )
+        except BackendError as e:
+            logger.warning("Agentic independent failed (backend error): %s", e)
 
         return results
+
+    async def _run_frem_stage(
+        self,
+        *,
+        search_outcome: SearchOutcome,
+        df: pd.DataFrame,
+        data_path: Path,
+        manifest: DataManifest,
+        covariate_names: list[str],
+        run_dir: Path,
+        nca_estimates: dict[str, float],
+    ) -> SearchResult | None:
+        """Run a single FREM fit on the best classical candidate.
+
+        Builds a FOCE-I-only ``Nlmixr2Runner`` (or uses the injected
+        ``self._frem_runner``), composes the FREM emitter pipeline via
+        :func:`run_frem_fit`, and returns a ``SearchResult`` whose
+        ``candidate_id`` is prefixed with ``frem_`` so downstream
+        bookkeeping and ranking can identify the FREM fit distinctly.
+
+        Returns ``None`` when no converged classical candidate exists to
+        seed the FREM template — without a converged spec we have no
+        principled basis for the joint Ω structure.
+        """
+        from apmode.backends.frem_runner import run_frem_fit
+        from apmode.backends.nlmixr2_runner import Nlmixr2Runner
+        from apmode.search.engine import SearchResult as _SR
+
+        # Filter to healthy CLASSICAL candidates only (Codex/Gemini review
+        # 2026-04-14): NODE/agentic specs cannot be fit via the FREM
+        # emitter, and ill-conditioned or unidentifiable warm-starts
+        # destabilize the joint Ω fit. We require converged + nlmixr2
+        # backend + finite BIC + not ill-conditioned.
+        converged = [
+            sr
+            for sr in search_outcome.results
+            if (
+                sr.converged
+                and sr.result is not None
+                and sr.spec is not None
+                and sr.result.backend == "nlmixr2"
+                and sr.bic is not None
+                and sr.bic != float("inf")
+                and not sr.result.diagnostics.identifiability.ill_conditioned
+            )
+        ]
+        if not converged:
+            logger.info(
+                "FREM stage skipped: no healthy classical candidate "
+                "(converged + identifiable + finite BIC) to seed the refit"
+            )
+            return None
+        best = min(converged, key=lambda r: r.bic if r.bic is not None else float("inf"))
+
+        runner = self._frem_runner or Nlmixr2Runner(
+            work_dir=run_dir / "frem", estimation=["focei"]
+        )
+        # Use the best candidate's structural parameter estimates as
+        # initial values for the FREM refit (warm-started FREM fit).
+        if best.result is not None:
+            init = {
+                name: pe.estimate
+                for name, pe in best.result.parameter_estimates.items()
+                if pe.category == "structural"
+            }
+        else:
+            init = {k: v for k, v in nca_estimates.items() if not k.startswith("_")}
+
+        # Reuse the best spec but tag the FREM-fit model_id distinctly so
+        # bundle artifacts and lineage can identify it.
+        frem_spec = best.spec.model_copy(update={"model_id": f"frem_{best.spec.model_id}"})
+        result = await run_frem_fit(
+            spec_template=frem_spec,
+            df=df,
+            data_path=data_path,
+            data_manifest=manifest,
+            covariate_names=covariate_names,
+            runner=runner,
+            work_dir=run_dir / "frem",
+            seed=self._config.seed,
+            timeout_seconds=self._config.timeout_seconds,
+            initial_estimates=init,
+        )
+        return _SR(
+            candidate_id=frem_spec.model_id,
+            spec=frem_spec,
+            result=result,
+            converged=result.converged,
+            bic=result.bic,
+            aic=result.aic,
+            n_params=len(result.parameter_estimates),
+        )
+
+    async def _run_mi_stage(
+        self,
+        *,
+        directive: MissingDataDirective,
+        search_outcome: SearchOutcome,
+        data_path: Path,
+        manifest: DataManifest,
+        covariate_names: list[str],
+        run_dir: Path,
+        nca_estimates: dict[str, float],
+    ) -> ImputationStabilityManifest | None:
+        """Drive the MI loop: produce m imputed CSVs, refit each, aggregate.
+
+        Refits the frozen classical candidate set on each of m imputed
+        CSVs produced by the configured ``ImputationProvider`` (mice
+        PMM or missRanger). ``aggregate_stability`` then applies Rubin's
+        rules to the per-imputation (estimate, SE) tuples when the
+        backend supplies them, and Gate 1 receives per-candidate
+        stability entries to drive the imputation-stability check.
+
+        ``directive.m_imputations`` must be set (the resolver guarantees
+        this for MI-* methods). Returns ``None`` and logs a warning when
+        no covariate specs can be refit or the provider cannot run.
+        """
+        from apmode.data.imputers import R_MiceImputer, R_MissRangerImputer
+        from apmode.errors import BackendError
+        from apmode.search.stability import (
+            PerImputationFit,
+            run_with_imputations,
+        )
+
+        if directive.m_imputations is None:
+            logger.warning("MI stage: directive.m_imputations is None; skipping")
+            return None
+
+        provider = self._mi_provider
+        if provider is None:
+            imputer_cls = (
+                R_MissRangerImputer
+                if directive.covariate_method == "MI-missRanger"
+                else R_MiceImputer
+            )
+            provider = imputer_cls(
+                work_dir=run_dir / "mi",
+                covariates=covariate_names,
+            )
+
+        # Freeze the classical candidate set and refit only those specs per
+        # imputation (Codex/Gemini review 2026-04-14). Running a fresh
+        # SearchEngine per imputation would generate different warm-started
+        # children per draw; stability metrics (convergence_rate,
+        # rank_stability) would then operate on misaligned candidate_ids and
+        # become meaningless for the primary search candidates. Restrict to
+        # classical nlmixr2 results because NODE specs cannot be fit through
+        # Nlmixr2Runner.
+        ref_specs = [
+            sr.spec
+            for sr in search_outcome.results
+            if sr.spec is not None and sr.result is not None and sr.result.backend == "nlmixr2"
+        ]
+        if not ref_specs:
+            logger.info("MI stage skipped: no classical candidate specs to refit per imputation")
+            return None
+
+        base_init = {k: v for k, v in nca_estimates.items() if not k.startswith("_")}
+
+        async def _fit_one_imputation(
+            imputed_csv: Path,
+            seed: int,
+        ) -> list[PerImputationFit]:
+            """Refit each classical candidate on a single imputed dataset.
+
+            Calls the main runner directly so candidate_ids align with the
+            classical search exactly — aggregation can pool per-candidate
+            across imputations without alignment issues.
+            """
+            fits: list[PerImputationFit] = []
+            for spec in ref_specs:
+                try:
+                    result = await self._runner.run(
+                        spec=spec,
+                        data_manifest=manifest,
+                        initial_estimates=base_init,
+                        seed=seed,
+                        timeout_seconds=self._config.timeout_seconds,
+                        data_path=imputed_csv,
+                    )
+                    fits.append(
+                        PerImputationFit(
+                            imputation_idx=0,  # filled in by run_with_imputations
+                            candidate_id=spec.model_id,
+                            converged=result.converged,
+                            ofv=result.ofv,
+                            aic=result.aic,
+                            bic=result.bic,
+                            parameter_estimates={
+                                name: (pe.estimate, pe.se)
+                                for name, pe in result.parameter_estimates.items()
+                                if pe.category == "structural"
+                            },
+                        )
+                    )
+                except BackendError as e:
+                    logger.warning("MI per-imputation fit failed for %s: %s", spec.model_id, e)
+                    fits.append(
+                        PerImputationFit(
+                            imputation_idx=0,
+                            candidate_id=spec.model_id,
+                            converged=False,
+                        )
+                    )
+            return fits
+
+        return await run_with_imputations(
+            directive=directive,
+            provider=provider,
+            source_csv=data_path,
+            search=_fit_one_imputation,
+            seed=self._config.seed,
+        )
 
     async def _run_loro_cv(
         self,
@@ -831,8 +1166,12 @@ class Orchestrator:
             data = json.loads(self._config.policy_path.read_text())
             return GatePolicy.model_validate(data)
 
-        # Try default policy directory
-        default_path = Path("policies") / f"{self._config.lane}.json"
+        # Default policy directory is resolved relative to the repo root,
+        # not the process CWD — otherwise invoking the CLI from any other
+        # directory silently skips all governance gates.
+        # Path: src/apmode/orchestrator/__init__.py → repo root is four parents up.
+        repo_root = Path(__file__).resolve().parents[3]
+        default_path = repo_root / "policies" / f"{self._config.lane}.json"
         if default_path.exists():
             data = json.loads(default_path.read_text())
             return GatePolicy.model_validate(data)

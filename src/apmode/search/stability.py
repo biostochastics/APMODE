@@ -41,8 +41,14 @@ if TYPE_CHECKING:
 class PerImputationFit:
     """One candidate's result on one imputed dataset.
 
-    The aggregation layer only needs lightweight scalars; upstream callers
-    may retain the full ``BackendResult`` separately for bundle emission.
+    ``parameter_estimates`` is optional per-parameter ``(estimate, se)``
+    carried from the backend result so ``aggregate_stability`` can apply
+    Rubin's rules (pooled point estimate, pooled total variance with
+    between/within decomposition, degrees of freedom). ``se`` is the
+    Wald/FIM-based standard error of ``estimate`` on whichever scale the
+    runner emitted (typically log-scale for structural params); it may
+    be None when the backend did not compute SEs (Rubin pooling then
+    degrades to arithmetic mean with no within variance).
     """
 
     imputation_idx: int
@@ -51,6 +57,10 @@ class PerImputationFit:
     ofv: float | None = None
     aic: float | None = None
     bic: float | None = None
+    # Per-parameter (estimate, se | None) for Rubin pooling. Dict-valued so
+    # callers can include only the parameters they care about pooling;
+    # unknown parameters at aggregation time are simply skipped.
+    parameter_estimates: dict[str, tuple[float, float | None]] | None = None
     # Optional sign-of-effect per covariate name for consistency scoring.
     # Example: {"WT_on_CL": +1.0, "AGE_on_V": -1.0}. Empty = not evaluated.
     covariate_effect_signs: dict[str, float] | None = None
@@ -173,6 +183,13 @@ def aggregate_stability(
         )
         rank_stability = min(1.0, in_top_count / max(m, 1))
 
+        # Rubin pooling for per-parameter estimates (when the backend
+        # supplied (estimate, se) tuples on each converged fit). Emits
+        # a dict keyed by parameter name with the 5-tuple
+        # (pooled_est, within_var, between_var, total_var, dof) — the
+        # canonical Rubin (1987) decomposition.
+        pooled_params = _rubin_pool_candidate(converged, m_total=m)
+
         entries.append(
             ImputationStabilityEntry(
                 candidate_id=candidate_id,
@@ -183,6 +200,16 @@ def aggregate_stability(
                 within_between_var_ratio=within_between,
                 rank_stability=rank_stability,
                 covariate_sign_consistency=_sign_consistency(candidate_fits),
+                pooled_parameters={
+                    name: {
+                        "pooled_estimate": t[0],
+                        "within_var": t[1],
+                        "between_var": t[2],
+                        "total_var": t[3],
+                        "dof": t[4],
+                    }
+                    for name, t in pooled_params.items()
+                },
             )
         )
 
@@ -195,6 +222,101 @@ def _pool_scalar(values: list[float | None]) -> float | None:
     if not finite:
         return None
     return float(sum(finite) / len(finite))
+
+
+def rubin_pool(
+    estimates: Sequence[float],
+    ses: Sequence[float | None],
+    *,
+    m_total: int | None = None,
+) -> tuple[float, float, float, float, float]:
+    """Pool one parameter across imputations via Rubin's rules.
+
+    Implements the classical Rubin (1987) pooling for a scalar parameter:
+
+      - Qbar (pooled estimate)  = mean of per-imputation estimates
+      - Ubar (within-imp var)    = mean of per-imputation variances (SE²)
+      - B   (between-imp var)    = sample variance of per-imp estimates
+      - T   (total var)          = Ubar + (1 + 1/m) * B
+      - nu  (Barnard-Rubin dof)  = (m - 1) * (1 + Ubar / ((1 + 1/m) * B))**2
+
+    When fewer than 2 imputations contribute, returns ``(Qbar, 0, 0, Ubar or 0,
+    inf)``. When no SE was reported, ``Ubar`` is zero and the interval
+    degenerates to the between-imputation-only spread — correct behavior
+    for the "SE unavailable from backend" case.
+
+    Args:
+        estimates: per-imputation point estimates (skip non-converged at
+            caller side; this function expects already-filtered input).
+        ses: per-imputation standard errors aligned 1:1 with
+            ``estimates``. ``None`` entries are treated as 0 variance
+            (i.e., SE unknown → no within contribution for that draw).
+        m_total: optional total number of imputations (for the standard
+            ``(1 + 1/m)`` Rubin factor). When omitted, defaults to the
+            number of converged estimates in ``estimates``.
+
+    Returns:
+        ``(pooled_estimate, within_var, between_var, total_var, dof)``.
+    """
+    if len(estimates) != len(ses):
+        msg = f"estimates ({len(estimates)}) and ses ({len(ses)}) must align"
+        raise ValueError(msg)
+    if not estimates:
+        return (0.0, 0.0, 0.0, 0.0, float("inf"))
+
+    m = m_total if m_total is not None else len(estimates)
+    qbar = float(sum(estimates) / len(estimates))
+
+    # Within-imputation variance: mean of SE². SEs reported as None count
+    # as zero so the between-imputation term can still be reported.
+    variances = [(se * se) if se is not None else 0.0 for se in ses]
+    ubar = float(sum(variances) / len(variances))
+
+    if len(estimates) < 2:
+        return (qbar, ubar, 0.0, ubar, float("inf"))
+
+    between = float(sum((q - qbar) ** 2 for q in estimates) / (len(estimates) - 1))
+    total = ubar + (1.0 + 1.0 / m) * between
+
+    # Barnard-Rubin degrees of freedom; infinite when between variance is
+    # negligible relative to within variance.
+    if between <= 0:
+        dof = float("inf")
+    else:
+        ratio = ubar / ((1.0 + 1.0 / m) * between)
+        dof = float((len(estimates) - 1) * (1.0 + ratio) ** 2)
+    return (qbar, ubar, between, total, dof)
+
+
+def _rubin_pool_candidate(
+    fits: list[PerImputationFit],
+    *,
+    m_total: int,
+) -> dict[str, tuple[float, float, float, float, float]]:
+    """Apply ``rubin_pool`` to every parameter reported across ``fits``.
+
+    Input fits should be pre-filtered to converged draws for this
+    candidate; the function then unions the parameter names reported in
+    each fit (some imputations may omit a parameter if the model failed
+    to compute its SE).
+
+    Returns a dict mapping each parameter name to its pooled 5-tuple
+    ``(pooled_estimate, within_var, between_var, total_var, dof)``. Empty
+    dict when no parameter-level estimates were supplied.
+    """
+    by_name: dict[str, list[tuple[float, float | None]]] = defaultdict(list)
+    for f in fits:
+        if not f.parameter_estimates:
+            continue
+        for name, (est, se) in f.parameter_estimates.items():
+            by_name[name].append((est, se))
+
+    pooled: dict[str, tuple[float, float, float, float, float]] = {}
+    for name, pairs in by_name.items():
+        ests = [p[0] for p in pairs]
+        ses = [p[1] for p in pairs]
+        pooled[name] = rubin_pool(ests, ses, m_total=m_total)
+    return pooled
 
 
 def _within_between_ratio(

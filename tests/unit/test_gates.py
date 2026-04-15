@@ -195,8 +195,8 @@ class TestGate1:
         seed_check = next(c for c in g1.checks if c.check_id == "seed_stability")
         assert seed_check.passed is False
 
-    def test_vpc_missing_fails(self) -> None:
-        """Missing VPC should fail, not silently pass."""
+    def test_vpc_missing_fails_when_required(self) -> None:
+        """Missing VPC should fail when policy requires it."""
         result = _make_backend_result(vpc_coverage=None)
         # Override to remove VPC
         from apmode.bundle.models import BackendResult as BR
@@ -205,9 +205,26 @@ class TestGate1:
         data["diagnostics"]["vpc"] = None
         result_no_vpc = BR.model_validate(data)
         policy = _load_policy("submission")
+        policy.gate1.vpc_required = True
         g1 = evaluate_gate1(result_no_vpc, policy)
         vpc_check = next(c for c in g1.checks if c.check_id == "vpc_coverage")
         assert vpc_check.passed is False
+        assert vpc_check.observed == "vpc_not_available"
+
+    def test_vpc_missing_passes_when_not_required(self) -> None:
+        """When vpc_required=False, missing VPC passes with explicit marker."""
+        result = _make_backend_result(vpc_coverage=None)
+        from apmode.bundle.models import BackendResult as BR
+
+        data = result.model_dump()
+        data["diagnostics"]["vpc"] = None
+        result_no_vpc = BR.model_validate(data)
+        policy = _load_policy("submission")
+        policy.gate1.vpc_required = False
+        g1 = evaluate_gate1(result_no_vpc, policy)
+        vpc_check = next(c for c in g1.checks if c.check_id == "vpc_coverage")
+        assert vpc_check.passed is True
+        assert vpc_check.observed == "vpc_not_configured"
 
     def test_discovery_policy_more_lenient(self) -> None:
         # Discovery allows higher CWRES mean (0.15 vs 0.10)

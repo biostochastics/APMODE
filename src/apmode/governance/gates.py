@@ -232,7 +232,15 @@ def _check_vpc_coverage(result: BackendResult, g1: Gate1Config) -> GateCheckResu
     """
     vpc = result.diagnostics.vpc
     if vpc is None:
-        # No VPC available — fail when policy requires it (missing evidence ≠ passing)
+        # When the policy does not require a VPC (e.g. Phase 1 backends
+        # that do not yet populate VPC), pass the check explicitly. When
+        # required, missing evidence fails — missing evidence ≠ passing.
+        if not g1.vpc_required:
+            return GateCheckResult(
+                check_id="vpc_coverage",
+                passed=True,
+                observed="vpc_not_configured",
+            )
         return GateCheckResult(
             check_id="vpc_coverage",
             passed=False,

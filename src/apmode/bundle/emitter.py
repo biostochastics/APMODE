@@ -34,6 +34,7 @@ from apmode.bundle.models import (  # noqa: TC001 — used at runtime in method 
     InitialEstimates,
     LOROCVResult,
     MissingDataDirective,
+    NCASubjectDiagnostic,
     PosteriorDiagnostics,
     PriorManifest,
     Ranking,
@@ -118,6 +119,25 @@ class BundleEmitter:
         path = self.run_dir / "initial_estimates.json"
         path.write_text(estimates.model_dump_json(indent=2))
         return path
+
+    def write_nca_diagnostics(self, diagnostics: list[NCASubjectDiagnostic]) -> Path:
+        """Write nca_diagnostics.jsonl (one row per subject).
+
+        Captures per-subject PKNCA-style QC outcomes (terminal lambda_z fit,
+        AUC extrapolation, exclusion reasons) so reviewers can audit why
+        the root initial estimates came from NCA, a literature prior, or
+        defaults. One subject per line.
+        """
+        path = self.run_dir / "nca_diagnostics.jsonl"
+        lines = [d.model_dump_json() for d in diagnostics]
+        path.write_text("\n".join(lines) + ("\n" if lines else ""))
+        return path
+
+    def nca_plots_dir(self) -> Path:
+        """Ensure and return diagnostics/nca_plots/ for per-subject NCA figures."""
+        plots_dir = self.run_dir / "diagnostics" / "nca_plots"
+        plots_dir.mkdir(parents=True, exist_ok=True)
+        return plots_dir
 
     def write_split_manifest(self, split: SplitManifest) -> Path:
         """Write split_manifest.json."""

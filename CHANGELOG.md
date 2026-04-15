@@ -7,6 +7,154 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Rubin's rules for per-parameter pooling
+- **`apmode.search.stability.rubin_pool`** (new). Implements the
+  canonical Rubin (1987) decomposition for a scalar parameter across
+  imputations:
+    - `Q̄`  — pooled point estimate (mean of per-imputation estimates)
+    - `Ū`  — within-imputation variance (mean of per-imputation SE²)
+    - `B`  — between-imputation variance (sample variance of per-imp estimates)
+    - `T`  — total variance = `Ū + (1 + 1/m) * B`
+    - `dof` — Barnard–Rubin degrees of freedom for inference
+  ``None`` SEs (backend did not compute them) degrade gracefully to a
+  between-only decomposition instead of throwing.
+- **`PerImputationFit.parameter_estimates`** (new optional field)
+  carries per-parameter ``(estimate, se | None)`` from the backend.
+  When set, `aggregate_stability` invokes `_rubin_pool_candidate` per
+  converged candidate and populates the new
+  `ImputationStabilityEntry.pooled_parameters` field with the full
+  5-tuple (`pooled_estimate`, `within_var`, `between_var`,
+  `total_var`, `dof`) keyed by parameter name.
+- **Bundle surface**: `imputation_stability.json` entries now include
+  a `pooled_parameters` dict so downstream reports can quote the
+  Rubin-pooled estimates + proper variance decomposition instead of
+  just the arithmetic means of OFV/AIC/BIC.
+- **5 new unit tests** in `tests/unit/test_missing_data.py::TestRubinPool`:
+  single imputation identity case, two-imputation variance
+  decomposition, `None` SE degradation, misaligned-input validation,
+  end-to-end aggregate pooling from `PerImputationFit` rows.
+
+### Fixed — multi-agent review of orchestrator MI/FREM wiring (2026-04-14)
+
+Five consensus-level bugs surfaced by crush, codex, and gemini reviews
+of the new `_run_frem_stage` / `_run_mi_stage` methods and the FREM
+emitter's time-varying / categorical support.
+
+- **HIGH: MI stage refit was misaligned.** `_run_mi_stage` previously
+  built `ref_specs` from the classical search but never used them —
+  each imputation ran a *fresh* `SearchEngine`, generating different
+  warm-started children per draw. Stability metrics (convergence_rate,
+  rank_stability) were therefore computed against misaligned
+  candidate_ids and meaningless for the primary search candidates
+  (Codex M1, Gemini B1). The refactor now invokes the main runner
+  directly over a frozen `ref_specs` list per imputation so
+  candidate_ids match the classical search exactly. NODE specs are
+  excluded at the filter step because they cannot be fit via
+  `Nlmixr2Runner`.
+- **HIGH: FREM warm-start accepted unhealthy bases.** `_run_frem_stage`
+  picked `min(converged, key=bic)` without filtering, so NODE specs
+  or ill-conditioned classical fits could seed the joint-Ω refit and
+  destabilize estimation (Codex M2, Crush). Now requires
+  `backend == "nlmixr2"`, finite BIC, and
+  `not ill_conditioned` before selecting the best candidate.
+- **HIGH: time-varying FREM was never actually emitted from the
+  orchestrator path.** `summarize_covariates` unconditionally emitted
+  `time_varying=False` on every `FREMCovariate`, so the Stage 5c FREM
+  fit always produced baseline-only rows even when routing had
+  flipped the directive based on `EvidenceManifest.time_varying_covariates`
+  (Codex H2). `summarize_covariates` now auto-detects TV per covariate
+  by checking within-subject variation and propagates the flag to
+  `FREMCovariate.time_varying` — downstream `prepare_frem_data`
+  correctly produces per-(subject, TIME) rows and `emit_nlmixr2_frem`
+  leaves `sig_cov_*` estimable.
+- **HIGH: Augmented rows leaked PK-context columns.** `_build_aug_row`
+  previously copied every source-row column onto covariate observation
+  rows; `CENS` / `LIMIT` / `BLQ_FLAG` / `RATE` / `DUR` / `SS` / `II`
+  then routed the covariate through the PK BLQ likelihood or treated
+  it as part of an infusion envelope (Codex nlmixr2 risk). These
+  columns are now explicitly cleared on augmentation rows.
+- **HIGH: Time-varying dedupe key was too permissive.** Dedup was
+  `(TIME, value)`, so conflicting values at the same subject/TIME
+  collapsed silently instead of surfacing the input-data ambiguity
+  (Codex medium). Dedup now keys on `(TIME,)` per subject and
+  raises `ValueError` with a pointer when the same timepoint has
+  distinct covariate values, forcing callers to aggregate upstream.
+- **Hygiene: Stage 5c exception handling.** Broadened `except
+  Exception` narrowed to
+  `(BackendError, RuntimeError, ValueError, NotImplementedError)`
+  with `exc_info=True` so the warning surfaces the traceback instead
+  of silently masking real bugs (Crush, Codex H1).
+- **Test hygiene**: `test_low_blq_burden_does_not_force_m3` updated
+  from the legacy 20% BLQ threshold to 5% to match the new Beal 2001
+  / Ahn 2008 10% `recommend_error_model` threshold in the profiler.
+
+### Fixed — full-codebase review sweep (2026-04-14)
+
+Nine issues surfaced by a comprehensive Python 3.12+ code review
+(2 critical, 7 high) plus one assertion-under-`-O` hardening.
+
+- **CRIT: Double NCA invocation.** `NCAEstimator.build_entry`
+  (`src/apmode/data/initial_estimates.py`) previously re-invoked
+  `estimate_per_subject()` internally, doubling NCA compute and
+  overwriting the diagnostics list produced by the earlier call. The
+  method now accepts a keyword-only `estimates` parameter reused
+  verbatim when provided; the orchestrator passes the pre-computed
+  `nca_estimates`.
+- **CRIT: Runtime Pydantic validation failure on `source` field.**
+  `build_entry(source: str = "nca")` accepted any string but
+  `InitialEstimateEntry.source` is
+  `Literal["nca","warm_start","fallback"]`, so off-Literal values
+  raised at runtime without type-checker warning. Narrowed to the
+  Literal.
+- **HIGH: Hardcoded version string in reproducibility bundle.**
+  `Orchestrator.run` wrote `apmode_version="0.2.0-dev"` in both
+  `BackendVersions` and `ReportProvenance` despite hatch-vcs
+  deriving the real version. Switched to `apmode.__version__`.
+- **HIGH: CWD-dependent gate-policy lookup.** `_load_policy` resolved
+  `Path("policies") / f"{lane}.json"` against the process CWD; any
+  invocation outside the repo root silently skipped all governance
+  gates. Resolution now anchors to the package directory
+  (`Path(__file__).resolve().parents[3] / "policies"`).
+- **HIGH: VPC gate unconditionally failed Phase 1 candidates.**
+  `_check_vpc_coverage` returned `passed=False` when
+  `diagnostics.vpc is None`, but no Phase 1 backend populates VPC
+  yet — every candidate failed Gate 1. Added
+  `Gate1Config.vpc_required: bool = True`; when `False`, missing VPC
+  passes with `observed="vpc_not_configured"`. All three shipped
+  lane policies set `vpc_required: false` until the backend VPC
+  pipeline lands.
+- **HIGH: Private-attribute mutation of `AgenticRunner._trace_dir`.**
+  `_run_agentic_stage` assigned `agentic._trace_dir = …` to redirect
+  Mode 1 (refine) vs Mode 2 (independent) trace output, coupling the
+  orchestrator to the runner's private state. Introduced
+  `AgenticRunner.with_trace_dir()` context manager; the orchestrator
+  now uses `with agentic.with_trace_dir(…):`.
+- **HIGH: MI inner engine emitted no bundle artifacts.**
+  `_run_mi_stage._fit_one_imputation` called `SearchEngine.run()`
+  with no `emitter`, so per-imputation compiled specs and trajectory
+  entries were never written — a reproducibility-bundle gap (PRD
+  §4.3.2). The outer `BundleEmitter` is now plumbed through.
+- **HIGH: Agentic exhaustion indistinguishable from transient
+  failure.** `AgenticRunner.run` raised a bare `RuntimeError` when
+  all iterations completed without a converged result; the
+  orchestrator's `except (BackendError, RuntimeError)` logged it as
+  a generic warning. Added
+  `apmode.errors.AgenticExhaustionError(BackendError)` carrying the
+  iteration count; orchestrator handles it distinctly with its own
+  log message.
+- **HIGH: `SearchSpace.apply_directive` in-place mutation.** The
+  method mutated `self` while documented as returning `self` for
+  chaining — reusing a space across directive applications silently
+  accumulated state. Now returns a fresh `SearchSpace` via
+  `dataclasses.replace`; tests updated to use the returned value.
+- **Hardening: `assert isinstance(self._agentic_runner, AgenticRunner)`
+  under `python -O`.** Replaced with an explicit `TypeError` so the
+  guard remains effective when assertions are stripped.
+
+Verification: `uv run pytest tests/` → 1447 passed / 7 skipped,
+`uv run mypy src/apmode/ --strict` clean, `uv run ruff check`
+and `ruff format --check` clean.
+
 ### Added — Policy-driven missing-data pipeline
 **Covariate imputation (MI) and Full Random Effects Models (FREM) are now
 first-class options; BLQ method selection is lane-driven rather than

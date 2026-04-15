@@ -35,6 +35,11 @@ class Gate1Config(BaseModel):
     parameter_plausibility_required: bool = True
     state_trajectory_validity_required: bool = True
     split_integrity_required: bool = True
+    # When False, candidates lacking a VPC pass the vpc_coverage check with
+    # observed="vpc_not_configured" instead of failing. Defaults True so
+    # production policies are conservative; set False in lane policies
+    # until the backend VPC pipeline is wired end-to-end.
+    vpc_required: bool = True
     cwres_mean_max: float
     outlier_fraction_max: float = Field(ge=0.0, le=1.0)
     vpc_coverage_lower: float

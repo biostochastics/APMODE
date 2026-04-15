@@ -338,6 +338,35 @@ class CovariateSpec(BaseModel):
     strategy: CovariateStrategy
 
 
+ErrorModelPrimary = Literal["proportional", "additive", "combined", "blq_m3", "blq_m4"]
+
+
+class ErrorModelPreference(BaseModel):
+    """Profiler-stage signal for admissible residual-error models.
+
+    Consumed by ``SearchSpace.from_manifest`` to prune candidate generation
+    before the search runs. Narrows the error_types cross-product when the
+    data strongly suggests a particular structure (e.g., BLQ ≥ 10% → M3
+    with proportional/combined underlying, never additive-only).
+
+    References:
+      - Beal (2001) "Ways to Fit a PK Model with Some Data Below the
+        Quantification Limit" J Pharmacokin Pharmacodyn 28:481.
+      - Ahn et al. (2008) "Likelihood based approaches to handling data
+        below the quantification limit" J Pharmacokin Pharmacodyn 35:401.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    primary: ErrorModelPrimary
+    # Allowed underlying error families in candidate generation. For BLQ
+    # primaries this is the set composed with the BLQ observation model;
+    # for non-BLQ primaries this is the set of error_types used directly.
+    allowed: list[Literal["proportional", "additive", "combined"]] = Field(min_length=1)
+    confidence: Literal["high", "medium", "low"] = "medium"
+    rationale: str = ""
+
+
 class EvidenceManifest(BaseModel):
     """evidence_manifest.json — Data Profiler output (PRD §4.2.1)."""
 
@@ -362,6 +391,12 @@ class EvidenceManifest(BaseModel):
     protocol_heterogeneity: Literal["single-study", "pooled-similar", "pooled-heterogeneous"]
     absorption_phase_coverage: Literal["adequate", "inadequate"]
     elimination_phase_coverage: Literal["adequate", "inadequate"]
+    # Profiler-stage signals informing the error-model heuristic. None for
+    # manifests emitted before the heuristic was introduced.
+    error_model_preference: ErrorModelPreference | None = None
+    cmax_p95_p05_ratio: float | None = Field(default=None, ge=0.0)
+    dv_cv_percent: float | None = Field(default=None, ge=0.0)
+    terminal_log_residual_mad: float | None = Field(default=None, ge=0.0)
 
 
 # --- Missing-Data Directive (router output, policy-resolved) ---
@@ -416,6 +451,16 @@ class ImputationStabilityEntry(BaseModel):
     # Directional consistency of key covariate effects across imputations
     # (fraction of imputations agreeing on sign of each covariate effect).
     covariate_sign_consistency: dict[str, float] = Field(default_factory=dict)
+    # Rubin-pooled per-parameter estimates (Rubin 1987). Keyed by parameter
+    # name; each value carries the canonical 5-tuple of quantities:
+    #   ``pooled_estimate``: Q̄, mean of per-imputation estimates
+    #   ``within_var``: Ū, mean of per-imputation sampling variances (SE²)
+    #   ``between_var``: B, sample variance of per-imputation estimates
+    #   ``total_var``: T = Ū + (1 + 1/m) * B
+    #   ``dof``: Barnard-Rubin degrees of freedom for inference
+    # Empty when the backend did not emit per-parameter (estimate, SE) on
+    # converged imputations.
+    pooled_parameters: dict[str, dict[str, float]] = Field(default_factory=dict)
 
 
 class ImputationStabilityManifest(BaseModel):
@@ -452,6 +497,38 @@ class InitialEstimates(BaseModel):
     """initial_estimates.json — keyed by candidate_id."""
 
     entries: dict[str, InitialEstimateEntry]
+
+
+class NCASubjectDiagnostic(BaseModel):
+    """Per-subject NCA QC record (one row in nca_diagnostics.jsonl).
+
+    Captures the outcome of the PKNCA-style per-subject analysis: terminal
+    curve-stripping metrics, AUC extrapolation, and whether the subject
+    survives QC gates (adj_r²≥0.80, extrap≤20%, span≥1·t½, ≥3 λz points).
+
+    ``excluded=True`` means the subject's NCA result did not enter the
+    population median used as initial estimates; ``excluded_reason`` names
+    the failing gate(s). Fields are Optional because subjects that fail
+    very early (e.g., <3 observations) cannot populate downstream values.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    subject_id: str
+    tmax: float | None = None
+    cmax: float | None = None
+    cl: float | None = None
+    v: float | None = None
+    ka: float | None = None
+    kel: float | None = None
+    auc_last: float | None = None
+    auc_inf: float | None = None
+    auc_extrap_fraction: float | None = None
+    lambda_z_adj_r2: float | None = None
+    lambda_z_n_points: int | None = None
+    span_ratio: float | None = None
+    excluded: bool = False
+    excluded_reason: str | None = None
 
 
 # --- Search Trajectory ---

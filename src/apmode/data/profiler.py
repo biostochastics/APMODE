@@ -14,12 +14,12 @@ Dispatch constraints derived from manifest (PRD §4.2.1):
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, cast
 
 import numpy as np
 import pandas as pd  # noqa: TC002
 
-from apmode.bundle.models import CovariateSpec, EvidenceManifest
+from apmode.bundle.models import CovariateSpec, ErrorModelPreference, EvidenceManifest
 
 # Profiler thresholds. These should migrate to a versioned policy artifact
 # (`policies/profiler.json`, analogous to gate policies) so bundle consumers
@@ -50,9 +50,23 @@ def profile_data(
     Returns:
         EvidenceManifest with typed fields constraining downstream dispatch.
     """
-    obs = df[df["EVID"] == 0].copy()
-    doses = df[df["EVID"] == 1].copy()
-    n_subjects = int(df["NMID"].nunique())
+    obs = cast("pd.DataFrame", df[df["EVID"] == 0].copy())
+    doses = cast("pd.DataFrame", df[df["EVID"] == 1].copy())
+    n_subjects = int(cast("int", df["NMID"].nunique()))
+
+    blq_burden = _compute_blq_burden(df)
+    lloq_value = _extract_lloq_value(df)
+    cmax_p95_p05_ratio = _compute_cmax_dynamic_range(obs)
+    dv_cv_percent = _compute_dv_cv_percent(obs)
+    terminal_log_mad = _compute_terminal_log_residual_mad(obs)
+    error_pref = recommend_error_model(
+        obs,
+        blq_burden=blq_burden,
+        lloq=lloq_value,
+        cmax_p95_p05_ratio=cmax_p95_p05_ratio,
+        dv_cv_percent=dv_cv_percent,
+        terminal_log_mad=terminal_log_mad,
+    )
 
     return EvidenceManifest(
         data_sha256=manifest.data_sha256,
@@ -66,12 +80,226 @@ def profile_data(
         covariate_correlated=_check_covariate_correlation(df, manifest),
         covariate_missingness=_assess_covariate_missingness(df, manifest),
         time_varying_covariates=_detect_time_varying_covariates(df, manifest),
-        blq_burden=_compute_blq_burden(df),
-        lloq_value=_extract_lloq_value(df),
+        blq_burden=blq_burden,
+        lloq_value=lloq_value,
         protocol_heterogeneity=_assess_protocol_heterogeneity(df),
         absorption_phase_coverage=_assess_absorption_coverage(obs),
         elimination_phase_coverage=_assess_elimination_coverage(obs),
+        error_model_preference=error_pref,
+        cmax_p95_p05_ratio=cmax_p95_p05_ratio,
+        dv_cv_percent=dv_cv_percent,
+        terminal_log_residual_mad=terminal_log_mad,
     )
+
+
+# ---------------------------------------------------------------------------
+# Error-model selection heuristic (Beal 2001, Ahn 2008 + multi-agent consensus)
+# ---------------------------------------------------------------------------
+
+# Thresholds informed by the multi-agent research consensus + cited papers.
+_BLQ_M3_TRIGGER: float = 0.10  # Beal 2001 / Ahn 2008: M3 preferred for BLQ ≥ 10%.
+_DYNAMIC_RANGE_PROPORTIONAL: float = 50.0  # Cmax_p95/Cmax_p05 > 50 → proportional.
+_HIGH_CV_CEILING: float = 80.0  # CV > 80 with big range → signal is noise-dominated.
+_LLOQ_CMAX_COMBINED: float = 0.05  # LLOQ / Cmax_median > 5% → combined needed.
+_TERMINAL_LOG_MAD_COMBINED: float = 0.35  # noisy terminal in log-space → combined.
+_NARROW_RANGE_ADDITIVE: float = 5.0  # range_ratio < 5 + low CV → additive plausible.
+
+
+def recommend_error_model(
+    obs: pd.DataFrame,
+    *,
+    blq_burden: float,
+    lloq: float | None,
+    cmax_p95_p05_ratio: float | None,
+    dv_cv_percent: float | None,
+    terminal_log_mad: float | None,
+) -> ErrorModelPreference:
+    """Return the profiler's preferred error-model family for this dataset.
+
+    Decision tree (priority order):
+      1. ``blq_burden ≥ 0.10`` → BLQ_M3 with proportional/combined underlying.
+         Never include additive-only: Ahn 2008 shows M3 gives biased estimates
+         when combined with additive-only residual error under heavy censoring
+         (the additive sigma absorbs the censored mass, corrupting CL).
+      2. Wide dynamic range (Cmax_p95/Cmax_p05 > 50) with moderate CV
+         (<80%) → proportional. Classic PK signal where sigma scales with
+         concentration over the observed range.
+      3. LLOQ/Cmax_median > 5% or terminal log-residual MAD > 0.35 →
+         combined. Additive component matters near the LLOQ or when
+         terminal noise is large in log-space.
+      4. Narrow range (<5) and low CV → additive (rare; typical of
+         narrow-range biomarker PD).
+      5. Default → proportional, medium confidence.
+
+    Returns ErrorModelPreference with primary, allowed set, confidence,
+    rationale.
+    """
+    # 1. BLQ dominance — never allow additive-only.
+    if blq_burden >= _BLQ_M3_TRIGGER:
+        allowed: list[Literal["proportional", "additive", "combined"]] = [
+            "proportional",
+            "combined",
+        ]
+        return ErrorModelPreference(
+            primary="blq_m3",
+            allowed=allowed,
+            confidence="high",
+            rationale=(
+                f"BLQ={blq_burden * 100:.1f}% ≥ {_BLQ_M3_TRIGGER * 100:.0f}%: "
+                "Beal 2001 M3 required; additive-only excluded (Ahn 2008)"
+            ),
+        )
+
+    cmax_median = _cmax_median(obs)
+    # 3. LLOQ/Cmax or terminal noise signal → combined
+    lloq_ratio = (lloq / cmax_median) if (lloq is not None and cmax_median > 0) else None
+    terminal_noisy = terminal_log_mad is not None and terminal_log_mad > _TERMINAL_LOG_MAD_COMBINED
+    lloq_close = lloq_ratio is not None and lloq_ratio > _LLOQ_CMAX_COMBINED
+    if lloq_close or terminal_noisy:
+        reason = []
+        if lloq_close and lloq_ratio is not None:
+            reason.append(f"LLOQ/Cmax_median={lloq_ratio * 100:.1f}%>5%")
+        if terminal_noisy and terminal_log_mad is not None:
+            reason.append(f"terminal log MAD={terminal_log_mad:.2f}>0.35")
+        return ErrorModelPreference(
+            primary="combined",
+            allowed=["combined"],
+            confidence="medium",
+            rationale="; ".join(reason) + " → combined error needed",
+        )
+
+    # 2. Wide dynamic range with moderate CV → proportional
+    if (
+        cmax_p95_p05_ratio is not None
+        and cmax_p95_p05_ratio > _DYNAMIC_RANGE_PROPORTIONAL
+        and (dv_cv_percent is None or dv_cv_percent < _HIGH_CV_CEILING)
+    ):
+        return ErrorModelPreference(
+            primary="proportional",
+            allowed=["proportional", "combined"],
+            confidence="high",
+            rationale=(
+                f"dynamic range={cmax_p95_p05_ratio:.1f}>50 with moderate CV → "
+                "proportional error scales with concentration"
+            ),
+        )
+
+    # 4. Narrow-range + low-CV biomarker → additive plausible
+    if (
+        cmax_p95_p05_ratio is not None
+        and cmax_p95_p05_ratio < _NARROW_RANGE_ADDITIVE
+        and dv_cv_percent is not None
+        and dv_cv_percent < 30.0
+    ):
+        return ErrorModelPreference(
+            primary="additive",
+            allowed=["additive", "combined"],
+            confidence="low",
+            rationale=(
+                f"narrow range={cmax_p95_p05_ratio:.1f} + CV={dv_cv_percent:.1f}% → "
+                "additive error plausible (biomarker-like)"
+            ),
+        )
+
+    # 5. Default: proportional with combined as escape hatch
+    return ErrorModelPreference(
+        primary="proportional",
+        allowed=["proportional", "combined"],
+        confidence="medium",
+        rationale="default preference: proportional with combined fallback",
+    )
+
+
+def _compute_cmax_dynamic_range(obs: pd.DataFrame) -> float | None:
+    """Ratio of the 95th-percentile DV to the 5th-percentile DV (positive only).
+
+    A stable proxy for "does sigma need to scale with concentration?". Returns
+    None when fewer than 20 positive observations exist.
+    """
+    if obs.empty:
+        return None
+    dv_pos = obs[obs["DV"] > 0]["DV"].to_numpy(dtype=float)
+    if len(dv_pos) < 20:
+        return None
+    p95 = float(np.percentile(dv_pos, 95))
+    p05 = float(np.percentile(dv_pos, 5))
+    if p05 <= 0:
+        return None
+    return p95 / p05
+
+
+def _compute_dv_cv_percent(obs: pd.DataFrame) -> float | None:
+    """Coefficient of variation (%) of positive DV values."""
+    if obs.empty:
+        return None
+    dv_pos = obs[obs["DV"] > 0]["DV"].to_numpy(dtype=float)
+    if len(dv_pos) < 10:
+        return None
+    mean = float(np.mean(dv_pos))
+    if mean <= 0:
+        return None
+    sd = float(np.std(dv_pos, ddof=1))
+    return 100.0 * sd / mean
+
+
+def _compute_terminal_log_residual_mad(obs: pd.DataFrame) -> float | None:
+    """Median absolute deviation of log-concentration residuals from the
+    per-subject terminal log-linear trend.
+
+    Computed per-subject using the last half of post-Tmax points; combined
+    MAD across subjects is reported. Larger values (>0.35) imply additive
+    error component is needed near the tail (combined preferred).
+    """
+    if obs.empty:
+        return None
+    residuals: list[float] = []
+    for _, subj in obs.groupby("NMID"):
+        subj_sorted = subj.sort_values("TIME")
+        times = subj_sorted["TIME"].to_numpy(dtype=float)
+        concs = subj_sorted["DV"].to_numpy(dtype=float)
+        pos = concs > 0
+        if pos.sum() < 4:
+            continue
+        t = times[pos]
+        c = concs[pos]
+        tmax_idx = int(np.argmax(c))
+        post_t = t[tmax_idx + 1 :]
+        post_c = c[tmax_idx + 1 :]
+        if len(post_t) < 4:
+            continue
+        half = len(post_t) // 2
+        term_t = post_t[half:]
+        term_c = post_c[half:]
+        if len(term_t) < 3:
+            continue
+        y = np.log(np.clip(term_c, 1e-100, 1e100))
+        mean_t = float(np.mean(term_t))
+        mean_y = float(np.mean(y))
+        ss_tt = float(np.sum((term_t - mean_t) ** 2))
+        if ss_tt <= 0:
+            continue
+        slope = float(np.sum((term_t - mean_t) * (y - mean_y))) / ss_tt
+        intercept = mean_y - slope * mean_t
+        pred = intercept + slope * term_t
+        residuals.extend(list(y - pred))
+    if not residuals:
+        return None
+    res_arr = np.array(residuals)
+    median = float(np.median(res_arr))
+    return float(np.median(np.abs(res_arr - median)))
+
+
+def _cmax_median(obs: pd.DataFrame) -> float:
+    """Median per-subject Cmax (robust to outliers)."""
+    if obs.empty:
+        return 0.0
+    cmax_values: list[float] = []
+    for _, subj in obs.groupby("NMID"):
+        concs = subj["DV"].to_numpy(dtype=float)
+        if concs.size == 0:
+            continue
+        cmax_values.append(float(np.max(concs)))
+    return float(np.median(cmax_values)) if cmax_values else 0.0
 
 
 def _detect_time_varying_covariates(

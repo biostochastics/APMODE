@@ -213,7 +213,17 @@ Missing data is resolved by a **lane-tiered policy** (`policies/{submission,disc
 | Discovery | 5 | off | 15% | 0.25 |
 | Optimization | 10 | → 20 | 10% | 0.5 |
 
-**Imputation stability (Gate 1)**. When MI is active, each candidate gets an `ImputationStabilityEntry` (Rubin-pooled OFV/AIC/BIC, `convergence_rate`, top-K `rank_stability`, within/between variance proxy, covariate sign consistency). Gate 1 fails candidates with `convergence_rate < 0.5` (hard floor) or `rank_stability < 1 − policy.imputation_stability_penalty` (soft, lane-driven).
+**Imputation stability (Gate 1)**. When MI is active, each candidate gets an `ImputationStabilityEntry` (Rubin-pooled OFV/AIC/BIC, `convergence_rate`, top-K `rank_stability`, within/between variance proxy, covariate sign consistency, plus per-parameter Rubin pooling — see below). Gate 1 fails candidates with `convergence_rate < 0.5` (hard floor) or `rank_stability < 1 − policy.imputation_stability_penalty` (soft, lane-driven).
+
+**Rubin's rules for per-parameter pooling**. `apmode.search.stability.rubin_pool(estimates, ses, m_total=...)` implements the canonical Rubin (1987) decomposition on a single scalar parameter:
+
+- `Q̄` — pooled point estimate (mean of per-imputation estimates).
+- `Ū` — within-imputation variance (mean of per-imputation `SE²`).
+- `B` — between-imputation variance (sample variance of per-imputation estimates).
+- `T = Ū + (1 + 1/m) · B` — total variance used for inference.
+- `dof` — Barnard–Rubin degrees of freedom for interval construction.
+
+`ImputationStabilityEntry.pooled_parameters` carries the full 5-tuple per parameter so downstream reports can quote Rubin-pooled estimates and confidence intervals with the correct variance decomposition (not just the arithmetic mean of OFV/AIC/BIC). The orchestrator populates the input tuples by having `_run_mi_stage` forward each refit's `(estimate, SE)` pairs on `PerImputationFit.parameter_estimates`. When the backend does not emit SEs (e.g., SAEM without a covariance step), the pool degrades gracefully to a between-imputation-only variance.
 
 **Agentic LLM cherry-picking guard**. The stability manifest is the *only* per-imputation artifact the LLM sees. When `directive.llm_pooled_only=true` (default), `diagnostic_summarizer.summarize_stability_for_llm` substitutes pooled scores + stability scores for raw per-imputation diagnostics — the LLM cannot observe individual imputation draws, so it cannot select transforms that exploit a single lucky imputation.
 

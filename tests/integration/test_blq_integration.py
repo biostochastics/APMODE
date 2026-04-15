@@ -108,12 +108,19 @@ class TestBLQPipelineIntegration:
             )
 
     def test_low_blq_burden_does_not_force_m3(self, tmp_path: Path) -> None:
-        """10% BLQ (below 20% threshold) → no BLQ forcing."""
+        """5% BLQ (below the Beal 2001 / Ahn 2008 10% threshold) → no BLQ forcing.
+
+        The profiler's error-model heuristic (``recommend_error_model``)
+        triggers BLQ_M3 at ``blq_burden >= 0.10``; the legacy
+        ``blq_burden > 0.20`` override is a fallback for old manifests
+        that omit ``error_model_preference``. This test uses 5% BLQ so
+        both paths agree: no forcing.
+        """
         df = _make_synthetic_pk_data(n_subjects=60)
 
         recipe = PerturbationRecipe(
             perturbation_type=PerturbationType.INJECT_BLQ,
-            blq_fraction=0.10,
+            blq_fraction=0.05,
             seed=42,
         )
         perturbed, _ = apply_perturbation(df, recipe)
@@ -124,7 +131,7 @@ class TestBLQPipelineIntegration:
         data_manifest, df_ingested = ingest_nonmem_csv(csv_path)
         evidence = profile_data(df_ingested, data_manifest)
 
-        assert evidence.blq_burden < 0.20  # Below threshold
+        assert evidence.blq_burden < 0.10  # Below new Beal/Ahn threshold
 
         space = SearchSpace.from_manifest(evidence)
         assert space.force_blq_method is None

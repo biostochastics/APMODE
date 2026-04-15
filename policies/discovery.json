@@ -5,6 +5,7 @@
     "convergence_required": true,
     "cwres_mean_max": 0.15,
     "outlier_fraction_max": 0.08,
+    "vpc_required": false,
     "vpc_coverage_lower": 0.80,
     "vpc_coverage_upper": 0.995,
     "seed_stability_n": 3

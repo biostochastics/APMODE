@@ -388,3 +388,107 @@ cat(sprintf("FIT_OK ofv=%.2f omega_wt=%.4f\\n", ofv, omega_wt))
         assert float(m.group(1)) > 1.0, (
             f"eta.cov.WT variance collapsed to {m.group(1)}; FREM learned nothing."
         )
+
+
+# --- Binary categorical covariate tests ----------------------------------
+
+
+class TestBinaryCovariate:
+    def test_binary_transform_accepts_zero_one(self) -> None:
+        cov = FREMCovariate(name="SEX", mu_init=0.5, sigma_init=0.5, dvid=2, transform="binary")
+        assert cov.transform == "binary"
+
+    def test_summarize_binary_validates_values(self) -> None:
+        df = pd.DataFrame(
+            {
+                "NMID": [1, 2, 3, 4],
+                "TIME": [0.0, 0.0, 0.0, 0.0],
+                "SEX": [0, 1, 0, 2],  # 2 is invalid
+            }
+        )
+        with pytest.raises(ValueError, match="binary transform"):
+            summarize_covariates(df, ["SEX"], transforms={"SEX": "binary"})
+
+    def test_summarize_binary_valid(self) -> None:
+        df = pd.DataFrame(
+            {
+                "NMID": [1, 2, 3, 4, 5, 6],
+                "TIME": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                "SEX": [0, 1, 0, 1, 0, 1],
+            }
+        )
+        summaries = summarize_covariates(df, ["SEX"], transforms={"SEX": "binary"})
+        assert summaries[0].transform == "binary"
+        assert summaries[0].mu_init == pytest.approx(0.5)
+
+
+# --- Time-varying covariate tests ----------------------------------------
+
+
+class TestTimeVaryingCovariate:
+    def test_time_varying_emits_per_time_rows(self) -> None:
+        df = pd.DataFrame(
+            {
+                "NMID": [1, 1, 1, 2, 2, 2],
+                "TIME": [0.0, 4.0, 8.0, 0.0, 4.0, 8.0],
+                "EVID": [1, 0, 0, 1, 0, 0],
+                "AMT": [100.0, 0.0, 0.0, 100.0, 0.0, 0.0],
+                "DV": [0.0, 5.0, 3.0, 0.0, 4.0, 2.0],
+                "CRCL": [80.0, 75.0, 70.0, 90.0, 88.0, 86.0],  # changes over time
+            }
+        )
+        cov = FREMCovariate(
+            name="CRCL",
+            mu_init=80.0,
+            sigma_init=10.0,
+            dvid=2,
+            time_varying=True,
+        )
+        out = prepare_frem_data(df, [cov])
+        cov_rows = out[out["DVID"] == 2]
+        # Subject 1 has 3 distinct (TIME, CRCL) values; same for subject 2
+        # → 6 covariate observation rows total.
+        assert len(cov_rows) == 6
+        # Per-subject values land at the correct times
+        s1 = cov_rows[cov_rows["NMID"] == 1].sort_values("TIME")
+        assert s1["DV"].tolist() == [80.0, 75.0, 70.0]
+
+    def test_time_varying_skips_repeated_same_time_value(self) -> None:
+        df = pd.DataFrame(
+            {
+                "NMID": [1, 1, 1],
+                "TIME": [0.0, 0.0, 4.0],
+                "EVID": [1, 0, 0],
+                "AMT": [100.0, 0.0, 0.0],
+                "DV": [0.0, 5.0, 3.0],
+                "CRCL": [80.0, 80.0, 70.0],  # 80@0 appears twice
+            }
+        )
+        cov = FREMCovariate(
+            name="CRCL",
+            mu_init=75.0,
+            sigma_init=5.0,
+            dvid=2,
+            time_varying=True,
+        )
+        out = prepare_frem_data(df, [cov])
+        cov_rows = out[out["DVID"] == 2]
+        assert len(cov_rows) == 2  # dedupe (0,80) and (4,70)
+
+    def test_time_varying_residual_left_estimable(self) -> None:
+        spec = _simple_spec()
+        covs = [
+            FREMCovariate(name="CRCL", mu_init=80.0, sigma_init=10.0, dvid=2, time_varying=True),
+        ]
+        code = emit_nlmixr2_frem(spec, covs)
+        # Static covariates are emitted as fix(...); TV covariates are not.
+        assert "sig_cov_CRCL <- 0.01" in code
+        assert "sig_cov_CRCL <- fix" not in code
+
+    def test_static_residual_remains_fixed(self) -> None:
+        spec = _simple_spec()
+        covs = [
+            FREMCovariate(name="WT", mu_init=70.0, sigma_init=10.0, dvid=2),
+        ]
+        code = emit_nlmixr2_frem(spec, covs)
+        assert "sig_cov_WT <- fix(0.01)" in code

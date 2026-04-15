@@ -12,10 +12,25 @@ References:
 - Yngman et al. 2022 CPT:PSP — practical FREM implementation patterns.
 - Nyberg 2024, Jonsson 2024 — FREM vs FFEM + mean imputation under MAR.
 
-Scope of this emitter (v1):
-- Static (baseline-only) subject-level covariates.
-- Continuous covariates. Categorical covariates require a separate
-  logit-transformed parameterization and are not emitted.
+Scope of this emitter:
+- Static (baseline-only) and time-varying subject-level covariates.
+  ``prepare_frem_data`` writes one observation row per subject per
+  covariate at the subject's baseline time by default; pass
+  ``time_varying_covariates`` to ``prepare_frem_data`` to emit one
+  row per *visit* (per subject x time x covariate) for covariates
+  whose value changes over time. nlmixr2 then treats the per-visit
+  observations as repeated measurements of the joint Ω structure.
+- Continuous, log-transformed continuous, and binary categorical
+  covariates. ``transform="binary"`` accepts 0/1-coded categorical
+  inputs and uses an additive-normal endpoint — the off-diagonal Ω
+  entry between the binary covariate eta and a PK eta then estimates
+  the linear association between the PK parameter and the binary
+  group (a common categorical-FREM compromise; for proper
+  logit-likelihood handling you would need a custom binomial endpoint
+  beyond this emitter's scope).
+- Multi-level categorical covariates (k > 2 categories): one-hot
+  encode upstream into k-1 binary indicators and pass each indicator
+  as a ``"binary"`` covariate.
 - Joint Ω is structured as a block matrix with the PK IIV block (from
   the underlying spec) in the top-left and covariate variances on the
   diagonal of the bottom-right block; off-diagonal PKxcovariate
@@ -23,11 +38,6 @@ Scope of this emitter (v1):
 - CovariateLink entries in the spec are dropped because FREM replaces
   explicit covariate-on-parameter effects with the joint random-effect
   structure.
-
-Time-varying covariates are currently handled upstream (routing forces
-FREM when ``manifest.time_varying_covariates`` is set), but the
-emitter treats them as if they were baseline. Extending to per-occasion
-etas is future work and is called out in the module docstring.
 """
 
 from __future__ import annotations
@@ -103,12 +113,31 @@ class FREMCovariate:
             observation per subject per covariate, BSV and residual are
             confounded, so fixing the residual lets the random-effect
             component absorb all between-subject variance (Karlsson 2011).
+        time_varying: When True, ``prepare_frem_data`` writes one
+            observation row per (subject x distinct TIME) where the
+            covariate value is observed (non-NaN), instead of a single
+            baseline-row per subject. The covariate residual SD
+            (``sig_cov_*``) is also left **estimable** (not fixed), so
+            it absorbs within-subject variation while the joint Ω
+            entry continues to capture between-subject variance and
+            the PK-covariate covariance. Default ``False`` (baseline
+            FREM, one obs/subject, residual fixed for identifiability).
         transform: Scale on which the covariate is represented in the
             model. ``"identity"`` (default) fits the covariate on its
             raw scale; ``"log"`` fits on the natural-log scale and is
             recommended for strictly positive, right-skewed covariates
             (weight, creatinine, etc.) so the Ω block stays well
-            conditioned.
+            conditioned; ``"binary"`` treats a 0/1-coded categorical
+            covariate as continuous with an additive-normal endpoint —
+            the off-diagonal Ω entry between the binary covariate eta
+            and a PK eta then estimates the linear association between
+            PK clearance/volume and the binary group, a common
+            categorical-FREM compromise (see module docstring on
+            multi-level coding). Inputs are validated to be exactly
+            ``{0, 1}`` for ``"binary"``; for multi-level categorical
+            covariates, one-hot encode to k-1 binary indicators
+            upstream and pass each indicator as a ``"binary"``
+            covariate.
     """
 
     name: str
@@ -117,13 +146,14 @@ class FREMCovariate:
     dvid: int
     epsilon_sd: float = _DEFAULT_COV_EPS_SD
     transform: str = "identity"
+    time_varying: bool = False
 
     def __post_init__(self) -> None:
         _sanitize_r_name(self.name)
-        if self.transform not in ("identity", "log"):
+        if self.transform not in ("identity", "log", "binary"):
             msg = (
-                f"FREMCovariate {self.name!r}: transform must be 'identity' or "
-                f"'log', got {self.transform!r}"
+                f"FREMCovariate {self.name!r}: transform must be 'identity', "
+                f"'log', or 'binary', got {self.transform!r}"
             )
             raise ValueError(msg)
         if not np.isfinite(self.mu_init):
@@ -190,6 +220,19 @@ def summarize_covariates(
     baseline_idx = df.groupby(id_col)[time_col].idxmin()
     per_subj = df.loc[baseline_idx].set_index(id_col)
 
+    # Detect per-covariate time-varying status by checking whether any
+    # subject has more than one distinct non-NaN value across the full
+    # dataset. The upstream ``EvidenceManifest.time_varying_covariates``
+    # flag is a binary aggregate; per-covariate resolution is needed so
+    # we emit the right ``time_varying`` flag on each ``FREMCovariate``.
+    tv_flags: dict[str, bool] = {}
+    for name in covariate_names:
+        if name not in df.columns:
+            tv_flags[name] = False
+            continue
+        per_subj_unique = df.groupby(id_col)[name].apply(lambda s: int(s.dropna().nunique()))
+        tv_flags[name] = bool((per_subj_unique > 1).any())
+
     summaries: list[FREMCovariate] = []
     for idx, name in enumerate(covariate_names):
         if name not in per_subj.columns:
@@ -205,6 +248,16 @@ def summarize_covariates(
                 )
                 raise ValueError(msg)
             observed = np.log(observed)
+        elif transform == "binary":
+            unique_vals = set(observed.unique().tolist())
+            if not unique_vals.issubset({0.0, 1.0}):
+                msg = (
+                    f"Covariate {name!r}: binary transform requires values "
+                    f"in {{0, 1}}, found {sorted(unique_vals)}. For multi-level "
+                    f"categorical covariates, one-hot encode to k-1 binary "
+                    f"indicators upstream and pass each as a 'binary' covariate."
+                )
+                raise ValueError(msg)
         if len(observed) < 2:
             msg = (
                 f"Covariate {name!r}: only {len(observed)} observed subject(s); "
@@ -220,9 +273,83 @@ def summarize_covariates(
                 sigma_init=sd,
                 dvid=_FREM_DVID_OFFSET + idx,
                 transform=transform,
+                time_varying=tv_flags[name],
             )
         )
     return summaries
+
+
+def _apply_cov_transform(
+    cov: FREMCovariate,
+    cov_float: float,
+    sid: object,
+) -> float:
+    """Apply the covariate's transform, validating positivity / 0-1 coding."""
+    if cov.transform == "log":
+        if cov_float <= 0:
+            msg = (
+                f"Subject {sid!r}: covariate {cov.name!r} has non-positive value "
+                f"{cov_float} but transform='log' — skip this subject or drop "
+                f"the covariate."
+            )
+            raise ValueError(msg)
+        return float(np.log(cov_float))
+    if cov.transform == "binary" and cov_float not in (0.0, 1.0):
+        msg = (
+            f"Subject {sid!r}: covariate {cov.name!r} has value {cov_float} but "
+            f"transform='binary' requires {{0, 1}}. For multi-level categorical "
+            f"covariates, one-hot encode upstream."
+        )
+        raise ValueError(msg)
+    return cov_float
+
+
+def _build_aug_row(
+    src_row: object,
+    id_col: str,
+    time_col: str,
+    sid: object,
+    obs_time: float,
+    dv: float,
+    dvid: int,
+) -> dict[str, object]:
+    """Construct one augmentation row from a source row + emitted DV.
+
+    Per-subject covariate columns are inherited from the source row so
+    rxode2's state machine has a complete event record at the
+    augmentation time, but event/dose/censoring columns that belong to
+    the original PK observation context are explicitly cleared
+    (Codex review 2026-04-14). Leaving CENS/LIMIT/BLQ_FLAG/RATE/DUR on
+    the covariate row would route the covariate observation through the
+    PK BLQ likelihood or treat it as part of an infusion envelope.
+    """
+    new_row: dict[str, object] = {k: v for k, v in src_row.items()}  # type: ignore[attr-defined]
+    new_row[id_col] = sid
+    new_row[time_col] = obs_time
+    if "EVID" in new_row:
+        new_row["EVID"] = 0
+    if "AMT" in new_row:
+        new_row["AMT"] = 0.0
+    if "MDV" in new_row:
+        new_row["MDV"] = 0
+    # Clear columns that would contaminate the covariate-endpoint likelihood.
+    for col, reset in (
+        ("CENS", 0),
+        ("LIMIT", 0.0),
+        ("BLQ_FLAG", 0),
+        ("RATE", 0.0),
+        ("DUR", 0.0),
+        ("SS", 0),  # steady state marker — covariate obs is not in SS
+        ("II", 0.0),  # inter-dose interval — N/A for covariate obs
+    ):
+        if col in new_row:
+            new_row[col] = reset
+    # CMT is deliberately not cleared here: nlmixr2 routes covariate
+    # endpoints via the DVID column in this emitter's design, and the
+    # source row's CMT is typically the dose compartment for the subject.
+    new_row["DV"] = dv
+    new_row["DVID"] = dvid
+    return new_row
 
 
 def prepare_frem_data(
@@ -278,37 +405,57 @@ def prepare_frem_data(
     baseline_idx = out.groupby(id_col, sort=False)[time_col].idxmin()
     first_per_subj = out.loc[baseline_idx].reset_index(drop=True)
 
+    static_covs = [c for c in covariates if not c.time_varying]
+    tv_covs = [c for c in covariates if c.time_varying]
+
     aug_rows: list[dict[str, object]] = []
+
+    # Static covariates: one observation row per subject at baseline.
     for _, subj_row in first_per_subj.iterrows():
         sid = subj_row[id_col]
         baseline_time = float(subj_row[time_col])
-        for cov in covariates:
+        for cov in static_covs:
             cov_value = subj_row.get(cov.name)
-            # pd.isna covers None, np.nan, pd.NA, and NaT in a single idiom.
             if pd.isna(cov_value):
                 continue
-            cov_float = float(cov_value)
-            if cov.transform == "log":
-                if cov_float <= 0:
-                    msg = (
-                        f"Subject {sid!r}: covariate {cov.name!r} has non-positive "
-                        f"value {cov_float} but transform='log' — skip this subject or "
-                        f"drop the covariate."
-                    )
-                    raise ValueError(msg)
-                cov_float = float(np.log(cov_float))
-            new_row: dict[str, object] = {k: v for k, v in subj_row.items()}
-            new_row[id_col] = sid
-            new_row[time_col] = baseline_time
-            if "EVID" in new_row:
-                new_row["EVID"] = 0
-            if "AMT" in new_row:
-                new_row["AMT"] = 0.0
-            if "MDV" in new_row:
-                new_row["MDV"] = 0
-            new_row["DV"] = cov_float
-            new_row["DVID"] = cov.dvid
-            aug_rows.append(new_row)
+            cov_float = _apply_cov_transform(cov, float(cov_value), sid)
+            aug_rows.append(
+                _build_aug_row(subj_row, id_col, time_col, sid, baseline_time, cov_float, cov.dvid)
+            )
+
+    # Time-varying covariates: one observation row per (subject, time) where
+    # the covariate value is non-NaN. Dedup is keyed on ``(subject, TIME)``
+    # alone and the stored ``(subject, TIME) → value`` map is consulted on
+    # subsequent rows to detect conflicting values at the same timepoint —
+    # an input-data ambiguity that would otherwise produce multiple
+    # contradictory observation rows and distort the likelihood.
+    # Raises ``ValueError`` with a clear pointer so callers can dedupe
+    # upstream (e.g., take the first observation per subject/time or
+    # average before calling prepare_frem_data).
+    _TV_CONFLICT_TOL: float = 1e-9
+    for cov in tv_covs:
+        per_subj_groups = out.groupby(id_col, sort=False)
+        for sid, subj_df in per_subj_groups:
+            seen_at_time: dict[float, float] = {}
+            for _, row in subj_df.iterrows():
+                cov_value = row.get(cov.name)
+                if pd.isna(cov_value):
+                    continue
+                cov_float = _apply_cov_transform(cov, float(cov_value), sid)
+                t = float(row[time_col])
+                if t in seen_at_time:
+                    prior = seen_at_time[t]
+                    if abs(prior - cov_float) > _TV_CONFLICT_TOL:
+                        msg = (
+                            f"Subject {sid!r}: covariate {cov.name!r} has "
+                            f"conflicting values at TIME={t}: {prior} vs "
+                            f"{cov_float}. Deduplicate or aggregate upstream "
+                            f"before calling prepare_frem_data."
+                        )
+                        raise ValueError(msg)
+                    continue
+                seen_at_time[t] = cov_float
+                aug_rows.append(_build_aug_row(row, id_col, time_col, sid, t, cov_float, cov.dvid))
 
     if not aug_rows:
         return out
@@ -449,15 +596,25 @@ def _emit_frem_ini(
     lines.extend(_emit_sigma_ini(frem_spec))
 
     # Covariate residual error (one per covariate).
-    # Fixed via ``fix(...)`` because with one covariate observation per
-    # subject, the subject-level eta and residual sd are perfectly
-    # confounded; fixing ε lets eta absorb all between-subject variance
+    # For static (baseline-only) covariates we ``fix(...)`` the residual
+    # because one obs/subject perfectly confounds eta and sigma; fixing
+    # the residual lets the eta absorb all between-subject variance
     # (standard FREM practice, Karlsson 2011).
+    # For time-varying covariates we leave the residual estimable so it
+    # can absorb within-subject variation while the eta continues to
+    # capture between-subject variance.
     lines.append("")
-    lines.append("# FREM covariate residual error (fixed; eta absorbs BSV)")
+    lines.append("# FREM covariate residual error")
+    lines.append(
+        "# (fixed for static covariates so eta absorbs BSV; "
+        "estimable for time-varying so it absorbs WSV)"
+    )
     for cov in covariates:
         name = _sanitize_r_name(cov.name)
-        lines.append(f"sig_cov_{name} <- fix({cov.epsilon_sd})")
+        if cov.time_varying:
+            lines.append(f"sig_cov_{name} <- {cov.epsilon_sd}")
+        else:
+            lines.append(f"sig_cov_{name} <- fix({cov.epsilon_sd})")
 
     return lines
 

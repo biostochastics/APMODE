@@ -188,10 +188,10 @@ class TestSearchSpaceApplyDirective:
         manifest = _manifest(blq_burden=0.25, lloq=0.5)
         space = SearchSpace.from_manifest(manifest)
         directive = MissingDataDirective(covariate_method="exclude", blq_method="M3")
-        space.apply_directive(directive, manifest)
-        assert space.force_blq_method == "m3"
-        assert space.lloq_value == 0.5
-        assert space.blq_strategy == "M3"
+        updated = space.apply_directive(directive, manifest)
+        assert updated.force_blq_method == "m3"
+        assert updated.lloq_value == 0.5
+        assert updated.blq_strategy == "M3"
 
     def test_m7plus_clears_force_blq(self) -> None:
         manifest = _manifest(blq_burden=0.25, lloq=0.5)
@@ -199,9 +199,11 @@ class TestSearchSpaceApplyDirective:
         # from_manifest set force_blq_method="m3" because burden>0.20
         assert space.force_blq_method == "m3"
         directive = MissingDataDirective(covariate_method="exclude", blq_method="M7+")
-        space.apply_directive(directive, manifest)
-        assert space.force_blq_method is None
-        assert space.blq_strategy == "M7+"
+        updated = space.apply_directive(directive, manifest)
+        assert updated.force_blq_method is None
+        assert updated.blq_strategy == "M7+"
+        # Original space is not mutated.
+        assert space.force_blq_method == "m3"
 
 
 class TestGate1ImputationStability:
@@ -284,3 +286,82 @@ class TestGate1ImputationStability:
         )
         check = next(c for c in g1.checks if c.check_id == "imputation_stability")
         assert check.passed is True
+
+
+# --- Rubin pooling tests -------------------------------------------------
+
+
+class TestRubinPool:
+    """Rubin (1987) pooling of per-imputation scalar parameter estimates."""
+
+    def test_single_imputation_returns_estimate_unchanged(self) -> None:
+        from apmode.search.stability import rubin_pool
+
+        pooled, within, between, total, dof = rubin_pool([5.0], [0.5])
+        assert pooled == pytest.approx(5.0)
+        assert within == pytest.approx(0.25)  # SE²
+        assert between == pytest.approx(0.0)
+        assert total == pytest.approx(0.25)
+        assert dof == float("inf")
+
+    def test_two_imputations_decomposes_variance(self) -> None:
+        from apmode.search.stability import rubin_pool
+
+        pooled, within, between, total, _ = rubin_pool([5.0, 5.4], [0.3, 0.3])
+        assert pooled == pytest.approx(5.2)
+        # Within: mean of SE² = 0.09
+        assert within == pytest.approx(0.09)
+        # Between: sample var([5.0, 5.4]) = 0.08 (n-1 denominator)
+        assert between == pytest.approx(0.08)
+        # Total: Ū + (1 + 1/2)*B = 0.09 + 1.5*0.08 = 0.21
+        assert total == pytest.approx(0.21)
+
+    def test_none_ses_zero_within_variance(self) -> None:
+        from apmode.search.stability import rubin_pool
+
+        pooled, within, between, total, _ = rubin_pool([5.0, 5.4, 4.8], [None, None, None])
+        assert pooled == pytest.approx(5.0666, rel=1e-3)
+        assert within == pytest.approx(0.0)
+        # Only between-imputation variance contributes to total.
+        assert total == pytest.approx((1 + 1 / 3) * between)
+
+    def test_misaligned_inputs_raise(self) -> None:
+        from apmode.search.stability import rubin_pool
+
+        with pytest.raises(ValueError, match="must align"):
+            rubin_pool([1.0, 2.0], [0.1])
+
+    def test_aggregate_populates_pooled_parameters(self) -> None:
+        """aggregate_stability must surface Rubin-pooled params when fits carry (est, se)."""
+        fits = [
+            PerImputationFit(
+                imputation_idx=0,
+                candidate_id="c1",
+                converged=True,
+                bic=100.0,
+                parameter_estimates={"CL": (5.0, 0.3), "V": (50.0, 2.0)},
+            ),
+            PerImputationFit(
+                imputation_idx=1,
+                candidate_id="c1",
+                converged=True,
+                bic=101.0,
+                parameter_estimates={"CL": (5.2, 0.3), "V": (51.0, 2.0)},
+            ),
+            PerImputationFit(
+                imputation_idx=2,
+                candidate_id="c1",
+                converged=True,
+                bic=100.5,
+                parameter_estimates={"CL": (4.9, 0.3), "V": (49.0, 2.0)},
+            ),
+        ]
+        from apmode.search.stability import aggregate_stability
+
+        entries = aggregate_stability(fits, m=3)
+        assert entries[0].pooled_parameters
+        cl = entries[0].pooled_parameters["CL"]
+        assert cl["pooled_estimate"] == pytest.approx((5.0 + 5.2 + 4.9) / 3)
+        assert cl["within_var"] == pytest.approx(0.09)
+        assert cl["total_var"] > cl["within_var"]  # between adds variance
+        assert cl["dof"] > 0

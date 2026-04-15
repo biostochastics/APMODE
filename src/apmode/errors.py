@@ -57,6 +57,25 @@ class CrashError(BackendError):
         self.stderr_tail = stderr_tail
 
 
+class AgenticExhaustionError(BackendError):
+    """Agentic loop completed all iterations without a converged result.
+
+    Distinct from transient ``BackendError`` failures (network, crash,
+    timeout) so the orchestrator can surface "LLM could not find a valid
+    model in N iterations" as a meaningful outcome rather than a
+    generic transient failure.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        iterations: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.iterations = iterations
+
+
 class InvalidSpecError(BackendError):
     """DSL spec failed validation before backend dispatch."""
 
