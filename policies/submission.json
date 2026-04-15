@@ -1,5 +1,5 @@
 {
-  "policy_version": "0.1.0",
+  "policy_version": "0.2.0",
   "lane": "submission",
   "gate1": {
     "convergence_required": true,
@@ -16,5 +16,19 @@
     "identifiability_required": true,
     "node_eligible": false,
     "loro_required": false
+  },
+  "missing_data": {
+    "mi_pmm_max_missingness": 0.20,
+    "frem_for_time_varying": true,
+    "frem_preferred_above": 0.25,
+    "missforest_fallback": true,
+    "m_imputations": 20,
+    "adaptive_m": true,
+    "m_max": 40,
+    "adaptive_variance_threshold": 0.05,
+    "blq_m3_threshold": 0.05,
+    "blq_force_m3": false,
+    "llm_pooled_only": true,
+    "imputation_stability_penalty": 0.0
   }
 }

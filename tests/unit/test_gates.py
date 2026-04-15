@@ -234,6 +234,7 @@ class TestGate1:
             "vpc_coverage",
             "split_integrity",
             "seed_stability",
+            "imputation_stability",
         }
         assert expected == check_ids
 

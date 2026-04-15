@@ -28,7 +28,11 @@ logger = structlog.get_logger(__name__)
 _VALID_LANES = frozenset({"submission", "discovery", "optimization"})
 
 if TYPE_CHECKING:
-    from apmode.bundle.models import BackendResult
+    from apmode.bundle.models import (
+        BackendResult,
+        ImputationStabilityEntry,
+        MissingDataDirective,
+    )
     from apmode.governance.policy import Gate1Config, Gate2Config, GatePolicy
 
 
@@ -41,10 +45,13 @@ def evaluate_gate1(
     result: BackendResult,
     policy: GatePolicy,
     seed_results: list[BackendResult] | None = None,
+    stability: ImputationStabilityEntry | None = None,
+    directive: MissingDataDirective | None = None,
 ) -> GateResult:
     """Evaluate Gate 1: Technical Validity.
 
-    7 checks per PRD §4.3.1:
+    7 core checks per PRD §4.3.1, plus an optional imputation-stability
+    check when Multiple Imputation is the resolved covariate method:
       1. Convergence: estimation algorithm converged
       2. Parameter plausibility: no extreme/negative structural params
       3. State trajectory validity: no negative concentrations, no NaN
@@ -52,11 +59,18 @@ def evaluate_gate1(
       5. VPC coverage: within [lower, upper] policy bounds
       6. Split integrity: (placeholder — requires train/test comparison)
       7. Seed stability: results consistent across ≥N random seeds
+      8. Imputation stability (MI runs only): convergence_rate and
+         rank_stability meet directive-driven thresholds.
 
     Args:
         result: BackendResult from a single estimation run.
         policy: GatePolicy with gate1 thresholds.
         seed_results: Results from additional seed runs for stability check.
+        stability: Optional ImputationStabilityEntry for this candidate
+            (present when the run was driven by MI).
+        directive: Optional MissingDataDirective; its
+            ``imputation_stability_penalty`` sets the rank-stability
+            threshold (pass requires rank_stability ≥ 1 - penalty).
     """
     g1 = policy.gate1
     checks: list[GateCheckResult] = []
@@ -68,6 +82,7 @@ def evaluate_gate1(
     checks.append(_check_vpc_coverage(result, g1))
     checks.append(_check_split_integrity(result, g1))
     checks.append(_check_seed_stability(result, seed_results, g1))
+    checks.append(_check_imputation_stability(result, stability, directive))
 
     passed = all(c.passed for c in checks)
     failed_names = [c.check_id for c in checks if not c.passed]
@@ -351,6 +366,69 @@ def _check_seed_stability(
         observed=round(cv, 4),
         threshold=cv_max,
         units="CV_ofv",
+    )
+
+
+_IMPUTATION_MIN_CONVERGENCE_RATE: float = 0.5
+"""Candidates converging in <50% of imputations fail Gate 1 regardless of
+penalty weight — this is a hard data-quality floor, not a tunable threshold.
+"""
+
+
+def _check_imputation_stability(
+    result: BackendResult,
+    stability: ImputationStabilityEntry | None,
+    directive: MissingDataDirective | None,
+) -> GateCheckResult:
+    """Check 8: Imputation stability (MI runs only).
+
+    The rank-stability threshold is driven by
+    ``directive.imputation_stability_penalty``:
+
+      pass_threshold = max(0.0, 1.0 - penalty)
+
+    Convergence rate is hard-gated at
+    ``_IMPUTATION_MIN_CONVERGENCE_RATE`` when stability data is present,
+    independent of the penalty weight — candidates that fail to converge on
+    more than half the imputations cannot be trusted regardless of how
+    permissive the rank-stability threshold is.
+
+    When MI is not active (directive is None or method is not an MI-*
+    variant, or no stability entry is available), the check is marked
+    ``not_applicable`` and passes.
+    """
+    del result  # candidate is identified via stability.candidate_id
+
+    if directive is None or stability is None or not directive.covariate_method.startswith("MI-"):
+        return GateCheckResult(
+            check_id="imputation_stability",
+            passed=True,
+            observed="not_applicable",
+        )
+
+    issues: list[str] = []
+
+    if stability.convergence_rate < _IMPUTATION_MIN_CONVERGENCE_RATE:
+        issues.append(
+            f"convergence_rate={stability.convergence_rate:.2f} "
+            f"(<{_IMPUTATION_MIN_CONVERGENCE_RATE})"
+        )
+
+    penalty = directive.imputation_stability_penalty
+    if penalty > 0:
+        threshold = max(0.0, 1.0 - penalty)
+        if stability.rank_stability < threshold:
+            issues.append(f"rank_stability={stability.rank_stability:.2f} (<{threshold:.2f})")
+
+    passed = not issues
+    return GateCheckResult(
+        check_id="imputation_stability",
+        passed=passed,
+        observed="; ".join(issues) if issues else "stable",
+        threshold=(
+            f"conv_rate≥{_IMPUTATION_MIN_CONVERGENCE_RATE}, "
+            f"rank_stability≥{max(0.0, 1.0 - penalty):.2f}"
+        ),
     )
 
 

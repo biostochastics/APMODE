@@ -65,12 +65,43 @@ def profile_data(
         covariate_burden=len(manifest.covariates),
         covariate_correlated=_check_covariate_correlation(df, manifest),
         covariate_missingness=_assess_covariate_missingness(df, manifest),
+        time_varying_covariates=_detect_time_varying_covariates(df, manifest),
         blq_burden=_compute_blq_burden(df),
         lloq_value=_extract_lloq_value(df),
         protocol_heterogeneity=_assess_protocol_heterogeneity(df),
         absorption_phase_coverage=_assess_absorption_coverage(obs),
         elimination_phase_coverage=_assess_elimination_coverage(obs),
     )
+
+
+def _detect_time_varying_covariates(
+    df: pd.DataFrame,
+    manifest: DataManifest,
+) -> bool:
+    """Detect whether any covariate changes value within a subject over time.
+
+    Drives FREM preference in the missing-data directive (Nyberg 2024, Jonsson
+    2024): when covariates are time-varying, MI per occasion is awkward and
+    FREM handles the missingness within the NLME likelihood.
+
+    A covariate is considered time-varying if its per-subject standard
+    deviation (treating NaN as a missing observation, not a new value) is
+    non-zero for at least one subject, for at least one numeric covariate.
+    Categorical covariates are compared by unique-value count per subject.
+    """
+    cov_names = [c.name for c in manifest.covariates if c.name in df.columns]
+    if not cov_names:
+        return False
+
+    for col in cov_names:
+        series = df[col]
+        if series.isna().all():
+            continue
+        # Per-subject unique non-NaN value count. >1 ⇒ time-varying for that subject.
+        for _, subj_series in df.groupby("NMID")[col]:
+            if int(subj_series.dropna().nunique()) > 1:
+                return True
+    return False
 
 
 # ---------------------------------------------------------------------------

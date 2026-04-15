@@ -19,6 +19,8 @@ from apmode.backends.diagnostic_summarizer import (
     redact_for_llm,
     summarize_diagnostics,
     summarize_for_llm,
+    summarize_stability_diagnostics,
+    summarize_stability_for_llm,
 )
 from apmode.backends.prompts.system_v1 import SYSTEM_PROMPT_VERSION, build_system_prompt
 from apmode.backends.protocol import Lane
@@ -40,6 +42,7 @@ if TYPE_CHECKING:
 
     from apmode.backends.llm_client import LLMResponse
     from apmode.backends.protocol import BackendRunner
+    from apmode.bundle.models import ImputationStabilityManifest, MissingDataDirective
     from apmode.dsl.ast_models import DSLSpec
 
 logger = structlog.get_logger(__name__)
@@ -146,11 +149,27 @@ class AgenticRunner:
         *,
         data_path: Path | None = None,
         split_manifest: dict[str, object] | None = None,
+        stability_manifest: ImputationStabilityManifest | None = None,
+        directive: MissingDataDirective | None = None,
     ) -> BackendResult:
         """Execute the agentic LLM loop.
 
         Returns the best BackendResult across all iterations.
+
+        When ``directive.llm_pooled_only`` is True and a matching entry
+        exists in ``stability_manifest`` for the current candidate, the
+        LLM receives pooled/stability diagnostics only — never per-
+        imputation results. This is the structural guard against
+        imputation cherry-picking (PRD §4.2.1, consensus review
+        2026-04-14). When either argument is absent the runner falls
+        back to the classical per-fit diagnostic summary.
         """
+        pooled_only = directive is not None and directive.llm_pooled_only
+        stability_by_candidate: dict[str, Any] = (
+            {e.candidate_id: e for e in stability_manifest.entries}
+            if stability_manifest is not None
+            else {}
+        )
         self._trace_dir.mkdir(parents=True, exist_ok=True)
 
         # Single, stable run_id for the entire loop — every iteration trace
@@ -359,16 +378,33 @@ class AgenticRunner:
                 }
             )
 
-            # 2. Build diagnostic summary for LLM
-            diag_text = summarize_for_llm(
-                result,
-                iteration=iteration,
-                max_iterations=self._config.max_iterations,
-                search_history=history,
-            )
-            # Redaction gate: enforce allow-list before any data leaves the
-            # process to the LLM provider (PRD §10, ARCHITECTURE.md §11).
-            diag_summary = redact_for_llm(summarize_diagnostics(result))
+            # 2. Build diagnostic summary for LLM.
+            # When the missing-data directive requires pooled-only inputs and
+            # a stability entry exists for the current candidate, substitute
+            # the pooled/stability summary. Otherwise fall back to the
+            # classical per-fit summary.
+            stability_entry = stability_by_candidate.get(current_spec.model_id)
+            if pooled_only and stability_entry is not None and stability_manifest is not None:
+                diag_text = summarize_stability_for_llm(
+                    stability_entry,
+                    stability_manifest,
+                    iteration=iteration,
+                    max_iterations=self._config.max_iterations,
+                    search_history=history,
+                )
+                diag_summary = redact_for_llm(
+                    summarize_stability_diagnostics(stability_entry, stability_manifest)
+                )
+            else:
+                diag_text = summarize_for_llm(
+                    result,
+                    iteration=iteration,
+                    max_iterations=self._config.max_iterations,
+                    search_history=history,
+                )
+                # Redaction gate: enforce allow-list before any data leaves the
+                # process to the LLM provider (PRD §10, ARCHITECTURE.md §11).
+                diag_summary = redact_for_llm(summarize_diagnostics(result))
 
             # 3. Build messages with conversation history (sliding window)
             conversation_history.append({"role": "user", "content": diag_text})

@@ -307,12 +307,35 @@ class SeedRegistry(BaseModel):
 # --- Evidence Manifest ---
 
 
-class CovariateSpec(BaseModel):
-    """Covariate missingness specification."""
+CovariateStrategy = Literal[
+    "impute-median",
+    "impute-LOCF",
+    "full-information",
+    "exclude",
+    "MI-PMM",
+    "MI-missForest",
+    "FREM",
+    "FFEM",
+]
+"""Valid covariate-missingness handling strategies.
 
-    pattern: Literal["MCAR", "MAR", "informative-suspected"]
+The first four are legacy/simple strategies; the last four correspond to the
+policy-driven missing-data directive (see MissingDataDirective and
+``apmode.data.missing_data.resolve_directive``).
+"""
+
+
+class CovariateSpec(BaseModel):
+    """Covariate missingness specification (profile-time signal).
+
+    ``strategy`` is an advisory hint from the profiler. The binding dispatch
+    decision is ``MissingDataDirective`` emitted by the router after policy
+    resolution.
+    """
+
+    pattern: Literal["MCAR", "MAR", "informative-suspected", "MNAR"]
     fraction_incomplete: float = Field(ge=0.0, le=1.0)
-    strategy: Literal["impute-median", "impute-LOCF", "full-information", "exclude"]
+    strategy: CovariateStrategy
 
 
 class EvidenceManifest(BaseModel):
@@ -330,11 +353,87 @@ class EvidenceManifest(BaseModel):
     covariate_burden: int = Field(ge=0)
     covariate_correlated: bool
     covariate_missingness: CovariateSpec | None = None
+    # True when any covariate changes value within a subject over time.
+    # Drives FREM preference in the missing-data directive (Nyberg 2024,
+    # Jonsson 2024). Defaults to False for backwards compatibility.
+    time_varying_covariates: bool = False
     blq_burden: float = Field(ge=0.0, le=1.0)
     lloq_value: float | None = Field(default=None, ge=0.0)
     protocol_heterogeneity: Literal["single-study", "pooled-similar", "pooled-heterogeneous"]
     absorption_phase_coverage: Literal["adequate", "inadequate"]
     elimination_phase_coverage: Literal["adequate", "inadequate"]
+
+
+# --- Missing-Data Directive (router output, policy-resolved) ---
+
+
+class MissingDataDirective(BaseModel):
+    """Policy-resolved missing-data handling plan for a run.
+
+    Produced by ``apmode.data.missing_data.resolve_directive(policy, manifest)``
+    and attached to ``DispatchDecision``. Backends MUST honor this directive;
+    it is not advisory.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    # Covariate missingness handling
+    covariate_method: CovariateStrategy
+    # Number of imputations for MI methods; None for FREM/FFEM/single-imputation.
+    m_imputations: int | None = Field(default=None, ge=1)
+    # Adaptive-m: start at m_imputations, escalate if between-imputation variance
+    # exceeds policy threshold (Crush recommendation).
+    adaptive_m: bool = False
+    m_max: int | None = Field(default=None, ge=1)
+    # BLQ (observation-side) handling: method selected by BLQ% threshold in policy.
+    blq_method: Literal["M1", "M3", "M4", "M6+", "M7+"]
+    # Whether the LLM (agentic backend) must receive pooled/stability summaries
+    # only, never per-imputation diagnostics (cherry-picking mitigation).
+    llm_pooled_only: bool = True
+    # Rank-stability penalty weight applied in Gate 1 for agentic candidates
+    # that flip ranking across imputations. 0.0 disables the penalty.
+    imputation_stability_penalty: float = Field(default=0.0, ge=0.0)
+    # Human-readable rationale (populated by resolver for audit trail).
+    rationale: list[str] = Field(default_factory=list)
+
+
+class ImputationStabilityEntry(BaseModel):
+    """Per-candidate stability summary across m imputed datasets."""
+
+    candidate_id: str
+    # Pooled (Rubin-combined) criteria
+    pooled_ofv: float | None = None
+    pooled_aic: float | None = None
+    pooled_bic: float | None = None
+    # Fraction of imputations where this candidate converged
+    convergence_rate: float = Field(ge=0.0, le=1.0)
+    # Within-imputation variance / between-imputation variance of OFV
+    # Low values (<1) indicate between-imputation variance dominates (unstable).
+    within_between_var_ratio: float | None = None
+    # Fraction of m imputations where this candidate's rank stayed within top-K.
+    # K is run-level (e.g., top-3). 1.0 = unanimously ranked in top-K.
+    rank_stability: float = Field(ge=0.0, le=1.0)
+    # Directional consistency of key covariate effects across imputations
+    # (fraction of imputations agreeing on sign of each covariate effect).
+    covariate_sign_consistency: dict[str, float] = Field(default_factory=dict)
+
+
+class ImputationStabilityManifest(BaseModel):
+    """imputation_stability.json — emitted per run when MI is active.
+
+    This is the ONLY per-imputation artifact the agentic LLM backend is
+    permitted to see (via the diagnostic summarizer). Raw per-imputation
+    diagnostics are withheld to prevent cherry-picking.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    m: int = Field(ge=1)
+    method: CovariateStrategy
+    top_k: int = Field(default=3, ge=1)
+    entries: list[ImputationStabilityEntry] = Field(default_factory=list)
+    # Documented limitations for Gate 2.5 credibility ingestion.
+    omega_pooling_caveats: list[str] = Field(default_factory=list)
 
 
 # --- Initial Estimates ---

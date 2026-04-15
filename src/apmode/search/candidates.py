@@ -40,7 +40,7 @@ from apmode.dsl.ast_models import (
 from apmode.ids import generate_candidate_id
 
 if TYPE_CHECKING:
-    from apmode.bundle.models import EvidenceManifest
+    from apmode.bundle.models import EvidenceManifest, MissingDataDirective
 
 
 # ---------------------------------------------------------------------------
@@ -79,6 +79,14 @@ class SearchSpace:
     force_blq_method: str | None = None  # "m3" or "m4" when BLQ burden > 0.20
     force_iov: bool = False  # True when protocol_heterogeneity = pooled-heterogeneous
     lloq_value: float = 1.0  # LLOQ for BLQ M3/M4 observation model
+    # Full Beal method tag. When set by ``apply_directive``, takes precedence
+    # over the heuristic defaults above. Values M1/M3/M4/M6+/M7+ come from
+    # ``MissingDataDirective.blq_method``; "none" means no BLQ handling.
+    # M1 means drop BLQ rows pre-fit (data preprocessing).
+    # M7+/M6+ mean impute zeros pre-fit with inflated additive residual error;
+    # the DSL does not emit a dedicated BLQ observation model for them — the
+    # R harness is expected to inflate the additive error coefficient.
+    blq_strategy: str = "none"
 
     @classmethod
     def from_manifest(
@@ -152,6 +160,47 @@ class SearchSpace:
                     space.covariates.append((param, cov, "power"))
 
         return space
+
+    def apply_directive(
+        self,
+        directive: MissingDataDirective,
+        manifest: EvidenceManifest,
+    ) -> SearchSpace:
+        """Overlay a policy-resolved missing-data directive onto this space.
+
+        The directive's BLQ method supersedes the manifest-derived heuristic
+        (``blq_burden > 0.20 → M3``) because it reflects the lane policy's
+        explicit threshold and any ``blq_force_m3`` override.
+
+        Mapping (see ``apmode.data.missing_data.resolve_directive`` for the
+        policy-side logic):
+
+          - ``M3``/``M4``: DSL BLQ observation model (BLQM3/BLQM4).
+          - ``M7+``/``M6+``: no DSL BLQ observation model; R harness
+            imputes zeros pre-fit and inflates the additive residual
+            error. Standard error models stay in the search space so the
+            additive component is estimable.
+          - ``M1``: drop BLQ rows pre-fit (data preprocessing). No DSL
+            change; additive/proportional error types remain available.
+          - Anything else is passed through unchanged.
+
+        Returns ``self`` for chaining.
+        """
+        blq = directive.blq_method
+        self.blq_strategy = blq
+
+        if blq in ("M3", "M4"):
+            self.force_blq_method = blq.lower()  # "m3" or "m4"
+            self.error_types = ["proportional", "combined"]  # BLQ composes with these
+            if manifest.lloq_value is not None and manifest.lloq_value > 0:
+                self.lloq_value = manifest.lloq_value
+        elif blq in ("M7+", "M6+", "M1"):
+            # No DSL BLQ observation model for these — preprocessing handles them.
+            # Clear any force set by the from_manifest heuristic so the emitter
+            # does not inadvertently include a BLQ observation model.
+            self.force_blq_method = None
+
+        return self
 
 
 # ---------------------------------------------------------------------------

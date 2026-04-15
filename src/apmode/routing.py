@@ -17,8 +17,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
+from apmode.data.missing_data import resolve_directive
+
 if TYPE_CHECKING:
-    from apmode.bundle.models import EvidenceManifest
+    from apmode.bundle.models import EvidenceManifest, MissingDataDirective
+    from apmode.governance.policy import MissingDataPolicy
 
 Lane = Literal["submission", "discovery", "optimization"]
 
@@ -39,17 +42,25 @@ class DispatchDecision:
     node_eligible: bool
     data_sufficient_for_node: bool
     constraints: list[str] = field(default_factory=list)
+    # Policy-resolved missing-data directive. None when route() is called
+    # without a policy (legacy call sites); backends that see None fall back
+    # to their historical behavior.
+    missing_data_directive: MissingDataDirective | None = None
 
 
 def route(
     lane: Lane,
     manifest: EvidenceManifest,
+    policy: MissingDataPolicy | None = None,
 ) -> DispatchDecision:
     """Route a run to the appropriate backends based on lane and manifest.
 
     Args:
         lane: Operating lane selected by user intent.
         manifest: Evidence manifest from data profiling.
+        policy: Optional lane-specific missing-data policy. When provided,
+            the returned ``DispatchDecision`` carries a
+            ``MissingDataDirective`` resolved from ``(policy, manifest)``.
 
     Returns:
         DispatchDecision with admissible backends and constraint notes.
@@ -88,8 +99,16 @@ def route(
             data_sufficient = False
             constraints.append("NODE removed: low identifiability ceiling")
 
-    # BLQ constraint note (enforcement is in SearchSpace, not here)
-    if manifest.blq_burden > 0.20:
+    # Resolve the missing-data directive (policy-driven).
+    directive = resolve_directive(policy, manifest) if policy is not None else None
+
+    # BLQ constraint note. When a directive is present the method is already
+    # resolved; otherwise fall back to the historical 0.20 heuristic.
+    if directive is not None:
+        constraints.append(
+            f"BLQ method {directive.blq_method} selected (burden={manifest.blq_burden:.2%})"
+        )
+    elif manifest.blq_burden > 0.20:
         constraints.append(
             f"BLQ burden {manifest.blq_burden:.2f} > 0.20: M3/M4 likelihood required"
         )
@@ -98,8 +117,12 @@ def route(
     if manifest.protocol_heterogeneity == "pooled-heterogeneous":
         constraints.append("Pooled-heterogeneous: IOV must be tested")
 
-    # Covariate missingness note
-    if (
+    # Covariate missingness note. When a directive is present use the resolved
+    # method; otherwise emit the legacy "full-information recommended" hint.
+    if directive is not None and directive.covariate_method != "exclude":
+        m_part = f", m={directive.m_imputations}" if directive.m_imputations is not None else ""
+        constraints.append(f"Covariate method: {directive.covariate_method}{m_part}")
+    elif (
         manifest.covariate_missingness is not None
         and manifest.covariate_missingness.fraction_incomplete > 0.15
     ):
@@ -114,4 +137,5 @@ def route(
         node_eligible=node_eligible,
         data_sufficient_for_node=data_sufficient,
         constraints=constraints,
+        missing_data_directive=directive,
     )

@@ -9,15 +9,17 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from apmode.bundle.models import CredibilityReport
+from apmode.data.missing_data import OMEGA_POOLING_CAVEATS
 
 if TYPE_CHECKING:
-    from apmode.bundle.models import BackendResult
+    from apmode.bundle.models import BackendResult, MissingDataDirective
 
 
 def generate_credibility_report(
     result: BackendResult,
     lane: str,
     n_observations: int,
+    directive: MissingDataDirective | None = None,
 ) -> CredibilityReport:
     """Generate a credibility report for a recommended candidate.
 
@@ -25,6 +27,9 @@ def generate_credibility_report(
         result: BackendResult for the candidate.
         lane: Operating lane.
         n_observations: Total observations in the dataset.
+        directive: Optional missing-data directive. When the run used MI
+            for covariates, Ω-pooling caveats are appended to limitations
+            per Gate 2.5 credibility requirements.
 
     Returns:
         CredibilityReport with ICH M15-aligned fields.
@@ -41,6 +46,8 @@ def generate_credibility_report(
             f"BLQ fraction {result.diagnostics.blq.blq_fraction:.2f} "
             f"may affect parameter precision"
         )
+    if directive is not None and directive.covariate_method.startswith("MI-"):
+        limitations.extend(OMEGA_POOLING_CAVEATS)
 
     return CredibilityReport(
         candidate_id=result.model_id,

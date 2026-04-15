@@ -11,7 +11,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from apmode.bundle.models import BackendResult
+    from apmode.bundle.models import (
+        BackendResult,
+        ImputationStabilityEntry,
+        ImputationStabilityManifest,
+    )
 
 
 # Allow-list of fields permitted in LLM context. Any key produced by
@@ -34,6 +38,18 @@ _LLM_ALLOWED_TOP_LEVEL_KEYS: frozenset[str] = frozenset(
         "vpc_coverage",
         "split_gof",
         "identifiability_warning",
+        # Pooled / stability summary fields (MI runs, directive.llm_pooled_only=True).
+        # These replace per-imputation diagnostics so the LLM cannot cherry-pick
+        # a "lucky" imputation (PRD §4.2.1, consensus review 2026-04-14).
+        "pooled_ofv",
+        "pooled_aic",
+        "pooled_bic",
+        "convergence_rate",
+        "rank_stability",
+        "within_between_var_ratio",
+        "covariate_sign_consistency",
+        "imputation_method",
+        "m_imputations",
     }
 )
 
@@ -174,6 +190,103 @@ def summarize_for_llm(
             lines.append(
                 f"  - {entry.get('model_id', '?')}: "
                 f"BIC={entry.get('bic', '?')}, "
+                f"converged={entry.get('converged', '?')}"
+            )
+
+    return "\n".join(lines)
+
+
+def summarize_stability_diagnostics(
+    stability: ImputationStabilityEntry,
+    manifest: ImputationStabilityManifest,
+) -> dict[str, Any]:
+    """Produce a pooled-only summary dict for the LLM from stability data.
+
+    Used when ``MissingDataDirective.llm_pooled_only`` is True. The output
+    only includes pooled scores and cross-imputation stability metrics —
+    never per-imputation diagnostics. Raw per-imputation OFV/BIC/parameter
+    tables are deliberately excluded to prevent cherry-picking (PRD §4.2.1).
+    """
+    summary: dict[str, Any] = {
+        "imputation_method": manifest.method,
+        "m_imputations": manifest.m,
+        "pooled_ofv": stability.pooled_ofv,
+        "pooled_aic": stability.pooled_aic,
+        "pooled_bic": stability.pooled_bic,
+        "convergence_rate": stability.convergence_rate,
+        "rank_stability": stability.rank_stability,
+    }
+    if stability.within_between_var_ratio is not None:
+        summary["within_between_var_ratio"] = stability.within_between_var_ratio
+    if stability.covariate_sign_consistency:
+        summary["covariate_sign_consistency"] = dict(stability.covariate_sign_consistency)
+    return summary
+
+
+def summarize_stability_for_llm(
+    stability: ImputationStabilityEntry,
+    manifest: ImputationStabilityManifest,
+    iteration: int,
+    max_iterations: int,
+    search_history: list[dict[str, Any]] | None = None,
+) -> str:
+    """Format the pooled-only stability summary for the LLM prompt.
+
+    Returned text is routed through ``redact_for_llm`` before formatting
+    so the allow-list enforcement gate still applies — new fields need to
+    be added to ``_LLM_ALLOWED_TOP_LEVEL_KEYS`` to reach the LLM.
+    """
+    s = redact_for_llm(summarize_stability_diagnostics(stability, manifest))
+    lines: list[str] = []
+
+    lines.append(f"## Iteration {iteration}/{max_iterations}  (pooled across m imputations)")
+    lines.append("")
+    lines.append(
+        f"Imputation method: {s.get('imputation_method', '?')}  "
+        f"(m = {s.get('m_imputations', '?')})"
+    )
+    lines.append("")
+
+    lines.append("### Pooled Fit Criteria (Rubin arithmetic mean)")
+    lines.append(
+        f"  Pooled OFV = {s.get('pooled_ofv')}, "
+        f"AIC = {s.get('pooled_aic')}, "
+        f"BIC = {s.get('pooled_bic')}"
+    )
+
+    lines.append("")
+    lines.append("### Cross-Imputation Stability")
+    conv_rate = s.get("convergence_rate")
+    rank_stab = s.get("rank_stability")
+    lines.append(f"  Convergence rate: {conv_rate}")
+    lines.append(f"  Rank stability (top-K): {rank_stab}")
+    if "within_between_var_ratio" in s:
+        lines.append(f"  Within/between variance proxy: {s['within_between_var_ratio']:.3f}")
+    # Flag clear instability signals for the LLM's reasoning.
+    if isinstance(conv_rate, (int, float)) and conv_rate < 0.5:
+        lines.append(
+            "  **WARNING: Candidate converged on <50% of imputations — "
+            "structural instability likely.**"
+        )
+    if isinstance(rank_stab, (int, float)) and rank_stab < 0.5:
+        lines.append(
+            "  **WARNING: Rank-unstable across imputations — "
+            "covariate effect sensitive to imputation draw.**"
+        )
+
+    if "covariate_sign_consistency" in s:
+        lines.append("")
+        lines.append("### Covariate-Effect Sign Consistency")
+        for name, frac in s["covariate_sign_consistency"].items():
+            lines.append(f"  {name}: {frac:.2f}")
+
+    if search_history:
+        lines.append("")
+        lines.append("### Search History (recent, pooled)")
+        for entry in search_history[-5:]:
+            lines.append(
+                f"  - {entry.get('model_id', '?')}: "
+                f"pooled_BIC={entry.get('bic', '?')}, "
                 f"converged={entry.get('converged', '?')}"
             )
 

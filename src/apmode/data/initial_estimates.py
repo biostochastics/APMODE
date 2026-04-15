@@ -112,10 +112,23 @@ class NCAEstimator:
         if len(cl_vals) < 2:
             return self.estimate_population_level()
 
+        cl_median = float(np.median(cl_vals))
+        v_median = float(np.median(v_vals))
+        ka_median = float(np.median(ka_vals))
+
+        # Apply unit-conversion heuristic when dose and DV units are mismatched.
+        # NCA computes CL = Dose/AUC directly, which is correct only when
+        # mass(Dose) and mass(DV)/volume(DV) are commensurate (e.g., dose mg +
+        # DV mg/L). When dose is in mg but DV is in ng/mL (a common convention),
+        # the raw CL is 1000x too small.
+        scale, scale_reason = _detect_unit_scale_factor(self._doses, self._obs, cl_median)
+        cl_median *= scale
+        v_median *= scale
+
         result = {
-            "CL": float(np.median(cl_vals)),
-            "V": float(np.median(v_vals)),
-            "ka": float(np.median(ka_vals)),
+            "CL": cl_median,
+            "V": v_median,
+            "ka": ka_median,
         }
 
         # Record quality flag: fraction of subjects with high extrapolation
@@ -123,6 +136,12 @@ class NCAEstimator:
             high_extrap = sum(1 for f in extrap_flags if f > 0.20)
             result["_auc_extrap_high_fraction"] = high_extrap / len(extrap_flags)
 
+        if scale != 1.0:
+            result["_unit_scale_applied"] = scale
+            # Reason recorded as flag for downstream auditability via bundle
+            # (string isn't carried; the magnitude alone is recoverable).
+
+        _ = scale_reason  # acknowledge for linters; reason is computed for logs only
         return result
 
     def estimate_population_level(self) -> dict[str, float]:
@@ -360,3 +379,55 @@ def _detect_multi_dose(dose_df: pd.DataFrame) -> tuple[bool, float | None]:
 def _default_estimates() -> dict[str, float]:
     """Fallback estimates when NCA fails."""
     return {"CL": 5.0, "V": 70.0, "ka": 1.0}
+
+
+def _detect_unit_scale_factor(
+    doses: pd.DataFrame,
+    obs: pd.DataFrame,
+    cl_estimate: float,
+) -> tuple[float, str]:
+    """Detect the unit-conversion factor needed for dose/concentration units.
+
+    NCA computes CL = Dose / AUC directly. This produces L/h only when:
+      - Dose is in same mass units as DV's mass component
+      - e.g., mg dose + mg/L DV (== μg/mL)
+
+    When dose is in mg but DV is in ng/mL (a common pharmacometric convention),
+    the raw CL is 1000x too small. This heuristic detects such mismatches and
+    returns a multiplier (1.0, 1000.0, or 1e6) plus the reason.
+
+    Heuristics (in priority order, based on absolute DV magnitude and CL plausibility):
+      1. dv_median > 50000 and CL < 0.0001 → DV likely in pg/mL → x1e6.
+      2. dv_median > 50    and CL < 0.5    → DV likely in ng/mL → x1000.
+         (Typical mg/L / μg/mL plasma levels are < 50; ng/mL levels are
+         routinely 50-10000. Combined with a CL < 0.5 L/h that is implausibly
+         low for typical adult human PK, this strongly indicates a unit gap.)
+      3. Otherwise no conversion.
+
+    Args:
+        doses: Dosing rows (EVID==1).
+        obs: Observation rows (EVID==0).
+        cl_estimate: The current median CL value from NCA.
+
+    Returns:
+        (scale_factor, reason_string).
+    """
+    if doses.empty or obs.empty:
+        return 1.0, "no dose/obs data"
+
+    dose_median = float(doses["AMT"].median())
+    dv_pos = obs[obs["DV"] > 0]["DV"]
+    if dv_pos.empty or dose_median <= 0:
+        return 1.0, "no positive DV or invalid dose"
+
+    dv_median = float(dv_pos.median())
+
+    # Typical adult human CL is 0.5-100 L/h for most marketed drugs; a CL
+    # below 0.5 paired with a "ng/mL-magnitude" DV (>50) is the canonical
+    # mg-dose / ng/mL-DV mismatch.
+    if cl_estimate < 0.0001 and dv_median > 50000:
+        return 1e6, "dose in mg but DV likely in pg/mL (x1e6)"
+    if cl_estimate < 0.5 and dv_median > 50:
+        return 1000.0, "dose in mg but DV likely in ng/mL (x1000)"
+
+    return 1.0, "units commensurate"

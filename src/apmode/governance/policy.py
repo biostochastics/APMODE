@@ -93,6 +93,65 @@ class Gate25Config(BaseModel):
     ai_ml_transparency_required: bool = False
 
 
+class MissingDataPolicy(BaseModel):
+    """Lane-specific missing-data handling policy.
+
+    Drives ``MissingDataDirective`` resolution (see
+    ``apmode.data.missing_data.resolve_directive``). Defaults correspond to
+    the Discovery lane; Submission lane tightens thresholds, Optimization
+    matches Discovery.
+
+    References:
+      - Nyberg 2024, Jonsson 2024 — FREM > FFEM+mean-imputation at high missingness
+      - Wijk 2025 (DiVA) — M7+ ≈ M3 precision with better stability
+      - Beal 2001 — M3/M7 BLQ method family
+    """
+
+    # Covariate-side: imputation method selection thresholds.
+    # Below ``mi_pmm_max_missingness`` → MI-PMM; above → FREM (if data supports).
+    mi_pmm_max_missingness: float = Field(default=0.30, ge=0.0, le=1.0)
+    # If time-varying covariates detected, prefer FREM regardless of %-missing.
+    frem_for_time_varying: bool = True
+    # Minimum %-missing to trigger FREM preference over MI-PMM for static covariates.
+    frem_preferred_above: float = Field(default=0.30, ge=0.0, le=1.0)
+    # Fallback when missForest is preferred over PMM (nonlinear covariate relations).
+    missforest_fallback: bool = True
+
+    # Number of imputations (m) for MI methods.
+    m_imputations: int = Field(default=5, ge=1)
+    # Adaptive escalation: if between-imputation variance exceeds threshold,
+    # bump m up to m_max.
+    adaptive_m: bool = False
+    m_max: int = Field(default=20, ge=1)
+    adaptive_variance_threshold: float = Field(default=0.10, gt=0.0, le=1.0)
+
+    # BLQ (observation-side) method selection by BLQ% threshold.
+    # Below threshold → M7+ (stable, simple); above → M3 (likelihood-based).
+    blq_m3_threshold: float = Field(default=0.10, ge=0.0, le=1.0)
+    # Override: M3 always (Submission-lane conservative option).
+    blq_force_m3: bool = False
+
+    # Agentic backend protections.
+    llm_pooled_only: bool = True
+    imputation_stability_penalty: float = Field(default=0.0, ge=0.0)
+
+    @model_validator(mode="after")
+    def m_ordering(self) -> Self:
+        if self.adaptive_m and self.m_max < self.m_imputations:
+            msg = (
+                f"m_max ({self.m_max}) must be >= m_imputations "
+                f"({self.m_imputations}) when adaptive_m is True"
+            )
+            raise ValueError(msg)
+        if self.frem_preferred_above < self.mi_pmm_max_missingness:
+            msg = (
+                f"frem_preferred_above ({self.frem_preferred_above}) must be "
+                f">= mi_pmm_max_missingness ({self.mi_pmm_max_missingness})"
+            )
+            raise ValueError(msg)
+        return self
+
+
 class GatePolicy(BaseModel):
     """Top-level policy file: versioned gate configuration per lane.
 
@@ -104,6 +163,7 @@ class GatePolicy(BaseModel):
     gate1: Gate1Config
     gate2: Gate2Config
     gate2_5: Gate25Config | None = None
+    missing_data: MissingDataPolicy = Field(default_factory=MissingDataPolicy)
     vpc_concordance_target: float = Field(default=0.90, ge=0.0, le=1.0)
 
     @model_validator(mode="after")

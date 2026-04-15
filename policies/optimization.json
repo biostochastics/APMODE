@@ -1,5 +1,5 @@
 {
-  "policy_version": "0.1.0",
+  "policy_version": "0.2.0",
   "lane": "optimization",
   "gate1": {
     "convergence_required": true,
@@ -24,5 +24,19 @@
     "data_adequacy_ratio_min": 5.0,
     "sensitivity_analysis_required": true,
     "ai_ml_transparency_required": true
+  },
+  "missing_data": {
+    "mi_pmm_max_missingness": 0.25,
+    "frem_for_time_varying": true,
+    "frem_preferred_above": 0.30,
+    "missforest_fallback": true,
+    "m_imputations": 10,
+    "adaptive_m": true,
+    "m_max": 20,
+    "adaptive_variance_threshold": 0.08,
+    "blq_m3_threshold": 0.10,
+    "blq_force_m3": false,
+    "llm_pooled_only": true,
+    "imputation_stability_penalty": 0.5
   }
 }
