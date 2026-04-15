@@ -13,6 +13,7 @@ Search is bounded by EvidenceManifest constraints.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
@@ -103,10 +104,16 @@ class SearchSpace:
         """
         space = cls()
 
-        # Structural complexity bounded by richness
+        # Structural complexity bounded by richness. Filter absorption to the
+        # simplest admissible set; preserve "none" so IV sparse datasets still
+        # generate an IV candidate.
         if manifest.richness_category == "sparse":
             space.structural_cmt = [1]
-            space.absorption_types = ["first_order"]
+            space.absorption_types = [
+                t for t in space.absorption_types if t in ("none", "first_order")
+            ]
+            if not space.absorption_types:
+                space.absorption_types = ["first_order"]
         elif manifest.richness_category == "moderate":
             space.structural_cmt = [1, 2]
 
@@ -155,6 +162,16 @@ class SearchSpace:
                 space.error_types = list(pref.allowed)
                 if manifest.lloq_value is not None and manifest.lloq_value > 0:
                     space.lloq_value = manifest.lloq_value
+                else:
+                    warnings.warn(
+                        f"BLQ {pref.primary.upper()} forced but "
+                        f"manifest.lloq_value is {manifest.lloq_value!r}; "
+                        f"falling back to default {space.lloq_value}. "
+                        "Populate lloq_value in the profiler for reliable "
+                        "censored likelihoods.",
+                        UserWarning,
+                        stacklevel=2,
+                    )
             else:
                 space.error_types = list(pref.allowed)
         elif manifest.blq_burden > 0.20:
@@ -342,14 +359,16 @@ def _build_spec(
     if has_absorption:
         iiv_params.append("ka")  # include ka IIV for oral models only
 
-    # Observation model — BLQ-aware when forced by dispatch constraints
+    # Observation model — BLQ-aware when forced by dispatch constraints.
+    # Additive is excluded from the M3/M4 residual-error slot because the
+    # additive sigma absorbs censored mass and biases estimates (Ahn 2008).
     observation: Proportional | Additive | Combined | BLQM3 | BLQM4
     if force_blq_method == "m3":
-        valid_errs = ("proportional", "additive", "combined")
+        valid_errs = ("proportional", "combined")
         blq_err = err_type if err_type in valid_errs else "proportional"
         observation = BLQM3(loq_value=lloq_value, error_model=blq_err)
     elif force_blq_method == "m4":
-        valid_errs = ("proportional", "additive", "combined")
+        valid_errs = ("proportional", "combined")
         blq_err = err_type if err_type in valid_errs else "proportional"
         observation = BLQM4(loq_value=lloq_value, error_model=blq_err)
     elif err_type == "proportional":

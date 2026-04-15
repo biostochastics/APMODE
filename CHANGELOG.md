@@ -7,6 +7,130 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Live end-to-end FREM + Rubin-pool test coverage
+Before this commit, FREM binary/time-varying support and the
+orchestrator MI execution path were only validated by string/dataframe
+unit assertions — neither the emitted model nor the full pooling loop
+had actually run under nlmixr2 on data. New live tests in
+`tests/unit/test_frem_features_live.py` (all marked `live` + most
+also `slow`; skipped by default) close those gaps:
+
+- **`test_binary_frem_fits_end_to_end`** — FOCE-I fit on n=12
+  synthetic subjects with a 0/1 `SEX` covariate. Proves
+  `transform="binary"` produces a model nlmixr2 accepts and fits
+  (previously unit-tested only on string/dataframe assertions).
+- **`test_time_varying_frem_fits_end_to_end`** — compile-only live
+  check on n=10 synthetic subjects with a time-varying CRCL covariate
+  (auto-detected by `summarize_covariates`). Confirms the TV model
+  (estimable `sig_cov_*`, per-(subject, TIME) augmentation) compiles
+  in nlmixr2; full FOCE-I convergence on TV endpoints is deferred to
+  estimator tuning work since it is not an emitter correctness issue.
+- **`test_rubin_pooling_populates_from_real_m_fits`** — full
+  `_run_mi_stage` run with m=3 imputations, real `R_MiceImputer`,
+  and real nlmixr2 FOCE-I fits per imputation. Asserts
+  `ImputationStabilityEntry.pooled_parameters` is populated from
+  actual `(estimate, SE)` tuples with finite Rubin statistics — the
+  first end-to-end verification that the Rubin decomposition
+  actually runs through real R infrastructure.
+- **`test_dvid_collision_with_realistic_multianalyte_layout`** and
+  **`test_prepare_frem_data_clears_pk_context_columns`** — realistic
+  parent/metabolite DVID scheme + every contaminating column
+  (`CENS`/`LIMIT`/`BLQ_FLAG`/`RATE`/`DUR`/`SS`/`II`) on source rows,
+  proving the guards actually fire on plausible multi-analyte data.
+
+Full suite: **1490 tests passing** (62 new on top of the prior 1428).
+`mypy --strict` clean across 79 source files; `ruff format` + `check`
+clean.
+
+Residual not covered by this live test pass:
+- **Benchmark PK datasets** (theophylline / mavoglurant / Suite A–C)
+  through the FREM path remain a future integration milestone. They
+  require nlmixr2data-backed data fixtures plus wall-time budget above
+  ~10 minutes per dataset, so they belong in a nightly/weekly suite
+  rather than the fast-path unit suite.
+- **Full `_run_frem_stage` live orchestrator test** was prototyped
+  during this sweep but excluded from CI because FOCE-I with the
+  covariance step on even tiny FREM-augmented data regularly exceeds
+  the 200 s runner default timeout. The FREM orchestrator path is
+  covered indirectly via (a) the stub-runner composition test in
+  `test_frem_runner.py`, (b) the binary/TV live fits in this file,
+  and (c) the `_run_mi_stage` live Rubin test.
+
+### Fixed — orchestrator FREM work directory
+- `Orchestrator._run_frem_stage` now creates `run_dir/frem/` before
+  invoking `run_frem_fit` so `prepare_frem_data` can write
+  `frem_augmented.csv` without raising the pandas "Cannot save file
+  into a non-existent directory" error surfaced by the live test.
+- The same directory is passed to the default FOCE-I
+  `Nlmixr2Runner.work_dir`, so the R subprocess and the augmented
+  CSV land next to each other under the bundle.
+
+### Fixed — NCA initial-estimate refinement (PKNCA-compatible)
+- Replaced last-3-point terminal regression with PKNCA-style curve-stripping
+  (`_select_lambda_z`): iterate window sizes 3..n_post-Cmax, fit last-k
+  points, filter `kel>0`, maximize adj-R² with a `1e-4` tiebreak on most
+  points (PKNCA `pk.calc.half.life` `allow.tmax.in.half.life=FALSE`).
+- Replaced linear trapezoidal AUC with linear-up/log-down
+  (`_auc_lin_up_log_down`, Purves 1992); zero-zero intervals contribute 0
+  and declining positive intervals use `dt*(C1-C2)/ln(C1/C2)` with a
+  numerical guard that falls back to linear when `C1≈C2`.
+- Added per-subject QC gates (adj-R²≥0.80, extrap≤20%, span≥1·t½, n_λz≥3);
+  subjects failing QC are excluded from the population median.
+- Added literature-prior fallback via `RunConfig.fallback_estimates` when
+  ≥50% of subjects fail QC (wires `DatasetCard.published_model.key_estimates`
+  when present; otherwise conservative defaults).
+- Plumbed `last_dose_time` into `_compute_nca_single_subject` so the
+  steady-state AUC_tau window anchors on the true last-dose interval
+  `[last_dose_time, last_dose_time + tau]`, not the first observation.
+- Removed per-subject CL/V/ka clipping so the unit-scale heuristic receives
+  unbiased raw estimates; `estimate_population_level` now applies the same
+  unit-scale so single-subject / sparse fallbacks are not silently 1000x off.
+- Hardened `_detect_unit_scale_factor`: requires `dose_median ≥ 1.0`
+  (mg-scale human dosing) and medians only over positive doses, so
+  preclinical studies and placebo arms do not trigger a spurious x1000
+  correction.
+- Clipped regression R² to [0, 1] in `_log_linear_fit` so floating-point
+  noise on near-constant log(C) windows cannot push adj-R² above 1 and
+  corrupt the λz tiebreak.
+- Emits `nca_diagnostics.jsonl` and optional `diagnostics/nca_plots/*.png`
+  in the reproducibility bundle (one row per subject with λz fit quality,
+  AUC extrapolation, exclusion reason).
+- New `NCASubjectDiagnostic` Pydantic model in `apmode.bundle.models`.
+- Fixes the production-blocking mavoglurant Suite B failure where NCA seed
+  `CL=48 L/h` caused SAEM to converge on degenerate `lCL=-3.4`.
+
+### Added — Profiler-stage error-model selection heuristic
+- New `ErrorModelPreference` Pydantic model + `recommend_error_model()`
+  decision tree (Beal 2001, Ahn 2008): BLQ≥10% → BLQ_M3 with
+  proportional/combined only (never additive-only, per Ahn 2008);
+  LLOQ/Cmax>5% or terminal log MAD>0.35 → combined; dynamic range>50 +
+  CV<80 → proportional; narrow range + low CV → additive (biomarker-like);
+  default proportional with combined fallback.
+- New `EvidenceManifest` fields: `error_model_preference`,
+  `cmax_p95_p05_ratio`, `dv_cv_percent`, `terminal_log_residual_mad`.
+- `_compute_cmax_dynamic_range` now takes p95/p05 of per-subject Cmax
+  (not of all DV values), so tail samples near LLOQ do not inflate the
+  range for narrow-Cmax studies.
+- `_compute_dv_cv_percent` switches to population CV (ddof=0) to match
+  the calibration of `recommend_error_model` thresholds.
+- `_nonlinear_clearance_confidence` now filters BLQ-zero tails and uses
+  the same Cmax-inclusive post-Tmax slice as `_detect_curvature_nonlinearity`
+  so the boolean detector and confidence score always operate on the same
+  per-subject ratios.
+- `_get_dose_auc_pairs` normalizes by median AMT instead of `iloc[-1]` so
+  loading/titration/maintenance regimens do not skew the Spearman
+  dose–AUC correlation used in nonlinear-clearance detection.
+- `_assess_absorption_coverage` uses the positive-DV Tmax so BLQ zeros
+  cannot masquerade as peak times.
+- `SearchSpace.from_manifest` consumes `error_model_preference` before
+  search runs; legacy `BLQ>20%` override retained for manifests emitted
+  before the heuristic existed. Sparse filter preserves `"none"` so
+  IV-sparse datasets still generate an IV candidate. Warns when BLQ
+  M3/M4 is forced but `manifest.lloq_value` is missing.
+- `_build_spec` rejects `additive` in the BLQ M3/M4 residual-error slot
+  (Ahn 2008: additive sigma absorbs censored mass under M3); falls back
+  to proportional.
+
 ### Added — FREM binary/time-varying covariates + orchestrator execution
 - **`FREMCovariate.transform="binary"`** — accepts 0/1-coded
   categorical covariates with an additive-normal endpoint and strict

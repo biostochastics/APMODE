@@ -231,7 +231,11 @@ class NCAEstimator:
         nca = _compute_nca_single_subject(times[pos_mask], concs[pos_mask], dose)
         if nca is None or nca.excluded:
             return _default_estimates()
-        return {"CL": nca.cl, "V": nca.v, "ka": nca.ka}
+        # Apply the same unit-scale heuristic as ``estimate_per_subject`` so
+        # single-subject / sparse fallbacks don't silently return CL/V that
+        # are 1000x off for mg-dose / ng-mL data.
+        scale, _reason = _detect_unit_scale_factor(self._doses, self._obs, nca.cl)
+        return {"CL": nca.cl * scale, "V": nca.v * scale, "ka": nca.ka}
 
     def build_entry(
         self,
@@ -347,12 +351,14 @@ class NCAEstimator:
         if dose <= 0:
             return _excluded_result(str(subj), "non-positive dose")
 
+        last_dose_time = float(subj_dose["TIME"].max()) if not subj_dose.empty else None
         result = _compute_nca_single_subject(
             times[pos_mask],
             concs[pos_mask],
             dose,
             is_steady_state=is_multi,
             tau=tau,
+            last_dose_time=last_dose_time,
         )
         if result is None:
             return _excluded_result(str(subj), "no viable terminal-phase fit or zero AUC")
@@ -414,6 +420,7 @@ def _compute_nca_single_subject(
     *,
     is_steady_state: bool = False,
     tau: float | None = None,
+    last_dose_time: float | None = None,
 ) -> NCAResult | None:
     """Compute NCA for one subject with QC gates.
 
@@ -454,15 +461,20 @@ def _compute_nca_single_subject(
     span_ratio = lam.span_ratio
 
     # Steady-state multi-dose branch: use AUC_tau instead of AUC_inf.
+    # Anchor the tau window on the last dose time when provided, so a long
+    # profile spanning multiple dosing intervals collapses to the final
+    # interval (true SS). Fallback to times[0]+tau preserves legacy behavior
+    # for call sites that haven't been updated yet.
     if is_steady_state and tau is not None and tau > 0:
-        t_tau_end = float(times[0]) + tau
-        tau_mask = times <= t_tau_end
+        t_tau_start = float(last_dose_time) if last_dose_time is not None else float(times[0])
+        t_tau_end = t_tau_start + tau
+        tau_mask = (times >= t_tau_start) & (times <= t_tau_end)
         if tau_mask.sum() >= 2:
             auc_tau = _auc_lin_up_log_down(times[tau_mask], concs[tau_mask])
             if auc_tau > 0:
-                cl = _bound(dose / auc_tau, 0.01, 10000.0)
-                v = _bound(cl / kel, 0.1, 100000.0)
-                ka = _bound(1.0 / tmax if tmax > 0 else 1.0, 0.01, 100.0)
+                cl = dose / auc_tau
+                v = cl / kel
+                ka = 1.0 / tmax if tmax > 0 else 1.0
                 return _maybe_exclude(
                     NCAResult(
                         cl=cl,
@@ -487,9 +499,9 @@ def _compute_nca_single_subject(
         return None
     auc_extrap_fraction = auc_extrap / auc_inf
 
-    cl = _bound(dose / auc_inf, 0.01, 10000.0)
-    v = _bound(cl / kel, 0.1, 100000.0)
-    ka = _bound(1.0 / tmax if tmax > 0 else 1.0, 0.01, 100.0)
+    cl = dose / auc_inf
+    v = cl / kel
+    ka = 1.0 / tmax if tmax > 0 else 1.0
 
     return _maybe_exclude(
         NCAResult(
@@ -604,8 +616,10 @@ def _log_linear_fit(
         return float("nan"), float("nan"), float("nan")
     slope = ss_xy / ss_xx
     intercept = mean_y - slope * mean_x
+    # Clip r² to [0, 1]; floating-point noise with near-constant y can push
+    # the ratio slightly above 1 and corrupt the lambda_z tiebreak.
     r2 = (ss_xy * ss_xy) / (ss_xx * ss_yy) if ss_yy > 0 else 1.0
-    return slope, intercept, float(r2)
+    return slope, intercept, float(max(0.0, min(1.0, r2)))
 
 
 def _auc_lin_up_log_down(times: np.ndarray, concs: np.ndarray) -> float:
@@ -634,8 +648,14 @@ def _auc_lin_up_log_down(times: np.ndarray, concs: np.ndarray) -> float:
         if c1 == 0.0 and c2 == 0.0:
             continue
         if c2 < c1 and c2 > 0.0 and c1 > 0.0:
-            # Log trapezoid — exact for monoexponential decline.
-            auc += dt * (c1 - c2) / np.log(c1 / c2)
+            # Log trapezoid — exact for monoexponential decline. Guard
+            # against c1≈c2 where ln(c1/c2)→0 would blow up; in that case
+            # the log and linear trapezoids converge so use linear.
+            log_ratio = np.log(c1 / c2)
+            if abs(log_ratio) < 1e-9:
+                auc += dt * (c1 + c2) / 2.0
+            else:
+                auc += dt * (c1 - c2) / log_ratio
         else:
             auc += dt * (c1 + c2) / 2.0
     return float(auc)
@@ -656,10 +676,6 @@ def _detect_multi_dose(dose_df: pd.DataFrame) -> tuple[bool, float | None]:
 def _default_estimates() -> dict[str, float]:
     """Fallback estimates when NCA fails and no literature prior is provided."""
     return {"CL": 5.0, "V": 70.0, "ka": 1.0}
-
-
-def _bound(x: float, lo: float, hi: float) -> float:
-    return max(lo, min(float(x), hi))
 
 
 def _maybe_exclude(result: NCAResult) -> NCAResult:
@@ -749,22 +765,31 @@ def _detect_unit_scale_factor(
     detects such mismatches and returns a multiplier (1.0, 1000.0, or 1e6).
 
     Heuristics (priority order):
-      1. cl_estimate < 1e-4 AND dv_median > 50000 → DV likely in pg/mL → x1e6.
-      2. cl_estimate < 0.5   AND dv_median > 50    → DV likely in ng/mL → x1000.
+      1. cl_estimate < 1e-4 AND dv_median > 50000 AND dose_median >= 1 → DV
+         likely in pg/mL → x1e6.
+      2. cl_estimate < 0.5   AND dv_median > 50    AND dose_median >= 1 → DV
+         likely in ng/mL → x1000.
       3. Otherwise no conversion.
 
     Typical adult human CL is 0.5-100 L/h; pairing an implausibly small CL
     with a large DV magnitude (>50) strongly indicates a mg-dose/ng-mL-DV gap.
+    The ``dose_median >= 1`` guard prevents over-correction of preclinical
+    data (small-animal studies, biologics) where a legitimate low-CL drug
+    with ng/mL concentrations may superficially match the heuristic.
     """
     if doses.empty or obs.empty:
         return 1.0, "no dose/obs data"
-    dose_median = float(doses["AMT"].median())
+    # Median over positive doses so placebo / zero-dose records do not
+    # collapse the heuristic when the active-treatment arm is obviously
+    # mismatched.
+    pos_doses = doses[doses["AMT"] > 0]["AMT"]
+    dose_median = float(pos_doses.median()) if not pos_doses.empty else 0.0
     dv_pos = obs[obs["DV"] > 0]["DV"]
     if dv_pos.empty or dose_median <= 0:
         return 1.0, "no positive DV or invalid dose"
     dv_median = float(dv_pos.median())
-    if cl_estimate < 0.0001 and dv_median > 50000:
+    if cl_estimate < 0.0001 and dv_median > 50000 and dose_median >= 1.0:
         return 1e6, "dose in mg but DV likely in pg/mL (x1e6)"
-    if cl_estimate < 0.5 and dv_median > 50:
+    if cl_estimate < 0.5 and dv_median > 50 and dose_median >= 1.0:
         return 1000.0, "dose in mg but DV likely in ng/mL (x1000)"
     return 1.0, "units commensurate"

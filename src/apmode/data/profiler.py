@@ -211,25 +211,36 @@ def recommend_error_model(
 
 
 def _compute_cmax_dynamic_range(obs: pd.DataFrame) -> float | None:
-    """Ratio of the 95th-percentile DV to the 5th-percentile DV (positive only).
+    """Ratio of the 95th-percentile per-subject Cmax to the 5th-percentile.
 
-    A stable proxy for "does sigma need to scale with concentration?". Returns
-    None when fewer than 20 positive observations exist.
+    A stable proxy for "does sigma need to scale with concentration?".
+    Computed across per-subject maxima (not across all DV values), so tail
+    samples near LLOQ do not inflate the range in narrow-Cmax studies.
+    Returns None when fewer than 10 subjects have positive concentrations.
     """
     if obs.empty:
         return None
-    dv_pos = obs[obs["DV"] > 0]["DV"].to_numpy(dtype=float)
-    if len(dv_pos) < 20:
+    cmaxes: list[float] = []
+    for _, subj in obs.groupby("NMID"):
+        pos = subj[subj["DV"] > 0]["DV"]
+        if not pos.empty:
+            cmaxes.append(float(pos.max()))
+    if len(cmaxes) < 10:
         return None
-    p95 = float(np.percentile(dv_pos, 95))
-    p05 = float(np.percentile(dv_pos, 5))
+    arr = np.array(cmaxes, dtype=float)
+    p95 = float(np.percentile(arr, 95))
+    p05 = float(np.percentile(arr, 5))
     if p05 <= 0:
         return None
     return p95 / p05
 
 
 def _compute_dv_cv_percent(obs: pd.DataFrame) -> float | None:
-    """Coefficient of variation (%) of positive DV values."""
+    """Population coefficient of variation (%) of positive DV values.
+
+    Uses ``ddof=0`` for a population (not sample) CV; the heuristic thresholds
+    in ``recommend_error_model`` are calibrated against population statistics.
+    """
     if obs.empty:
         return None
     dv_pos = obs[obs["DV"] > 0]["DV"].to_numpy(dtype=float)
@@ -238,7 +249,7 @@ def _compute_dv_cv_percent(obs: pd.DataFrame) -> float | None:
     mean = float(np.mean(dv_pos))
     if mean <= 0:
         return None
-    sd = float(np.std(dv_pos, ddof=1))
+    sd = float(np.std(dv_pos, ddof=0))
     return 100.0 * sd / mean
 
 
@@ -509,8 +520,9 @@ def _get_dose_auc_pairs(
                 tau_mask = (times >= last_dose_time) & (times <= last_dose_time + tau)
                 if tau_mask.sum() >= 2:
                     auc = float(np.trapezoid(concs[tau_mask], times[tau_mask]))
-                    # Normalize to single dose for comparability
-                    single_dose = float(subj_doses["AMT"].iloc[-1])
+                    # Normalize to median AMT for comparability; iloc[-1]
+                    # is unreliable under dose titration or loading regimens.
+                    single_dose = float(subj_doses["AMT"].median())
                     if single_dose > 0 and auc > 0:
                         pairs.append((single_dose, auc))
                     continue
@@ -580,11 +592,20 @@ def _detect_curvature_nonlinearity(obs: pd.DataFrame) -> bool:
             continue
 
         tmax_idx = int(np.argmax(concs))
+        # Cmax-inclusive slice: the early-segment anchor is log(Cmax) so the
+        # early slope captures the steep peak-to-mid transition that drives
+        # MM detection. _compute_terminal_log_residual_mad uses tmax_idx+1
+        # because it measures terminal noise, a different concept; the 1.8
+        # MM threshold below is calibrated against this Cmax-inclusive slice.
         post_c = concs[tmax_idx:]
         post_t = times[tmax_idx:]
 
-        # Need enough post-Cmax points with positive concentrations
-        if len(post_c) < 4 or not np.all(post_c > 0):
+        # Drop BLQ-zero tail points but keep the subject if enough positives
+        # remain; rejecting on a single BLQ cuts too many real profiles.
+        pos = post_c > 0
+        post_c = post_c[pos]
+        post_t = post_t[pos]
+        if len(post_c) < 4:
             continue
 
         log_c = np.log(post_c)
@@ -635,7 +656,9 @@ def _nonlinear_clearance_confidence(obs: pd.DataFrame, doses: pd.DataFrame) -> f
             corr = _spearman_r(dose_vals, dn_auc)
             scores.append(max(0.0, min(1.0, corr)))
 
-    # Score from curvature ratio
+    # Score from curvature ratio. Cmax-inclusive slice + BLQ-tail filter
+    # mirror ``_detect_curvature_nonlinearity`` so the boolean detector and
+    # this confidence score operate on the same per-subject ratios.
     subjects = obs["NMID"].unique()
     ratios: list[float] = []
     for subj in subjects:
@@ -647,7 +670,10 @@ def _nonlinear_clearance_confidence(obs: pd.DataFrame, doses: pd.DataFrame) -> f
         tmax_idx = int(np.argmax(concs))
         post_c = concs[tmax_idx:]
         post_t = times[tmax_idx:]
-        if len(post_c) < 4 or not np.all(post_c > 0):
+        pos = post_c > 0
+        post_c = post_c[pos]
+        post_t = post_t[pos]
+        if len(post_c) < 4:
             continue
         log_c = np.log(post_c)
         mid = len(post_c) // 2
@@ -859,7 +885,11 @@ def _assess_absorption_coverage(obs: pd.DataFrame) -> str:
         subj_data = obs[obs["NMID"] == subj].sort_values("TIME")
         if subj_data.empty:
             continue
-        tmax = subj_data.loc[subj_data["DV"].idxmax(), "TIME"]
+        # Restrict to positive DV so BLQ zeros do not masquerade as Tmax.
+        pos = subj_data[subj_data["DV"] > 0]
+        if pos.empty:
+            continue
+        tmax = pos.loc[pos["DV"].idxmax(), "TIME"]
         pre_tmax = int((subj_data["TIME"] < tmax).sum())
         pre_tmax_counts.append(pre_tmax)
 

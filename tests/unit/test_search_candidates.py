@@ -45,7 +45,10 @@ class TestSearchSpace:
         manifest = _make_manifest(richness_category="sparse")
         space = SearchSpace.from_manifest(manifest)
         assert space.structural_cmt == [1]
-        assert space.absorption_types == ["first_order"]
+        # Sparse filter reduces to the simplest admissible absorption types
+        # but preserves "none" so IV-sparse datasets still generate an IV
+        # candidate.
+        assert space.absorption_types == ["none", "first_order"]
 
     def test_nonlinear_clearance_includes_mm(self) -> None:
         manifest = _make_manifest(nonlinear_clearance_signature=True)

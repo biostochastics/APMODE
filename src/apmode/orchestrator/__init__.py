@@ -891,9 +891,9 @@ class Orchestrator:
             return None
         best = min(converged, key=lambda r: r.bic if r.bic is not None else float("inf"))
 
-        runner = self._frem_runner or Nlmixr2Runner(
-            work_dir=run_dir / "frem", estimation=["focei"]
-        )
+        frem_work_dir = run_dir / "frem"
+        frem_work_dir.mkdir(parents=True, exist_ok=True)
+        runner = self._frem_runner or Nlmixr2Runner(work_dir=frem_work_dir, estimation=["focei"])
         # Use the best candidate's structural parameter estimates as
         # initial values for the FREM refit (warm-started FREM fit).
         if best.result is not None:
@@ -915,7 +915,7 @@ class Orchestrator:
             data_manifest=manifest,
             covariate_names=covariate_names,
             runner=runner,
-            work_dir=run_dir / "frem",
+            work_dir=frem_work_dir,
             seed=self._config.seed,
             timeout_seconds=self._config.timeout_seconds,
             initial_estimates=init,

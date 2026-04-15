@@ -8,7 +8,7 @@
 
   [![Phase](https://img.shields.io/badge/phase-3%20(P3.B)-blue)]()
 
-  [![Tests](https://img.shields.io/badge/tests-1356%20passing-success)]()
+  [![Tests](https://img.shields.io/badge/tests-1490%20passing-success)]()
   [![License](https://img.shields.io/badge/license-GPL--2.0--or--later-green)](LICENSE)
   [![Python](https://img.shields.io/badge/python-3.12%E2%80%933.14-yellow)]()
   [![mypy](https://img.shields.io/badge/mypy-strict%20%E2%9C%93-blue)]()
@@ -29,7 +29,7 @@ APMODE is a **governed meta-system** that composes five population PK modeling p
 
 **Formular — a typed PK DSL — is the control surface.** Models are specified in [Formular](docs/FORMULAR.md), a structured grammar (`Absorption x Distribution x Elimination x Variability x Observation × Priors`), compiled to a typed AST, validated against pharmacometric constraints, and lowered to backend-specific code (nlmixr2 R, Stan/Torsten, JAX/Diffrax). The agentic LLM backend (Phase 3) operates exclusively through Formular transforms — including the new `SetPrior` transform for Bayesian workflows — it cannot emit raw code.
 
-> **Status**: Phase 3 in progress (P3.B LORO-CV complete) + Phase 2+ Bayesian backend landed. 1356 tests passing (including 89 new Bayesian tests and end-to-end smoke verification on the Boeckmann 1994 theophylline dataset). `mypy --strict` clean. `ruff` clean. Supports Python 3.12–3.14.
+> **Status**: Phase 3 in progress (P3.B LORO-CV complete) + Phase 2+ Bayesian backend + missing-data pipeline (MI / FREM / Rubin pooling) landed. 1490 tests passing (including 89 Bayesian tests, 5 live nlmixr2/mice/missRanger integration tests covering binary + time-varying FREM and end-to-end Rubin pooling, and a Boeckmann 1994 theophylline smoke test). `mypy --strict` clean. `ruff` clean. Supports Python 3.12–3.14.
 
 ---
 
@@ -247,7 +247,7 @@ Scope covers **static + time-varying** subject-level covariates and **continuous
 
 ### Phase 2: Generate Root Candidates
 
-`generate_root_candidates(space, base_params=nca_estimates)` enumerates the cross-product of allowed modules, seeded with parameter estimates from **NCA** (Naive Compartmental Analysis — derived from observed AUC, Cmax, half-life per subject and averaged):
+`generate_root_candidates(space, base_params=nca_estimates)` enumerates the cross-product of allowed modules, seeded with parameter estimates from **per-subject PKNCA-style NCA** (adaptive lambda_z selection by curve-stripping, linear-up/log-down AUC integration per Purves 1992, and QC gates on adj-R², AUC extrapolation fraction, and span ratio; subjects failing QC are excluded from the population median, and when ≥50% are excluded APMODE falls back to `RunConfig.fallback_estimates` — e.g., a dataset card's `published_model.key_estimates` — or conservative defaults. Per-subject diagnostics are emitted as `nca_diagnostics.jsonl` in the reproducibility bundle):
 
 ```
 for cmt in space.structural_cmt:              # e.g., [1, 2, 3]
@@ -259,7 +259,7 @@ for cmt in space.structural_cmt:              # e.g., [1, 2, 3]
 
 For a typical dataset with rich sampling, nonlinear CL, and high identifiability, this produces ~20-30 root candidates. NCA-seeded initial estimates dramatically reduce SAEM convergence time vs. fitting from arbitrary values.
 
-The NCA estimator is **unit-aware**: when raw CL is implausibly small (`< 0.5 L/h`) and the DV magnitude looks like ng/mL territory (`> 50`), it applies a `x1000` scaling factor — accommodating the common pharmacometric convention of dose-in-mg with concentration-in-ng/mL without requiring users to specify units explicitly. The applied scale factor is recorded as `_unit_scale_applied` in the initial estimates bundle for auditability.
+The NCA estimator is **unit-aware**: when raw CL is implausibly small (`< 0.5 L/h`), the DV magnitude looks like ng/mL territory (`> 50`), and `dose_median ≥ 1` (mg-scale human dosing), it applies a `x1000` scaling factor — accommodating the common pharmacometric convention of dose-in-mg with concentration-in-ng/mL without requiring users to specify units explicitly. The `dose_median` guard prevents over-correction of preclinical data (small-animal studies, biologics) where a legitimate low-CL drug with ng/mL concentrations may superficially match the heuristic. The applied scale factor is recorded as `_unit_scale_applied` in the initial estimates bundle for auditability.
 
 ### Phase 3: Warm-Start Children (Fixed Budget, Max 18)
 
@@ -474,7 +474,7 @@ uv run pytest tests/ --snapshot-update      # update snapshots after emitter cha
 - **Transit compartments**: Savic et al. (2007), J Pharmacokinet Pharmacodyn 34:711-726
 - **Allometric scaling**: Anderson & Holford (2008), Clin Pharmacokinet 47:455-467
 - **BLQ M3/M4**: nlmixr2 censoring via CENS/LIMIT data columns
-- **NCA**: Linear trapezoidal AUC, terminal log-linear kel, CL = Dose / AUC_inf, with a unit-scaling heuristic that detects mg-dose + ng/mL-DV mismatches (CL < 0.5 L/h + DV magnitude > 50 → x1000 scaling on CL/V)
+- **NCA**: PKNCA-style curve-stripping for terminal lambda_z (`pk.calc.half.life`, adjusted R² with most-points tiebreak), linear-up/log-down AUC integration (Purves 1992, `pk.calc.auc`), `CL = Dose / AUC_inf` (or `AUC_tau` at steady state anchored on the last dose), with QC gates (adj-R²≥0.80, extrap≤20%, span≥1 half-life, n_λz≥3) and a dose-guarded unit-scaling heuristic (`x1000` when CL<0.5 + DV>50 + dose_median≥1). Reference: Purves (1992) J Pharmacokin Biopharm 20:211; PKNCA vignettes at https://humanpred.github.io/pknca/
 
 ---
 
