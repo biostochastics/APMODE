@@ -117,12 +117,14 @@ class SearchSpace:
         elif manifest.richness_category == "moderate":
             space.structural_cmt = [1, 2]
 
-        # Absorption complexity
-        if manifest.absorption_complexity == "simple":
-            # Remove transit from search space (simple absorption unlikely to need it)
-            if "transit" in space.absorption_types:
-                space.absorption_types.remove("transit")
-        elif manifest.absorption_complexity == "multi-phase":
+        # Absorption complexity. Note: do NOT remove "transit" when the
+        # detector reports "simple" — the prominence-based peak detector
+        # (post 2026-04-15 refactor) correctly classifies transit-chain
+        # absorption datasets (which produce a smooth single peak with a
+        # delayed apex) as "simple" rather than "multi-phase". Transit
+        # candidates must remain discoverable through the search space so
+        # the structural search can still recover them via BIC ranking.
+        if manifest.absorption_complexity == "multi-phase":
             # Multi-phase absorption often requires transit compartment models
             if "transit" not in space.absorption_types:
                 space.absorption_types.append("transit")
@@ -139,13 +141,18 @@ class SearchSpace:
         if manifest.route_certainty == "confirmed" and "none" not in space.absorption_types:
             pass  # Keep all absorption types for confirmed routes
 
-        # Nonlinear clearance
-        if not manifest.nonlinear_clearance_signature:
-            space.elimination_types = ["linear"]
-        else:
-            # Ensure MM candidates present
+        # Nonlinear clearance — graded routing per PRD §10 Q2 follow-up.
+        # ``strong`` (all 3 signals: curvature ratio + terminal R^2 failure
+        # + dose nonproportionality) → full MM cross-product.
+        # ``moderate`` (2 signals) → keep linear + add MM as sentinel; do
+        # not blow out the search space on a 2-cmt-linear false positive
+        # like warfarin.
+        # ``weak`` / ``none`` → linear only.
+        if manifest.nonlinear_clearance_evidence_strength in ("moderate", "strong"):
             if "michaelis_menten" not in space.elimination_types:
                 space.elimination_types.append("michaelis_menten")
+        else:
+            space.elimination_types = ["linear"]
 
         # Error-model preference from profiler heuristic (Beal 2001, Ahn 2008,
         # multi-agent consensus). Supersedes the legacy ``blq_burden > 0.20``

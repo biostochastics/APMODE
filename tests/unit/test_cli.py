@@ -63,7 +63,7 @@ def _make_full_bundle(tmp_path: Path, name: str = "run_full") -> Path:
         {
             "richness_category": "rich",
             "route_certainty": "oral",
-            "nonlinear_clearance_signature": False,
+            "nonlinear_clearance_evidence_strength": "none",
         },
     )
     _write_json(bundle / "initial_estimates.json", {"CL": 3.0, "V": 30.0})
@@ -556,7 +556,7 @@ class TestDiff:
             {
                 "richness_category": "sparse",
                 "route_certainty": "oral",
-                "nonlinear_clearance_signature": False,
+                "nonlinear_clearance_evidence_strength": "none",
             },
         )
         result = runner.invoke(app, ["diff", str(a), str(b)])

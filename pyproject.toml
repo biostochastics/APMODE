@@ -128,7 +128,7 @@ warn_unused_configs = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["sparkid.*", "pandera.*", "lark.*", "jax.*", "jaxlib.*", "diffrax.*", "equinox.*", "optax.*", "jaxtyping.*", "pandas.*", "cmdstanpy.*", "arviz.*", "pyarrow.*"]
+module = ["sparkid.*", "pandera.*", "lark.*", "jax.*", "jaxlib.*", "diffrax.*", "equinox.*", "optax.*", "jaxtyping.*", "pandas.*", "cmdstanpy.*", "arviz.*", "pyarrow.*", "scipy.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

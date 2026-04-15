@@ -871,7 +871,10 @@ def inspect(
             table.add_column(style="dim")
             table.add_column()
             table.add_row("Richness", escape(str(em.get("richness_category", "?"))))
-            table.add_row("Nonlinear CL", _bool_badge(em.get("nonlinear_clearance_signature")))
+            table.add_row(
+                "Nonlinear CL",
+                escape(str(em.get("nonlinear_clearance_evidence_strength", "?"))),
+            )
             table.add_row("BLQ burden", escape(str(em.get("blq_burden", "?"))))
             if em.get("time_varying_covariates"):
                 table.add_row("Time-varying covariates", _bool_badge(True))
@@ -1337,7 +1340,9 @@ def _print_evidence_panel(evidence: object) -> None:
         "richness_category",
         "route_certainty",
         "absorption_complexity",
-        "nonlinear_clearance_signature",
+        "nonlinear_clearance_evidence_strength",
+        "compartmentality",
+        "multi_dose_detected",
         "absorption_phase_coverage",
         "elimination_phase_coverage",
         "covariate_burden",
@@ -1706,7 +1711,7 @@ def _show_bundle_overview(bundle_dir: Path) -> None:
     if em:
         t.add_row("Richness", em.get("richness_category", "?"))
         t.add_row("Route", em.get("route_certainty", "?"))
-        t.add_row("Nonlinear CL", str(em.get("nonlinear_clearance_signature", "?")))
+        t.add_row("Nonlinear CL", str(em.get("nonlinear_clearance_evidence_strength", "?")))
 
     # Search trajectory
     st_path = bundle_dir / "search_trajectory.jsonl"

@@ -12,7 +12,7 @@ def _make_manifest(**overrides: object) -> EvidenceManifest:
     defaults = {
         "route_certainty": "confirmed",
         "absorption_complexity": "simple",
-        "nonlinear_clearance_signature": False,
+        "nonlinear_clearance_evidence_strength": "none",
         "richness_category": "rich",
         "identifiability_ceiling": "high",
         "covariate_burden": 0,

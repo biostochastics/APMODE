@@ -45,6 +45,8 @@ Thumbs.db
 
 # APMODE runtime
 runs/
+benchmarks/data/
+benchmarks/runs/
 *.log
 
 # Internal docs (not for public repo)

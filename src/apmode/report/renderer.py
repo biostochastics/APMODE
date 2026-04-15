@@ -142,7 +142,7 @@ def _header(
 
 
 def _data_summary(manifest: DataManifest, evidence: EvidenceManifest) -> str:
-    nl_cl = "Yes" if evidence.nonlinear_clearance_signature else "No"
+    nl_cl = evidence.nonlinear_clearance_evidence_strength
     conf_str = ""
     if evidence.nonlinear_clearance_confidence is not None:
         conf_str = f" ({evidence.nonlinear_clearance_confidence:.0%} confidence)"

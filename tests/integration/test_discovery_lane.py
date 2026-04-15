@@ -226,7 +226,7 @@ def _evidence_manifest() -> EvidenceManifest:
     return EvidenceManifest(
         route_certainty="confirmed",
         absorption_complexity="simple",
-        nonlinear_clearance_signature=False,
+        nonlinear_clearance_evidence_strength="none",
         richness_category="moderate",
         identifiability_ceiling="medium",
         covariate_burden=0,

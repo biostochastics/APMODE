@@ -6,7 +6,7 @@ Rule-based analysis produces typed manifest fields that the Lane Router must con
 
 Dispatch constraints derived from manifest (PRD §4.2.1):
   - richness=sparse + absorption_coverage=inadequate → NODE not dispatched
-  - nonlinear_clearance_signature=True → automated search includes MM candidates
+  - nonlinear_clearance_evidence_strength="strong" → automated search includes MM candidates
   - blq_burden > 0.20 → all backends must use BLQ-aware likelihood (M3/M4)
   - protocol_heterogeneity=pooled-heterogeneous → IOV must be tested
   - covariate_missingness.fraction_incomplete > 0.15 → full-information likelihood
@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Literal, cast
 
 import numpy as np
 import pandas as pd  # noqa: TC002
+from scipy.signal import find_peaks
 
 from apmode.bundle.models import CovariateSpec, ErrorModelPreference, EvidenceManifest
 
@@ -29,9 +30,33 @@ _COVARIATE_CORRELATION_THRESHOLD: float = 0.7  # |r| > 0.7 flagged as correlated
 _NONLINEAR_CLEARANCE_DOSE_AUC_THRESHOLD: float = 0.4  # Spearman rho threshold
 _NONLINEAR_MM_CURVATURE_RATIO: float = 1.8  # early/late slope ratio
 _NONLINEAR_TMDD_CURVATURE_RATIO: float = 0.3  # inverse pattern
-_MULTI_PEAK_FRACTION_THRESHOLD: float = 0.3  # fraction of subjects with ≥2 peaks
+_MULTI_PEAK_FRACTION_THRESHOLD: float = 0.3  # fraction of subjects with >=2 peaks
 _LAG_SIGNATURE_FRACTION_THRESHOLD: float = 0.5  # fraction of subjects with lag
 _BLQ_COVARIATE_MISSINGNESS_CUTOFF: float = 0.15  # above → full-information likelihood
+
+# Multi-signal voting thresholds for nonlinear-clearance evidence strength.
+# A monoexponential terminal fit with adj R² >= this value is treated as
+# evidence FOR linear (multi-compartment) kinetics and AGAINST MM saturation.
+# Justification: per-subject log-linear regression on the final ~30% of post-
+# Cmax samples; warfarin (2-cmt linear) reaches ~0.95 here while a true MM
+# late phase below Km also reaches ~0.95 — so this gates on the *combination*
+# of curvature ratio AND failure of monoexp explanation, not on R² alone
+# (per gpt-5.2-pro: MM looks linear for C << Km, do not veto on R² alone).
+_TERMINAL_MONOEXP_R2_LINEAR_THRESHOLD: float = 0.85
+# Final fraction of post-Cmax points used for the terminal monoexp fit.
+_TERMINAL_FIT_TAIL_FRACTION: float = 0.30
+# Minimum points in the terminal-fit window.
+_TERMINAL_FIT_MIN_POINTS: int = 3
+# Peak detector (scipy.signal.find_peaks) parameters.
+# Prominence required: max(_PEAK_PROMINENCE_RANGE_FRACTION x (Cmax - Cmin),
+# _PEAK_PROMINENCE_CMAX_FLOOR x Cmax). Both bounds together prevent
+# both small descending-limb wiggles (range floor) and tiny prominences on
+# rich profiles where Cmin is already near zero (Cmax floor).
+_PEAK_PROMINENCE_RANGE_FRACTION: float = 0.10
+_PEAK_PROMINENCE_CMAX_FLOOR: float = 0.05
+# Minimum samples between successive peaks (in units of median sampling
+# interval). Prevents adjacent-noise pairs from being counted as two peaks.
+_PEAK_MIN_DISTANCE_INTERVALS: float = 2.0
 
 if TYPE_CHECKING:
     from apmode.bundle.models import DataManifest
@@ -68,12 +93,33 @@ def profile_data(
         terminal_log_mad=terminal_log_mad,
     )
 
+    # Detect multi-dose regimens once — both the terminal-monoexp R² fit
+    # and peak-counting use this flag to slice profiles per dose interval
+    # (root-cause fix for warfarin's negative terminal R² and the multi-
+    # phase false positive; multi-model consensus 2026-04-15).
+    multi_dose = _detect_multi_dose(doses)
+
+    # Multi-signal classification of nonlinear-clearance evidence (PRD §10
+    # Q2 follow-up). Routing: ``strong`` = full MM cross-product;
+    # ``moderate`` = single sentinel MM candidate; ``weak``/``none`` = MM
+    # not auto-included.
+    nlc_strength, nlc_signals = _classify_nonlinear_clearance_evidence_strength(
+        obs, doses, multi_dose=multi_dose
+    )
+
     return EvidenceManifest(
         data_sha256=manifest.data_sha256,
         route_certainty=_assess_route_certainty(doses),
-        absorption_complexity=_assess_absorption_complexity(obs),
-        nonlinear_clearance_signature=_detect_nonlinear_clearance(obs, doses),
+        absorption_complexity=_assess_absorption_complexity(obs, doses, multi_dose=multi_dose),
         nonlinear_clearance_confidence=_nonlinear_clearance_confidence(obs, doses),
+        nonlinear_clearance_evidence_strength=nlc_strength,
+        multi_dose_detected=multi_dose,
+        compartmentality=_assess_compartmentality(obs, doses, multi_dose=multi_dose),
+        terminal_fit_adj_r2_median=nlc_signals["terminal_fit_adj_r2_median"],
+        auc_extrap_fraction_median=_auc_extrap_fraction_median(obs, doses),
+        lambda_z_analyzable_fraction=_lambda_z_analyzable_fraction(obs),
+        curvature_ratio_median=nlc_signals["curvature_ratio_median"],
+        peak_prominence_fraction=_peak_prominence_fraction(obs, doses, multi_dose=multi_dose),
         richness_category=_classify_richness(obs, n_subjects),
         identifiability_ceiling=_assess_identifiability(obs, n_subjects),
         covariate_burden=len(manifest.covariates),
@@ -97,7 +143,7 @@ def profile_data(
 # ---------------------------------------------------------------------------
 
 # Thresholds informed by the multi-agent research consensus + cited papers.
-_BLQ_M3_TRIGGER: float = 0.10  # Beal 2001 / Ahn 2008: M3 preferred for BLQ ≥ 10%.
+_BLQ_M3_TRIGGER: float = 0.10  # Beal 2001 / Ahn 2008: M3 preferred for BLQ >= 10%.
 _DYNAMIC_RANGE_PROPORTIONAL: float = 50.0  # Cmax_p95/Cmax_p05 > 50 → proportional.
 _HIGH_CV_CEILING: float = 80.0  # CV > 80 with big range → signal is noise-dominated.
 _LLOQ_CMAX_COMBINED: float = 0.05  # LLOQ / Cmax_median > 5% → combined needed.
@@ -117,7 +163,7 @@ def recommend_error_model(
     """Return the profiler's preferred error-model family for this dataset.
 
     Decision tree (priority order):
-      1. ``blq_burden ≥ 0.10`` → BLQ_M3 with proportional/combined underlying.
+      1. ``blq_burden >= 0.10`` → BLQ_M3 with proportional/combined underlying.
          Never include additive-only: Ahn 2008 shows M3 gives biased estimates
          when combined with additive-only residual error under heavy censoring
          (the additive sigma absorbs the censored mass, corrupting CL).
@@ -145,7 +191,7 @@ def recommend_error_model(
             allowed=allowed,
             confidence="high",
             rationale=(
-                f"BLQ={blq_burden * 100:.1f}% ≥ {_BLQ_M3_TRIGGER * 100:.0f}%: "
+                f"BLQ={blq_burden * 100:.1f}% >= {_BLQ_M3_TRIGGER * 100:.0f}%: "
                 "Beal 2001 M3 required; additive-only excluded (Ahn 2008)"
             ),
         )
@@ -429,31 +475,134 @@ def _assess_route_certainty(
     return "inferred"
 
 
-def _assess_absorption_complexity(obs: pd.DataFrame) -> str:
+def _detect_multi_dose(doses: pd.DataFrame) -> bool:
+    """True iff any subject has >=2 dose events. Drives the dose-interval
+    slicing path used by ``_per_subject_terminal_monoexp_r2`` and the peak
+    counter — without slicing, the "post-Cmax terminal phase" of a multi-
+    dose subject spans subsequent dose absorption rises and the
+    monoexponential fit is meaningless. Multi-model consensus 2026-04-15:
+    this is the root cause of warfarin's terminal R² = -0.49 and the
+    100% multi-phase absorption false positive (every additional dose
+    creates a "peak").
+    """
+    if doses.empty or "NMID" not in doses.columns:
+        return False
+    counts = doses.groupby("NMID").size()
+    return bool((counts >= 2).any())
+
+
+def _last_dose_window(
+    subj_doses: pd.DataFrame, subj_obs: pd.DataFrame
+) -> tuple[float, float] | None:
+    """Return ``(t_start, t_end)`` of the last dose interval, or None when
+    the subject is single-dose / lacks dose records. ``t_end`` is the lesser
+    of (last_dose_time + median_tau, last observation time) so we never
+    project past observed data."""
+    if subj_doses.empty or len(subj_doses) < 2:
+        return None
+    dt = np.sort(subj_doses["TIME"].to_numpy(dtype=float))
+    intervals = np.diff(dt)
+    if len(intervals) == 0:
+        return None
+    tau = float(np.median(intervals[intervals > 0])) if (intervals > 0).any() else 0.0
+    if tau <= 0:
+        return None
+    t_start = float(dt[-1])
+    t_end_obs = (
+        float(subj_obs["TIME"].to_numpy(dtype=float).max()) if not subj_obs.empty else t_start
+    )
+    return t_start, min(t_start + tau, t_end_obs)
+
+
+def _windowed_profile(
+    subj_obs: pd.DataFrame,
+    subj_doses: pd.DataFrame,
+    *,
+    multi_dose: bool,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return ``(times, concs)`` restricted to the last dose interval when
+    ``multi_dose=True`` AND the subject has a meaningful interval; else
+    returns the full profile. Used by every per-subject shape detector so
+    multi-dose accumulation does not contaminate single-dose-style
+    heuristics (root-cause fix per multi-model consensus 2026-04-15).
+    """
+    s = subj_obs.sort_values("TIME")
+    times = s["TIME"].to_numpy(dtype=float)
+    concs = s["DV"].to_numpy(dtype=float)
+    if not multi_dose:
+        return times, concs
+    window = _last_dose_window(subj_doses, subj_obs)
+    if window is None:
+        return times, concs
+    t_start, t_end = window
+    mask = (times >= t_start) & (times <= t_end)
+    if mask.sum() < 3:
+        return times, concs  # not enough samples in window — fall back
+    return times[mask], concs[mask]
+
+
+def _count_prominent_peaks(times: np.ndarray, concs: np.ndarray) -> int:
+    """Count peaks in a single concentration-time profile using scipy
+    ``find_peaks`` with prominence and inter-peak distance guards.
+
+    The naive ``c[i] > c[i-1] AND c[i] > c[i+1]`` detector counts every
+    measurement-noise wiggle on the descending limb as a "peak" — this
+    is what produced 100% multi-phase false positives on warfarin (32/32
+    subjects). ``find_peaks`` with a prominence threshold relative to
+    Cmax/dynamic-range filters those out, and the distance constraint
+    prevents adjacent noise pairs from registering as separate peaks.
+
+    Returns the number of peaks meeting both prominence and distance
+    requirements; the caller decides whether >=2 indicates multi-phase
+    absorption.
+    """
+    if len(concs) < 5 or not (concs > 0).any():
+        return 0
+    cmax = float(np.max(concs))
+    cmin = float(np.min(concs[concs > 0]))
+    prominence_floor = max(
+        _PEAK_PROMINENCE_RANGE_FRACTION * (cmax - cmin),
+        _PEAK_PROMINENCE_CMAX_FLOOR * cmax,
+    )
+    if prominence_floor <= 0:
+        return 0
+    # Distance is in samples, not time; convert ">=2 sampling intervals"
+    # to a sample count (always >=1). Median sampling interval is robust
+    # to outlier gaps in the schedule.
+    interval_samples = max(1, round(_PEAK_MIN_DISTANCE_INTERVALS)) if len(times) >= 2 else 1
+    peaks, _props = find_peaks(concs, prominence=prominence_floor, distance=interval_samples)
+    return len(peaks)
+
+
+def _assess_absorption_complexity(
+    obs: pd.DataFrame, doses: pd.DataFrame, *, multi_dose: bool
+) -> str:
     """Classify absorption complexity from concentration-time profiles.
 
     simple: monotone rise to Cmax then decline
-    multi-phase: multiple peaks or shoulder (secondary absorption)
+    multi-phase: multiple PROMINENT peaks within the analysis window
     lag-signature: delayed onset (low concentrations at early times)
     unknown: insufficient data to characterize
+
+    For multi-dose datasets the per-subject analysis window is restricted
+    to the last dose interval — without this, every subsequent dose Cmax
+    registers as a "secondary peak" (warfarin: 100% false positive).
     """
     if obs.empty:
         return "unknown"
 
-    # Per-subject analysis: check for delayed onset and multiple peaks
     subjects = obs["NMID"].unique()
     lag_count = 0
     multi_peak_count = 0
 
     for subj in subjects:
-        subj_data = obs[obs["NMID"] == subj].sort_values("TIME")
-        times = subj_data["TIME"].values
-        concs = subj_data["DV"].values
-
+        subj_obs = obs[obs["NMID"] == subj]
+        subj_doses = doses[doses["NMID"] == subj] if not doses.empty else doses
+        times, concs = _windowed_profile(subj_obs, subj_doses, multi_dose=multi_dose)
         if len(concs) < 3:
             continue
 
-        # Lag detection: first 2 observations near zero while later ones rise
+        # Lag detection within the analysis window.
         if (times > 0).any():
             early_mask = times <= np.percentile(times[times > 0], 25)
             if early_mask.any():
@@ -462,12 +611,7 @@ def _assess_absorption_complexity(obs: pd.DataFrame) -> str:
                 if max_conc > 0 and np.all(early_concs < 0.05 * max_conc):
                     lag_count += 1
 
-        # Multi-peak detection: count local maxima
-        peaks = 0
-        for i in range(1, len(concs) - 1):
-            if concs[i] > concs[i - 1] and concs[i] > concs[i + 1]:
-                peaks += 1
-        if peaks >= 2:
+        if _count_prominent_peaks(times, concs) >= 2:
             multi_peak_count += 1
 
     n_analyzable = max(1, len(subjects))
@@ -476,6 +620,84 @@ def _assess_absorption_complexity(obs: pd.DataFrame) -> str:
     if lag_count / n_analyzable > _LAG_SIGNATURE_FRACTION_THRESHOLD:
         return "lag-signature"
     return "simple"
+
+
+def _peak_prominence_fraction(
+    obs: pd.DataFrame, doses: pd.DataFrame, *, multi_dose: bool
+) -> float | None:
+    """Fraction of subjects with >=2 prominent peaks within their analysis
+    window (last-dose interval for multi-dose, full profile otherwise)."""
+    if obs.empty:
+        return None
+    subjects = obs["NMID"].unique()
+    if len(subjects) == 0:
+        return None
+    n_analyzable = 0
+    multi_peak = 0
+    for subj in subjects:
+        subj_obs = obs[obs["NMID"] == subj]
+        subj_doses = doses[doses["NMID"] == subj] if not doses.empty else doses
+        times, concs = _windowed_profile(subj_obs, subj_doses, multi_dose=multi_dose)
+        if len(concs) < 5:
+            continue
+        n_analyzable += 1
+        if _count_prominent_peaks(times, concs) >= 2:
+            multi_peak += 1
+    if n_analyzable == 0:
+        return None
+    return float(multi_peak / n_analyzable)
+
+
+def _per_subject_terminal_monoexp_r2(
+    obs: pd.DataFrame, doses: pd.DataFrame, *, multi_dose: bool
+) -> list[float]:
+    """Per-subject adjusted R² of monoexponential fit to the terminal
+    ~30% of post-Cmax samples within the analysis window. Used to
+    distinguish 2-compartment linear kinetics (high R² in the late beta
+    phase) from MM saturation (R² sometimes also high once C << Km —
+    caller must combine with curvature ratio + dose-proportionality,
+    never use alone).
+
+    For multi-dose data the per-subject window is restricted to the last
+    dose interval; otherwise the "terminal phase" spans subsequent dose
+    rises and the monoexp fit is meaningless (warfarin: R² = -0.49 across
+    full profile, ~0.95 within the last dosing interval).
+    """
+    out: list[float] = []
+    for subj in obs["NMID"].unique():
+        subj_obs = obs[obs["NMID"] == subj]
+        subj_doses = doses[doses["NMID"] == subj] if not doses.empty else doses
+        times, concs = _windowed_profile(subj_obs, subj_doses, multi_dose=multi_dose)
+        if len(concs) < 5:
+            continue
+        tmax_idx = int(np.argmax(concs))
+        post_c = concs[tmax_idx:]
+        post_t = times[tmax_idx:]
+        pos = post_c > 0
+        post_c = post_c[pos]
+        post_t = post_t[pos]
+        if len(post_c) < _TERMINAL_FIT_MIN_POINTS:
+            continue
+        # Use the final TAIL_FRACTION of points, but at least MIN_POINTS.
+        tail_n = max(_TERMINAL_FIT_MIN_POINTS, round(len(post_c) * _TERMINAL_FIT_TAIL_FRACTION))
+        tail_n = min(tail_n, len(post_c))
+        log_c = np.log(post_c[-tail_n:])
+        t_tail = post_t[-tail_n:]
+        if t_tail.max() - t_tail.min() <= 0:
+            continue
+        # OLS log-linear fit; adj R^2 = 1 - (1 - R^2) * (n-1) / (n-2).
+        slope, intercept = np.polyfit(t_tail, log_c, 1)
+        if slope >= 0:
+            continue
+        pred = slope * t_tail + intercept
+        ss_res = float(np.sum((log_c - pred) ** 2))
+        ss_tot = float(np.sum((log_c - log_c.mean()) ** 2))
+        if ss_tot <= 0:
+            continue
+        r2 = 1.0 - ss_res / ss_tot
+        adj_r2 = r2 if tail_n <= 2 else 1.0 - (1.0 - r2) * (tail_n - 1) / (tail_n - 2)
+        out.append(float(adj_r2))
+    return out
 
 
 def _get_dose_auc_pairs(
@@ -577,7 +799,7 @@ def _detect_curvature_nonlinearity(obs: pd.DataFrame) -> bool:
     concentrations (faster late decline), yielding ratio < 0.3.
 
     Computes the median ratio of |early slope| / |late slope| across subjects.
-    Linear PK (including multi-compartment) typically yields 0.5 ≤ ratio ≤ 1.5;
+    Linear PK (including multi-compartment) typically yields 0.5 <= ratio <= 1.5;
     MM kinetics yields ratio > 1.8; TMDD yields ratio < 0.3.
     """
     subjects = obs["NMID"].unique()
@@ -633,6 +855,237 @@ def _detect_curvature_nonlinearity(obs: pd.DataFrame) -> bool:
         median_ratio > _NONLINEAR_MM_CURVATURE_RATIO
         or median_ratio < _NONLINEAR_TMDD_CURVATURE_RATIO
     )
+
+
+def _classify_nonlinear_clearance_evidence_strength(
+    obs: pd.DataFrame,
+    doses: pd.DataFrame,
+    *,
+    multi_dose: bool,
+) -> tuple[Literal["none", "weak", "moderate", "strong"], dict[str, float | None]]:
+    """Multi-signal voting for nonlinear-clearance evidence (PRD §10 Q2 follow-up).
+
+    Returns ``(strength, signals)`` where ``signals`` carries the median
+    diagnostic values used to derive ``strength`` so they can be emitted on
+    the EvidenceManifest for downstream auditability.
+
+    Three independent signals contribute one vote each. ``strong`` requires
+    all three; ``moderate`` requires two; ``weak`` requires one; ``none``
+    means no signal triggered.
+
+    Signal 1 — curvature ratio: median early/late post-Cmax log-slope ratio
+    > _NONLINEAR_MM_CURVATURE_RATIO. By itself this fires on 2-cmt linear
+    drugs (e.g., warfarin → 3.92) so it is necessary but not sufficient.
+
+    Signal 2 — terminal monoexponential failure: median per-subject adj R²
+    of a log-linear fit to the final ~30% of post-Cmax samples
+    < _TERMINAL_MONOEXP_R2_LINEAR_THRESHOLD. A passing R² is *evidence
+    against* MM (the late phase is well-explained by linear elimination).
+    A failing R² alone does NOT prove MM (could be sparse/noisy data).
+
+    Signal 3 - dose-AUC nonproportionality: Spearman rho between dose and
+    dose-normalized AUC > _NONLINEAR_CLEARANCE_DOSE_AUC_THRESHOLD with
+    >=2 distinct dose levels. Strongest single discriminator when present;
+    absent for single-dose-level studies (then this signal abstains).
+    """
+    signals: dict[str, float | None] = {
+        "curvature_ratio_median": None,
+        "terminal_fit_adj_r2_median": None,
+        "dose_proportionality_rho": None,
+    }
+    votes = 0
+    eligible = 0
+
+    # Signal 1: curvature ratio.
+    ratios = _curvature_ratios_per_subject(obs, doses, multi_dose=multi_dose)
+    if len(ratios) >= 4:
+        eligible += 1
+        median_ratio = float(np.median(ratios))
+        signals["curvature_ratio_median"] = median_ratio
+        if median_ratio > _NONLINEAR_MM_CURVATURE_RATIO:
+            votes += 1
+
+    # Signal 2: terminal monoexponential fit.
+    r2s = _per_subject_terminal_monoexp_r2(obs, doses, multi_dose=multi_dose)
+    if len(r2s) >= 4:
+        eligible += 1
+        median_r2 = float(np.median(r2s))
+        signals["terminal_fit_adj_r2_median"] = median_r2
+        if median_r2 < _TERMINAL_MONOEXP_R2_LINEAR_THRESHOLD:
+            votes += 1
+
+    # Signal 3: dose-AUC proportionality. Abstains when only one dose
+    # level is present; ``eligible`` reflects this so single-dose-level
+    # studies do not get penalised by an inactive third signal.
+    pairs = _get_dose_auc_pairs(obs, doses)
+    if len(pairs) >= 4:
+        dose_vals = np.array([p[0] for p in pairs])
+        auc_vals = np.array([p[1] for p in pairs])
+        if len(np.unique(dose_vals)) >= 2:
+            eligible += 1
+            dn_auc = auc_vals / dose_vals
+            rho = _spearman_r(dose_vals, dn_auc)
+            signals["dose_proportionality_rho"] = float(rho)
+            if rho > _NONLINEAR_CLEARANCE_DOSE_AUC_THRESHOLD:
+                votes += 1
+
+    # Strength is the fraction of *eligible* signals that fired, not an
+    # absolute count out of three. This avoids misclassifying single-dose
+    # true-MM datasets (Suite A2/A4) as merely "weak" when only Signal 1
+    # could possibly trigger.
+    strength: Literal["none", "weak", "moderate", "strong"]
+    if eligible == 0 or votes == 0:
+        strength = "none"
+    else:
+        ratio = votes / eligible
+        if ratio >= 1.0:
+            strength = "strong"
+        elif ratio >= 0.5:
+            strength = "moderate"
+        else:
+            strength = "weak"
+    return strength, signals
+
+
+def _curvature_ratios_per_subject(
+    obs: pd.DataFrame, doses: pd.DataFrame, *, multi_dose: bool
+) -> list[float]:
+    """Per-subject early/late post-Cmax log-slope ratio — refactored shared
+    helper used by the evidence-strength classifier and compartmentality
+    assessor. Profile is restricted to the last dose interval when
+    ``multi_dose=True`` to avoid contamination from subsequent dose
+    rises."""
+    ratios: list[float] = []
+    for subj in obs["NMID"].unique():
+        subj_obs = obs[obs["NMID"] == subj]
+        subj_doses = doses[doses["NMID"] == subj] if not doses.empty else doses
+        times, concs = _windowed_profile(subj_obs, subj_doses, multi_dose=multi_dose)
+        if len(concs) < 5:
+            continue
+        tmax_idx = int(np.argmax(concs))
+        post_c = concs[tmax_idx:]
+        post_t = times[tmax_idx:]
+        pos = post_c > 0
+        post_c = post_c[pos]
+        post_t = post_t[pos]
+        if len(post_c) < 4:
+            continue
+        log_c = np.log(post_c)
+        mid = len(post_c) // 2
+        if mid < 2 or len(post_c) - mid < 2:
+            continue
+        dt_e = post_t[mid] - post_t[0]
+        dt_l = post_t[-1] - post_t[mid]
+        if dt_e <= 0 or dt_l <= 0:
+            continue
+        es = abs((log_c[mid] - log_c[0]) / dt_e)
+        ls = abs((log_c[-1] - log_c[mid]) / dt_l)
+        if ls > 1e-6:
+            ratios.append(es / ls)
+    return ratios
+
+
+def _assess_compartmentality(
+    obs: pd.DataFrame,
+    doses: pd.DataFrame,
+    *,
+    multi_dose: bool,
+) -> Literal["one_compartment", "two_compartment", "multi_compartment_likely", "insufficient"]:
+    """Classify likely compartmentality from terminal-phase shape.
+
+    one_compartment: monoexponential late phase (median terminal adj R² high)
+        AND modest early/late curvature (ratio close to 1).
+    two_compartment: monoexponential terminal R² high AND elevated curvature
+        ratio (steep alpha + shallow beta — classic biexponential).
+    multi_compartment_likely: terminal R² fails AND curvature elevated
+        (poorly captured beta phase or true sum-of-exponentials).
+    insufficient: not enough analyzable subjects.
+    """
+    r2s = _per_subject_terminal_monoexp_r2(obs, doses, multi_dose=multi_dose)
+    ratios = _curvature_ratios_per_subject(obs, doses, multi_dose=multi_dose)
+    if len(r2s) < 4 or len(ratios) < 4:
+        return "insufficient"
+    median_r2 = float(np.median(r2s))
+    median_ratio = float(np.median(ratios))
+    high_r2 = median_r2 >= _TERMINAL_MONOEXP_R2_LINEAR_THRESHOLD
+    elevated_curvature = median_ratio > _NONLINEAR_MM_CURVATURE_RATIO
+    if high_r2 and not elevated_curvature:
+        return "one_compartment"
+    if high_r2 and elevated_curvature:
+        return "two_compartment"
+    return "multi_compartment_likely"
+
+
+def _lambda_z_analyzable_fraction(obs: pd.DataFrame) -> float | None:
+    """Fraction of subjects with >=3 positive post-Cmax samples — the
+    minimum required for terminal-slope estimation."""
+    if obs.empty:
+        return None
+    subjects = obs["NMID"].unique()
+    if len(subjects) == 0:
+        return None
+    analyzable = 0
+    for subj in subjects:
+        s = obs[obs["NMID"] == subj].sort_values("TIME")
+        c = s["DV"].values.astype(float)
+        if len(c) < 5:
+            continue
+        tmax_idx = int(np.argmax(c))
+        post = c[tmax_idx:]
+        if (post > 0).sum() >= _TERMINAL_FIT_MIN_POINTS:
+            analyzable += 1
+    return float(analyzable / len(subjects))
+
+
+def _auc_extrap_fraction_median(obs: pd.DataFrame, doses: pd.DataFrame) -> float | None:
+    """Median across subjects of AUC_extrap / AUC_inf, derived from
+    per-subject (AUC_last, lambda_z) where lambda_z is estimable. Provides
+    a population-level summary without depending on the NCA module's
+    exclusion gates — the profiler emits its own snapshot for routing
+    decisions, NCA-stage exclusions live in ``initial_estimates``.
+    """
+    if obs.empty or doses.empty:
+        return None
+    fractions: list[float] = []
+    for subj in obs["NMID"].unique():
+        s = obs[obs["NMID"] == subj].sort_values("TIME")
+        t = s["TIME"].values.astype(float)
+        c = s["DV"].values.astype(float)
+        if len(c) < 5:
+            continue
+        tmax_idx = int(np.argmax(c))
+        post_c = c[tmax_idx:]
+        post_t = t[tmax_idx:]
+        pos = post_c > 0
+        post_c = post_c[pos]
+        post_t = post_t[pos]
+        if len(post_c) < _TERMINAL_FIT_MIN_POINTS:
+            continue
+        # Best-fit terminal slope: try last n=3..N points, pick max adj R².
+        best_lambda: float | None = None
+        for n in range(_TERMINAL_FIT_MIN_POINTS, len(post_c) + 1):
+            log_c = np.log(post_c[-n:])
+            tt = post_t[-n:]
+            if tt.max() - tt.min() <= 0:
+                continue
+            slope, _ = np.polyfit(tt, log_c, 1)
+            if slope >= 0:
+                continue
+            best_lambda = -float(slope)
+            break  # n=3 gives the longest possible terminal estimate; loop
+            # could also pick max-adj-R² but for the diagnostic snapshot
+            # the simple heuristic suffices.
+        if best_lambda is None or best_lambda <= 0:
+            continue
+        c_last = float(post_c[-1])
+        auc_last = float(np.trapezoid(c, t))
+        if auc_last <= 0:
+            continue
+        auc_inf = auc_last + c_last / best_lambda
+        fractions.append((c_last / best_lambda) / auc_inf)
+    if not fractions:
+        return None
+    return float(np.median(fractions))
 
 
 def _nonlinear_clearance_confidence(obs: pd.DataFrame, doses: pd.DataFrame) -> float | None:
@@ -872,7 +1325,7 @@ def _assess_protocol_heterogeneity(df: pd.DataFrame) -> str:
 def _assess_absorption_coverage(obs: pd.DataFrame) -> str:
     """Assess whether absorption phase is adequately sampled.
 
-    adequate: ≥ 2 pre-Tmax observations per subject on average
+    adequate: >= 2 pre-Tmax observations per subject on average
     inadequate: < 2 pre-Tmax observations per subject on average
     """
     if obs.empty:
@@ -903,7 +1356,7 @@ def _assess_absorption_coverage(obs: pd.DataFrame) -> str:
 def _assess_elimination_coverage(obs: pd.DataFrame) -> str:
     """Assess whether elimination phase is adequately sampled.
 
-    adequate: ≥ 3 post-Tmax observations per subject on average
+    adequate: >= 3 post-Tmax observations per subject on average
     inadequate: < 3 post-Tmax observations per subject on average
     """
     if obs.empty:

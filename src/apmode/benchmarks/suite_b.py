@@ -92,7 +92,7 @@ def sparse_evidence_manifest() -> EvidenceManifest:
     return EvidenceManifest(
         route_certainty="confirmed",
         absorption_complexity="simple",
-        nonlinear_clearance_signature=False,
+        nonlinear_clearance_evidence_strength="none",
         richness_category="sparse",
         identifiability_ceiling="low",
         covariate_burden=0,

@@ -375,8 +375,42 @@ class EvidenceManifest(BaseModel):
     data_sha256: HexSHA256 | None = None
     route_certainty: Literal["confirmed", "inferred", "ambiguous"]
     absorption_complexity: Literal["simple", "multi-phase", "lag-signature", "unknown"]
-    nonlinear_clearance_signature: bool
+    # Graded evidence strength for nonlinear clearance (PRD §10 Q2 follow-up).
+    # Multi-signal voting per the warfarin false-positive analysis (2026-04-15):
+    #   strong   = all 3 independent signals fire (curvature ratio,
+    #              terminal-monoexp failure, dose-AUC nonproportionality)
+    #   moderate = 2 signals fire — search engine adds MM as sentinel only
+    #   weak     = 1 signal fires
+    #   none     = no signal triggered
+    # Replaces the legacy boolean ``nonlinear_clearance_signature`` field
+    # which produced false positives on multi-cmt linear drugs (warfarin:
+    # 0/24 candidate convergence). Multi-model consensus (gpt-5.2-pro,
+    # gemini-3-pro, mimo-v2-pro, glm-5): drop the bool entirely.
+    nonlinear_clearance_evidence_strength: Literal["none", "weak", "moderate", "strong"]
     nonlinear_clearance_confidence: float | None = None
+    # True when a subject has ≥2 dose events (EVID==1, AMT>0). Drives the
+    # dose-interval slicing path used by the terminal-monoexp R² and peak-
+    # detection helpers — without slicing, multi-dose data destroys the
+    # monoexponential terminal phase (warfarin: terminal R² = -0.49 across
+    # full profile; ~0.95 within the last dosing interval).
+    multi_dose_detected: bool = False
+    # Compartmentality signal — derived from biexponential vs monoexponential
+    # BIC on pooled post-Cmax data. ``insufficient`` when post-absorption
+    # sample count is too low for reliable model discrimination.
+    compartmentality: (
+        Literal["one_compartment", "two_compartment", "multi_compartment_likely", "insufficient"]
+        | None
+    ) = None
+    # Continuous diagnostic signals supporting the categorical fields above.
+    # Median across analyzable subjects of: terminal monoexp adj R², AUC
+    # extrapolation fraction, early/late post-Cmax log-slope ratio, and
+    # fraction of subjects with prominent secondary peaks. Optional so older
+    # bundles continue to deserialize.
+    terminal_fit_adj_r2_median: float | None = Field(default=None, ge=-1.0, le=1.0)
+    auc_extrap_fraction_median: float | None = Field(default=None, ge=0.0, le=1.0)
+    lambda_z_analyzable_fraction: float | None = Field(default=None, ge=0.0, le=1.0)
+    curvature_ratio_median: float | None = Field(default=None, ge=0.0)
+    peak_prominence_fraction: float | None = Field(default=None, ge=0.0, le=1.0)
     richness_category: Literal["sparse", "moderate", "rich"]
     identifiability_ceiling: Literal["low", "medium", "high"]
     covariate_burden: int = Field(ge=0)

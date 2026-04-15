@@ -108,7 +108,7 @@ def fit_parametric_surrogate(
         a_lin, b_lin, ss_lin, r2_lin = 0.0, 0.0, float("inf"), 0.0
 
     # Michaelis-Menten fit: y = Vmax*x/(Km+x) via nonlinear least-squares
-    from scipy.optimize import curve_fit  # type: ignore[import-untyped]
+    from scipy.optimize import curve_fit
 
     def _mm_fn(x: np.ndarray, vmax: float, km: float) -> np.ndarray:
         return vmax * x / (km + x)

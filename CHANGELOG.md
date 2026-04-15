@@ -7,6 +7,109 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — Evidence profiler refactor (BREAKING, PRD §10 Q2 follow-up)
+
+The data profiler's nonlinear-clearance heuristic was producing false
+positives on real-world multi-compartment linear datasets (warfarin: 0/24
+candidate convergence in the rc1 real-fit campaign). Multi-model
+consensus (gpt-5.2-pro, gemini-3-pro, mimo-v2-pro, glm-5) plus targeted
+exa.ai literature search drove a substantial refactor.
+
+**Breaking schema change**: `EvidenceManifest.nonlinear_clearance_signature: bool`
+is **removed**. Replaced by:
+
+- `nonlinear_clearance_evidence_strength: Literal["none","weak","moderate","strong"]`
+  — multi-signal voting, where each enabled signal contributes one vote
+  out of the *eligible* signals (not absolute count), so single-dose-level
+  studies do not get penalised by an inactive third signal.
+- `compartmentality: Literal["one_compartment","two_compartment","multi_compartment_likely","insufficient"]`
+  — derived from terminal-monoexp R² + early/late curvature ratio; lets
+  downstream search prefer 2-cmt linear over MM when the evidence
+  profile matches that signature.
+- `multi_dose_detected: bool` — drives a new dose-interval slicing path
+  that prevents multi-dose accumulation from contaminating the terminal-
+  monoexp R² fit and the peak detector (root cause of warfarin's
+  terminal R² = -0.49 across the full profile, which recovers to ~0.95
+  within the last dosing interval).
+
+**New diagnostic fields** on EvidenceManifest, all derived from the same
+shared per-subject helpers so they cannot drift relative to the
+categorical fields above:
+
+- `terminal_fit_adj_r2_median`
+- `auc_extrap_fraction_median`
+- `lambda_z_analyzable_fraction`
+- `curvature_ratio_median`
+- `peak_prominence_fraction`
+
+**Routing change** in `src/apmode/search/candidates.py`:
+
+- `nonlinear_clearance_evidence_strength == "strong"` → full MM
+  cross-product (3-of-3 signals)
+- `nonlinear_clearance_evidence_strength == "moderate"` → MM as
+  sentinel only (≥50% of eligible signals; 2-cmt false positives like
+  warfarin land here, which is much cheaper than the previous bool=True
+  full-MM blowout)
+- `nonlinear_clearance_evidence_strength in ("weak","none")` → linear
+  only
+
+**Peak detector**: `_count_prominent_peaks` now uses
+`scipy.signal.find_peaks` with prominence ≥ max(10% of dynamic range,
+5% of Cmax) and a minimum inter-peak distance of ≥2 samples. Replaces
+the naive local-max counter that registered every descending-limb noise
+wiggle as a "peak" (warfarin: 100% subjects falsely flagged multi-phase
+absorption pre-refactor).
+
+**Search-space change**: `SearchSpace.from_manifest` no longer removes
+``transit`` from the absorption types when ``absorption_complexity ==
+"simple"``. The new prominence-based detector classifies
+transit-chain absorption datasets (Suite A3 ground truth) as "simple"
+correctly, so transit candidates must remain discoverable via BIC
+ranking. Test ``test_simple_absorption_deprioritizes_transit`` renamed
++ inverted accordingly.
+
+**Empirical validation** (`benchmarks/data/{theo_sd,warfarin,mavoglurant}.csv`,
+nlmixr2data corpus):
+
+| Dataset | Before (bool) | After (enum + compart) |
+|---|---|---|
+| theo_sd (12 subj, 1-cmt linear) | True (incorrect) | strength=none, compartmentality=one_compartment |
+| warfarin (32 subj, 2-cmt linear oral) | True (false positive → 0/24 conv) | strength=moderate, compartmentality=multi_compartment_likely |
+| mavoglurant (120 subj, 2-cmt linear oral, multi-dose) | True (false positive) | strength=moderate, compartmentality=multi_compartment_likely, multi_dose_detected=True |
+
+**Suite A integration tests** (7 synthetic recovery scenarios) all
+pass: A2/A4 (true MM) correctly produce ``moderate``/``strong`` (1/2
+eligible signals → moderate via the eligibility-fraction scoring); A3
+(transit) recovers transit candidates without relying on accidental
+peak-counter false positives.
+
+**Files touched**:
+
+- `src/apmode/data/profiler.py` — added `_detect_multi_dose`,
+  `_last_dose_window`, `_windowed_profile`, `_count_prominent_peaks`,
+  `_peak_prominence_fraction`, `_per_subject_terminal_monoexp_r2`,
+  `_curvature_ratios_per_subject`, `_classify_nonlinear_clearance_evidence_strength`,
+  `_assess_compartmentality`, `_lambda_z_analyzable_fraction`,
+  `_auc_extrap_fraction_median`. Existing helpers updated to accept
+  ``doses`` + ``multi_dose`` so the dose-interval slicing applies
+  uniformly.
+- `src/apmode/bundle/models.py` — schema additions + bool removal.
+- `src/apmode/search/candidates.py` — routing logic consumes enum,
+  transit no longer pruned from "simple" data.
+- `src/apmode/report/renderer.py`, `src/apmode/cli.py`,
+  `src/apmode/orchestrator/__init__.py`, `src/apmode/benchmarks/suite_b.py`
+  — bool field references updated.
+- 11 test files updated for the new schema; 1 fixture-coverage test
+  inverted to match the corrected absorption-search-space behavior.
+- Added `scipy.*` to mypy ignore-missing-imports and dropped a
+  now-unused `# type: ignore` in `node_distillation.py`.
+
+**Known follow-up (rc3)**: warfarin's terminal R² = -0.49 is partly a
+multi-endpoint contamination (the dataset mixes `cp` warfarin
+concentrations with `pca` PD measurements via DVID; APMODE currently
+treats both as PK observations). DVID-aware endpoint filtering at
+profile time is the next item.
+
 ### Added
 
 - **Claude Skill for the APMODE CLI** (`.claude/skills/apmode/SKILL.md`): a

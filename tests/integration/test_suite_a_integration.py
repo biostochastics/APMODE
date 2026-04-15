@@ -252,7 +252,7 @@ class TestSuiteAStructureCoverage:
         manifest, df = ingest_nonmem_csv(_csv_path(name))
         evidence = profile_data(df, manifest)
 
-        assert evidence.nonlinear_clearance_signature, (
+        assert evidence.nonlinear_clearance_evidence_strength, (
             f"{name}: profiler failed to detect nonlinear CL"
         )
 
@@ -273,7 +273,7 @@ class TestSuiteAStructureCoverage:
         manifest, df = ingest_nonmem_csv(_csv_path(name))
         evidence = profile_data(df, manifest)
         # TMDD produces nonlinear PK
-        assert evidence.nonlinear_clearance_signature, (
+        assert evidence.nonlinear_clearance_evidence_strength, (
             f"{name}: profiler failed to detect TMDD nonlinear PK"
         )
 

@@ -8,7 +8,7 @@
 
   [![Phase](https://img.shields.io/badge/phase-3%20(P3.B%20%E2%80%94%20rc1)-blue)]()
 
-  [![Tests](https://img.shields.io/badge/tests-1537%20passing-success)]()
+  [![Tests](https://img.shields.io/badge/tests-1541%20passing-success)]()
   [![License](https://img.shields.io/badge/license-GPL--2.0--or--later-green)](LICENSE)
   [![Python](https://img.shields.io/badge/python-3.12%E2%80%933.14-yellow)]()
   [![mypy](https://img.shields.io/badge/mypy-strict%20%E2%9C%93-blue)]()
@@ -30,7 +30,7 @@ APMODE is a **governed meta-system** that composes five population PK modeling p
 
 **Formular — a typed PK DSL — is the control surface.** Models are specified in [Formular](docs/FORMULAR.md), a structured grammar (`Absorption x Distribution x Elimination x Variability x Observation × Priors`), compiled to a typed AST, validated against pharmacometric constraints, and lowered to backend-specific code (nlmixr2 R, Stan/Torsten, JAX/Diffrax). The agentic LLM backend (Phase 3) operates exclusively through Formular transforms — including the new `SetPrior` transform for Bayesian workflows — it cannot emit raw code.
 
-> **Status**: **v0.3.0-rc1** (2026-04-15) — Phase 3 release candidate. LICENSE + SPDX + CLI + public API cleared; deferred items (Gate 2.5 quantification, LORO orchestrator E2E test, full-fit benchmark sweep) tracked as rc2 in CHANGELOG. Phase 3 P3.B LORO-CV complete + Phase 2+ Bayesian backend + missing-data pipeline (MI / FREM / Rubin pooling) landed. 1537 tests collected; additionally live nlmixr2/mice/missRanger integration tests covering binary + time-varying FREM, end-to-end Rubin pooling with real m=3 fits, and a theophylline FREM compile check. `mypy --strict` clean. `ruff` clean. Supports Python 3.12–3.14.
+> **Status**: **v0.3.0-rc1** (2026-04-15) — Phase 3 release candidate. LICENSE + SPDX + CLI + public API cleared; deferred items (Gate 2.5 quantification, LORO orchestrator E2E test, full-fit benchmark sweep) tracked as rc2 in CHANGELOG. Phase 3 P3.B LORO-CV complete + Phase 2+ Bayesian backend + missing-data pipeline (MI / FREM / Rubin pooling) landed. 1541 tests collected; additionally live nlmixr2/mice/missRanger integration tests covering binary + time-varying FREM, end-to-end Rubin pooling with real m=3 fits, and a theophylline FREM compile check. `mypy --strict` clean. `ruff` clean. Supports Python 3.12–3.14.
 
 ---
 

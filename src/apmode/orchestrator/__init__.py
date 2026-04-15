@@ -7,7 +7,7 @@ Full pipeline per ARCHITECTURE.md §3:
 
 Dispatch constraints from Evidence Manifest (PRD §4.2.1):
   - richness=sparse + absorption_coverage=inadequate → NODE not dispatched
-  - nonlinear_clearance_signature=True → automated search includes MM candidates
+  - nonlinear_clearance_evidence_strength="strong" → automated search includes MM candidates
   - blq_burden > 0.20 → all backends must use BLQ-aware likelihood (M3/M4)
   - protocol_heterogeneity=pooled-heterogeneous → IOV must be tested
 """
@@ -205,7 +205,7 @@ class Orchestrator:
         logger.info(
             "Profiled: richness=%s, nonlinear_CL=%s, blq=%.2f",
             evidence.richness_category,
-            evidence.nonlinear_clearance_signature,
+            evidence.nonlinear_clearance_evidence_strength,
             evidence.blq_burden,
         )
 

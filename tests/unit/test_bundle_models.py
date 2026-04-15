@@ -293,7 +293,7 @@ class TestEvidenceManifest:
         em = EvidenceManifest(
             route_certainty="confirmed",
             absorption_complexity="simple",
-            nonlinear_clearance_signature=False,
+            nonlinear_clearance_evidence_strength="none",
             richness_category="moderate",
             identifiability_ceiling="medium",
             covariate_burden=5,
@@ -313,7 +313,7 @@ class TestEvidenceManifest:
             EvidenceManifest(
                 route_certainty="confirmed",
                 absorption_complexity="simple",
-                nonlinear_clearance_signature=False,
+                nonlinear_clearance_evidence_strength="none",
                 richness_category="moderate",
                 identifiability_ceiling="medium",
                 covariate_burden=5,

@@ -33,7 +33,7 @@ class TestBundleEmitterFull:
             data_sha256="a" * 64,
             route_certainty="confirmed",
             absorption_complexity="simple",
-            nonlinear_clearance_signature=False,
+            nonlinear_clearance_evidence_strength="none",
             richness_category="rich",
             identifiability_ceiling="high",
             covariate_burden=2,

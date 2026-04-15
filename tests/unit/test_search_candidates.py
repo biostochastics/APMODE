@@ -18,7 +18,7 @@ def _make_manifest(**overrides: object) -> EvidenceManifest:
     defaults = {
         "route_certainty": "confirmed",
         "absorption_complexity": "simple",
-        "nonlinear_clearance_signature": False,
+        "nonlinear_clearance_evidence_strength": "none",
         "richness_category": "moderate",
         "identifiability_ceiling": "medium",
         "covariate_burden": 2,
@@ -51,19 +51,26 @@ class TestSearchSpace:
         assert space.absorption_types == ["none", "first_order"]
 
     def test_nonlinear_clearance_includes_mm(self) -> None:
-        manifest = _make_manifest(nonlinear_clearance_signature=True)
+        manifest = _make_manifest(nonlinear_clearance_evidence_strength="strong")
         space = SearchSpace.from_manifest(manifest)
         assert "michaelis_menten" in space.elimination_types
 
     def test_linear_clearance_excludes_mm(self) -> None:
-        manifest = _make_manifest(nonlinear_clearance_signature=False)
+        manifest = _make_manifest(nonlinear_clearance_evidence_strength="none")
         space = SearchSpace.from_manifest(manifest)
         assert space.elimination_types == ["linear"]
 
-    def test_simple_absorption_deprioritizes_transit(self) -> None:
+    def test_simple_absorption_keeps_transit_in_search_space(self) -> None:
+        # Post 2026-04-15 profiler refactor: prominence-based peak detection
+        # correctly classifies transit-chain absorption datasets as
+        # "simple" (no spurious peaks from descending-limb noise). Transit
+        # candidates must remain discoverable so structural search can
+        # still recover them via BIC ranking. Suite A3
+        # (transit_1cmt_linear) is the ground-truth regression test that
+        # drove this change.
         manifest = _make_manifest(absorption_complexity="simple")
         space = SearchSpace.from_manifest(manifest)
-        assert "transit" not in space.absorption_types
+        assert "transit" in space.absorption_types
 
     def test_lag_signature_includes_lagged(self) -> None:
         manifest = _make_manifest(absorption_complexity="lag-signature")
