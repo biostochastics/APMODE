@@ -5,7 +5,7 @@ Converts a pair of ``(MissingDataPolicy, EvidenceManifest)`` into a binding
 ``MissingDataDirective`` that downstream backends must honor. Also provides
 a builder for ``ImputationStabilityManifest`` from per-imputation results.
 
-Decision logic (consensus from droid/crush/gemini/codex/opencode review):
+Decision logic:
 
   1. BLQ method selection by BLQ% threshold (policy.blq_m3_threshold)
      - Below threshold → M7+ (impute 0 + inflated additive error; Wijk 2025)
@@ -161,8 +161,9 @@ def build_stability_manifest(
     """Build the stability manifest from per-imputation candidate results.
 
     The agentic backend sees this artifact INSTEAD OF raw per-imputation
-    diagnostics (Crush's structural fix: freeze the covariate representation
-    before the LLM proposes transforms).
+    diagnostics: the covariate representation is frozen before the LLM
+    proposes transforms, so cherry-picking across imputations is
+    structurally prevented.
 
     Args:
         directive: Resolved directive (provides m, method).

@@ -218,7 +218,7 @@ def _component_lpdf(
     the correct normalized log-density is normal_lpdf(x | 0, sigma) + log(2).
     The +log(2) MUST be retained in mixtures so that half-* components are not
     artificially down-weighted by 50% relative to fully-supported components
-    like Gamma/InvGamma. (Per gemini-3.1-pro review, Issue 1.)
+    like Gamma/InvGamma.
     """
     if isinstance(component, NormalPrior):
         return f"normal_lpdf({stan_param} | {component.mu:.6f}, {component.sigma:.6f})"
@@ -304,7 +304,7 @@ def _emit_historical_borrowing_prior(
 
     # scale. V can easily exceed 100 L and CL can range 0.1-100 L/h, so a
     # Normal(0, 2) log-scale prior (95% CI ≈ [0.02, 55]) is too narrow and would
-    # penalize true values. Use Normal(0, 10) instead. (Per gemini review.)
+    # penalize true values. Use Normal(0, 10) instead.
     weak_component = NormalPrior(mu=0.0, sigma=10.0)
     mixture = MixturePrior(
         components=[map_component, weak_component],

@@ -180,8 +180,7 @@ class BundleEmitter:
         polarity actually applied. Lets reviewers trace exactly how a
         raw ``"male"`` / ``"female"`` column became 0/1 in the
         downstream FREM joint Ω entry, including whether the polarity
-        came from auto-detection or a caller override (PRD §4.2.0,
-        multi-CLI review consensus 2026-04-15).
+        came from auto-detection or a caller override (PRD §4.2.0).
         """
         path = self.run_dir / "categorical_encoding_provenance.json"
         path.write_text(provenance.model_dump_json(indent=2))

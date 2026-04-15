@@ -373,8 +373,8 @@ def _build_stan_data(request: dict[str, Any]) -> dict[str, Any]:
 
     # Covariates referenced via CovariateLink variability items.
     # Stan data declares covariates as vector[N_subjects] (subject-level constants).
-    # Time-varying covariates silently collapse to baseline would bias estimates,
-    # so reject at data-build time (codex review Issue 2).
+    # Time-varying covariates silently collapsing to baseline would bias
+    # estimates, so reject at data-build time.
     variability = (
         request["spec"].get("variability", []) if isinstance(request["spec"], dict) else []
     )
@@ -398,8 +398,8 @@ def _build_stan_data(request: dict[str, Any]) -> dict[str, Any]:
 
     # ADDL/II (repeat dose) and SS (steady state) NMTRAN semantics are not yet
     # expanded by the harness — reject at data-build time rather than fit with
-    # silently-biased posteriors (codex review Issue 1). Users should preprocess
-    # into explicit dose rows before calling the Bayesian harness.
+    # silently-biased posteriors. Users should preprocess into explicit dose
+    # rows before calling the Bayesian harness.
     if "ADDL" in df.columns and (df["ADDL"].fillna(0).astype(int) > 0).any():
         raise ValueError(
             "ADDL>0 repeat-dose rows detected. Pre-expand into explicit dose events "
@@ -590,11 +590,11 @@ def _aggregate_estimates(fit: Any, structural_names: list[str]) -> dict[str, dic
 def _compute_eta_shrinkage(fit: Any, structural_names: list[str]) -> dict[str, float]:
     """Individual eta shrinkage on the natural (omega·eta_raw) scale.
 
-    Correct formula (codex review Issue 4): the per-subject eta is omega·eta_raw,
-    not eta_raw. The original implementation used ``1 - var(eta_raw_mean)`` which
-    assumed omega=1. The corrected version computes the posterior mean of each
-    subject's natural-scale eta, measures the between-subject variance of those
-    means, and divides by E[omega^2].
+    The per-subject eta is ``omega·eta_raw``, not ``eta_raw``. An earlier
+    implementation used ``1 - var(eta_raw_mean)`` which assumed ``omega=1``.
+    The current formula computes the posterior mean of each subject's
+    natural-scale eta, measures the between-subject variance of those
+    means, and divides by ``E[omega^2]``.
     """
     import numpy as np
 
@@ -611,7 +611,7 @@ def _compute_eta_shrinkage(fit: Any, structural_names: list[str]) -> dict[str, f
     # cmdstanpy returns shape (n_draws, N_subjects, N_iiv).
     # eta_raw's third axis is indexed by IIV-declaration order, which may not
     # match structural_names order. We read the names from the spec variability
-    # items instead. (Follow-up on codex review Issue 4.)
+    # items instead.
     n_iiv = eta_raw_draws.shape[2]
 
     for i, name in enumerate(structural_names[:n_iiv]):

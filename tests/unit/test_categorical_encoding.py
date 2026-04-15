@@ -50,10 +50,10 @@ class TestDetectEncoding:
         assert hint.suggested_remap == {False: 0, True: 1}
 
     def test_bool_numeric_object_mix_rejected(self) -> None:
-        # Gemini review: object-dtype mixing bool and non-bool numeric where
-        # the values are actually distinct (True, 2) must be rejected as
-        # multi_level — the bool/int hash-equivalence would otherwise
-        # produce a meaningless remap.
+        # Object-dtype mixing bool and non-bool numeric where the values
+        # are actually distinct (True, 2) must be rejected as multi_level —
+        # the bool/int hash-equivalence would otherwise produce a
+        # meaningless remap.
         # Note: True/1 and False/0 collapse under pandas equality before
         # this detector sees them, so this test covers the detectable path.
         s = pd.Series([True, 2], dtype=object, name="FLAG")

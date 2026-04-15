@@ -417,7 +417,7 @@ class MissingDataDirective(BaseModel):
     # Number of imputations for MI methods; None for FREM/FFEM/single-imputation.
     m_imputations: int | None = Field(default=None, ge=1)
     # Adaptive-m: start at m_imputations, escalate if between-imputation variance
-    # exceeds policy threshold (Crush recommendation).
+    # exceeds policy threshold.
     adaptive_m: bool = False
     m_max: int | None = Field(default=None, ge=1)
     # BLQ (observation-side) handling: method selected by BLQ% threshold in policy.
@@ -516,10 +516,9 @@ class CategoricalEncodingProvenance(BaseModel):
 
     Records every column inspected by the auto-encoding pipeline + the
     polarity actually applied. Lets reviewers trace exactly how a raw
-    "male"/"female" column became 0/1 in the FREM joint Ω entry — a
-    safety guarantee analysts asked for after the multi-CLI review
-    flagged silent NaN-on-incomplete-remap and inconsistent
-    summarize-vs-prepare polarity as the highest-impact bugs in the
+    "male"/"female" column became 0/1 in the FREM joint Ω entry — the
+    safety guarantee that protects against silent NaN-on-incomplete-remap
+    and inconsistent summarize-vs-prepare polarity bugs in the
     auto-detection pass (PRD §4.2.0).
     """
 

@@ -155,7 +155,7 @@ class BayesianRunner:
 
         # start_new_session=True is the cross-platform equivalent of
         # preexec_fn=os.setsid and avoids the thread-safety caveat of
-        # preexec_fn on forking platforms (per codex review).
+        # preexec_fn on forking platforms.
         proc = await asyncio.create_subprocess_exec(
             self.python_executable,
             str(self.harness_path),

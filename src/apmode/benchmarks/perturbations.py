@@ -271,9 +271,9 @@ def _add_protocol_pooling(
     Tests whether the pipeline handles protocol heterogeneity correctly.
     Optionally varies sampling schedules and LLOQ per protocol.
 
-    Per GPT-5.2-pro/Gemini consultation: real pooled analyses struggle with
-    heterogeneous designs (different sampling windows, assays). This tests
-    the orchestrator's robustness to protocol differences.
+    Real pooled analyses struggle with heterogeneous designs (different
+    sampling windows, assays). This scenario tests the orchestrator's
+    robustness to protocol differences.
     """
     n_protocols = recipe.n_protocols
     subject_ids = df["NMID"].unique()

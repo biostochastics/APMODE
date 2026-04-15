@@ -150,10 +150,10 @@ def detect_encoding(series: pd.Series, *, column: str | None = None) -> Categori
         )
 
     raw_unique = observed.unique().tolist()
-    # Mixed-type columns (object dtype mixing strings and numerics) cannot be
-    # robustly remapped — explicit mapping is required. Codex review:
-    # ``["M", 1]`` would otherwise stringify and produce an alphabetic
-    # remap that is almost certainly wrong.
+    # Mixed-type columns (object dtype mixing strings and numerics) cannot
+    # be robustly remapped — explicit mapping is required. Example: ``["M",
+    # 1]`` would otherwise stringify and produce an alphabetic remap that
+    # is almost certainly wrong.
     if len(raw_unique) > 0:
         types_seen = {type(v) for v in raw_unique}
         # bool is a subclass of int; treat them as one dtype for this check.
@@ -173,11 +173,11 @@ def detect_encoding(series: pd.Series, *, column: str | None = None) -> Categori
                     f"upstream."
                 ),
             )
-        # Gemini review: object-dtype columns mixing bool and non-bool
-        # numeric (e.g., ``pd.Series([True, 1], dtype=object)``) hash-
-        # collapse on equality and would otherwise be reported as
-        # ``constant``. Treat them as ambiguous multi_level so the
-        # caller is forced to canonicalize upstream.
+        # Object-dtype columns mixing bool and non-bool numeric (e.g.,
+        # ``pd.Series([True, 1], dtype=object)``) hash-collapse on
+        # equality and would otherwise be reported as ``constant``.
+        # Treat them as ambiguous multi_level so the caller is forced to
+        # canonicalize upstream.
         has_bool = any(issubclass(t, bool) for t in types_seen)
         has_non_bool_numeric = any(
             issubclass(t, (int, float)) and not issubclass(t, bool) for t in types_seen
@@ -453,8 +453,8 @@ def auto_remap_binary_columns(
             # Validate remap completeness BEFORE applying. ``Series.map``
             # silently produces NaN for any source value not in the
             # remap dict — that would drop subjects from FREM without
-            # warning. Codex/Crush both flagged this as the
-            # highest-impact bug. Targets are also constrained to
+            # warning, so an incomplete remap is the highest-impact
+            # silent-bug class here. Targets are also constrained to
             # ``{0, 1}`` so a malformed override cannot poison the
             # additive-normal endpoint interpretation downstream.
             observed_values = set(df[col].dropna().unique().tolist())
@@ -499,8 +499,8 @@ def hints_to_provenance_entries(
     JSON does not distinguish ``int`` vs ``str`` keys, so the provenance
     artifact stringifies every original value. Reviewers reading
     ``categorical_encoding_provenance.json`` see exactly which raw value
-    became which 0/1 target — the audit trail the multi-CLI review
-    asked for after the silent-NaN-on-incomplete-remap class of bugs.
+    became which 0/1 target — the audit trail that protects against
+    silent-NaN-on-incomplete-remap bugs.
     """
     from apmode.bundle.models import CategoricalEncodingEntry
 

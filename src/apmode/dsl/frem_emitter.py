@@ -358,10 +358,10 @@ def _build_aug_row(
     Per-subject covariate columns are inherited from the source row so
     rxode2's state machine has a complete event record at the
     augmentation time, but event/dose/censoring columns that belong to
-    the original PK observation context are explicitly cleared
-    (Codex review 2026-04-14). Leaving CENS/LIMIT/BLQ_FLAG/RATE/DUR on
-    the covariate row would route the covariate observation through the
-    PK BLQ likelihood or treat it as part of an infusion envelope.
+    the original PK observation context are explicitly cleared. Leaving
+    CENS/LIMIT/BLQ_FLAG/RATE/DUR on the covariate row would route the
+    covariate observation through the PK BLQ likelihood or treat it as
+    part of an infusion envelope.
     """
     new_row: dict[str, object] = {k: v for k, v in src_row.items()}  # type: ignore[attr-defined]
     new_row[id_col] = sid

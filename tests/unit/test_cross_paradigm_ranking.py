@@ -25,6 +25,7 @@ from apmode.governance.ranking import (
     compute_vpc_concordance,
     is_cross_paradigm,
     rank_cross_paradigm,
+    ranking_requires_simulation_metrics,
 )
 
 POLICY_DIR = Path(__file__).parent.parent.parent / "policies"
@@ -38,6 +39,7 @@ def _make_result(
     cwres_mean: float = 0.01,
     cwres_sd: float = 1.0,
     vpc_coverage: dict[str, float] | None = None,
+    blq_method: str = "none",
 ) -> BackendResult:
     return BackendResult(
         model_id=model_id,
@@ -75,7 +77,7 @@ def _make_result(
                 profile_likelihood_ci={"CL": True, "V": True},
                 ill_conditioned=False,
             ),
-            blq=BLQHandling(method="none", n_blq=0, blq_fraction=0.0),
+            blq=BLQHandling(method=blq_method, n_blq=0, blq_fraction=0.0),  # type: ignore[arg-type]
         ),
         wall_time_seconds=45.0,
         backend_versions={"nlmixr2": "2.1.2"},
@@ -100,6 +102,46 @@ class TestIsCrossParadigm:
         r1 = _make_result(model_id="m1", backend="nlmixr2")
         r2 = _make_result(model_id="m2", backend="jax_node")
         assert is_cross_paradigm([r1, r2]) is True
+
+
+class TestRankingRequiresSimulationMetrics:
+    """PRD §10 Q2: BIC/NLPD ranking is only valid for a shared observation model."""
+
+    def test_single_backend_uniform_blq_uses_within_paradigm(self) -> None:
+        r1 = _make_result(model_id="m1", backend="nlmixr2", blq_method="m3")
+        r2 = _make_result(model_id="m2", backend="nlmixr2", blq_method="m3")
+        required, reason = ranking_requires_simulation_metrics([r1, r2])
+        assert required is False
+        assert "within-paradigm" in reason
+
+    def test_mixed_backends_forces_simulation(self) -> None:
+        r1 = _make_result(model_id="m1", backend="nlmixr2")
+        r2 = _make_result(model_id="m2", backend="jax_node")
+        required, reason = ranking_requires_simulation_metrics([r1, r2])
+        assert required is True
+        assert "cross-paradigm" in reason
+
+    def test_same_backend_mixed_blq_forces_simulation(self) -> None:
+        # Within-paradigm comparability failure: same backend, different
+        # BLQ handling → likelihood scales are not comparable.
+        r1 = _make_result(model_id="m1", backend="nlmixr2", blq_method="m3")
+        r2 = _make_result(model_id="m2", backend="nlmixr2", blq_method="m4")
+        required, reason = ranking_requires_simulation_metrics([r1, r2])
+        assert required is True
+        assert "BLQ" in reason or "blq" in reason.lower()
+
+    def test_gate3_routes_mixed_blq_to_simulation_metrics(self) -> None:
+        from apmode.governance.gates import evaluate_gate3
+
+        r1 = _make_result(model_id="m1", backend="nlmixr2", blq_method="m3", bic=170.0)
+        r2 = _make_result(model_id="m2", backend="nlmixr2", blq_method="m4", bic=165.0)
+        gate_result, _ranked = evaluate_gate3([r1, r2], _load_policy("submission"))
+        assert gate_result.gate_name == "cross_paradigm_ranking"
+        # The qualification reason must mention BLQ to document *why* BIC was refused.
+        quals = [c for c in gate_result.checks if c.check_id == "qualified_comparison"]
+        assert quals
+        evidence = quals[0].evidence_ref or ""
+        assert "BLQ" in evidence or "blq" in evidence.lower()
 
 
 class TestVPCConcordance:

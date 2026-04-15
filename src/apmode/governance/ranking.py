@@ -34,19 +34,68 @@ class CrossParadigmMetrics:
 
 @dataclass
 class CrossParadigmRankingResult:
-    """Full cross-paradigm ranking outcome."""
+    """Full simulation-based ranking outcome.
+
+    ``qualification_reason`` captures *why* simulation metrics were used
+    — cross-paradigm vs. mixed BLQ within a single paradigm (PRD §10 Q2).
+    Downstream report generation quotes this string verbatim so reviewers
+    see the explicit comparability justification.
+    """
 
     is_cross_paradigm: bool
     ranked_candidates: list[CrossParadigmMetrics] = field(default_factory=list)
     backends_compared: list[str] = field(default_factory=list)
     ranking_method: str = "simulation_based"
     qualified_comparison: bool = True
+    qualification_reason: str = ""
 
 
 def is_cross_paradigm(survivors: list[BackendResult]) -> bool:
     """Check if survivors span multiple backend paradigms."""
     backends = {r.backend for r in survivors}
     return len(backends) > 1
+
+
+def ranking_requires_simulation_metrics(
+    survivors: list[BackendResult],
+) -> tuple[bool, str]:
+    """Decide whether Gate 3 ranking must use simulation-based metrics.
+
+    Implements PRD §10 Q2 — NLPD/BIC are likelihood-scale metrics and
+    are only comparable when every candidate shares the **same observation
+    model**. Two conditions force a switch to simulation-based ranking:
+
+    1. **Cross-paradigm**: survivors come from ≥ 2 backends (e.g.,
+       nlmixr2 + jax_node). Each paradigm has its own observation model
+       parameterization, so likelihood values aren't on the same scale.
+    2. **Within-paradigm but mixed BLQ handling**: survivors share a
+       backend but differ in BLQ method (M1 / M3 / M4 / M6+ / M7+). M3
+       contributes a censored-likelihood term; M7+ replaces BLQ with an
+       imputed zero + inflated additive error. The two likelihoods are
+       on different scales even when the structural model is identical.
+
+    Returns:
+        ``(requires_simulation, reason)``. ``requires_simulation=False``
+        only when all survivors share a backend and a single BLQ method.
+        The ``reason`` string is human-readable and gets surfaced into
+        the Gate 3 qualified-comparison annotation.
+    """
+    if not survivors:
+        return False, "no survivors"
+
+    backends = {r.backend for r in survivors}
+    if len(backends) > 1:
+        return True, f"cross-paradigm: backends {sorted(backends)} differ"
+
+    blq_methods = {r.diagnostics.blq.method for r in survivors}
+    if len(blq_methods) > 1:
+        return True, (
+            f"within-paradigm but BLQ handling differs across survivors "
+            f"({sorted(blq_methods)}); likelihood scales are not "
+            "comparable — PRD §10 Q2 routes to simulation-based metrics"
+        )
+
+    return False, "within-paradigm, uniform observation model"
 
 
 def compute_vpc_concordance(result: BackendResult, *, target: float = 0.90) -> float:
@@ -116,15 +165,23 @@ def rank_cross_paradigm(
     survivors: list[BackendResult],
     *,
     vpc_concordance_target: float = 0.90,
+    qualification_reason: str | None = None,
 ) -> CrossParadigmRankingResult:
-    """Rank candidates across paradigms using simulation-based metrics.
+    """Rank candidates using simulation-based metrics.
+
+    Called when ``ranking_requires_simulation_metrics`` returns True —
+    either cross-paradigm or within-paradigm with mixed BLQ handling.
 
     Args:
         survivors: BackendResults that passed Gates 1+2+2.5.
         vpc_concordance_target: VPC concordance target (from GatePolicy).
+        qualification_reason: Optional override for the qualification
+            reason; when ``None`` it is computed from the survivor set.
 
     Returns:
-        CrossParadigmRankingResult with ranked candidates.
+        CrossParadigmRankingResult with ranked candidates and the
+        qualification reason wired through from
+        ``ranking_requires_simulation_metrics``.
     """
     if not survivors:
         return CrossParadigmRankingResult(is_cross_paradigm=False)
@@ -150,10 +207,14 @@ def rank_cross_paradigm(
     # Sort by composite score (lower is better)
     metrics.sort(key=lambda m: m.composite_score)
 
+    if qualification_reason is None:
+        _, qualification_reason = ranking_requires_simulation_metrics(survivors)
+
     return CrossParadigmRankingResult(
         is_cross_paradigm=cross,
         ranked_candidates=metrics,
         backends_compared=backends,
-        ranking_method="simulation_based" if cross else "within_paradigm_bic",
-        qualified_comparison=cross,
+        ranking_method="simulation_based",
+        qualified_comparison=True,
+        qualification_reason=qualification_reason,
     )

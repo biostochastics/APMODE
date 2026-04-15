@@ -735,7 +735,7 @@ def evaluate_gate3(
     Returns:
         Tuple of (GateResult, ranked list of candidates).
     """
-    from apmode.governance.ranking import is_cross_paradigm
+    from apmode.governance.ranking import ranking_requires_simulation_metrics
 
     if not survivors:
         return (
@@ -758,10 +758,13 @@ def evaluate_gate3(
             [],
         )
 
-    cross = is_cross_paradigm(survivors)
+    requires_sim, qualification_reason = ranking_requires_simulation_metrics(survivors)
 
-    if cross:
-        return _gate3_cross_paradigm(survivors, policy)
+    if requires_sim:
+        # Covers both cross-paradigm and within-paradigm-with-mixed-BLQ
+        # (PRD §10 Q2). The qualification reason is threaded into the
+        # Gate 3 ranking result so reports document *why* BIC was not used.
+        return _gate3_cross_paradigm(survivors, policy, qualification_reason=qualification_reason)
     return _gate3_within_paradigm(survivors, policy)
 
 
@@ -834,11 +837,19 @@ def _gate3_within_paradigm(
 def _gate3_cross_paradigm(
     survivors: list[BackendResult],
     policy: GatePolicy,
+    *,
+    qualification_reason: str | None = None,
 ) -> tuple[GateResult, list[RankedCandidate]]:
-    """Cross-paradigm ranking using simulation-based metrics (PRD SS4.3.1)."""
+    """Simulation-based Gate 3 ranking (PRD §4.3.1, §10 Q2).
+
+    Used when ``ranking_requires_simulation_metrics`` returns True —
+    either because survivors span multiple backends (classical cross-
+    paradigm) or because within a single backend the BLQ handling
+    methods differ (within-paradigm comparability failure).
+    """
     from apmode.governance.ranking import rank_cross_paradigm
 
-    cp_result = rank_cross_paradigm(survivors)
+    cp_result = rank_cross_paradigm(survivors, qualification_reason=qualification_reason)
 
     def _safe_bic(r: BackendResult) -> float:
         if r.bic is None or not np.isfinite(r.bic):
@@ -887,7 +898,7 @@ def _gate3_cross_paradigm(
             check_id="qualified_comparison",
             passed=True,
             observed=True,
-            evidence_ref=f"backends: {backends_str}",
+            evidence_ref=cp_result.qualification_reason or f"backends: {backends_str}",
         ),
         GateCheckResult(
             check_id="best_composite",

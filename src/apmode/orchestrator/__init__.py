@@ -879,11 +879,11 @@ class Orchestrator:
         from apmode.backends.nlmixr2_runner import Nlmixr2Runner
         from apmode.search.engine import SearchResult as _SR
 
-        # Filter to healthy CLASSICAL candidates only (Codex/Gemini review
-        # 2026-04-14): NODE/agentic specs cannot be fit via the FREM
-        # emitter, and ill-conditioned or unidentifiable warm-starts
-        # destabilize the joint Ω fit. We require converged + nlmixr2
-        # backend + finite BIC + not ill-conditioned.
+        # Filter to healthy CLASSICAL candidates only: NODE/agentic specs
+        # cannot be fit via the FREM emitter, and ill-conditioned or
+        # unidentifiable warm-starts destabilize the joint Ω fit. We
+        # require converged + nlmixr2 backend + finite BIC + not
+        # ill-conditioned.
         converged = [
             sr
             for sr in search_outcome.results
@@ -993,8 +993,8 @@ class Orchestrator:
             )
 
         # Freeze the classical candidate set and refit only those specs per
-        # imputation (Codex/Gemini review 2026-04-14). Running a fresh
-        # SearchEngine per imputation would generate different warm-started
+        # imputation. Running a fresh SearchEngine per imputation would
+        # generate different warm-started
         # children per draw; stability metrics (convergence_rate,
         # rank_stability) would then operate on misaligned candidate_ids and
         # become meaningless for the primary search candidates. Restrict to

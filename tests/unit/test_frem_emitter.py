@@ -281,7 +281,7 @@ class TestFREMLiveIntegration:
     def test_nlmixr2_accepts_emitted_frem(self, tmp_path: Path) -> None:
         """nlmixr2() must parse and compile the emitted FREM function.
 
-        Regression guard for the Codex-flagged ``| DVID==N`` pipe bug: the
+        Regression guard for the ``| DVID==N`` pipe bug: the
         emitter previously wrote a condition on the endpoint RHS that
         nlmixr2 5.0 rejects ("the condition 'DVID == N' must be a simple
         name"). Fix: no pipe at all; routing is data-driven via DVID.
