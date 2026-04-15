@@ -49,6 +49,9 @@ benchmarks/data/
 benchmarks/runs/
 *.log
 
+# Research / scratch (gitignored exploration)
+_research/
+
 # Internal docs (not for public repo)
 CLAUDE.md
 PRD_APMODE_*.md

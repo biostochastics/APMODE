@@ -14,6 +14,7 @@ Dispatch constraints derived from manifest (PRD §4.2.1):
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Literal, cast
 
 import numpy as np
@@ -21,24 +22,35 @@ import pandas as pd  # noqa: TC002
 from scipy.signal import find_peaks
 
 from apmode.bundle.models import CovariateSpec, ErrorModelPreference, EvidenceManifest
+from apmode.data.policy import get_policy
 from apmode.data.types import (
+    TerminalPhase,
     auc_linup_logdown,
+    bootstrap_median_ci,
     fit_best_lambdaz,
+    fit_dose_proportionality,
+    is_steady_state,
     positive_unblqd_mask,
     safe_log,
+    wagner_nelson_ka,
 )
 
-# Profiler thresholds. These should migrate to a versioned policy artifact
-# (`policies/profiler.json`, analogous to gate policies) so bundle consumers
-# can recover exactly which cutoffs produced an Evidence Manifest. Until then,
-# named constants document intent and localize future updates.
-_COVARIATE_CORRELATION_THRESHOLD: float = 0.7  # |r| > 0.7 flagged as correlated
-_NONLINEAR_CLEARANCE_DOSE_AUC_THRESHOLD: float = 0.4  # Spearman rho threshold
-_NONLINEAR_MM_CURVATURE_RATIO: float = 1.8  # early/late slope ratio
-_NONLINEAR_TMDD_CURVATURE_RATIO: float = 0.3  # inverse pattern
-_MULTI_PEAK_FRACTION_THRESHOLD: float = 0.3  # fraction of subjects with >=2 peaks
-_LAG_SIGNATURE_FRACTION_THRESHOLD: float = 0.5  # fraction of subjects with lag
-_BLQ_COVARIATE_MISSINGNESS_CUTOFF: float = 0.15  # above → full-information likelihood
+_log = logging.getLogger(__name__)
+_POLICY = get_policy()
+
+# Thresholds below are now sourced from `policies/profiler.json` v2.0.0 via
+# the loader in `apmode/data/policy.py`. Follow-up: (
+# ): the JSON is the source of truth; the module-level constants
+# are derived and kept for readable call sites. Drift is prevented by
+# `tests/unit/test_profiler_policy_consistency.py`.
+_PK_DVIDS: frozenset[str] = _POLICY.pk_dvid_allowlist
+_COVARIATE_CORRELATION_THRESHOLD: float = _POLICY.covariate_correlation_threshold_abs_r
+_NONLINEAR_MM_CURVATURE_RATIO: float = _POLICY.mm_curvature_ratio
+_COMPARTMENTALITY_CURVATURE_RATIO: float = _POLICY.compartmentality_curvature_ratio
+_NONLINEAR_TMDD_CURVATURE_RATIO: float = _POLICY.tmdd_curvature_ratio
+_MULTI_PEAK_FRACTION_THRESHOLD: float = _POLICY.multi_peak_fraction_threshold
+_LAG_SIGNATURE_FRACTION_THRESHOLD: float = _POLICY.lag_signature_fraction_threshold
+_BLQ_COVARIATE_MISSINGNESS_CUTOFF: float = _POLICY.covariate_missingness_full_information_cutoff
 
 # Multi-signal voting thresholds for nonlinear-clearance evidence strength.
 # A monoexponential terminal fit with adj R² >= this value is treated as
@@ -48,21 +60,44 @@ _BLQ_COVARIATE_MISSINGNESS_CUTOFF: float = 0.15  # above → full-information li
 # late phase below Km also reaches ~0.95 — so this gates on the *combination*
 # of curvature ratio AND failure of monoexp explanation, not on R² alone
 # (MM kinetics appear linear when C << Km; do not veto on R² alone).
-_TERMINAL_MONOEXP_R2_LINEAR_THRESHOLD: float = 0.85
-# Final fraction of post-Cmax points used for the terminal monoexp fit.
-_TERMINAL_FIT_TAIL_FRACTION: float = 0.30
-# Minimum points in the terminal-fit window.
-_TERMINAL_FIT_MIN_POINTS: int = 3
-# Peak detector (scipy.signal.find_peaks) parameters.
-# Prominence required: max(_PEAK_PROMINENCE_RANGE_FRACTION x (Cmax - Cmin),
-# _PEAK_PROMINENCE_CMAX_FLOOR x Cmax). Both bounds together prevent
-# both small descending-limb wiggles (range floor) and tiny prominences on
-# rich profiles where Cmin is already near zero (Cmax floor).
-_PEAK_PROMINENCE_RANGE_FRACTION: float = 0.10
-_PEAK_PROMINENCE_CMAX_FLOOR: float = 0.05
-# Minimum samples between successive peaks (in units of median sampling
-# interval). Prevents adjacent-noise pairs from being counted as two peaks.
-_PEAK_MIN_DISTANCE_INTERVALS: float = 2.0
+_TERMINAL_MONOEXP_R2_LINEAR_THRESHOLD: float = _POLICY.terminal_monoexp_r2_linear_threshold
+_TERMINAL_FIT_MIN_POINTS: int = _POLICY.lambdaz_min_points
+_PEAK_PROMINENCE_RANGE_FRACTION: float = _POLICY.peak_prominence_range_fraction
+_PEAK_PROMINENCE_CMAX_FLOOR: float = _POLICY.peak_prominence_cmax_floor
+_PEAK_MIN_DISTANCE_INTERVALS: float = _POLICY.peak_min_distance_intervals
+
+
+def _fit_terminal(times: np.ndarray, concs: np.ndarray) -> TerminalPhase | None:
+    """Policy-driven wrapper around ``fit_best_lambdaz``.
+
+    Threads the policy JSON's Huang-2025 parameters into the algorithm so
+    deployments that tune ``policies/profiler.json`` actually see their
+    thresholds honored.
+    """
+    return fit_best_lambdaz(
+        times,
+        concs,
+        min_points=_POLICY.lambdaz_min_points,
+        tolerance=_POLICY.lambdaz_tolerance,
+        phoenix_constraint=_POLICY.lambdaz_phoenix_constraint,
+    )
+
+
+def _policy_steady_state(
+    dose_times: np.ndarray, doses: np.ndarray, *, half_life: float | None
+) -> tuple[bool, str]:
+    """Policy-driven wrapper around ``is_steady_state``."""
+    return is_steady_state(
+        dose_times=dose_times,
+        doses=doses,
+        half_life=half_life,
+        n_half_lives_required=_POLICY.ss_n_half_lives_required,
+        n_doses_alt=_POLICY.ss_n_doses_alt,
+        interval_tolerance=_POLICY.ss_interval_tolerance,
+        dose_tolerance=_POLICY.ss_dose_tolerance,
+        min_doses=_POLICY.ss_min_doses,
+    )
+
 
 if TYPE_CHECKING:
     from apmode.bundle.models import DataManifest
@@ -81,6 +116,7 @@ def profile_data(
     Returns:
         EvidenceManifest with typed fields constraining downstream dispatch.
     """
+    df, n_non_pk_dropped = _filter_pk_observations_with_count(df)
     obs = cast("pd.DataFrame", df[df["EVID"] == 0].copy())
     doses = cast("pd.DataFrame", df[df["EVID"] == 1].copy())
     n_subjects = int(cast("int", df["NMID"].nunique()))
@@ -114,11 +150,22 @@ def profile_data(
         obs, doses, multi_dose=multi_dose
     )
 
+    # PR-F new diagnostic signals.
+    lambda_z_meta = _lambda_z_window_meta(obs, doses, multi_dose=multi_dose)
+    flip_flop = _assess_flip_flop_risk(obs, doses, multi_dose=multi_dose)
+    wn_ka = _wagner_nelson_ka_median(obs, doses, multi_dose=multi_dose)
+    node_budget = _compute_node_dim_budget(obs, n_subjects, multi_dose=multi_dose)
+    tad_flag = _assess_tad_consistency(obs, doses, multi_dose=multi_dose)
+    richness = _classify_richness(obs, n_subjects)
+    abs_cov = _assess_absorption_coverage(obs)
+
     return EvidenceManifest(
         data_sha256=manifest.data_sha256,
         route_certainty=_assess_route_certainty(doses),
         absorption_complexity=_assess_absorption_complexity(obs, doses, multi_dose=multi_dose),
-        nonlinear_clearance_confidence=_nonlinear_clearance_confidence(obs, doses),
+        nonlinear_clearance_confidence=_nonlinear_clearance_confidence(
+            obs, doses, multi_dose=multi_dose
+        ),
         nonlinear_clearance_evidence_strength=nlc_strength,
         multi_dose_detected=multi_dose,
         compartmentality=_assess_compartmentality(obs, doses, multi_dose=multi_dose),
@@ -127,9 +174,11 @@ def profile_data(
         lambda_z_analyzable_fraction=_lambda_z_analyzable_fraction(
             obs, doses, multi_dose=multi_dose
         ),
-        curvature_ratio_median=nlc_signals["curvature_ratio_median"],
+        curvature_ratio_median=_to_float(nlc_signals.get("curvature_ratio_median")),
+        curvature_ratio_ci90_low=_to_float(nlc_signals.get("curvature_ratio_ci90_low")),
+        curvature_ratio_ci90_high=_to_float(nlc_signals.get("curvature_ratio_ci90_high")),
         peak_prominence_fraction=_peak_prominence_fraction(obs, doses, multi_dose=multi_dose),
-        richness_category=_classify_richness(obs, n_subjects),
+        richness_category=richness,
         identifiability_ceiling=_assess_identifiability(obs, n_subjects),
         covariate_burden=len(manifest.covariates),
         covariate_correlated=_check_covariate_correlation(df, manifest),
@@ -138,25 +187,325 @@ def profile_data(
         blq_burden=blq_burden,
         lloq_value=lloq_value,
         protocol_heterogeneity=_assess_protocol_heterogeneity(df),
-        absorption_phase_coverage=_assess_absorption_coverage(obs),
+        absorption_phase_coverage=abs_cov,
         elimination_phase_coverage=_assess_elimination_coverage(obs),
         error_model_preference=error_pref,
         cmax_p95_p05_ratio=cmax_p95_p05_ratio,
         dv_cv_percent=dv_cv_percent,
         terminal_log_residual_mad=terminal_log_mad,
+        # ---- v2 fields ----
+        dose_proportionality_beta=_to_float(nlc_signals.get("dose_proportionality_beta")),
+        dose_proportionality_beta_ci90_low=_to_float(
+            nlc_signals.get("dose_proportionality_beta_ci90_low")
+        ),
+        dose_proportionality_beta_ci90_high=_to_float(
+            nlc_signals.get("dose_proportionality_beta_ci90_high")
+        ),
+        dose_proportionality_dose_ratio=_to_float(
+            nlc_signals.get("dose_proportionality_dose_ratio")
+        ),
+        dose_proportionality_smith_low=_to_float(nlc_signals.get("smith_low")),
+        dose_proportionality_smith_high=_to_float(nlc_signals.get("smith_high")),
+        signal_eligibility_mask=cast("dict[str, bool]", nlc_signals.get("eligibility_mask", {})),
+        signal_votes=cast("dict[str, bool]", nlc_signals.get("votes_mask", {})),
+        lambda_z_used_points_median=lambda_z_meta.get("used_points_median"),
+        lambda_z_adj_r2_median=lambda_z_meta.get("adj_r2_median"),
+        flip_flop_risk=flip_flop,
+        wagner_nelson_ka_median=wn_ka,
+        node_dim_budget=node_budget,
+        tad_consistency_flag=tad_flag,
+        n_non_pk_rows_dropped=n_non_pk_dropped,
     )
+
+
+def _lambda_z_window_meta(
+    obs: pd.DataFrame, doses: pd.DataFrame, *, multi_dose: bool
+) -> dict[str, float | None]:
+    """Per-subject median of (n_used, adj_r2) from fit_best_lambdaz.
+
+    R6 audit fields — exposes the Phoenix-constrained Huang 2025
+    selector's chosen window size and goodness-of-fit so reviewers can
+    confirm tail-selection quality without re-running the algorithm.
+    """
+    if obs.empty:
+        return {"used_points_median": None, "adj_r2_median": None}
+    n_used: list[int] = []
+    r2: list[float] = []
+    for subj in obs["NMID"].unique():
+        subj_obs = obs[obs["NMID"] == subj]
+        subj_doses = doses[doses["NMID"] == subj] if not doses.empty else doses
+        subj_obs_filt = subj_obs[positive_unblqd_mask(subj_obs)]
+        if len(subj_obs_filt) < 5:
+            continue
+        times, concs = _windowed_profile(subj_obs_filt, subj_doses, multi_dose=multi_dose)
+        if len(concs) < 5:
+            continue
+        terminal = _fit_terminal(times, concs)
+        if terminal is None:
+            continue
+        n_used.append(terminal.n_used)
+        r2.append(terminal.adj_r2)
+    return {
+        "used_points_median": float(np.median(n_used)) if n_used else None,
+        "adj_r2_median": float(np.median(r2)) if r2 else None,
+    }
+
+
+def _wagner_nelson_ka_median(
+    obs: pd.DataFrame, doses: pd.DataFrame, *, multi_dose: bool
+) -> float | None:
+    """Population-median Wagner-Nelson ka across single-dose oral subjects.
+
+    R15 (Huang Z et al. 2025; Wagner & Nelson 1963). Multi-dose subjects
+    are skipped because Wagner-Nelson assumes a single dose at t=0.
+    Returns None when fewer than 4 subjects yield a valid ka.
+    """
+    if obs.empty or doses.empty:
+        return None
+    dose_counts = doses.groupby("NMID").size()
+    kas: list[float] = []
+    for subj in obs["NMID"].unique():
+        n_d = int(dose_counts.get(subj, 0))
+        if n_d != 1:
+            # Skip multi-dose AND zero-dose subjects.
+            continue
+        subj_obs_filt = obs[obs["NMID"] == subj]
+        subj_obs_filt = subj_obs_filt[positive_unblqd_mask(subj_obs_filt)]
+        subj_obs_filt = subj_obs_filt.sort_values("TIME")
+        times = subj_obs_filt["TIME"].to_numpy(dtype=float)
+        concs = subj_obs_filt["DV"].to_numpy(dtype=float)
+        if len(concs) < 4:
+            continue
+        terminal = _fit_terminal(times, concs)
+        if terminal is None or terminal.half_life is None:
+            continue
+        ka = wagner_nelson_ka(times, concs, half_life=terminal.half_life)
+        if ka is not None and ka > 0:
+            kas.append(ka)
+    if len(kas) < 4:
+        return None
+    return float(np.median(kas))
+
+
+def _assess_flip_flop_risk(
+    obs: pd.DataFrame, doses: pd.DataFrame, *, multi_dose: bool
+) -> Literal["none", "possible", "likely", "unknown"]:
+    """Flip-flop kinetics risk for oral profiles (Richardson 2025
+    automation pitfall). Combines Wagner-Nelson ka vs lambda_z with
+    quality guards.
+
+    Tightened from the first draft: even if W-N ka < median λz, we only
+    return "likely" when the terminal fit is itself trustworthy. In true
+    flip-flop the terminal slope reflects ka, so W-N ka becomes
+    structurally biased; the guard prevents over-confident calls.
+    """
+    if doses.empty:
+        return "unknown"
+    has_rate = "RATE" in doses.columns and (doses["RATE"] > 0).any()
+    has_dur = "DUR" in doses.columns and (doses["DUR"] > 0).any()
+    if has_rate or has_dur:
+        return "none"  # IV infusion — no absorption phase.
+    wn_ka = _wagner_nelson_ka_median(obs, doses, multi_dose=multi_dose)
+    if wn_ka is None:
+        return "unknown"
+    # Population-median λz + terminal-fit-quality guard.
+    lambdas: list[float] = []
+    n_used_pts: list[int] = []
+    adj_r2s: list[float] = []
+    for subj in obs["NMID"].unique():
+        subj_obs = obs[obs["NMID"] == subj]
+        subj_doses = doses[doses["NMID"] == subj] if not doses.empty else doses
+        subj_obs_filt = subj_obs[positive_unblqd_mask(subj_obs)]
+        if len(subj_obs_filt) < 5:
+            continue
+        times, concs = _windowed_profile(subj_obs_filt, subj_doses, multi_dose=multi_dose)
+        if len(concs) < 5:
+            continue
+        terminal = _fit_terminal(times, concs)
+        if terminal is None or terminal.lambda_z is None:
+            continue
+        lambdas.append(terminal.lambda_z)
+        n_used_pts.append(terminal.n_used)
+        adj_r2s.append(terminal.adj_r2)
+    if len(lambdas) < 4:
+        return "unknown"
+    median_lambdaz = float(np.median(lambdas))
+    median_npts = float(np.median(n_used_pts))
+    median_r2 = float(np.median(adj_r2s))
+    quality_ok = median_npts >= 4 and median_r2 >= 0.85
+    if wn_ka < median_lambdaz and quality_ok:
+        return "likely"
+    if wn_ka < median_lambdaz or wn_ka < 1.5 * median_lambdaz:
+        return "possible"
+    return "none"
+
+
+def _compute_node_dim_budget(obs: pd.DataFrame, n_subjects: int, *, multi_dose: bool) -> int:
+    """NODE input-dim budget per PRD §4.2.4 R6 (Pharmpy AMD design
+    feasibility,  ).
+
+    0 → NODE not eligible (sparse data or inadequate absorption).
+    4 → Optimization lane budget (moderate density).
+    8 → Discovery lane budget (rich, well-powered).
+    """
+    if obs.empty or n_subjects < 5:
+        return 0
+    per_subj_counts = obs.groupby("NMID").size()
+    median_samples = float(per_subj_counts.median()) if len(per_subj_counts) > 0 else 0.0
+    abs_cov = _assess_absorption_coverage(obs)
+    if median_samples < 4 or abs_cov == "inadequate":
+        return 0
+    if median_samples >= 8 and n_subjects >= 20:
+        return 8
+    if median_samples >= 4 and n_subjects >= 10:
+        return 4
+    return 0
+
+
+def _assess_tad_consistency(
+    obs: pd.DataFrame, doses: pd.DataFrame, *, multi_dose: bool
+) -> Literal["clean", "contaminated", "unknown"]:
+    """R19: detect TIME/TAD contamination in multi-dose data.
+
+    Follow-up: ( + ):
+    checks per-subject membership in the UNION of per-dose intervals
+    ``[dose_i, dose_i + median_tau]`` — stricter than the previous global
+    ``[first_dose, last_dose+tau]`` window, which always passed
+    regardless of whether observations were actually dose-aligned.
+
+    Threshold: fraction_in < tad_in_window_fraction_clean (policy default
+    0.80). Returns ``contaminated`` when TIME is clearly not
+    TAD-equivalent (shape heuristics should be down-weighted in
+    dispatch); ``clean`` otherwise.
+    """
+    if not multi_dose:
+        return "clean"
+    if obs.empty or doses.empty:
+        return "unknown"
+    n_total = 0
+    n_in_window = 0
+    threshold = _POLICY.tad_in_window_fraction_clean
+    for subj in obs["NMID"].unique():
+        subj_doses = doses[doses["NMID"] == subj]
+        subj_obs = obs[obs["NMID"] == subj]
+        if subj_doses.empty or subj_obs.empty:
+            continue
+        dt = np.sort(subj_doses["TIME"].to_numpy(dtype=float))
+        intervals = np.diff(dt)
+        if len(intervals) == 0 or not (intervals > 0).any():
+            continue
+        tau = float(np.median(intervals[intervals > 0]))
+        if tau <= 0:
+            continue
+        times = subj_obs["TIME"].to_numpy(dtype=float)
+        n_total += len(times)
+        # Union check: observation is in-window iff ANY dose interval
+        # [d, d+tau] contains it.
+        in_any = np.zeros(len(times), dtype=bool)
+        for d in dt:
+            in_any |= (times >= d) & (times <= d + tau)
+        n_in_window += int(in_any.sum())
+    if n_total == 0:
+        return "unknown"
+    fraction_in = n_in_window / n_total
+    if fraction_in < threshold:
+        return "contaminated"
+    return "clean"
+
+
+def _to_float(v: object) -> float | None:
+    """Coerce diagnostic-dict values to float for manifest fields. Strings
+    (rationales) collapse to None so the typed manifest stays numeric."""
+    if v is None or isinstance(v, str):
+        return None
+    return float(v)  # type: ignore[arg-type]
+
+
+def _filter_pk_observations_with_count(df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+    """Same as ``_filter_pk_observations`` but also returns the count of
+    rows removed (for manifest auditability)."""
+    n_before = len(df)
+    out = _filter_pk_observations(df)
+    return out, n_before - len(out)
+
+
+def _filter_pk_observations(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop non-PK observation rows when DVID column is present.
+
+    Per  +  review:
+    datasets that pool PK and PD observations (warfarin's `cp` + `pca`,
+    biomarker studies with multiple analytes) must have non-PK rows
+    removed before shape geometry runs. Otherwise PCA values rising in
+    the late phase cause Tmax-anchored heuristics to silently flip to
+    negative-slope / multi-compartment-likely classifications.
+
+    Fail-open semantics: if no observation row matches the PK allowlist
+    (e.g. dataset uses DVID=2 for plasma), the filter ABSTAINS and
+    returns df unchanged with a WARNING — better than silently nuking
+    every observation row. Same for missing/NaN DVID values, which
+    stringify to ``"nan"`` and would otherwise be dropped wholesale.
+
+    Dose rows (EVID==1) are always preserved regardless of DVID. The
+    decision is logged at INFO with the count and unique values of the
+    dropped rows for auditability (analogous to other recoding
+    decisions in the ingest layer).
+    """
+    if "DVID" not in df.columns:
+        return df
+    dvid_str = df["DVID"].astype(str).str.lower()
+    obs_mask = df["EVID"] == 0
+    obs_dvids = dvid_str[obs_mask]
+    n_pk_matches = int(obs_dvids.isin(_PK_DVIDS).sum())
+    if n_pk_matches == 0:
+        unique_obs_dvids = sorted(set(obs_dvids.astype(str)))
+        # Policy-controlled fail-open. Deployments that
+        # want strict DVID enforcement set dvid_fail_open_when_no_match=false
+        # in policies/profiler.json; the default stays permissive to keep
+        # unknown-DVID datasets profilable.
+        if _POLICY.dvid_fail_open_when_no_match:
+            _log.warning(
+                "Profiler DVID filter: no observation rows match PK allowlist %s; "
+                "observed DVID values=%s. Filter abstains (fail-open per policy) "
+                "and keeps all rows.",
+                sorted(_PK_DVIDS),
+                unique_obs_dvids,
+            )
+            return df
+        msg = (
+            f"DVID filter failed closed: no observation rows match PK "
+            f"allowlist {sorted(_PK_DVIDS)}; observed DVIDs={unique_obs_dvids}. "
+            "Extend policies/profiler.json pk_dvid_allowlist or canonicalise DVID at ingest."
+        )
+        raise ValueError(msg)
+    # Preserve ALL non-observation rows (dose events EVID!=0 including
+    # NONMEM reset-dose codes EVID=3/4); filter only observation rows by
+    # DVID allowlist.
+    obs_mask = df["EVID"] == 0
+    keep_mask = (~obs_mask) | dvid_str.isin(_PK_DVIDS)
+    dropped = int((~keep_mask).sum())
+    if dropped == 0:
+        return df
+    unique_dropped = sorted(set(df.loc[~keep_mask, "DVID"].astype(str).str.lower()))
+    _log.info(
+        "Profiler: dropping %d non-PK observation rows (DVID values=%s); "
+        "kept DVID values matching %s",
+        dropped,
+        unique_dropped,
+        sorted(_PK_DVIDS),
+    )
+    return df[keep_mask].copy()
 
 
 # ---------------------------------------------------------------------------
 # Error-model selection heuristic (Beal 2001, Ahn 2008)
 # ---------------------------------------------------------------------------
 
-_BLQ_M3_TRIGGER: float = 0.10  # Beal 2001 / Ahn 2008: M3 preferred for BLQ >= 10%.
-_DYNAMIC_RANGE_PROPORTIONAL: float = 50.0  # Cmax_p95/Cmax_p05 > 50 → proportional.
-_HIGH_CV_CEILING: float = 80.0  # CV > 80 with big range → signal is noise-dominated.
-_LLOQ_CMAX_COMBINED: float = 0.05  # LLOQ / Cmax_median > 5% → combined needed.
-_TERMINAL_LOG_MAD_COMBINED: float = 0.35  # noisy terminal in log-space → combined.
-_NARROW_RANGE_ADDITIVE: float = 5.0  # range_ratio < 5 + low CV → additive plausible.
+_BLQ_M3_TRIGGER: float = _POLICY.blq_m3_trigger
+_DYNAMIC_RANGE_PROPORTIONAL: float = _POLICY.dynamic_range_proportional
+_HIGH_CV_CEILING: float = _POLICY.high_cv_ceiling
+_LLOQ_CMAX_COMBINED: float = _POLICY.lloq_cmax_combined
+_TERMINAL_LOG_MAD_COMBINED: float = _POLICY.terminal_log_mad_combined
+_NARROW_RANGE_ADDITIVE: float = _POLICY.narrow_range_additive
 
 
 def recommend_error_model(
@@ -215,11 +564,15 @@ def recommend_error_model(
             reason.append(f"LLOQ/Cmax_median={lloq_ratio * 100:.1f}%>5%")
         if terminal_noisy and terminal_log_mad is not None:
             reason.append(f"terminal log MAD={terminal_log_mad:.2f}>0.35")
+        # R13: allowed must include
+        # proportional alongside combined. Locking out proportional was
+        # too aggressive; Ahn 2008 only forbids additive-only under heavy
+        # BLQ, not proportional.
         return ErrorModelPreference(
             primary="combined",
-            allowed=["combined"],
+            allowed=["combined", "proportional"],
             confidence="medium",
-            rationale="; ".join(reason) + " → combined error needed",
+            rationale="; ".join(reason) + " → combined preferred (proportional allowed)",
         )
 
     # 2. Wide dynamic range with moderate CV → proportional
@@ -316,8 +669,8 @@ def _compute_terminal_log_residual_mad(
     """Median absolute deviation of log-concentration residuals from the
     per-subject terminal log-linear trend.
 
-    R5 (BLQ mask) + R22 (multi-dose windowing) — multi-model consensus
-    2026-04-15. Operates on the BLQ-filtered, last-dose-window per-subject
+    R5 (BLQ mask) + R22 (multi-dose windowing) —
+    . Operates on the BLQ-filtered, last-dose-window per-subject
     profile so censored DV=LLOQ rows do not bias slopes and multi-dose
     "terminal" does not span subsequent absorption rises.
 
@@ -677,9 +1030,9 @@ def _per_subject_terminal_monoexp_r2(
     rises and the monoexp fit is meaningless (warfarin: R² = -0.49 across
     full profile, ~0.95 within the last dosing interval).
     """
-    # R3 + R5 + R6 (multi-model consensus): apply BLQ mask, use safe_log
+    #  apply BLQ mask, use safe_log
     # via fit_best_lambdaz (Huang 2025) which selects max-adj-R² window with
-    # the Phoenix WinNonlin time-anchor constraint (gemini-3 review).
+    # the Phoenix WinNonlin time-anchor constraint.
     out: list[float] = []
     for subj in obs["NMID"].unique():
         subj_obs = obs[obs["NMID"] == subj]
@@ -690,168 +1043,116 @@ def _per_subject_terminal_monoexp_r2(
         times, concs = _windowed_profile(subj_obs_filt, subj_doses, multi_dose=multi_dose)
         if len(concs) < 5:
             continue
-        terminal = fit_best_lambdaz(times, concs)
+        terminal = _fit_terminal(times, concs)
         if terminal is None:
             continue
         out.append(terminal.adj_r2)
     return out
 
 
-def _get_dose_auc_pairs(
+def _filter_triples_to_ss_subjects(
     obs: pd.DataFrame,
     doses: pd.DataFrame,
+    triples: list[tuple[int, float, float]],
 ) -> list[tuple[float, float]]:
-    """Compute per-subject (dose, AUC) pairs using actual AMT from dosing records.
+    """Drop (dose, AUC) pairs from subjects not at steady state.
 
-    For multi-dose subjects, uses total dose and AUC over the observed interval.
-    Returns pairs where both dose and AUC are positive.
+    operates on (NMID, dose, AUC) triples to avoid the previous
+    zip-mismatch bug where skipped subjects in `_get_dose_auc_pairs_impl`
+    caused pairs to be re-attached to wrong subjects.
+
+    Pre-SS AUCτ underestimates AUCss and biases Smith 2000 toward false
+    saturation. For single-dose subjects (n_doses<2) SS is moot — pass
+    through. For multi-dose subjects, gate via `is_steady_state`. Half-life
+    is approximated from `fit_best_lambdaz` on the subject's last-dose-window.
     """
-    subjects = obs["NMID"].unique()
-    pairs: list[tuple[float, float]] = []
+    if not triples or doses.empty:
+        return [(d, a) for _, d, a in triples]
+    dose_counts = doses.groupby("NMID").size()
+    out: list[tuple[float, float]] = []
+    for subj_id, dose, auc in triples:
+        n_doses = int(dose_counts.get(subj_id, 0))
+        if n_doses < 2:
+            out.append((dose, auc))
+            continue
+        subj_doses = doses[doses["NMID"] == subj_id]
+        subj_obs = obs[obs["NMID"] == subj_id]
+        subj_obs_filt = subj_obs[positive_unblqd_mask(subj_obs)]
+        if len(subj_obs_filt) >= 5:
+            times, concs = _windowed_profile(subj_obs_filt, subj_doses, multi_dose=True)
+            terminal = _fit_terminal(times, concs) if len(concs) >= 5 else None
+            half_life = terminal.half_life if terminal is not None else None
+        else:
+            half_life = None
+        ss, _rationale = _policy_steady_state(
+            dose_times=subj_doses["TIME"].to_numpy(dtype=float),
+            doses=subj_doses["AMT"].to_numpy(dtype=float),
+            half_life=half_life,
+        )
+        if ss:
+            out.append((dose, auc))
+    return out
 
-    for subj in subjects:
-        subj_obs = obs[obs["NMID"] == subj].sort_values("TIME")
+
+def _get_dose_auc_triples(
+    obs: pd.DataFrame,
+    doses: pd.DataFrame,
+) -> list[tuple[int, float, float]]:
+    """Per-subject (NMID, dose, AUC) triples — keyed by NMID so SS-gating
+    can re-attach correctly. R1 +"""
+    out: list[tuple[int, float, float]] = []
+    for subj in obs["NMID"].unique():
+        subj_obs_raw = obs[obs["NMID"] == subj].sort_values("TIME")
+        subj_obs = subj_obs_raw[positive_unblqd_mask(subj_obs_raw)]
         subj_doses = doses[doses["NMID"] == subj]
-
         if len(subj_obs) < 3 or subj_doses.empty:
             continue
-
-        # Total dose from AMT column (actual dose, not Cmax proxy)
         total_dose = float(subj_doses["AMT"].sum())
         if total_dose <= 0:
             continue
-
-        concs = subj_obs["DV"].values.astype(float)
-        times = subj_obs["TIME"].values.astype(float)
-
-        # For multi-dose: use AUC over the dosing interval (AUC_tau)
-        # if repeated dosing is detected, otherwise use full AUC_last
+        concs = subj_obs["DV"].to_numpy(dtype=float)
+        times = subj_obs["TIME"].to_numpy(dtype=float)
         n_doses = len(subj_doses)
         if n_doses > 1:
-            dose_times = subj_doses["TIME"].values.astype(float)
-            # Estimate tau as median inter-dose interval
+            dose_times = subj_doses["TIME"].to_numpy(dtype=float)
             sorted_dt = np.sort(dose_times)
             intervals = np.diff(sorted_dt)
             if len(intervals) > 0 and np.median(intervals) > 0:
                 tau = float(np.median(intervals))
-                # Use observations within the last dosing interval
                 last_dose_time = float(sorted_dt[-1])
                 tau_mask = (times >= last_dose_time) & (times <= last_dose_time + tau)
                 if tau_mask.sum() >= 2:
-                    auc = float(np.trapezoid(concs[tau_mask], times[tau_mask]))
-                    # Normalize to median AMT for comparability; iloc[-1]
-                    # is unreliable under dose titration or loading regimens.
+                    auc = auc_linup_logdown(times[tau_mask], concs[tau_mask])
                     single_dose = float(subj_doses["AMT"].median())
                     if single_dose > 0 and auc > 0:
-                        pairs.append((single_dose, auc))
+                        out.append((int(subj), single_dose, auc))
                     continue
-
-        # Single-dose or fallback: AUC_last over entire profile
-        auc = float(np.trapezoid(concs, times))
+        auc = auc_linup_logdown(times, concs)
         if auc > 0:
-            pairs.append((total_dose, auc))
+            out.append((int(subj), total_dose, auc))
+    return out
 
-    return pairs
+
+# R3: _detect_curvature_nonlinearity
+# was deleted (a divergent duplicate of _curvature_ratios_per_subject).
+# _detect_nonlinear_clearance retained as a thin shim over the strength
+# classifier so existing tests (and any external callers) continue to
+# work; new code should consume `nonlinear_clearance_evidence_strength`
+# directly from the manifest.
 
 
 def _detect_nonlinear_clearance(obs: pd.DataFrame, doses: pd.DataFrame) -> bool:
-    """Detect signature of nonlinear (dose-dependent) clearance.
-
-    Two complementary heuristics:
-    1. Dose-normalized AUC: if multiple dose levels exist, Spearman correlation
-       between dose and AUC/dose > 0.4 indicates saturable clearance.
-    2. Elimination curvature: for single dose-level studies, compares early vs.
-       late post-Cmax log-concentration slopes. MM kinetics produces faster
-       decline at high concentrations (early) than low (late), yielding a
-       median |early/late| slope ratio > 1.8.
+    """Boolean shortcut: True iff the strength classifier returns
+    `moderate` or `strong`. Wraps the unified pipeline so the boolean
+    and graded outputs cannot drift apart.
     """
     if obs.empty or doses.empty:
         return False
-
-    pairs = _get_dose_auc_pairs(obs, doses)
-    if len(pairs) >= 4:
-        dose_vals = np.array([p[0] for p in pairs])
-        auc_vals = np.array([p[1] for p in pairs])
-
-        if len(np.unique(dose_vals)) >= 2:
-            # Heuristic 1: dose-normalized AUC comparison
-            dn_auc = auc_vals / dose_vals
-            corr = _spearman_r(dose_vals, dn_auc)
-            if corr > _NONLINEAR_CLEARANCE_DOSE_AUC_THRESHOLD:
-                return True
-
-    # Heuristic 2: elimination curvature (works with single dose level)
-    return _detect_curvature_nonlinearity(obs)
-
-
-def _detect_curvature_nonlinearity(obs: pd.DataFrame) -> bool:
-    """Detect nonlinear clearance via elimination phase curvature.
-
-    For Michaelis-Menten kinetics, the post-Cmax log-concentration curve is
-    concave: the slope is steeper at high concentrations (early, near Vmax)
-    and shallower at low concentrations (late, near linear regime).
-
-    For TMDD kinetics, the inverse pattern occurs: target-mediated clearance
-    saturates at high concentrations (slow early decline) and dominates at low
-    concentrations (faster late decline), yielding ratio < 0.3.
-
-    Computes the median ratio of |early slope| / |late slope| across subjects.
-    Linear PK (including multi-compartment) typically yields 0.5 <= ratio <= 1.5;
-    MM kinetics yields ratio > 1.8; TMDD yields ratio < 0.3.
-    """
-    subjects = obs["NMID"].unique()
-    ratios: list[float] = []
-
-    for subj in subjects:
-        subj_data = obs[obs["NMID"] == subj].sort_values("TIME")
-        times = subj_data["TIME"].values.astype(float)
-        concs = subj_data["DV"].values.astype(float)
-
-        if len(concs) < 5:
-            continue
-
-        tmax_idx = int(np.argmax(concs))
-        # Cmax-inclusive slice: the early-segment anchor is log(Cmax) so the
-        # early slope captures the steep peak-to-mid transition that drives
-        # MM detection. _compute_terminal_log_residual_mad uses tmax_idx+1
-        # because it measures terminal noise, a different concept; the 1.8
-        # MM threshold below is calibrated against this Cmax-inclusive slice.
-        post_c = concs[tmax_idx:]
-        post_t = times[tmax_idx:]
-
-        # Drop BLQ-zero tail points but keep the subject if enough positives
-        # remain; rejecting on a single BLQ cuts too many real profiles.
-        pos = post_c > 0
-        post_c = post_c[pos]
-        post_t = post_t[pos]
-        if len(post_c) < 4:
-            continue
-
-        log_c = np.log(post_c)
-        mid = len(post_c) // 2
-        if mid < 2 or len(post_c) - mid < 2:
-            continue
-
-        dt_early = post_t[mid] - post_t[0]
-        dt_late = post_t[-1] - post_t[mid]
-        if dt_early <= 0 or dt_late <= 0:
-            continue
-
-        early_slope = abs((log_c[mid] - log_c[0]) / dt_early)
-        late_slope = abs((log_c[-1] - log_c[mid]) / dt_late)
-
-        if late_slope > 1e-6:
-            ratios.append(early_slope / late_slope)
-
-    if len(ratios) < 4:
-        return False
-
-    median_ratio = float(np.median(ratios))
-    # MM kinetics: fast early decline; TMDD: inverse (slow early, fast late).
-    return (
-        median_ratio > _NONLINEAR_MM_CURVATURE_RATIO
-        or median_ratio < _NONLINEAR_TMDD_CURVATURE_RATIO
+    multi_dose = _detect_multi_dose(doses)
+    strength, _signals = _classify_nonlinear_clearance_evidence_strength(
+        obs, doses, multi_dose=multi_dose
     )
+    return strength in {"moderate", "strong"}
 
 
 def _classify_nonlinear_clearance_evidence_strength(
@@ -859,7 +1160,7 @@ def _classify_nonlinear_clearance_evidence_strength(
     doses: pd.DataFrame,
     *,
     multi_dose: bool,
-) -> tuple[Literal["none", "weak", "moderate", "strong"], dict[str, float | None]]:
+) -> tuple[Literal["none", "weak", "moderate", "strong"], dict[str, object]]:
     """Multi-signal voting for nonlinear-clearance evidence (PRD §10 Q2 follow-up).
 
     Returns ``(strength, signals)`` where ``signals`` carries the median
@@ -880,51 +1181,101 @@ def _classify_nonlinear_clearance_evidence_strength(
     against MM (the late phase is well-explained by linear elimination).
     A failing R² alone does not prove MM (could be sparse/noisy data).
 
-    Signal 3 - dose-AUC nonproportionality: Spearman rho between dose and
-    dose-normalized AUC > _NONLINEAR_CLEARANCE_DOSE_AUC_THRESHOLD with
-    >=2 distinct dose levels. Strongest single discriminator when present;
-    absent for single-dose-level studies (then this signal abstains).
+    Signal 3 - dose-AUC nonproportionality: Smith 2000 power model
+    log(AUC)=alpha+beta·log(dose) with translated beta bounds derived from
+    [θ_L, θ_H]=[0.80, 1.25] and observed dose ratio. Eligible only when
+    ≥3 distinct dose levels AND dose ratio ≥3-fold AND ≥4 SS-gated
+    pairs (R10 steady-state filter via is_steady_state). Saturation
+    flag fires when beta CI lower bound exceeds the Smith high bound;
+    induction when CI upper bound is below the Smith low bound. The
+    strongest single discriminator when present; abstains when design
+    cannot support the test or pre-SS contamination is suspected.
     """
-    signals: dict[str, float | None] = {
+    # Mixed numeric/text diagnostics — keep value type permissive so the
+    # rationale string from Smith 2000 ineligibility coexists with float
+    # diagnostic values.
+    # Mixed numeric / text / dict diagnostics — eligibility_mask and
+    # votes_mask are dict[str,bool]; everything else is float|str|None.
+    signals: dict[str, object] = {
         "curvature_ratio_median": None,
+        "curvature_ratio_ci90_low": None,
+        "curvature_ratio_ci90_high": None,
         "terminal_fit_adj_r2_median": None,
-        "dose_proportionality_rho": None,
+        "dose_proportionality_beta": None,
+        "dose_proportionality_beta_ci90_low": None,
+        "dose_proportionality_beta_ci90_high": None,
+        "dose_proportionality_dose_ratio": None,
+        "dose_proportionality_rationale": None,
+        "smith_low": None,
+        "smith_high": None,
     }
     votes = 0
     eligible = 0
+    # Per-signal eligibility + vote mask for manifest auditability
+    # .
+    eligibility_mask: dict[str, bool] = {
+        "curvature_ratio": False,
+        "terminal_monoexp": False,
+        "dose_proportionality_smith": False,
+    }
+    votes_mask: dict[str, bool] = {
+        "curvature_ratio": False,
+        "terminal_monoexp": False,
+        "dose_proportionality_smith": False,
+    }
 
-    # Signal 1: curvature ratio.
+    # Signal 1: curvature ratio + population bootstrap CI (Follow-up:).
     ratios = _curvature_ratios_per_subject(obs, doses, multi_dose=multi_dose)
     if len(ratios) >= 4:
         eligible += 1
-        median_ratio = float(np.median(ratios))
-        signals["curvature_ratio_median"] = median_ratio
+        eligibility_mask["curvature_ratio"] = True
+        ci = bootstrap_median_ci(ratios)
+        if ci is not None:
+            median_ratio, ci_low, ci_high = ci
+            signals["curvature_ratio_median"] = median_ratio
+            signals["curvature_ratio_ci90_low"] = ci_low
+            signals["curvature_ratio_ci90_high"] = ci_high
+        else:
+            median_ratio = float(np.median(ratios))
+            signals["curvature_ratio_median"] = median_ratio
+        # Vote on the point estimate (threshold tuned against the median,
+        # not the CI lower bound, to preserve sensitivity).
         if median_ratio > _NONLINEAR_MM_CURVATURE_RATIO:
             votes += 1
+            votes_mask["curvature_ratio"] = True
 
     # Signal 2: terminal monoexponential fit.
     r2s = _per_subject_terminal_monoexp_r2(obs, doses, multi_dose=multi_dose)
     if len(r2s) >= 4:
         eligible += 1
+        eligibility_mask["terminal_monoexp"] = True
         median_r2 = float(np.median(r2s))
         signals["terminal_fit_adj_r2_median"] = median_r2
         if median_r2 < _TERMINAL_MONOEXP_R2_LINEAR_THRESHOLD:
             votes += 1
+            votes_mask["terminal_monoexp"] = True
 
-    # Signal 3: dose-AUC proportionality. Abstains when only one dose
-    # level is present; ``eligible`` reflects this so single-dose-level
-    # studies do not get penalised by an inactive third signal.
-    pairs = _get_dose_auc_pairs(obs, doses)
-    if len(pairs) >= 4:
-        dose_vals = np.array([p[0] for p in pairs])
-        auc_vals = np.array([p[1] for p in pairs])
-        if len(np.unique(dose_vals)) >= 2:
-            eligible += 1
-            dn_auc = auc_vals / dose_vals
-            rho = _spearman_r(dose_vals, dn_auc)
-            signals["dose_proportionality_rho"] = float(rho)
-            if rho > _NONLINEAR_CLEARANCE_DOSE_AUC_THRESHOLD:
-                votes += 1
+    # Signal 3: Smith 2000 dose-proportionality with SS gating (R2 + R10).
+    triples = _get_dose_auc_triples(obs, doses)
+    ss_gated_pairs = _filter_triples_to_ss_subjects(obs, doses, triples)
+    smith_fit = fit_dose_proportionality(ss_gated_pairs)
+    if smith_fit.eligible:
+        eligible += 1
+        eligibility_mask["dose_proportionality_smith"] = True
+        signals["dose_proportionality_beta"] = smith_fit.beta
+        signals["dose_proportionality_beta_ci90_low"] = smith_fit.beta_ci90_low
+        signals["dose_proportionality_beta_ci90_high"] = smith_fit.beta_ci90_high
+        signals["dose_proportionality_dose_ratio"] = smith_fit.dose_ratio
+        signals["smith_low"] = smith_fit.beta_smith_low
+        signals["smith_high"] = smith_fit.beta_smith_high
+        if smith_fit.saturation_flag:
+            votes += 1
+            votes_mask["dose_proportionality_smith"] = True
+    else:
+        signals["dose_proportionality_rationale"] = smith_fit.rationale
+
+    signals["eligibility_mask"] = eligibility_mask
+    signals["votes_mask"] = votes_mask
 
     # Strength is the fraction of *eligible* signals that fired, not an
     # absolute count out of three. This avoids misclassifying single-dose
@@ -954,22 +1305,26 @@ def _curvature_ratios_per_subject(
     interval when ``multi_dose=True`` to avoid contamination from
     subsequent dose rises.
     """
+    # R3 + R5: BLQ mask + safe_log; underflow-safe slope ratio.
+    # Note: 3-anchor-point ratio is retained here for back-compat with the
+    # strength classifier; R4 (two-segment OLS + bootstrap CI) is a
+    # follow-up enhancement.
     ratios: list[float] = []
     for subj in obs["NMID"].unique():
         subj_obs = obs[obs["NMID"] == subj]
         subj_doses = doses[doses["NMID"] == subj] if not doses.empty else doses
-        times, concs = _windowed_profile(subj_obs, subj_doses, multi_dose=multi_dose)
-        if len(concs) < 5:
+        subj_obs_filt = subj_obs[positive_unblqd_mask(subj_obs)]
+        if len(subj_obs_filt) < 5:
+            continue
+        times, concs = _windowed_profile(subj_obs_filt, subj_doses, multi_dose=multi_dose)
+        if len(concs) < 4:
             continue
         tmax_idx = int(np.argmax(concs))
         post_c = concs[tmax_idx:]
         post_t = times[tmax_idx:]
-        pos = post_c > 0
-        post_c = post_c[pos]
-        post_t = post_t[pos]
         if len(post_c) < 4:
             continue
-        log_c = np.log(post_c)
+        log_c = safe_log(post_c)
         mid = len(post_c) // 2
         if mid < 2 or len(post_c) - mid < 2:
             continue
@@ -1000,6 +1355,15 @@ def _assess_compartmentality(
         (poorly captured beta phase or true sum-of-exponentials).
     insufficient: not enough analyzable subjects.
     """
+    # R7: use a SEPARATE, lower
+    # curvature threshold for biexponential detection. Re-using the MM
+    # threshold (1.8) collapsed 2cmt and MM into the same bucket: a 2cmt
+    # drug with steep alpha + shallow beta (warfarin-like) hits >1.8 and
+    # a true MM with C<<Km in the tail also hits >1.8. The biexponential
+    # signature is *moderate* curvature (alpha/beta ratio typically 1.3-3
+    # for clinical drugs); MM saturation produces sharper curvature plus
+    # other corroborating signals (dose nonproportionality, terminal R²
+    # failure) which are scored independently in nlc_evidence_strength.
     r2s = _per_subject_terminal_monoexp_r2(obs, doses, multi_dose=multi_dose)
     ratios = _curvature_ratios_per_subject(obs, doses, multi_dose=multi_dose)
     if len(r2s) < 4 or len(ratios) < 4:
@@ -1007,10 +1371,10 @@ def _assess_compartmentality(
     median_r2 = float(np.median(r2s))
     median_ratio = float(np.median(ratios))
     high_r2 = median_r2 >= _TERMINAL_MONOEXP_R2_LINEAR_THRESHOLD
-    elevated_curvature = median_ratio > _NONLINEAR_MM_CURVATURE_RATIO
-    if high_r2 and not elevated_curvature:
+    elevated_curvature_2cmt = median_ratio > _COMPARTMENTALITY_CURVATURE_RATIO
+    if high_r2 and not elevated_curvature_2cmt:
         return "one_compartment"
-    if high_r2 and elevated_curvature:
+    if high_r2 and elevated_curvature_2cmt:
         return "two_compartment"
     return "multi_compartment_likely"
 
@@ -1021,7 +1385,7 @@ def _lambda_z_analyzable_fraction(
     """Fraction of subjects with >=3 positive non-BLQ post-Cmax samples
     within their analysis window — the minimum required for terminal-slope
     estimation. R5 (BLQ-aware) + R22 (multi-dose windowing) — multi-model
-    consensus 2026-04-15.
+    consensus .
     """
     if obs.empty:
         return None
@@ -1050,7 +1414,7 @@ def _auc_extrap_fraction_median(
 ) -> float | None:
     """Median across subjects of AUC_extrap / AUC_inf.
 
-    R6 (Huang 2025 best-lambda_z selector with Phoenix constraint, gemini-3
+    R6 (Huang 2025 best-lambda_z selector with Phoenix constraint,
     review) + R1 (linear-up/log-down AUC, Wagner & Nelson 1963) + R5 (BLQ
     mask) + R22 (multi-dose windowing). Replaces the previous
     break-on-first lambda_z selector that systematically picked the shortest
@@ -1068,7 +1432,7 @@ def _auc_extrap_fraction_median(
         times, concs = _windowed_profile(subj_obs_filt, subj_doses, multi_dose=multi_dose)
         if len(concs) < 5:
             continue
-        terminal = fit_best_lambdaz(times, concs)
+        terminal = _fit_terminal(times, concs)
         if terminal is None or terminal.lambda_z is None:
             continue
         # Linear-up / log-down trapezoid for AUC_last (R1).
@@ -1085,64 +1449,47 @@ def _auc_extrap_fraction_median(
     return float(np.median(fractions))
 
 
-def _nonlinear_clearance_confidence(obs: pd.DataFrame, doses: pd.DataFrame) -> float | None:
+def _nonlinear_clearance_confidence(
+    obs: pd.DataFrame, doses: pd.DataFrame, *, multi_dose: bool
+) -> float | None:
     """Confidence score for nonlinear clearance detection (0.0-1.0).
 
-    Returns the maximum signal from dose-normalized AUC correlation (if
-    multiple dose levels) and elimination curvature ratio (scaled to 0-1).
+    R3 +  routes through the same unified
+    pipeline as the strength classifier — Smith 2000 power model with
+    SS-gated triples (instead of legacy Spearman-on-raw-pairs) and the
+    unified `_curvature_ratios_per_subject` helper. Previously this
+    function had its own inline curvature loop and used Spearman
+    without SS gating, so it could disagree with the strength label.
+
+    Score is the maximum of:
+      - Smith beta saturation/induction excess (clipped 0-1, derived from
+        how far the beta CI lies outside the translated bounds).
+      - Curvature-ratio score: (median_ratio - 1) / 2 clipped to [0, 1].
     """
     if obs.empty or doses.empty:
         return None
-
     scores: list[float] = []
-
-    # Score from dose-normalized AUC
-    pairs = _get_dose_auc_pairs(obs, doses)
-    if len(pairs) >= 4:
-        dose_vals = np.array([p[0] for p in pairs])
-        auc_vals = np.array([p[1] for p in pairs])
-        if len(np.unique(dose_vals)) >= 2:
-            dn_auc = auc_vals / dose_vals
-            corr = _spearman_r(dose_vals, dn_auc)
-            scores.append(max(0.0, min(1.0, corr)))
-
-    # Score from curvature ratio. Cmax-inclusive slice + BLQ-tail filter
-    # mirror ``_detect_curvature_nonlinearity`` so the boolean detector and
-    # this confidence score operate on the same per-subject ratios.
-    subjects = obs["NMID"].unique()
-    ratios: list[float] = []
-    for subj in subjects:
-        subj_data = obs[obs["NMID"] == subj].sort_values("TIME")
-        times = subj_data["TIME"].values.astype(float)
-        concs = subj_data["DV"].values.astype(float)
-        if len(concs) < 5:
-            continue
-        tmax_idx = int(np.argmax(concs))
-        post_c = concs[tmax_idx:]
-        post_t = times[tmax_idx:]
-        pos = post_c > 0
-        post_c = post_c[pos]
-        post_t = post_t[pos]
-        if len(post_c) < 4:
-            continue
-        log_c = np.log(post_c)
-        mid = len(post_c) // 2
-        if mid < 2 or len(post_c) - mid < 2:
-            continue
-        dt_early = post_t[mid] - post_t[0]
-        dt_late = post_t[-1] - post_t[mid]
-        if dt_early <= 0 or dt_late <= 0:
-            continue
-        early_slope = abs((log_c[mid] - log_c[0]) / dt_early)
-        late_slope = abs((log_c[-1] - log_c[mid]) / dt_late)
-        if late_slope > 1e-6:
-            ratios.append(early_slope / late_slope)
+    triples = _get_dose_auc_triples(obs, doses)
+    ss_pairs = _filter_triples_to_ss_subjects(obs, doses, triples)
+    smith_fit = fit_dose_proportionality(ss_pairs)
+    # Saturation excess: how far CI lower bound exceeds the high Smith
+    # bound, normalised by the bound's offset from 1.0.
+    if (
+        smith_fit.eligible
+        and smith_fit.beta is not None
+        and smith_fit.beta_smith_high is not None
+        and smith_fit.beta_ci90_low is not None
+        and smith_fit.beta_smith_high > 1.0
+    ):
+        excess = (smith_fit.beta_ci90_low - smith_fit.beta_smith_high) / (
+            smith_fit.beta_smith_high - 1.0
+        )
+        scores.append(max(0.0, min(1.0, excess)))
+    ratios = _curvature_ratios_per_subject(obs, doses, multi_dose=multi_dose)
     if len(ratios) >= 4:
-        # Map ratio to 0-1: ratio=1.0 → 0.0, ratio=3.0 → 1.0
         median_ratio = float(np.median(ratios))
         curvature_score = max(0.0, min(1.0, (median_ratio - 1.0) / 2.0))
         scores.append(curvature_score)
-
     if not scores:
         return None
     return float(max(scores))
@@ -1176,14 +1523,16 @@ def _assess_identifiability(obs: pd.DataFrame, n_subjects: int) -> str:
     medium: moderate data or limited subjects
     low: sparse data, few subjects
     """
+    # R11: use median samples per subject
+    # for consistency with _classify_richness (was: arithmetic mean, which
+    # is dragged up by PK-intensive outliers in heterogeneous studies).
     if n_subjects < 5:
         return "low"
-
-    avg_samples = len(obs) / max(1, n_subjects) if n_subjects > 0 else 0
-
-    if avg_samples > 8 and n_subjects >= 20:
+    per_subj_counts = obs.groupby("NMID").size()
+    median_samples = float(per_subj_counts.median()) if len(per_subj_counts) > 0 else 0.0
+    if median_samples > 8 and n_subjects >= 20:
         return "high"
-    elif avg_samples >= 4 and n_subjects >= 10:
+    if median_samples >= 4 and n_subjects >= 10:
         return "medium"
     return "low"
 
@@ -1280,12 +1629,12 @@ def _extract_lloq_value(df: pd.DataFrame) -> float | None:
         # Use the most common non-null LLOQ value across censored rows
         lloq_values = blq_rows["LLOQ"].dropna()
         if not lloq_values.empty:
-            return float(lloq_values.mode().iloc[0])
+            return float(lloq_values.mode().iloc()[0])
 
     # Fallback: DV of censored rows (M3 convention sets DV=LLOQ)
     dv_values = blq_rows["DV"].dropna()
     if not dv_values.empty:
-        return float(dv_values.mode().iloc[0])
+        return float(dv_values.mode().iloc()[0])
 
     return None
 

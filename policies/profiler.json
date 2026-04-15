@@ -1,0 +1,91 @@
+{
+  "$schema": "https://github.com/biostochastics/APMODE/policies/profiler.schema.json",
+  "policy_id": "profiler/v2.0.0",
+  "policy_version": "2.0.0",
+  "description": "Versioned thresholds for the Data Profiler. Lane Router fails fast on unknown policy_version. See docs/PROFILER_REFINEMENT_PLAN.md for derivation and citations.",
+  "schema_version": 2,
+  "manifest_schema_version": 2,
+  "covariate": {
+    "correlation_threshold_abs_r": 0.7,
+    "missingness_full_information_cutoff": 0.15
+  },
+  "nonlinear_clearance": {
+    "mm_curvature_ratio": 1.8,
+    "tmdd_curvature_ratio": 0.3,
+    "compartmentality_curvature_ratio": 1.3,
+    "terminal_monoexp_r2_linear_threshold": 0.85
+  },
+  "smith_2000_dose_proportionality": {
+    "theta_low": 0.80,
+    "theta_high": 1.25,
+    "min_dose_levels": 3,
+    "min_dose_ratio": 3.0
+  },
+  "huang_2025_lambda_z": {
+    "min_points": 3,
+    "tolerance": 1e-4,
+    "phoenix_constraint": true,
+    "adj_r2_threshold": 0.7
+  },
+  "steady_state": {
+    "n_half_lives_required": 3,
+    "n_doses_alt": 5,
+    "interval_tolerance": 0.25,
+    "dose_tolerance": 0.20,
+    "min_doses": 3
+  },
+  "shape_detection": {
+    "multi_peak_fraction_threshold": 0.3,
+    "lag_signature_fraction_threshold": 0.5,
+    "lag_early_conc_fraction": 0.05,
+    "lag_early_time_percentile": 25,
+    "peak_prominence_range_fraction": 0.10,
+    "peak_prominence_cmax_floor": 0.05,
+    "peak_min_distance_intervals": 2.0
+  },
+  "subject_quality": {
+    "min_subjects_for_median": 4,
+    "min_concs_for_profile": 5,
+    "min_subjects_for_dynamic_range": 10,
+    "min_obs_per_subject_rich": 8,
+    "min_obs_per_subject_moderate": 4,
+    "absorption_coverage_min_pre_tmax": 2.0,
+    "elimination_coverage_min_post_tmax": 3.0
+  },
+  "error_model": {
+    "blq_m3_trigger": 0.10,
+    "dynamic_range_proportional": 50.0,
+    "high_cv_ceiling": 80.0,
+    "lloq_cmax_combined": 0.05,
+    "terminal_log_mad_combined": 0.35,
+    "narrow_range_additive": 5.0,
+    "low_cv_additive_ceiling": 30.0
+  },
+  "node_readiness": {
+    "min_subjects": {"discovery": 20, "optimization": 10},
+    "min_median_samples": {"discovery": 8, "optimization": 4},
+    "dim_budget": {"discovery": 8, "optimization": 4}
+  },
+  "flip_flop": {
+    "ka_lambdaz_ratio_likely": 1.0,
+    "ka_lambdaz_ratio_possible": 1.5
+  },
+  "tad_consistency": {
+    "in_window_fraction_clean": 0.80
+  },
+  "dvid_filter": {
+    "pk_dvid_allowlist": ["cp", "1", "conc", "concentration"],
+    "fail_open_when_no_match": true
+  },
+  "_references": {
+    "smith_2000": "Smith BP et al. (2000) Pharm Res 17(10):1278-1283. doi:10.1023/a:1026451721686",
+    "huang_2025": "Huang Z, Fidler M, Lan M, Cheng IL, Kloprogge F, Standing JF (2025) J Pharmacokinet Pharmacodyn 52:60. doi:10.1007/s10928-025-10000-z",
+    "wagner_nelson_1963": "Wagner JG, Nelson E (1963) J Pharm Sci 52(6):610-611. doi:10.1002/jps.2600520627",
+    "beal_2001": "Beal SL (2001) J Pharmacokinet Pharmacodyn 28(5):481-504. doi:10.1023/a:1012299115260",
+    "ahn_2008": "Ahn JE, Karlsson MO, Dunne A, Ludden TM (2008) J Pharmacokinet Pharmacodyn 35(4):401-421. doi:10.1007/s10928-008-9094-4",
+    "richardson_2025": "Richardson S, Irurzun-Arana I et al. (2025) Commun Med 5:327. doi:10.1038/s43856-025-01054-8",
+    "chen_2024_pharmpy_amd": "Chen X, Hooker AC, Karlsson MO et al. (2024) CPT Pharmacometrics Syst Pharmacol 13:1785-1797",
+    "wahlby_2002": "Wahlby U, Jonsson EN, Karlsson MO (2002) AAPS PharmSci 4(4):E27. doi:10.1208/ps040427",
+    "ribbing_jonsson_2004": "Ribbing J, Jonsson EN (2004) J Pharmacokinet Pharmacodyn 31(2):109-134. doi:10.1023/B:JOPA.0000034404.86036.72"
+  }
+}

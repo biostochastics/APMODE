@@ -9,6 +9,9 @@ from apmode.routing import route
 
 def _make_manifest(**overrides: object) -> EvidenceManifest:
     """Build a default EvidenceManifest with overrides."""
+    # Manifest schema v2 (2026-04-15): `node_dim_budget` gates NODE in the
+    # Lane Router. A rich default fixture (richness=rich, absorption=adequate)
+    # must explicitly set the budget that the profiler would derive.
     defaults = {
         "route_certainty": "confirmed",
         "absorption_complexity": "simple",
@@ -21,6 +24,7 @@ def _make_manifest(**overrides: object) -> EvidenceManifest:
         "protocol_heterogeneity": "single-study",
         "absorption_phase_coverage": "adequate",
         "elimination_phase_coverage": "adequate",
+        "node_dim_budget": 8,
     }
     defaults.update(overrides)
     return EvidenceManifest(**defaults)  # type: ignore[arg-type]

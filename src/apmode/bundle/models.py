@@ -211,8 +211,8 @@ class ColumnMapping(BaseModel):
     """Maps source columns to canonical schema fields.
 
     Each field name is a semantic key (snake_case), and each value is
-    the canonical NONMEM column name (UPPERCASE).  Use ``to_canonical()``
-    and ``to_semantic()`` for bidirectional lookup.
+    the canonical NONMEM column name (UPPERCASE).  Use ``to_canonical``
+    and ``to_semantic`` for bidirectional lookup.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -372,16 +372,23 @@ class EvidenceManifest(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
+    # Schema version. Bumped when fields are added/removed/changed
+    # semantically. Lane Router fails fast on an unknown version.
+    # v2 =  refactor (Smith 2000, Huang
+    # 2025 lambda_z, BLQ-aware shape, R3 unification, R7 compartmentality
+    # decoupling, R10 SS gating, R12 NODE-readiness, R14 flip-flop,
+    # R15 Wagner-Nelson ka, signal eligibility audit fields).
+    manifest_schema_version: int = 2
     data_sha256: HexSHA256 | None = None
     route_certainty: Literal["confirmed", "inferred", "ambiguous"]
     absorption_complexity: Literal["simple", "multi-phase", "lag-signature", "unknown"]
     # Graded evidence strength for nonlinear clearance (PRD §10 Q2 follow-up).
-    # Multi-signal voting per the warfarin false-positive analysis (2026-04-15):
-    #   strong   = all 3 independent signals fire (curvature ratio,
-    #              terminal-monoexp failure, dose-AUC nonproportionality)
-    #   moderate = 2 signals fire — search engine adds MM as sentinel only
-    #   weak     = 1 signal fires
-    #   none     = no signal triggered
+    # Multi-signal voting per the warfarin false-positive analysis :
+    # strong   = all 3 independent signals fire (curvature ratio,
+    # terminal-monoexp failure, dose-AUC nonproportionality)
+    # moderate = 2 signals fire — search engine adds MM as sentinel only
+    # weak     = 1 signal fires
+    # none     = no signal triggered
     # Replaces the legacy boolean ``nonlinear_clearance_signature`` field
     # which produced false positives on multi-cmt linear drugs (warfarin:
     # 0/24 candidate convergence).
@@ -409,6 +416,10 @@ class EvidenceManifest(BaseModel):
     auc_extrap_fraction_median: float | None = Field(default=None, ge=0.0, le=1.0)
     lambda_z_analyzable_fraction: float | None = Field(default=None, ge=0.0, le=1.0)
     curvature_ratio_median: float | None = Field(default=None, ge=0.0)
+    # Follow-up: population-level bootstrap
+    # CI on the per-subject curvature ratio median (B=1000, 90% CI).
+    curvature_ratio_ci90_low: float | None = Field(default=None, ge=0.0)
+    curvature_ratio_ci90_high: float | None = Field(default=None, ge=0.0)
     peak_prominence_fraction: float | None = Field(default=None, ge=0.0, le=1.0)
     richness_category: Literal["sparse", "moderate", "rich"]
     identifiability_ceiling: Literal["low", "medium", "high"]
@@ -430,6 +441,42 @@ class EvidenceManifest(BaseModel):
     cmax_p95_p05_ratio: float | None = Field(default=None, ge=0.0)
     dv_cv_percent: float | None = Field(default=None, ge=0.0)
     terminal_log_residual_mad: float | None = Field(default=None, ge=0.0)
+
+    # ---- v2 fields ----
+
+    # Smith 2000 power-model beta coefficient on log(AUC)=alpha+beta·log(dose).
+    # None when design ineligible (<3 dose levels OR dose ratio <3-fold).
+    dose_proportionality_beta: float | None = None
+    dose_proportionality_beta_ci90_low: float | None = None
+    dose_proportionality_beta_ci90_high: float | None = None
+    dose_proportionality_dose_ratio: float | None = None
+    # Smith 2000 translated bounds derived from default [θ_L,θ_H]=[0.80,1.25]
+    dose_proportionality_smith_low: float | None = None
+    dose_proportionality_smith_high: float | None = None
+    # Audit fields: which signals were eligible to vote and which fired.
+    # Lets downstream consumers reproduce dispatch decisions and
+    # distinguish "abstained" from "voted against".
+    signal_eligibility_mask: dict[str, bool] = Field(default_factory=dict)
+    signal_votes: dict[str, bool] = Field(default_factory=dict)
+    # R6 + R10: Huang 2025 best-lambda_z window stats for auditability.
+    lambda_z_used_points_median: float | None = Field(default=None, ge=0.0)
+    lambda_z_adj_r2_median: float | None = Field(default=None, ge=-1.0, le=1.0)
+    # R14 (Richardson 2025): flip-flop kinetics risk for oral profiles.
+    # Drives whether the structural search seeds both ka>ke and ka<ke.
+    flip_flop_risk: Literal["none", "possible", "likely", "unknown"] = "unknown"
+    # R15 (Wagner-Nelson 1963): population-median ka from Wagner-Nelson
+    # method on single-dose oral subjects. Used as initial-estimate seed.
+    wagner_nelson_ka_median: float | None = Field(default=None, ge=0.0)
+    # R12 (Pharmpy AMD design feasibility): NODE input-dim budget per
+    # PRD §4.2.4 R6 — 0 disables NODE backend; 4 = Optimization lane;
+    # 8 = Discovery lane.
+    node_dim_budget: int = Field(default=0, ge=0, le=8)
+    # R19: TIME/TAD consistency for multi-dose datasets. ``contaminated``
+    # = multi-dose subjects exist but TIME is not aligned to dose events;
+    # downstream shape-based heuristics should be down-weighted.
+    tad_consistency_flag: Literal["clean", "contaminated", "unknown"] = "unknown"
+    # Filter audit (DVID non-PK row removal at profile_data entry).
+    n_non_pk_rows_dropped: int = Field(default=0, ge=0)
 
 
 # --- Missing-Data Directive (router output, policy-resolved) ---
@@ -486,11 +533,11 @@ class ImputationStabilityEntry(BaseModel):
     covariate_sign_consistency: dict[str, float] = Field(default_factory=dict)
     # Rubin-pooled per-parameter estimates (Rubin 1987). Keyed by parameter
     # name; each value carries the canonical 5-tuple of quantities:
-    #   ``pooled_estimate``: Q̄, mean of per-imputation estimates
-    #   ``within_var``: Ū, mean of per-imputation sampling variances (SE²)
-    #   ``between_var``: B, sample variance of per-imputation estimates
-    #   ``total_var``: T = Ū + (1 + 1/m) * B
-    #   ``dof``: Barnard-Rubin degrees of freedom for inference
+    # ``pooled_estimate``: Q̄, mean of per-imputation estimates
+    # ``within_var``: Ū, mean of per-imputation sampling variances (SE²)
+    # ``between_var``: B, sample variance of per-imputation estimates
+    # ``total_var``: T = Ū + (1 + 1/m) * B
+    # ``dof``: Barnard-Rubin degrees of freedom for inference
     # Empty when the backend did not emit per-parameter (estimate, SE) on
     # converged imputations.
     pooled_parameters: dict[str, dict[str, float]] = Field(default_factory=dict)

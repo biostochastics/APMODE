@@ -112,8 +112,7 @@ def canonicalize(raw_file: Path, output_dir: Path) -> Path:
 
     # Compute SHA-256
     sha256 = hashlib.sha256(out_path.read_bytes()).hexdigest()
-    print(f"Gentamicin IOV dataset written: {len(df)} rows, "
-          f"{df['NMID'].nunique()} subjects")
+    print(f"Gentamicin IOV dataset written: {len(df)} rows, {df['NMID'].nunique()} subjects")
     print(f"SHA-256: {sha256}")
     print(f"Output: {out_path}")
 

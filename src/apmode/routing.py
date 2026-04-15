@@ -42,7 +42,7 @@ class DispatchDecision:
     node_eligible: bool
     data_sufficient_for_node: bool
     constraints: list[str] = field(default_factory=list)
-    # Policy-resolved missing-data directive. None when route() is called
+    # Policy-resolved missing-data directive. None when route is called
     # without a policy (legacy call sites); backends that see None fall back
     # to their historical behavior.
     missing_data_directive: MissingDataDirective | None = None
@@ -82,22 +82,51 @@ def route(
             backends.remove("agentic_llm")
         constraints.append("NODE excluded (submission lane)")
 
-    # NODE data sufficiency check
+    # NODE data sufficiency check. Follow-up: (
+    # ): use the new `node_dim_budget` manifest field as the
+    # primary gate. Legacy richness-only check retained as a fallback for
+    # v1 manifests (schema_version < 2).
     if node_eligible and "jax_node" in backends:
-        sparse_and_inadequate = (
-            manifest.richness_category == "sparse"
-            and manifest.absorption_phase_coverage == "inadequate"
-        )
-        if sparse_and_inadequate:
+        budget = getattr(manifest, "node_dim_budget", None)
+        if budget is not None and budget == 0:
             backends.remove("jax_node")
             data_sufficient = False
-            constraints.append("NODE removed: sparse data + inadequate absorption coverage")
+            constraints.append("NODE removed: node_dim_budget=0 (insufficient design feasibility)")
+        else:
+            # Fallback to v1 richness + coverage gate.
+            sparse_and_inadequate = (
+                manifest.richness_category == "sparse"
+                and manifest.absorption_phase_coverage == "inadequate"
+            )
+            if sparse_and_inadequate:
+                backends.remove("jax_node")
+                data_sufficient = False
+                constraints.append("NODE removed: sparse data + inadequate absorption coverage")
 
-        # Low identifiability ceiling also constrains NODE
+        # Low identifiability ceiling also constrains NODE (defensive).
         if manifest.identifiability_ceiling == "low" and "jax_node" in backends:
             backends.remove("jax_node")
             data_sufficient = False
             constraints.append("NODE removed: low identifiability ceiling")
+
+        # TAD contamination: shape-heuristic-driven dispatch signals are
+        # down-weighted (NODE pulled, MM hint softened). Only applies
+        # when the manifest carries the v2 field.
+        tad = getattr(manifest, "tad_consistency_flag", None)
+        if tad == "contaminated":
+            constraints.append(
+                "TAD contamination: shape heuristics down-weighted, recheck ingest alignment"
+            )
+            if "jax_node" in backends:
+                backends.remove("jax_node")
+                data_sufficient = False
+                constraints.append("NODE removed: tad_consistency_flag=contaminated")
+
+    # Flip-flop hint for downstream search seeding. Does not remove
+    # backends — just records the directive for initial-estimate generation.
+    ff = getattr(manifest, "flip_flop_risk", None)
+    if ff in {"possible", "likely"}:
+        constraints.append(f"flip_flop_risk={ff}: seed both ka>ke and ka<ke branches")
 
     # Resolve the missing-data directive (policy-driven).
     directive = resolve_directive(policy, manifest) if policy is not None else None

@@ -6,9 +6,9 @@
 
   **Adaptive Pharmacokinetic Model Discovery Engine**
 
-  [![Phase](https://img.shields.io/badge/phase-3%20(P3.B%20%E2%80%94%20rc1)-blue)]()
+  [![Phase](https://img.shields.io/badge/phase-3%20(P3.B%20%E2%80%94%20rc2)-blue)]()
 
-  [![Tests](https://img.shields.io/badge/tests-1541%20passing-success)]()
+  [![Tests](https://img.shields.io/badge/tests-1558%20passing-success)]()
   [![License](https://img.shields.io/badge/license-GPL--2.0--or--later-green)](LICENSE)
   [![Python](https://img.shields.io/badge/python-3.12%E2%80%933.14-yellow)]()
   [![mypy](https://img.shields.io/badge/mypy-strict%20%E2%9C%93-blue)]()
@@ -30,7 +30,7 @@ APMODE is a **governed meta-system** that composes five population PK modeling p
 
 **Formular — a typed PK DSL — is the control surface.** Models are specified in [Formular](docs/FORMULAR.md), a structured grammar (`Absorption x Distribution x Elimination x Variability x Observation × Priors`), compiled to a typed AST, validated against pharmacometric constraints, and lowered to backend-specific code (nlmixr2 R, Stan/Torsten, JAX/Diffrax). The agentic LLM backend (Phase 3) operates exclusively through Formular transforms — including the new `SetPrior` transform for Bayesian workflows — it cannot emit raw code.
 
-> **Status**: **v0.3.0-rc1** (2026-04-15) — Phase 3 release candidate. LICENSE + SPDX + CLI + public API cleared; deferred items (Gate 2.5 quantification, LORO orchestrator E2E test, full-fit benchmark sweep) tracked as rc2 in CHANGELOG. Phase 3 P3.B LORO-CV complete + Phase 2+ Bayesian backend + missing-data pipeline (MI / FREM / Rubin pooling) landed. 1541 tests collected; additionally live nlmixr2/mice/missRanger integration tests covering binary + time-varying FREM, end-to-end Rubin pooling with real m=3 fits, and a theophylline FREM compile check. `mypy --strict` clean. `ruff` clean. Supports Python 3.12–3.14.
+> **Status**: **v0.3.0-rc2** (2026-04-15) — Phase 3 release candidate 2. Ships the Evidence Profiler refactor: manifest schema v2 (Smith 2000 dose-proportionality with translated-bound CI, Huang 2025 λz selector with Phoenix constraint, Wagner-Nelson ka, flip-flop risk, NODE-dim budget, TAD consistency, DVID-aware PK/PD filter, policy-externalised thresholds in `policies/profiler.json`), BLQ-aware shape geometry per Beal 2001 / Ahn 2008, Lane Router contract upgrade. Warfarin false-positive (0/24 convergence on rc1) is resolved: correctly classified as `one_compartment` / `nlc=none` / terminal R²=0.975. 1558 tests collected, full unit suite green; `mypy --strict` clean; `ruff` clean. Supports Python 3.12–3.14.
 
 ---
 
@@ -497,12 +497,96 @@ uv run pytest tests/ --snapshot-update     # update snapshots after emitter chan
 
 ## Pharmacometric References
 
+- **Smith 2000 dose-proportionality power model**: Smith BP, Vandenhende FR, DeSante KA, Farid NA, Welch PA, Callaghan JT, Forgue ST (2000). Confidence interval criteria for assessment of dose proportionality. *Pharm Res* 17(10):1278-1283. doi:10.1023/a:1026451721686
+- **Huang 2025 λz selector + initial-estimates pipeline**: Huang Z, Fidler M, Lan M, Cheng I-L, Kloprogge F, Standing JF (2025). An automated pipeline to generate initial estimates for population pharmacokinetic base models. *J Pharmacokinet Pharmacodyn* 52:60. doi:10.1007/s10928-025-10000-z
+- **Wagner-Nelson absorption**: Wagner JG, Nelson E (1963). Percent absorbed time plots derived from blood level and/or urinary excretion data. *J Pharm Sci* 52(6):610-611. doi:10.1002/jps.2600520627
+- **Richardson 2025 popPK automation**: Richardson S, Irurzun-Arana I et al. (2025). A machine learning approach to population pharmacokinetic modelling automation. *Commun Med* 5:327. doi:10.1038/s43856-025-01054-8
+- **Pharmpy AMD**: Chen X, Hooker AC, Karlsson MO et al. (2024). A fully automatic tool for development of population pharmacokinetic models. *CPT Pharmacometrics Syst Pharmacol* 13:1785-1797
+- **BLQ M3 likelihood**: Beal SL (2001). Ways to fit a PK model with some data below the quantification limit. *J Pharmacokinet Pharmacodyn* 28(5):481-504. doi:10.1023/a:1012299115260
+- **BLQ method comparison**: Ahn JE, Karlsson MO, Dunne A, Ludden TM (2008). Likelihood-based approaches to handling data below the quantification limit using NONMEM VI. *J Pharmacokinet Pharmacodyn* 35(4):401-421. doi:10.1007/s10928-008-9094-4
+- **SCM covariate selection**: Wählby U, Jonsson EN, Karlsson MO (2002). Comparison of stepwise covariate model building strategies in population pharmacokinetic-pharmacodynamic analysis. *AAPS PharmSci* 4(4):E27. doi:10.1208/ps040427
+- **Covariate model power**: Ribbing J, Jonsson EN (2004). Power, selection bias and predictive performance of the population pharmacokinetic covariate model. *J Pharmacokinet Pharmacodyn* 31(2):109-134. doi:10.1023/B:JOPA.0000034404.86036.72
 - **TMDD full binding**: Mager & Jusko (2001), J Pharmacokinet Pharmacodyn 28:507-532
 - **TMDD QSS**: Gibiansky et al. (2008), J Pharmacokinet Pharmacodyn 35:573-591
 - **Transit compartments**: Savic et al. (2007), J Pharmacokinet Pharmacodyn 34:711-726
 - **Allometric scaling**: Anderson & Holford (2008), Clin Pharmacokinet 47:455-467
-- **BLQ M3/M4**: nlmixr2 censoring via CENS/LIMIT data columns
-- **NCA**: PKNCA-style curve-stripping for terminal lambda_z (`pk.calc.half.life`, adjusted R² with most-points tiebreak), linear-up/log-down AUC integration (Purves 1992, `pk.calc.auc`), `CL = Dose / AUC_inf` (or `AUC_tau` at steady state anchored on the last dose), with QC gates (adj-R²≥0.80, extrap≤20%, span≥1 half-life, n_λz≥3) and a dose-guarded unit-scaling heuristic (`x1000` when CL<0.5 + DV>50 + dose_median≥1). Reference: Purves (1992) J Pharmacokin Biopharm 20:211; PKNCA vignettes at https://humanpred.github.io/pknca/
+- **NCA**: PKNCA-style curve-stripping for terminal lambda_z (`pk.calc.half.life`, adjusted R² with most-points tiebreak), linear-up/log-down AUC integration (Purves 1992, `pk.calc.auc`). Reference: Purves (1992) J Pharmacokin Biopharm 20:211; PKNCA vignettes at https://humanpred.github.io/pknca/
+
+---
+
+## Data Profiler Parameter Dictionary
+
+Every threshold used by `apmode.data.profiler` is stored in a versioned
+policy artifact so runs are reproducible without touching Python source:
+
+- **Source of truth**: [`policies/profiler.json`](policies/profiler.json)
+- **Loader**: [`src/apmode/data/policy.py`](src/apmode/data/policy.py) — `get_policy()` returns a typed frozen `ProfilerPolicy` dataclass; `policy_sha256` is embedded in every `EvidenceManifest`.
+- **Current version**: `profiler/v2.0.0` (`manifest_schema_version = 2`)
+
+| Group | Parameter | Default | Purpose |
+|-------|-----------|---------|---------|
+| **Smith 2000 dose-proportionality** | `theta_low` | 0.80 | Lower bound of bioequivalence-style exposure interval |
+| | `theta_high` | 1.25 | Upper bound |
+| | `min_dose_levels` | 3 | Minimum distinct dose levels required for eligibility |
+| | `min_dose_ratio` | 3.0 | Minimum ratio of highest to lowest dose |
+| **Huang 2025 λz selector** | `min_points` | 3 | Minimum points in the terminal-fit window |
+| | `tolerance` | 1e-4 | Adjusted-R² tie-break tolerance |
+| | `phoenix_constraint` | true | Restrict window to second half of post-Cmax (falls back to `min_points` on sparse profiles) |
+| | `adj_r2_threshold` | 0.7 | Minimum acceptable terminal-fit quality |
+| **Steady-state check** | `n_half_lives_required` | 3 | Elapsed duration in half-lives for SS (87.5% attainment) |
+| | `n_doses_alt` | 5 | Alternative dose-count path to SS |
+| | `interval_tolerance` | 0.25 | ±25% inter-dose variation |
+| | `dose_tolerance` | 0.20 | ±20% dose amount variation |
+| | `min_doses` | 3 | Minimum doses required in any SS branch |
+| **Nonlinear clearance** | `mm_curvature_ratio` | 1.8 | Early/late slope ratio triggering MM vote |
+| | `tmdd_curvature_ratio` | 0.3 | Inverse ratio triggering TMDD vote |
+| | `compartmentality_curvature_ratio` | 1.3 | Separate threshold for 2-cmt linear (distinct from MM) |
+| | `terminal_monoexp_r2_linear_threshold` | 0.85 | Monoexp R² above this is evidence for linear PK |
+| **Covariate** | `correlation_threshold_abs_r` | 0.7 | Inter-covariate |r| flagging collinearity |
+| | `missingness_full_information_cutoff` | 0.15 | Fraction above → full-information likelihood |
+| **Error model** | `blq_m3_trigger` | 0.10 | BLQ fraction triggering M3 |
+| | `dynamic_range_proportional` | 50.0 | Cmax_p95/p05 triggering proportional error |
+| | `lloq_cmax_combined` | 0.05 | LLOQ/Cmax median triggering combined |
+| | `terminal_log_mad_combined` | 0.35 | Terminal log-residual MAD triggering combined |
+| **NODE readiness** | `dim_budget.discovery` | 8 | NODE dim cap for Discovery lane |
+| | `dim_budget.optimization` | 4 | NODE dim cap for Optimization lane |
+| | `min_subjects.{discovery,optimization}` | 20 / 10 | Minimum subjects per lane |
+| | `min_median_samples.{discovery,optimization}` | 8 / 4 | Minimum median samples/subject |
+| **Flip-flop** | `ka_lambdaz_ratio_likely` | 1.0 | `ka < λz` → flip-flop "likely" |
+| | `ka_lambdaz_ratio_possible` | 1.5 | `ka < 1.5·λz` → "possible" |
+| **TAD consistency** | `in_window_fraction_clean` | 0.80 | Fraction of obs within union of per-dose intervals |
+| **DVID filter** | `pk_dvid_allowlist` | ["cp", "1", "conc", "concentration"] | Accepted observation DVIDs |
+| | `fail_open_when_no_match` | true | Keep all rows and WARN (vs raise ValueError) when allowlist matches nothing |
+| **Shape detection** | `multi_peak_fraction_threshold` | 0.3 | Fraction of subjects with ≥2 prominent peaks |
+| | `lag_signature_fraction_threshold` | 0.5 | Fraction with delayed-onset absorption |
+| | `peak_prominence_range_fraction` | 0.10 | Prominence as fraction of dynamic range |
+| | `peak_prominence_cmax_floor` | 0.05 | Prominence floor as fraction of Cmax |
+| | `peak_min_distance_intervals` | 2.0 | Minimum inter-peak distance in sampling intervals |
+| **Subject quality** | `min_concs_for_profile` | 5 | Minimum per-subject observations for shape analysis |
+| | `min_subjects_for_median` | 4 | Minimum subjects for population-median statistics |
+| | `absorption_coverage_min_pre_tmax` | 2.0 | Mean pre-Tmax samples for "adequate" coverage |
+| | `elimination_coverage_min_post_tmax` | 3.0 | Mean post-Tmax samples for "adequate" coverage |
+
+To tune for a deployment, edit `policies/profiler.json`, re-run
+`apmode run ...`, and inspect the emitted
+`evidence_manifest.policy_sha256` to confirm the change propagated.
+
+---
+
+## Acknowledgments
+
+The APMODE Data Profiler stands on the shoulders of the open-source
+pharmacometric community. We specifically build on:
+
+- **nlmixr2 / nlmixr2autoinit** (Standing lab, UCL; Matt Fidler et al.) — the Huang 2025 `find_best_lambdaz`, `is_ss`, Wagner-Nelson helpers, and the automated initial-estimates pipeline are replicated faithfully from the R package. https://github.com/ucl-pharmacometrics/nlmixr2autoinit
+- **Pharmpy / AMD tool** (Uppsala Pharmacometrics Research Group) — the search-space MFL, structural/IIV/RUV search algorithms, and dispatch-feasibility concepts inform APMODE's Lane Router. https://github.com/pharmpy/pharmpy
+- **pyDarwin** (Certara; Sale, Sherer, Nieforth et al.) — the Bayesian-optimisation + penalty-function framework for popPK structural search motivated APMODE's penalty / plausibility signals. https://github.com/certara/pyDarwin
+- **rxode2 / nlmixr2est** — canonical oral / IV / infusion model code generation.
+- **PKNCA** (Denney) — the reference NCA implementation whose conventions (linear-up/log-down AUC, `pk.calc.half.life`) APMODE's profiler follows. https://github.com/humanpred/pknca
+- **pandas, numpy, scipy, scikit-learn, hypothesis, syrupy** — the Python scientific and testing stack.
+- **Pydantic, Lark, ruff, mypy, uv, pytest** — the type-safety, parsing, linting, and test toolchain.
+
+Please cite the individual papers listed under *Pharmacometric References* when reporting APMODE-based analyses.
 
 ---
 

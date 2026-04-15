@@ -11,9 +11,147 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The data profiler's nonlinear-clearance heuristic was producing false
 positives on real-world multi-compartment linear datasets (warfarin: 0/24
-candidate convergence in the rc1 real-fit campaign). Multi-model
-consensus (gpt-5.2-pro, gemini-3-pro, mimo-v2-pro, glm-5) plus targeted
-exa.ai literature search drove a substantial refactor.
+candidate convergence in the rc1 real-fit campaign). A substantial
+refactor — grounded in the 2024-2025 automated popPK literature
+(Pharmpy AMD (Chen et al. 2024), nlmixr2autoinit (Huang et al. 2025),
+pyDarwin ML search (Richardson et al. 2025)) and classical
+pharmacokinetic methodology (Smith et al. 2000 dose proportionality,
+Wagner & Nelson 1963 Wagner-Nelson absorption, Beal 2001 / Ahn 2008
+BLQ handling) — replaces heuristic thresholds with statistically
+grounded tests and adds audit fields to the manifest.
+
+### Added — Manifest schema v2 (BREAKING)
+
+- `manifest_schema_version: int = 2` — Lane Router fails fast on
+  unknown versions.
+- Smith 2000 dose-proportionality fields: `dose_proportionality_beta`,
+  `dose_proportionality_beta_ci90_low/high`,
+  `dose_proportionality_dose_ratio`, `dose_proportionality_smith_low/high`.
+  Replaces the previous Spearman(dose, AUC/dose) heuristic with a
+  power-model β-coefficient and translated-bound acceptance region
+  derived from the bioequivalence-style [θ_L, θ_H] interval
+  ([0.80, 1.25] default) and observed dose ratio. Abstains when <3
+  dose levels or dose ratio <3-fold.
+- `signal_eligibility_mask` / `signal_votes` — per-signal audit of
+  which discriminators were eligible to vote on nonlinear-clearance
+  strength and which actually fired. Lets consumers replay dispatch
+  decisions without re-running the profiler.
+- `curvature_ratio_ci90_low/high` — population-level bootstrap CI
+  (B=1000) over per-subject ratios; stable on sparse data where
+  per-subject bootstrap would be singular.
+- `lambda_z_used_points_median` / `lambda_z_adj_r2_median` — audit of
+  the Huang-2025 terminal fit window (R² threshold + n_points the
+  selector chose for each subject).
+- `flip_flop_risk: Literal["none","possible","likely","unknown"]` —
+  Richardson-2025 automation-pitfall flag for oral drugs. Compares
+  Wagner-Nelson `ka` against population-median `λz` with quality
+  guards (terminal-fit adj-R² ≥ 0.85 and ≥4 points before declaring
+  "likely"). Lane Router uses this to seed both `ka>ke` and `ka<ke`
+  initial-estimate branches.
+- `wagner_nelson_ka_median` — population-median absorption rate
+  constant from Wagner-Nelson method on single-dose oral subjects.
+  Used both for flip-flop detection and as an initial-estimate seed.
+- `node_dim_budget: int ∈ {0, 4, 8}` — NODE input-dim budget per PRD
+  §4.2.4 R6. Replaces the richness-only NODE gate in the Lane Router
+  (richness=rich + adequate absorption → 8 for Discovery, 4 for
+  Optimization; else 0 = not dispatched).
+- `tad_consistency_flag: Literal["clean","contaminated","unknown"]` —
+  detects when multi-dose TIME is not aligned to dose events. Uses
+  a true per-dose-interval union check; flags `contaminated` when
+  fewer than 80% of observations fall within any `[dose_i, dose_i+τ]`.
+- `n_non_pk_rows_dropped` — count of non-PK rows removed by the DVID
+  filter (e.g., warfarin's `pca` pharmacodynamic endpoint).
+
+### Added — Algorithm upgrades
+
+- **Huang 2025 λz selector** (`fit_best_lambdaz`) — replaces the
+  break-on-first-viable tail selector. Iterates candidate windows
+  `n ∈ [min_points, N]`, picks max adjusted R² with a `tolerance`
+  tie-break preferring larger windows. Adds a Phoenix WinNonlin-style
+  constraint: the window cannot start before `Tmax + (Tlast - Tmax) / 2`
+  unless the eligible window is shorter than `min_points`, in which
+  case it falls back to `min_points` (documented trade-off for sparse
+  profiles). Replicates `nlmixr2autoinit::find_best_lambdaz`.
+- **Smith 2000 dose-proportionality** (`fit_dose_proportionality`) —
+  aggregates per-subject (dose, AUC) pairs to geometric-mean AUC per
+  dose level before OLS on `log(AUC)=α+β·log(dose)`; computes 90% CI
+  on β via Student-t with df = `n_levels − 2`; flags saturation /
+  induction when CI excludes the Smith-translated bounds.
+- **Steady-state check** (`is_steady_state`) — refuses to declare SS
+  when half-life is unknown (prevents false-positive SS for long-t½
+  drugs with frequent dosing). SS declared iff
+  `elapsed ≥ n_half_lives_required·t½ AND n_doses ≥ min_doses` OR
+  `n_doses ≥ n_doses_alt`, with ±25% interval-variation and ±20%
+  dose-variation tolerances.
+- **Wagner-Nelson ka** (`wagner_nelson_ka`) — standard Wagner & Nelson
+  1963 method with O(n) running-accumulator prefix-AUC and linear-up
+  / log-down trapezoid (matches Phoenix WinNonlin convention).
+- **Population-bootstrap CI** (`bootstrap_median_ci`) — B=1000 seeded
+  bootstrap over the per-subject median statistic.
+
+### Added — BLQ-aware shape geometry (Beal 2001, Ahn 2008)
+
+Every per-subject shape computation (Tmax, terminal slope, curvature
+ratio, peak counter, AUC pairs, λz analyzability, elimination
+coverage) now masks `DV > 0 AND BLQ_FLAG != 1` via the
+`positive_unblqd_mask` helper in `apmode/data/types.py`. Without this
+mask, censored rows encoded as `DV = LLOQ` (M3 convention) biased
+slopes and let `argmax(DV)` land on a censored value.
+
+### Added — Policy externalisation
+
+- `policies/profiler.json` v2.0.0 — every threshold (curvature
+  ratios, Smith interval bounds, λz parameters, SS tolerances, error
+  model triggers, NODE budgets, flip-flop ratios, TAD threshold, DVID
+  allowlist) with literature citations.
+- `src/apmode/data/policy.py` — typed `ProfilerPolicy` dataclass that
+  reads the JSON at import and threads values into
+  `fit_best_lambdaz` / `is_steady_state` through policy-aware
+  wrappers (`_fit_terminal`, `_policy_steady_state`). Emits
+  `policy_sha256` for bundle-level replay.
+- `dvid_fail_open_when_no_match: bool` policy — when false, the DVID
+  filter raises `ValueError` rather than silently keeping all rows
+  when the allowlist matches zero observations (default remains true
+  for backwards-compatible behaviour).
+
+### Added — Lane Router contract updates
+
+The Lane Router consumes the new v2 fields:
+
+- `node_dim_budget == 0` now removes `jax_node` before the legacy
+  richness + coverage fallback runs.
+- `tad_consistency_flag == "contaminated"` removes `jax_node` and
+  records a down-weight-shape-heuristics constraint.
+- `flip_flop_risk ∈ {"possible","likely"}` is recorded as a search
+  constraint for dual-ka-branch seeding (does not remove backends).
+
+### Changed
+
+- `_assess_compartmentality` uses a new `_COMPARTMENTALITY_CURVATURE_RATIO
+  = 1.3` threshold, distinct from `_NONLINEAR_MM_CURVATURE_RATIO = 1.8`,
+  so 2-cmt linear drugs no longer collide with MM detection.
+- `recommend_error_model` — when "combined" is indicated, the allowed
+  set is now `["combined", "proportional"]` rather than combined-only.
+  Ahn 2008 only forbids additive-only under heavy BLQ.
+- `_assess_identifiability` uses median samples per subject (matches
+  `_classify_richness`) instead of arithmetic mean.
+- `_get_dose_auc_pairs_impl` replaced with `_get_dose_auc_triples`
+  which returns `(NMID, dose, AUC)` triples so the SS-gating filter
+  (`_filter_triples_to_ss_subjects`) can re-attach by NMID rather
+  than relying on zip-by-position.
+- DVID filter (`_filter_pk_observations`) now preserves ALL
+  non-observation rows (EVID != 0, including NONMEM reset codes
+  EVID=3/4); drops only observation rows whose DVID is not in the
+  policy allowlist.
+
+### Removed
+
+- `_detect_curvature_nonlinearity` (divergent duplicate of
+  `_curvature_ratios_per_subject`).
+- `_get_dose_auc_pairs_impl_unused` (unreachable dead code).
+- The previous `nonlinear_clearance_signature: bool` manifest field
+  is still absent; consumers must read
+  `nonlinear_clearance_evidence_strength` and act on the literal.
 
 **Breaking schema change**: `EvidenceManifest.nonlinear_clearance_signature: bool`
 is **removed**. Replaced by:
