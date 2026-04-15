@@ -182,10 +182,53 @@ The Data Profiler emits an `EvidenceManifest` describing what the dataset suppor
 | `identifiability_ceiling="medium"` | Caps at 2 compartments |
 | `identifiability_ceiling="high"` | Allows up to 3 compartments |
 | `covariate_burden > 0` | Tracked for SCM search and Gate 2.5 credibility checks |
-| `blq_burden > 0.20` | Forces BLQ M3/M4 into all error models |
+| `blq_burden > policy.blq_m3_threshold` | Selects BLQ method (`M7+` below, `M3` above) per `MissingDataPolicy` |
+| `covariate_missingness.fraction > 0` | Triggers policy-driven `MissingDataDirective`: MI-PMM / MI-missForest / FREM |
+| `time_varying_covariates=true` | Prefers FREM over MI-PMM (Nyberg 2024) |
 | Lane = Submission | Hard-blocks NODE backends regardless of data |
 
 This is a **disqualifying filter**, not a weighted score. If the profiler says the data doesn't support 3-cmt estimation, no 3-cmt candidate is generated — saving hours of wasted fitting on unidentifiable models.
+
+### Missing-Data Handling (Covariates + BLQ)
+
+Missing data is resolved by a **lane-tiered policy** (`policies/{submission,discovery,optimization}.json → missing_data`) that turns the `EvidenceManifest` into a binding `MissingDataDirective`. Two independent paths:
+
+**Covariate missingness** (`src/apmode/data/missing_data.py::resolve_directive`):
+1. No missingness → `exclude` (no directive action).
+2. Time-varying covariates → **FREM** (handled in the NLME likelihood — avoids per-occasion imputation and Ω pooling). Rationale: Nyberg 2024, Jonsson 2024.
+3. `fraction > frem_preferred_above` → **FREM** (MI pooling of Ω becomes the dominant error source at high missingness).
+4. `fraction > mi_pmm_max_missingness` (between thresholds) → **FREM** (prefer single-fit over large-m MI).
+5. Correlated covariates + `missforest_fallback` → **MI-missForest** (nonlinear relations; Bräm CPT:PSP 2022).
+6. Otherwise → **MI-PMM** with `m = policy.m_imputations` (Wijk 2025 DiVA).
+
+**BLQ handling**:
+- `blq_burden > policy.blq_m3_threshold` or `blq_force_m3=true` → **M3** (likelihood-based; Beal 2001).
+- Otherwise → **M7+** (impute 0 + inflated additive residual error; Wijk 2025).
+
+**Lane tiers**:
+
+| Lane | m | adaptive | BLQ M3 threshold | Rank penalty |
+|------|---|----------|------------------|--------------|
+| Submission | 20 | → 40 | 5% | 0.0 (hard floor only) |
+| Discovery | 5 | off | 15% | 0.25 |
+| Optimization | 10 | → 20 | 10% | 0.5 |
+
+**Imputation stability (Gate 1)**. When MI is active, each candidate gets an `ImputationStabilityEntry` (Rubin-pooled OFV/AIC/BIC, `convergence_rate`, top-K `rank_stability`, within/between variance proxy, covariate sign consistency). Gate 1 fails candidates with `convergence_rate < 0.5` (hard floor) or `rank_stability < 1 − policy.imputation_stability_penalty` (soft, lane-driven).
+
+**Agentic LLM cherry-picking guard**. The stability manifest is the *only* per-imputation artifact the LLM sees. When `directive.llm_pooled_only=true` (default), `diagnostic_summarizer.summarize_stability_for_llm` substitutes pooled scores + stability scores for raw per-imputation diagnostics — the LLM cannot observe individual imputation draws, so it cannot select transforms that exploit a single lucky imputation.
+
+**Ω-pooling caveats**. Whenever MI is used, the credibility report automatically appends three Rubin/log-Cholesky/EBE caveats to the limitations block for Gate 2.5 ingestion (ICH M15 alignment).
+
+**R harness**. Imputation uses `src/apmode/r/impute.R`, which dispatches to `mice::mice(method="pmm")` or `missForest::missForest`. Python-side providers are `R_MiceImputer` and `R_MissForestImputer` (`src/apmode/data/imputers.py`).
+
+**FREM emitter**. The FREM path is implemented in `src/apmode/dsl/frem_emitter.py`. Public API:
+
+- `FREMCovariate(name, mu_init, sigma_init, dvid, epsilon_sd, transform)` — per-covariate metadata. `transform="log"` recommended for positive/right-skewed covariates so the joint Ω stays well conditioned.
+- `summarize_covariates(df, names, transforms=...)` — compute baseline (min TIME) mean + SD per covariate; rejects duplicates and covariates with <2 observed subjects.
+- `prepare_frem_data(df, covariates)` — pivot to DVID-multiplexed long format; adds one observation row per subject per covariate at the subject's baseline time, rejects DVID collisions with any existing multi-analyte scheme.
+- `emit_nlmixr2_frem(spec, covariates, initial_estimates=...)` — emits the augmented nlmixr2 model function with a joint Ω block (PK IIV etas + covariate etas), estimable covariate means, fixed covariate residuals (`fix(...)`) so the eta absorbs all BSV, explicit `| DVID==1` on the PK endpoint, and `| DVID==<cov.dvid>` pipes on each covariate endpoint.
+
+Scope is static subject-level continuous covariates (categorical and time-varying are documented as future work). End-to-end orchestrator hookup writes `missing_data_directive.json` to the bundle and logs the resolved directive; fully-driven MI/FREM execution through the orchestrator loop is a follow-up PR (use `apmode.search.stability.run_with_imputations` / `emit_nlmixr2_frem` directly in the meantime).
 
 ### Phase 2: Generate Root Candidates
 

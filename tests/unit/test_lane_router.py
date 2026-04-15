@@ -126,3 +126,28 @@ class TestLaneRouter:
         )
         decision = route("submission", manifest)
         assert any("missingness" in c.lower() for c in decision.constraints)
+
+
+class TestRouteWithPolicy:
+    """Policy-driven ``MissingDataDirective`` is attached to DispatchDecision."""
+
+    def test_no_policy_no_directive(self) -> None:
+        manifest = _make_manifest()
+        decision = route("discovery", manifest)
+        assert decision.missing_data_directive is None
+
+    def test_policy_attaches_directive(self) -> None:
+        from apmode.governance.policy import MissingDataPolicy
+
+        manifest = _make_manifest(blq_burden=0.30)
+        decision = route("submission", manifest, MissingDataPolicy(blq_m3_threshold=0.10))
+        assert decision.missing_data_directive is not None
+        assert decision.missing_data_directive.blq_method == "M3"
+
+    def test_directive_m7plus_when_below_threshold(self) -> None:
+        from apmode.governance.policy import MissingDataPolicy
+
+        manifest = _make_manifest(blq_burden=0.05)
+        decision = route("discovery", manifest, MissingDataPolicy(blq_m3_threshold=0.10))
+        assert decision.missing_data_directive is not None
+        assert decision.missing_data_directive.blq_method == "M7+"

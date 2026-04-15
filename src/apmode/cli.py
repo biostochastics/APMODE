@@ -782,11 +782,50 @@ def inspect(
             table.add_row("Richness", escape(str(em.get("richness_category", "?"))))
             table.add_row("Nonlinear CL", _bool_badge(em.get("nonlinear_clearance_signature")))
             table.add_row("BLQ burden", escape(str(em.get("blq_burden", "?"))))
+            if em.get("time_varying_covariates"):
+                table.add_row("Time-varying covariates", _bool_badge(True))
+            cov_miss = em.get("covariate_missingness")
+            if cov_miss:
+                pattern = cov_miss.get("pattern", "?")
+                frac = cov_miss.get("fraction_incomplete", 0.0)
+                table.add_row("Covariate missingness", f"{pattern} ({frac:.1%})")
             if "absorption_coverage" in em:
                 table.add_row("Absorption", escape(str(em["absorption_coverage"])))
             if "protocol_heterogeneity" in em:
                 table.add_row("Protocol", escape(str(em["protocol_heterogeneity"])))
             console.print(Panel(table, title="[bold]Evidence Profile[/]", border_style="cyan"))
+            sections_shown += 1
+
+    # --- Imputation stability (optional, MI runs only) ---
+    stab_path = bundle_dir / "imputation_stability.json"
+    if stab_path.exists():
+        stab = _load_json(stab_path, "imputation_stability.json")
+        if stab:
+            table = Table(show_header=True, box=None, padding=(0, 2))
+            table.add_column("Candidate", style="dim")
+            table.add_column("Pooled BIC", justify="right")
+            table.add_column("Convergence", justify="right")
+            table.add_column("Rank stability", justify="right")
+            for entry in stab.get("entries", [])[:10]:
+                pb = entry.get("pooled_bic")
+                pb_str = f"{pb:.1f}" if isinstance(pb, (int, float)) else "—"
+                cr = entry.get("convergence_rate", 0.0)
+                rs = entry.get("rank_stability", 0.0)
+                table.add_row(
+                    escape(str(entry.get("candidate_id", "?"))[:20]),
+                    pb_str,
+                    f"{cr:.0%}",
+                    f"{rs:.0%}",
+                )
+            method = stab.get("method", "?")
+            m = stab.get("m", "?")
+            console.print(
+                Panel(
+                    table,
+                    title=f"[bold]Imputation Stability[/]  ({method}, m={m})",
+                    border_style="yellow",
+                )
+            )
             sections_shown += 1
 
     # --- Search trajectory ---

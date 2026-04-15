@@ -30,8 +30,10 @@ from apmode.bundle.models import (  # noqa: TC001 — used at runtime in method 
     EvidenceManifest,
     FailedCandidate,
     GateResult,
+    ImputationStabilityManifest,
     InitialEstimates,
     LOROCVResult,
+    MissingDataDirective,
     PosteriorDiagnostics,
     PriorManifest,
     Ranking,
@@ -127,6 +129,25 @@ class BundleEmitter:
         """Write policy_file.json (copy of the gate thresholds used for this run)."""
         path = self.run_dir / "policy_file.json"
         path.write_text(json.dumps(policy_data, indent=2, default=str))
+        return path
+
+    def write_missing_data_directive(self, directive: MissingDataDirective) -> Path:
+        """Write missing_data_directive.json.
+
+        The directive is the policy-resolved missing-data plan for the run
+        (covariate method, m budget, BLQ method, LLM guard, stability
+        penalty, rationale). Included in the reproducibility bundle so
+        downstream consumers can recover the exact decision that shaped
+        the run without having to re-resolve against the policy file.
+        """
+        path = self.run_dir / "missing_data_directive.json"
+        path.write_text(directive.model_dump_json(indent=2))
+        return path
+
+    def write_imputation_stability(self, manifest: ImputationStabilityManifest) -> Path:
+        """Write imputation_stability.json (MI runs only)."""
+        path = self.run_dir / "imputation_stability.json"
+        path.write_text(manifest.model_dump_json(indent=2))
         return path
 
     # --- Compiled specs ---

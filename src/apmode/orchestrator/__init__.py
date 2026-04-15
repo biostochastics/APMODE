@@ -169,8 +169,15 @@ class Orchestrator:
             evidence.blq_burden,
         )
 
-        # --- Stage 1b: Lane Router Dispatch ---
-        dispatch = route(self._config.lane, evidence)
+        # --- Stage 1b: Load Policy (before routing so the missing-data
+        # directive can be resolved and attached to DispatchDecision) ---
+        policy = self._load_policy()
+        if policy:
+            emitter.write_policy_file(policy.model_dump())
+
+        # --- Stage 1c: Lane Router Dispatch ---
+        missing_data_policy = policy.missing_data if policy is not None else None
+        dispatch = route(self._config.lane, evidence, missing_data_policy)
         outcome.dispatch_decision = dispatch
         for constraint in dispatch.constraints:
             logger.info("Dispatch constraint: %s", constraint)
@@ -180,6 +187,31 @@ class Orchestrator:
             dispatch.backends,
             dispatch.node_eligible,
         )
+        if dispatch.missing_data_directive is not None:
+            directive = dispatch.missing_data_directive
+            emitter.write_missing_data_directive(directive)
+            logger.info(
+                "Missing-data directive: covariate=%s, m=%s, BLQ=%s, pooled_only=%s",
+                directive.covariate_method,
+                directive.m_imputations,
+                directive.blq_method,
+                directive.llm_pooled_only,
+            )
+            for reason in directive.rationale:
+                logger.info("Missing-data rationale: %s", reason)
+            if directive.covariate_method.startswith("MI-"):
+                logger.warning(
+                    "Multiple-imputation execution path is staged but not yet "
+                    "driven by the orchestrator loop. Directive is recorded; use "
+                    "apmode.search.stability.run_with_imputations directly for "
+                    "end-to-end execution in this release."
+                )
+            elif directive.covariate_method == "FREM":
+                logger.info(
+                    "FREM emitter available via apmode.dsl.frem_emitter. "
+                    "Directive recorded; orchestrator FREM refit-on-best is a "
+                    "follow-up PR."
+                )
 
         # --- Stage 2: NCA Initial Estimates ---
         estimator = NCAEstimator(df, manifest)
@@ -191,11 +223,6 @@ class Orchestrator:
         # --- Stage 3: Data Splitting ---
         split = split_subjects(df, seed=self._config.seed)
         emitter.write_split_manifest(split)
-
-        # --- Stage 4: Load Policy ---
-        policy = self._load_policy()
-        if policy:
-            emitter.write_policy_file(policy.model_dump())
 
         # --- Stage 5: Automated Search ---
         split_manifest_dict = split.model_dump()
@@ -358,7 +385,18 @@ class Orchestrator:
                 emitter.write_backend_result(sr.result)
 
                 seed_results = seed_results_map.get(sr.candidate_id)
-                g1 = evaluate_gate1(sr.result, policy, seed_results=seed_results)
+                # The orchestrator does not yet drive the MI execution loop,
+                # so ``stability`` is None here. When MI is wired in, the
+                # per-candidate ``ImputationStabilityEntry`` should be looked
+                # up from the stability manifest and passed alongside the
+                # directive. The Gate 1 imputation-stability check marks
+                # itself ``not_applicable`` when either argument is missing.
+                g1 = evaluate_gate1(
+                    sr.result,
+                    policy,
+                    seed_results=seed_results,
+                    directive=dispatch.missing_data_directive,
+                )
                 emitter.write_gate_decision(g1, gate_number=1)
                 outcome.gate1_results.append((sr.candidate_id, g1.passed))
 
@@ -441,11 +479,14 @@ class Orchestrator:
                     )
                     continue
 
-                # Passed gates 1, 2, 2.5 — emit credibility report
+                # Passed gates 1, 2, 2.5 — emit credibility report.
+                # The directive is forwarded so that MI Ω-pooling caveats
+                # are appended to the limitations block automatically.
                 cred_report = generate_credibility_report(
                     sr_result,
                     lane=self._config.lane,
                     n_observations=manifest.n_observations,
+                    directive=dispatch.missing_data_directive,
                 )
                 emitter.write_credibility_report(cred_report)
 
@@ -484,7 +525,12 @@ class Orchestrator:
             from apmode.report.renderer import render_run_report
 
             cred_reports = [
-                generate_credibility_report(r, self._config.lane, manifest.n_observations)
+                generate_credibility_report(
+                    r,
+                    self._config.lane,
+                    manifest.n_observations,
+                    directive=dispatch.missing_data_directive,
+                )
                 for r in gate12_survivors
             ]
             report_md = render_run_report(
