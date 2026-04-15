@@ -7,166 +7,144 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added — Policy-driven missing-data pipeline (covariate MI + FREM + BLQ routing)
-- **New `MissingDataPolicy` block** in `src/apmode/governance/policy.py`
+### Added — Policy-driven missing-data pipeline
+**Covariate imputation (MI) and Full Random Effects Models (FREM) are now
+first-class options; BLQ method selection is lane-driven rather than
+heuristic.** The full lifecycle is: policy → router directive → bundle
+artifact → backend execution helper → credibility report.
+
+#### Policy + directive
+- **`MissingDataPolicy`** block in `src/apmode/governance/policy.py`
   with lane-tiered defaults in `policies/{submission,discovery,optimization}.json`
-  (policy files bumped to `0.2.0`). Drives end-to-end missing-data dispatch:
-    - Covariate method (`MI-PMM`, `MI-missForest`, `FREM`, `FFEM`, `exclude`)
-    - BLQ method selection by BLQ% threshold (`M7+` default, `M3` above
-      `blq_m3_threshold`; `blq_force_m3` overrides)
-    - Adaptive m with escalation ceiling (`m_imputations`, `m_max`)
-    - LLM pooled-only guard + rank-stability penalty weight
-  - Lane tiers: Submission m=20 / adaptive→40, Discovery m=5 / penalty=0.25,
-    Optimization m=10 / adaptive→20 / penalty=0.5.
+  (policy files bumped to `0.2.0`). Selects:
+  - Covariate method: `MI-PMM`, `MI-missRanger`, `FREM`, `FFEM`, `exclude`.
+  - BLQ method: `M7+` default, `M3` above `blq_m3_threshold` (or when
+    `blq_force_m3=true`).
+  - Imputation budget: `m_imputations`, optional `adaptive_m` / `m_max`.
+  - Agentic guards: `llm_pooled_only`, `imputation_stability_penalty`.
+  - Lane tiers: Submission m=20 → 40, Discovery m=5 + penalty 0.25,
+    Optimization m=10 → 20 + penalty 0.5.
 - **`MissingDataDirective`** (`src/apmode/bundle/models.py`) — binding
-  router output carrying the resolved method, m budget, BLQ method, LLM
-  guard, penalty weight, and audit rationale. Resolution logic in
-  `src/apmode/data/missing_data.py::resolve_directive` cites Nyberg 2024,
-  Wijk 2025 (DiVA), Bräm CPT:PSP 2022. The router (`src/apmode/routing.py`)
-  attaches the directive to every `DispatchDecision` when a policy is
-  passed.
-- **Stability artifact for the agentic backend**. New
-  `ImputationStabilityManifest` + `ImputationStabilityEntry` Pydantic
-  models. `src/apmode/search/stability.py` provides
-  `aggregate_stability()` (Rubin-pooled OFV/AIC/BIC, convergence rate,
-  top-K rank stability, within/between variance proxy, covariate sign
-  consistency) and `run_with_imputations()` (m-fit orchestrator around
-  an injected search callable). When `directive.llm_pooled_only=True` the
-  agentic runner substitutes a pooled-only LLM summary
-  (`summarize_stability_for_llm` in `diagnostic_summarizer.py`) — the LLM
-  never sees per-imputation diagnostics, closing the cherry-picking path.
-- **Gate 1 imputation-stability check** (`src/apmode/governance/gates.py`).
-  For MI runs, `convergence_rate ≥ 0.5` (hard floor) and
-  `rank_stability ≥ 1 − imputation_stability_penalty` (policy-driven)
-  must hold. Non-MI runs mark the check `not_applicable` and pass.
-- **R harness for imputation** (`src/apmode/r/impute.R`). Driven by a
-  typed JSON request/response contract; dispatches to
-  `mice::mice(method="pmm")` or `missForest::missForest` and writes m
-  imputed CSVs. Python adapters `R_MiceImputer` and
-  `R_MissForestImputer` (`src/apmode/data/imputers.py`) implement the
-  `ImputationProvider` protocol. `R_FREMProvider` is a placeholder —
-  FREM is a structural single-fit path (nlmixr2 emitter work), not a
-  preprocessing imputer.
-- **Profiler time-varying covariate detection**
-  (`src/apmode/data/profiler.py`). New `_detect_time_varying_covariates`
-  populates `EvidenceManifest.time_varying_covariates`, which
-  `resolve_directive` uses to prefer FREM over MI when
-  `frem_for_time_varying` is set.
-- **SearchSpace directive overlay**
-  (`src/apmode/search/candidates.py::SearchSpace.apply_directive`).
-  Maps directive BLQ method → DSL emission (`M3`/`M4` → BLQ observation
-  models; `M7+`/`M6+`/`M1` → preprocessing-side handling, no DSL BLQ
-  model). New `blq_strategy` field preserves the full Beal tag.
-- **Credibility report**
-  (`src/apmode/report/credibility.py::generate_credibility_report`)
-  appends `OMEGA_POOLING_CAVEATS` (Rubin-pool limitations, log-Cholesky
-  note, EBE non-poolability) whenever MI is active — Gate 2.5 now
-  documents the Ω-pooling caveat automatically.
-- **Tests**: 31 new unit tests across
-  `tests/unit/test_missing_data.py` (resolver branches, stability
-  aggregation, SearchSpace directive overlay, Gate 1 imputation check)
-  and `tests/unit/test_lane_router.py` (policy-driven directive
-  attachment).
+  router output carrying the resolved method, m, BLQ method, LLM
+  guard, penalty weight, and rationale. Resolver in
+  `src/apmode/data/missing_data.py::resolve_directive` cites Nyberg
+  2024, Wijk 2025 (DiVA), Bräm CPT:PSP 2022.
+- **Router integration**: `src/apmode/routing.py::route` accepts the
+  policy and attaches the directive to every `DispatchDecision`.
+- **Bundle artifact**: `BundleEmitter.write_missing_data_directive`
+  serializes the directive as `missing_data_directive.json` in the
+  reproducibility bundle.
 
-### Added — FREM emitter + orchestrator hookup
-- **FREM emitter** (`src/apmode/dsl/frem_emitter.py`, new). Emits a
-  Full Random Effects Model nlmixr2 program: covariates enter as
-  observations with a joint Ω block spanning PK IIV etas + covariate
-  etas, handling missingness inside the NLME likelihood (no imputation,
-  no Rubin pooling). Based on Karlsson 2011, Yngman 2022, Nyberg 2024.
-  Scope: static subject-level continuous covariates; `transform="log"`
-  supported for positive/right-skewed covariates. Public API:
-  `FREMCovariate`, `summarize_covariates`, `prepare_frem_data`,
-  `emit_nlmixr2_frem`.
-- **Emitter correctness fixes from multi-CLI review** (droid, crush,
-  gemini, codex):
-  - Explicit `| DVID==1` pipe on the PK endpoint so nlmixr2 routes the
-    PK observation correctly in multi-endpoint mode.
-  - `sig_cov_*` residual wrapped in `fix(...)` — with one covariate
-    observation per subject, BSV and residual are confounded; fixing
-    lets the eta absorb all between-subject variance.
-  - `pd.isna()` for null detection in `prepare_frem_data` (covers
-    `pd.NA`, `np.nan`, `None`, `NaT`).
-  - DVID collision check rejects source data that already uses DVIDs in
-    the FREM reserved range.
-  - Duplicate covariate name check in `summarize_covariates` (colliding
-    DVIDs otherwise).
-  - Baseline-row (min `TIME`) selection for subject-level covariate
-    summaries, not first-as-stored.
-  - Optional log-transform pathway for positive/right-skewed covariates
-    keeps the joint Ω well conditioned (Yngman 2022).
-- **Orchestrator hookup** (`src/apmode/orchestrator/__init__.py`,
-  `src/apmode/bundle/emitter.py`).
-  - Policy loaded before routing; `policy.missing_data` plumbed into
-    `route()` so `DispatchDecision.missing_data_directive` is
-    populated end-to-end.
-  - Directive serialized as `missing_data_directive.json` in the
-    reproducibility bundle (new `BundleEmitter.write_missing_data_directive`).
-    `write_imputation_stability` also added for MI runs.
-  - Directive + rationale logged; MI/FREM paths emit an informational
-    warning pointing to `run_with_imputations` / `emit_nlmixr2_frem`
-    for out-of-orchestrator execution. Full in-orchestrator MI/FREM
-    execution is a follow-up PR.
-  - Gate 1 receives the directive; credibility reports receive it too
-    so Ω-pooling caveats are emitted automatically for MI runs.
-- **Tests**: 18 new unit tests in `tests/unit/test_frem_emitter.py`
-  covering `FREMCovariate` validation, `summarize_covariates` (identity
-  + log transforms, duplicates, baseline), `prepare_frem_data` (DVID
-  collisions, log-scale DV, missing-subject handling), and
-  `emit_nlmixr2_frem` (joint Ω block, fixed residuals, covariate-link
-  stripping). Full suite: 1389 passing.
+#### Profiler + search
+- `EvidenceManifest.time_varying_covariates` (new) populated by
+  `_detect_time_varying_covariates` in `src/apmode/data/profiler.py`;
+  drives FREM preference via `frem_for_time_varying`.
+- `SearchSpace.apply_directive` maps directive BLQ method → DSL
+  emission (`M3`/`M4` → BLQ observation models; `M7+`/`M6+`/`M1` →
+  preprocessing-side handling). `blq_strategy` field records the
+  Beal tag for auditing.
 
-### Changed — End-to-end validation + live fixes
-- **nlmixr2 endpoint syntax fixed** (`src/apmode/dsl/frem_emitter.py`).
-  The prior release emitted `| DVID==N` on the endpoint RHS; nlmixr2
-  5.0 rejects this with *"the condition 'DVID == N' must be a simple
-  name"* (Codex review, empirically confirmed 2026-04-14). The emitter
-  now omits the pipe entirely and routes via the DVID column in the
-  augmented data. `_FREM_DVID_OFFSET` changed from 10 to 2 to match
-  nlmixr2's implicit declaration-order endpoint numbering (PK = 1,
-  first covariate = 2, …).
-- **Live nlmixr2 tests** (`tests/unit/test_frem_emitter.py`, new
-  `TestFREMLiveIntegration`). Marked `live`/`slow`; spawns real
-  Rscript against the emitted model code:
-  - `test_nlmixr2_accepts_emitted_frem`: regression guard for the
-    DVID-pipe bug; asserts nlmixr2 compiles the FREM model and sees
-    the expected number of endpoints.
-  - `test_nlmixr2_fits_emitted_frem`: end-to-end FOCE-I fit on tiny
-    synthetic data; asserts a non-degenerate `eta.cov.WT` variance
-    (catches the SAEM-collapse failure mode observed in development).
-- **Imputer swap missForest → missRanger** (user-requested; verified
-  against missRanger 2.6.1 docs via ref.tools). missRanger is a fast
-  ranger-backed random-forest imputer with predictive mean matching
-  that's the modern successor to missForest for MI workflows.
-  - `src/apmode/r/impute.R` now dispatches to
-    `missRanger::missRanger(num.trees=100, pmm.k=10, seed=...)`.
-  - Python adapter renamed `R_MissForestImputer` →
-    `R_MissRangerImputer` with method string `"missRanger"`.
-  - `MissingDataDirective.covariate_method` literal updated:
-    `MI-missForest` → `MI-missRanger`.
-- **Live imputer tests** (`tests/unit/test_imputers_live.py`, new).
-  Marked `live`; spawns real Rscript against `mice` and `missRanger`.
-  Verifies 3 imputed CSVs are produced, no residual NaN in imputed
-  columns, and between-imputation variance across draws (proves MI
-  is actually functioning, not collapsing to a single imputation).
+#### MI execution infrastructure
+- **R imputer harness** (`src/apmode/r/impute.R`): JSON-typed
+  request/response contract; dispatches to `mice::mice(method="pmm")`
+  or **`missRanger::missRanger(num.trees=100, pmm.k=10)`** — the
+  modern ranger-backed successor to missForest (Mayer CRAN 2.6.x,
+  verified via ref.tools).
+- **Python adapters** (`src/apmode/data/imputers.py`): `R_MiceImputer`
+  and `R_MissRangerImputer` implement the `ImputationProvider`
+  protocol.
+- **Stability aggregation** (`src/apmode/search/stability.py`):
+  `run_with_imputations` drives the m-fit loop via an injected search
+  callable; `aggregate_stability` computes Rubin-pooled OFV/AIC/BIC,
+  convergence rate, top-K rank stability, within/between variance
+  proxy, and covariate sign consistency. Emitted to the bundle as
+  `imputation_stability.json`.
+
+#### FREM execution infrastructure
+- **FREM emitter** (`src/apmode/dsl/frem_emitter.py`, new). Emits an
+  nlmixr2 program where covariates are observations drawn from a joint
+  MVN with the PK random effects — a single joint Ω matrix carries
+  PK-covariate covariances; missingness is handled inside the NLME
+  likelihood (no imputation, no Rubin pooling). References: Karlsson
+  2011, Yngman 2022, Nyberg 2024.
+  - Public API: `FREMCovariate`, `summarize_covariates`,
+    `prepare_frem_data`, `emit_nlmixr2_frem`.
+  - Scope: static subject-level continuous covariates;
+    `transform="log"` supported for positive/right-skewed covariates
+    (Yngman 2022 conditioning).
+  - Correctness details: covariate means emitted as estimable thetas
+    (`<-`), residuals fixed via `fix(...)` so the random effect
+    absorbs BSV at one-obs-per-subject, `pd.isna()` null detection,
+    DVID collision guard, duplicate-name rejection, baseline (min
+    TIME) row selection.
+  - **Endpoint routing is data-driven via the `DVID` column.** nlmixr2
+    assigns endpoints DVID 1 (PK), 2, 3, … in declaration order.
+    No `| <expr>` is emitted on endpoint RHS — nlmixr2 5.0 rejects
+    any condition after `|` with "the condition '…' must be a simple
+    name" (Codex review, empirically confirmed 2026-04-14).
+    `_FREM_DVID_OFFSET = 2` to align with nlmixr2's implicit numbering.
 - **FREM runner** (`src/apmode/backends/frem_runner.py`, new).
-  `run_frem_fit()` composes `summarize_covariates` +
-  `prepare_frem_data` + `emit_nlmixr2_frem` with
-  `Nlmixr2Runner.run(compiled_code_override=...)` for a single-call
-  FREM fit. `Nlmixr2Runner.run` gains `compiled_code_override` kwarg
-  so the FREM path supplies its own R code without monkey-patching
-  the emitter.
-- **Live FREM runner test** (`tests/unit/test_frem_runner_live.py`,
-  new). End-to-end: synthesizes a tiny PK dataset with induced WT
-  missingness, runs `run_frem_fit` through real nlmixr2 FOCE-I, and
-  asserts convergence plus the augmented CSV is written to the
-  bundle.
+  `run_frem_fit` composes `summarize_covariates` + `prepare_frem_data`
+  + `emit_nlmixr2_frem` with `Nlmixr2Runner.run(compiled_code_override=...)`.
+  `Nlmixr2Runner.run` gains `compiled_code_override` kwarg so the FREM
+  path supplies its own R code without monkey-patching
+  `emit_nlmixr2`.
 
-### Known constraints
-- **SAEM is not supported for FREM** endpoints. nlmixr2 SAEM treats
-  subject-level covariate observations as dynamic sampling targets and
-  collapses the random-effect variance to zero (verified 2026-04-14).
-  The FREM runner must use `estimation=["focei"]`.
+#### Governance + agentic guard
+- **Gate 1 imputation-stability check** (`src/apmode/governance/gates.py`).
+  For MI runs: `convergence_rate ≥ 0.5` (hard floor) and
+  `rank_stability ≥ 1 − imputation_stability_penalty`. Non-MI runs
+  mark the check `not_applicable` and pass.
+- **Agentic pooled-only guard**. When `directive.llm_pooled_only=true`
+  the agentic runner substitutes a pooled-only LLM summary
+  (`summarize_stability_for_llm` in `diagnostic_summarizer.py`) — the
+  LLM never sees per-imputation diagnostics, closing the
+  imputation-cherry-picking path.
+- **Credibility report** auto-appends `OMEGA_POOLING_CAVEATS`
+  (Rubin-pool limits, log-Cholesky note, EBE non-poolability) whenever
+  MI is active. Gate 2.5 now documents the Ω-pooling caveat
+  automatically.
+
+### Tests
+- **49 new unit tests** in the default fast path:
+  - `tests/unit/test_missing_data.py` (31): resolver branches,
+    stability aggregation, SearchSpace directive overlay, Gate 1
+    imputation check.
+  - `tests/unit/test_frem_emitter.py` (18): `FREMCovariate` validation,
+    `summarize_covariates` (identity + log transforms, duplicates,
+    baseline), `prepare_frem_data` (DVID collisions, log-scale DV,
+    missing-subject handling), `emit_nlmixr2_frem` (joint Ω block,
+    fixed residuals, covariate-link stripping, no DVID pipe).
+- **Live end-to-end tests** (marked `live`/`slow`; skipped by default):
+  - `tests/unit/test_frem_emitter.py::TestFREMLiveIntegration`: spawns
+    real Rscript + nlmixr2; verifies (a) the emitted FREM model
+    compiles and exposes the expected endpoint count, (b) FOCE-I
+    actually fits the joint Ω and learns a non-degenerate
+    `eta.cov.WT` on tiny synthetic data (regression guard against
+    SAEM collapse observed during development).
+  - `tests/unit/test_imputers_live.py`: spawns real Rscript against
+    `mice` and `missRanger`; verifies imputed CSVs appear, no residual
+    NaN in imputed columns, and between-imputation variance proves MI
+    is functioning (not collapsing to single imputation).
+  - `tests/unit/test_frem_runner.py`: Python-side composition test
+    for `run_frem_fit` using a stub runner (fast; runs every PR).
+- **Full suite**: 1391 passing in the default fast path. ruff clean,
+  `mypy --strict` clean across 79 source files.
+
+### Known constraints and residuals
+- **SAEM is not supported for FREM.** nlmixr2 SAEM treats subject-level
+  covariate observations as dynamic sampling targets and collapses the
+  random-effect variance to zero (verified 2026-04-14). The FREM runner
+  must use `Nlmixr2Runner(estimation=["focei"])`.
+- **Orchestrator MI/FREM execution wiring** is a follow-up PR. The
+  directive is written to every bundle and logged, but `apmode run`
+  does not yet call `run_with_imputations` or `run_frem_fit` from the
+  main pipeline. Use the helpers directly in the meantime.
+- **Categorical covariates** in FREM require a separate logit/probit
+  parameterization and are documented as future work.
+- **Time-varying covariates** are routed to FREM upstream
+  (via `frem_for_time_varying`), but the v1 emitter treats them as
+  baseline. Per-occasion etas are future work.
 
 ### Fixed — NCA unit-scaling on heterogeneous-unit datasets
 - **NCA initial estimates are now unit-aware** (`src/apmode/data/initial_estimates.py`).

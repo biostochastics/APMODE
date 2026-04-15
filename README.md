@@ -183,7 +183,7 @@ The Data Profiler emits an `EvidenceManifest` describing what the dataset suppor
 | `identifiability_ceiling="high"` | Allows up to 3 compartments |
 | `covariate_burden > 0` | Tracked for SCM search and Gate 2.5 credibility checks |
 | `blq_burden > policy.blq_m3_threshold` | Selects BLQ method (`M7+` below, `M3` above) per `MissingDataPolicy` |
-| `covariate_missingness.fraction > 0` | Triggers policy-driven `MissingDataDirective`: MI-PMM / MI-missForest / FREM |
+| `covariate_missingness.fraction > 0` | Triggers policy-driven `MissingDataDirective`: MI-PMM / MI-missRanger / FREM |
 | `time_varying_covariates=true` | Prefers FREM over MI-PMM (Nyberg 2024) |
 | Lane = Submission | Hard-blocks NODE backends regardless of data |
 
@@ -198,7 +198,7 @@ Missing data is resolved by a **lane-tiered policy** (`policies/{submission,disc
 2. Time-varying covariates → **FREM** (handled in the NLME likelihood — avoids per-occasion imputation and Ω pooling). Rationale: Nyberg 2024, Jonsson 2024.
 3. `fraction > frem_preferred_above` → **FREM** (MI pooling of Ω becomes the dominant error source at high missingness).
 4. `fraction > mi_pmm_max_missingness` (between thresholds) → **FREM** (prefer single-fit over large-m MI).
-5. Correlated covariates + `missforest_fallback` → **MI-missForest** (nonlinear relations; Bräm CPT:PSP 2022).
+5. Correlated covariates + `missforest_fallback` → **MI-missRanger** (nonlinear relations; Bräm 2022 concept, `missRanger` 2.6.x ranger-backed implementation).
 6. Otherwise → **MI-PMM** with `m = policy.m_imputations` (Wijk 2025 DiVA).
 
 **BLQ handling**:
