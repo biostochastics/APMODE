@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — FREM binary/time-varying covariates + orchestrator execution
+- **`FREMCovariate.transform="binary"`** — accepts 0/1-coded
+  categorical covariates with an additive-normal endpoint and strict
+  validation on both `summarize_covariates` and `prepare_frem_data`.
+  The off-diagonal Ω entry between the binary covariate eta and a PK
+  eta estimates the linear association between the PK parameter and
+  the binary group — the standard "categorical-FREM compromise"
+  (Karlsson 2011). Multi-level categorical covariates are handled by
+  one-hot encoding upstream into k−1 binary indicators.
+- **`FREMCovariate.time_varying`** — when True, `prepare_frem_data`
+  emits one observation row per (subject, TIME) where the covariate
+  value is observed, and `emit_nlmixr2_frem` leaves `sig_cov_*`
+  estimable (instead of `fix(...)`) so the residual absorbs
+  within-subject variation while the joint Ω entry continues to
+  carry the between-subject component. Dedup keys on `(TIME,)` per
+  subject and raises on conflicting values at the same timepoint.
+- **Auto-detection**: `summarize_covariates` now sets
+  `time_varying=True` automatically when any subject has more than
+  one distinct non-NaN value for the covariate.
+- **`Orchestrator._run_frem_stage`** (new) — refits the best healthy
+  classical candidate (filtered to `backend="nlmixr2"` + finite BIC +
+  not `ill_conditioned`) via `run_frem_fit` after the classical
+  search. The FREM fit is appended to `search_outcome.results` as
+  `frem_<model_id>` and emitted to the bundle as a standard backend
+  result. Defaults to a FOCE-I-configured `Nlmixr2Runner` when
+  `Orchestrator(frem_runner=...)` is not provided.
+- **`Orchestrator._run_mi_stage`** (new) — drives the m-imputation
+  loop after classical search: produces m imputed CSVs via
+  `R_MiceImputer` / `R_MissRangerImputer` (or an injected
+  `mi_provider`), refits the **frozen classical candidate set** on
+  each imputation so candidate_ids align, applies Rubin's rules to
+  the pooled `(estimate, SE)` tuples, and emits
+  `imputation_stability.json`. Gate 1 consumes the per-candidate
+  stability entries to enforce `convergence_rate ≥ 0.5` and
+  `rank_stability ≥ 1 − policy.imputation_stability_penalty`.
+- **Stage 5c** in `apmode run` now branches on
+  `directive.covariate_method`: FREM → `_run_frem_stage`, MI-* →
+  `_run_mi_stage`, otherwise no-op. Failures are logged with
+  `exc_info=True` and do not abort the classical search results.
+- **`Nlmixr2Runner.run(compiled_code_override=...)`** kwarg — the
+  FREM path supplies pre-emitted nlmixr2 model code via
+  `emit_nlmixr2_frem` without monkey-patching the DSL compiler.
+- **`Orchestrator(frem_runner, mi_provider)`** — optional
+  constructor-level dependency injection points so tests and custom
+  deployments can substitute stubs or specialized backends without
+  re-invoking the defaults.
+
 ### Added — Rubin's rules for per-parameter pooling
 - **`apmode.search.stability.rubin_pool`** (new). Implements the
   canonical Rubin (1987) decomposition for a scalar parameter across
@@ -284,15 +331,23 @@ artifact → backend execution helper → credibility report.
   covariate observations as dynamic sampling targets and collapses the
   random-effect variance to zero (verified 2026-04-14). The FREM runner
   must use `Nlmixr2Runner(estimation=["focei"])`.
-- **Orchestrator MI/FREM execution wiring** is a follow-up PR. The
-  directive is written to every bundle and logged, but `apmode run`
-  does not yet call `run_with_imputations` or `run_frem_fit` from the
-  main pipeline. Use the helpers directly in the meantime.
-- **Categorical covariates** in FREM require a separate logit/probit
-  parameterization and are documented as future work.
-- **Time-varying covariates** are routed to FREM upstream
-  (via `frem_for_time_varying`), but the v1 emitter treats them as
-  baseline. Per-occasion etas are future work.
+- **Orchestrator MI/FREM execution** now wired end-to-end
+  (`Orchestrator._run_frem_stage` / `_run_mi_stage` called from
+  Stage 5c of `apmode run` when the directive demands FREM or MI-*;
+  bundle artifacts `frem_augmented.csv`, `imputation_stability.json`
+  and the refit results emitted automatically). Defaults construct
+  `Nlmixr2Runner(estimation=["focei"])` for FREM and
+  `R_MiceImputer` / `R_MissRangerImputer` for MI; both can be
+  overridden via `Orchestrator(frem_runner=..., mi_provider=...)`.
+- **Categorical covariates in FREM** supported via
+  `FREMCovariate.transform="binary"` (0/1-coded additive-normal
+  endpoint; multi-level via k−1 one-hot indicators). Proper
+  logit-likelihood binomial endpoints remain future work.
+- **Time-varying covariates in FREM** supported via
+  `FREMCovariate.time_varying=True` with auto-detection in
+  `summarize_covariates`. Per-(subject, TIME) augmentation rows are
+  emitted and `sig_cov_*` is left estimable so the residual absorbs
+  within-subject variation while the eta continues to carry BSV.
 
 ### Fixed — NCA unit-scaling on heterogeneous-unit datasets
 - **NCA initial estimates are now unit-aware** (`src/apmode/data/initial_estimates.py`).
