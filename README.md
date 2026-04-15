@@ -201,6 +201,8 @@ for cmt in space.structural_cmt:              # e.g., [1, 2, 3]
 
 For a typical dataset with rich sampling, nonlinear CL, and high identifiability, this produces ~20-30 root candidates. NCA-seeded initial estimates dramatically reduce SAEM convergence time vs. fitting from arbitrary values.
 
+The NCA estimator is **unit-aware**: when raw CL is implausibly small (`< 0.5 L/h`) and the DV magnitude looks like ng/mL territory (`> 50`), it applies a `x1000` scaling factor — accommodating the common pharmacometric convention of dose-in-mg with concentration-in-ng/mL without requiring users to specify units explicitly. The applied scale factor is recorded as `_unit_scale_applied` in the initial estimates bundle for auditability.
+
 ### Phase 3: Warm-Start Children (Fixed Budget, Max 18)
 
 After all root candidates are fit, the SearchEngine selects the **top-3 converged roots by BIC** and generates warm-started children from each. For each parent, it produces up to 2 children per error model type (proportional, additive, combined), giving a hard ceiling of **3 parents × 3 error types × 2 children = 18 child candidates**. Duplicates (deduplicated by `model_id`) are skipped, so the actual count is usually lower.
@@ -413,7 +415,7 @@ uv run pytest tests/ --snapshot-update      # update snapshots after emitter cha
 - **Transit compartments**: Savic et al. (2007), J Pharmacokinet Pharmacodyn 34:711-726
 - **Allometric scaling**: Anderson & Holford (2008), Clin Pharmacokinet 47:455-467
 - **BLQ M3/M4**: nlmixr2 censoring via CENS/LIMIT data columns
-- **NCA**: Linear trapezoidal AUC, terminal log-linear kel, CL = Dose / AUC_inf
+- **NCA**: Linear trapezoidal AUC, terminal log-linear kel, CL = Dose / AUC_inf, with a unit-scaling heuristic that detects mg-dose + ng/mL-DV mismatches (CL < 0.5 L/h + DV magnitude > 50 → x1000 scaling on CL/V)
 
 ---
 

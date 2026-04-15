@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — NCA unit-scaling on heterogeneous-unit datasets
+- **NCA initial estimates are now unit-aware** (`src/apmode/data/initial_estimates.py`).
+  Discovered via Suite B mavoglurant run: NCA computed `CL = Dose / AUC`
+  directly with no unit conversion, producing `CL=0.05 L/h` (1000x too low)
+  when dose is in mg but DV is in ng/mL — a routine pharmacometric convention.
+  SAEM then converged to degenerate parameter regions (`lCL=-3.6`, i.e.
+  CL=0.028 L/h), and Gate 1's `parameter_plausibility` check correctly
+  rejected all candidates.
+- **`_detect_unit_scale_factor()` heuristic**: when `CL < 0.5 L/h` and
+  `DV magnitude > 50`, infers ng/mL DV convention and applies `x1000`
+  scaling to CL and V. Multiplier exposed as `_unit_scale_applied` in NCA
+  results for downstream auditability. Per-magnitude tier:
+    - `CL < 0.0001` and `DV > 50000` → `x1e6` (pg/mL DV)
+    - `CL < 0.5` and `DV > 50` → `x1000` (ng/mL DV)
+    - otherwise → `x1.0` (units commensurate)
+- **Verified across three datasets**: theophylline (mg + mg/L → no scaling,
+  CL=2.8 L/h), mavoglurant (mg + ng/mL → x1000, CL=49 L/h), A1 synthetic
+  (commensurate → no scaling).
+- 8 new regression tests in `tests/unit/test_nca_unit_scaling.py`
+  covering commensurate units, ng/mL detection, edge cases, and a
+  parametrized dose/DV-scale matrix.
+
+### Fixed — BLQ pipeline LLOQ propagation
+- **Profiler now extracts LLOQ from data** (`src/apmode/data/profiler.py`).
+  When `BLQ_FLAG=1` rows exist, `_extract_lloq_value()` reads the explicit
+  `LLOQ` column (preferred) or falls back to the `DV` value of censored rows
+  (M3 convention sets DV=LLOQ). Result populated as `EvidenceManifest.lloq_value`.
+- **SearchSpace propagates the actual LLOQ into BLQ_M3/M4 candidates**.
+  Prior bug: `force_blq_method="m3"` was set when `blq_burden > 0.20`, but
+  `lloq_value` stayed at the default `1.0`. On the mavoglurant Suite B run
+  (actual LLOQ=32.8), this caused all candidates to fit the wrong M3
+  censoring integral and Gate 1 to reject every candidate. Now the SearchSpace
+  reads `manifest.lloq_value` and passes the correct LLOQ into all BLQ_M3
+  observation models.
+- 3 new integration tests (`tests/integration/test_blq_integration.py`):
+  high BLQ + auto-computed LLOQ, low BLQ (below 20% threshold) does not
+  force M3, profiler fallback to DV when LLOQ column is missing.
+
 ### Added — Bayesian backend (5th paradigm, Phase 2+)
 - **Bayesian PK backend via Stan/Torsten** (`src/apmode/backends/bayesian_runner.py`,
   `src/apmode/bayes/harness.py`). Joins classical NLME, automated search,
