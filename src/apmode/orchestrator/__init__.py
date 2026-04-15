@@ -668,6 +668,12 @@ class Orchestrator:
             report_path = emitter.run_dir / "report.md"
             report_path.write_text(report_md)
 
+            # HTML export (rc1: rich-rendered terminal-style HTML).
+            from apmode.report.renderer import render_markdown_to_html
+
+            report_html = render_markdown_to_html(report_md, title=f"APMODE Run {emitter.run_id}")
+            (emitter.run_dir / "report.html").write_text(report_html)
+
         # --- Stage 7b: Report Provenance ---
         from apmode.bundle.models import ReportProvenance
 

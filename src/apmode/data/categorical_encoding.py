@@ -37,10 +37,15 @@ import warnings
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
+import structlog
+
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
     import pandas as pd
+
+
+_logger = structlog.get_logger(__name__)
 
 
 EncodingKind = Literal[
@@ -166,6 +171,29 @@ def detect_encoding(series: pd.Series, *, column: str | None = None) -> Categori
                     f"({sorted(raw_unique, key=str)[:5]}); auto-remap refuses "
                     f"to guess. Pass an explicit override or canonicalize "
                     f"upstream."
+                ),
+            )
+        # Gemini review: object-dtype columns mixing bool and non-bool
+        # numeric (e.g., ``pd.Series([True, 1], dtype=object)``) hash-
+        # collapse on equality and would otherwise be reported as
+        # ``constant``. Treat them as ambiguous multi_level so the
+        # caller is forced to canonicalize upstream.
+        has_bool = any(issubclass(t, bool) for t in types_seen)
+        has_non_bool_numeric = any(
+            issubclass(t, (int, float)) and not issubclass(t, bool) for t in types_seen
+        )
+        if has_bool and has_non_bool_numeric:
+            return CategoricalEncodingHint(
+                column=name,
+                detected_encoding="multi_level",
+                unique_values=sorted(raw_unique, key=str)[:10],
+                suggested_remap=None,
+                applied=False,
+                rationale=(
+                    f"column {name!r} mixes bool and non-bool numeric values "
+                    f"({sorted(raw_unique, key=str)[:5]}); these equate under "
+                    f"Python semantics (True == 1) and cannot be safely "
+                    f"remapped. Canonicalize to a single dtype upstream."
                 ),
             )
     n_unique = len(raw_unique)
@@ -415,6 +443,13 @@ def auto_remap_binary_columns(
             rationale = hint.rationale
 
         if apply and remap_to_apply is not None:
+            _logger.info(
+                "categorical_encoding.remap_applied",
+                column=col,
+                detected_encoding=hint.detected_encoding,
+                source="override" if explicit_remap is not None else "auto",
+                remap={str(k): int(v) for k, v in remap_to_apply.items()},
+            )
             # Validate remap completeness BEFORE applying. ``Series.map``
             # silently produces NaN for any source value not in the
             # remap dict — that would drop subjects from FREM without

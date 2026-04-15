@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0-rc1] — 2026-04-15
+
+First release candidate for the v0.3.0 Phase 3 milestone. All pre-release
+hygiene items (LICENSE, SPDX headers, CLI documentation, public API) cleared.
+1537 fast-path tests passing, `mypy --strict` clean across 80 source files,
+`ruff` clean.
+
+### Added
+
+- **CLI `--binary-encode` flag** (`apmode run --binary-encode COL=VAL1:0,VAL2:1`,
+  repeatable): per-column override for the categorical encoding auto-detector.
+  Parsed into `RunConfig.binary_encode_overrides` and threaded through to
+  FREM and MI paths. Validated at the CLI layer so malformed flags fail before
+  ingestion.
+- **INFO-level structured logging on applied remaps** — `auto_remap_binary_columns`
+  now emits a `categorical_encoding.remap_applied` event whenever it rewrites a
+  column, so downstream log aggregation captures the auto-detection decisions
+  without requiring an `apmode inspect` pass.
+- **HTML report export** (`report.html`): every run bundle now emits a
+  standalone HTML render of `report.md` alongside the existing Markdown. The
+  HTML is self-contained (no external CSS/JS), rendered via `rich.markdown`
+  (already a project dependency), safe to archive or host statically. For
+  publication-quality HTML, pipe `report.md` through `pandoc`.
+
+### Fixed
+
+- **Boolean/numeric collision in categorical detection** — `detect_encoding`
+  now flags object-dtype columns that mix `bool` and non-bool numeric values
+  (e.g., `pd.Series([True, 2], dtype=object)`) as `multi_level` with a clear
+  rationale, instead of silently producing a meaningless remap. Raised by
+  gemini in the last multi-CLI review.
+
+### Deferred to v0.3.0-rc2 (documented limitations)
+
+- **Gate 2.5 limitation-to-risk mapping**: currently a presence check
+  (threshold calibration requires scientific work — see PRD §10 Q2).
+- **Gate 2.5 sensitivity-analysis execution**: presence check only; actual
+  ±20% structural-parameter perturbation sweep is rc2 scope.
+- **LORO-CV orchestrator integration test**: unit coverage is comprehensive
+  (722 LoC across `test_loro_cv.py`, `test_loro_execution.py`,
+  `test_loro_gate2.py`), but no end-to-end optimization-lane integration
+  test yet.
+- **Cross-paradigm NLPD comparability protocol** (PRD §10 Q2): within-paradigm
+  NLPD is supported; cross-paradigm ranking uses simulation-based metrics
+  (VPC concordance, AUC/Cmax BE, NPE) per the v0.3 design.
+- **Full nlmixr2data benchmark sweep with real fits**: FREM sweep currently
+  runs compile-only; nightly real-fit sweep is rc2 infrastructure.
+
 ### Added — Categorical encoding auto-detection + provenance recording
 APMODE now detects and remaps non-canonical binary categorical
 covariate encodings automatically, with a documented format contract

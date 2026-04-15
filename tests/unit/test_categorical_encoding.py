@@ -49,6 +49,19 @@ class TestDetectEncoding:
         assert hint.detected_encoding == "binary_boolean"
         assert hint.suggested_remap == {False: 0, True: 1}
 
+    def test_bool_numeric_object_mix_rejected(self) -> None:
+        # Gemini review: object-dtype mixing bool and non-bool numeric where
+        # the values are actually distinct (True, 2) must be rejected as
+        # multi_level — the bool/int hash-equivalence would otherwise
+        # produce a meaningless remap.
+        # Note: True/1 and False/0 collapse under pandas equality before
+        # this detector sees them, so this test covers the detectable path.
+        s = pd.Series([True, 2], dtype=object, name="FLAG")
+        hint = detect_encoding(s)
+        assert hint.detected_encoding == "multi_level"
+        assert hint.suggested_remap is None
+        assert "bool" in hint.rationale.lower()
+
     def test_unknown_two_level_string_alphabetic_default(self) -> None:
         s = pd.Series(["AlphaArm", "BetaArm", "AlphaArm"], name="ARM")
         hint = detect_encoding(s)

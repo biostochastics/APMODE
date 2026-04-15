@@ -264,6 +264,28 @@ class TestRun:
         result = runner.invoke(app, ["run", str(csv), "-j", "0"])
         assert result.exit_code != 0
 
+    def test_binary_encode_invalid_no_equals(self, tmp_path: Path) -> None:
+        csv = tmp_path / "data.csv"
+        csv.write_text("NMID,TIME,DV,MDV,EVID,AMT,CMT\n")
+        result = runner.invoke(app, ["run", str(csv), "--binary-encode", "SEX"])
+        assert result.exit_code == 1
+        assert "invalid --binary-encode" in result.output.lower()
+
+    def test_binary_encode_invalid_target(self, tmp_path: Path) -> None:
+        csv = tmp_path / "data.csv"
+        csv.write_text("NMID,TIME,DV,MDV,EVID,AMT,CMT\n")
+        result = runner.invoke(app, ["run", str(csv), "--binary-encode", "SEX=M:3,F:1"])
+        assert result.exit_code == 1
+        assert "invalid --binary-encode target" in result.output.lower()
+
+    def test_binary_encode_valid_parses(self, tmp_path: Path) -> None:
+        # Valid flag should parse and then fail later at ingestion (empty CSV).
+        csv = tmp_path / "data.csv"
+        csv.write_text("NMID,TIME,DV,MDV,EVID,AMT,CMT\n")
+        result = runner.invoke(app, ["run", str(csv), "--binary-encode", "SEX=M:0,F:1"])
+        # Must get past parsing into the pipeline.
+        assert "invalid --binary-encode" not in result.output.lower()
+
 
 # ---------------------------------------------------------------------------
 # `validate` command

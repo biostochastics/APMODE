@@ -27,6 +27,32 @@ if TYPE_CHECKING:
     )
 
 
+def render_markdown_to_html(markdown_text: str, *, title: str = "APMODE Run Report") -> str:
+    """Render a Markdown report to a standalone HTML document.
+
+    Uses ``rich.markdown.Markdown`` (already a project dependency) to
+    produce a styled HTML page with the same visual layout as the
+    terminal report. Produces inline-styled, self-contained HTML —
+    no external CSS or JS needed, safe to email or host statically.
+
+    rc1 scope: terminal-style HTML rendering. For full web-native HTML
+    (anchors, responsive tables, collapsible sections), pipe ``report.md``
+    through ``pandoc`` or a static-site generator.
+    """
+    from rich.console import Console
+    from rich.markdown import Markdown
+
+    console = Console(record=True, width=120, file=None)
+    console.print(Markdown(markdown_text))
+    html_doc = console.export_html(inline_styles=True)
+    # Inject a <title> so the browser tab and archived file are labeled.
+    return html_doc.replace(
+        '<head>\n<meta charset="UTF-8">',
+        f'<head>\n<meta charset="UTF-8">\n<title>{title}</title>',
+        1,
+    )
+
+
 def render_run_report(
     *,
     run_id: str,

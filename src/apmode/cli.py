@@ -363,6 +363,18 @@ def run(
         bool,
         typer.Option("--quiet", "-q", help="Suppress non-essential output."),
     ] = False,
+    binary_encode: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--binary-encode",
+            help=(
+                "Override the auto-detected remap for a binary categorical "
+                "covariate. Format: ``COL=VAL1:0,VAL2:1`` (repeatable). "
+                "Example: ``--binary-encode SEX=M:0,F:1``. The raw values "
+                "are parsed as strings if non-numeric, else as ints/floats."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Run the full APMODE pipeline on a PK dataset.
 
@@ -385,6 +397,52 @@ def run(
     if policy is not None and not policy.is_file():
         err_console.print(f"[red bold]Error:[/] policy file not found: {escape(str(policy))}")
         raise typer.Exit(code=1)
+
+    # --- Parse --binary-encode flag (must happen before ingestion) ---
+    binary_encode_overrides: dict[str, dict[object, int]] | None = None
+    if binary_encode:
+        binary_encode_overrides = {}
+        for entry in binary_encode:
+            if "=" not in entry:
+                err_console.print(
+                    f"[red bold]Invalid --binary-encode:[/] {escape(entry)} "
+                    "(expected COL=VAL1:0,VAL2:1)"
+                )
+                raise typer.Exit(code=1)
+            col, pairs = entry.split("=", 1)
+            remap: dict[object, int] = {}
+            for pair in pairs.split(","):
+                if ":" not in pair:
+                    err_console.print(
+                        f"[red bold]Invalid --binary-encode pair:[/] {escape(pair)} "
+                        "(expected VAL:0 or VAL:1)"
+                    )
+                    raise typer.Exit(code=1)
+                raw, target_str = pair.rsplit(":", 1)
+                try:
+                    target = int(target_str)
+                except ValueError:
+                    err_console.print(
+                        f"[red bold]Invalid --binary-encode target:[/] {escape(target_str)} "
+                        "(must be 0 or 1)"
+                    )
+                    raise typer.Exit(code=1) from None
+                if target not in (0, 1):
+                    err_console.print(
+                        f"[red bold]Invalid --binary-encode target:[/] {target} (must be 0 or 1)"
+                    )
+                    raise typer.Exit(code=1)
+                # Try numeric first, fall back to stripped string.
+                key: object
+                try:
+                    key = int(raw)
+                except ValueError:
+                    try:
+                        key = float(raw)
+                    except ValueError:
+                        key = raw.strip()
+                remap[key] = target
+            binary_encode_overrides[col.strip()] = remap
 
     # --- Logging setup ---
     from apmode.logging import configure_logging
@@ -437,6 +495,7 @@ def run(
         timeout_seconds=timeout,
         policy_path=policy,
         max_concurrency=parallel_models,
+        binary_encode_overrides=binary_encode_overrides,
     )
 
     # --- Backend selection ---
