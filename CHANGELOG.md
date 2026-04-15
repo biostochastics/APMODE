@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — FREM benchmark sweep across the nlmixr2data corpus
+- **`scripts/benchmark_frem_sweep.py`** (new, 350 LOC). Runnable
+  benchmark harness that exercises the full FREM emitter pipeline
+  (`summarize_covariates` → `prepare_frem_data` → `emit_nlmixr2_frem`
+  → `nlmixr2(fn)` compile) on every nlmixr2data-backed dataset
+  with covariate coverage. Each dataset config carries a
+  `binary_encode` map so categorical covariates with non-{0,1}
+  representations (warfarin's `"male"`/`"female"` strings,
+  mavoglurant's 1-indexed `1`/`2` integers) are remapped before
+  `summarize_covariates` validates them.
+- **First-run results** (`docs/FREM_BENCHMARK_RESULTS.md`):
+
+  | Dataset | Subjects | Rows | Covariates | Missing | Compile | Status |
+  |---|---:|---:|---|---:|---:|:-:|
+  | theophylline | 12 | 144 | WT | 3 | 0.77s | ✓ |
+  | warfarin | 32 | 515 | wt, age, sex (binary) | 6 | 0.77s | ✓ |
+  | mavoglurant | 120 | 2678 | WT, AGE, SEX (binary) | 18 | 0.77s | ✓ |
+
+  All 3 nlmixr2data benchmarks compile cleanly through the FREM
+  pipeline. Total wall time including R startup: ~30 s. This is the
+  first end-to-end demonstration that the emitter handles real PK
+  data at every registered size tier (12 → 120 subjects), every
+  transform branch (continuous + log + binary), and the
+  contaminating-column / DVID guards on real layouts.
+
 ### Added — Live end-to-end FREM + Rubin-pool test coverage
 Before this commit, FREM binary/time-varying support and the
 orchestrator MI execution path were only validated by string/dataframe
