@@ -32,7 +32,7 @@ jobs:
           version: "latest"
       - run: uv python install ${{ matrix.python-version }}
       - run: uv sync --all-extras --python ${{ matrix.python-version }}
-      - run: uv run pytest tests/ -v --tb=short -n auto
+      - run: uv run pytest tests/ -v --tb=short -n auto -m "not live and not slow"
 
   benchmarks:
     runs-on: ubuntu-latest

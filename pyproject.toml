@@ -97,6 +97,9 @@ packages = ["src/apmode"]
 src = ["src"]
 target-version = "py312"
 line-length = 99
+# _version.py is regenerated on every build by hatch-vcs with an
+# unsorted __all__ (RUF022) that would trip ruff on fresh CI checkouts.
+extend-exclude = ["src/apmode/_version.py"]
 
 [tool.ruff.lint]
 select = [

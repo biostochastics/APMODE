@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Claude Skill for the APMODE CLI** (`.claude/skills/apmode/SKILL.md`): a
+ project-level skill that teaches LLM assistants (Claude Code, Codex, Gemini,
+ Droid, etc.) how to correctly drive `apmode run/validate/inspect/datasets/
+ explore/diff/log/trace/lineage/graph`. Includes verified flag defaults,
+ lane-selection guidance, bundle-artifact names, typical workflows, and
+ gotchas (agentic silent no-op on the submission lane, `explore -y` timeout
+ override, `--gate` vs `--top` exclusivity, `--iteration` requires `--mode`).
+ Cross-reviewed with Droid, Crush, Gemini, and Codex for accuracy.
+
 ## [0.3.0-rc1] — 2026-04-15
 
 First release candidate for the v0.3.0 Phase 3 milestone. All pre-release

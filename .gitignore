@@ -51,3 +51,8 @@ runs/
 CLAUDE.md
 PRD_APMODE_*.md
 _smoke_bayes_work/
+
+# hatch-vcs auto-generated version file — regenerated on every build.
+# Shipped version drifts (e.g., __all__ ordering, version tuple) break
+# CI linting on clean checkouts. Let hatch-vcs produce it at build time.
+src/apmode/_version.py

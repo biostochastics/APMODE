@@ -509,9 +509,11 @@ uv run pytest tests/ --snapshot-update     # update snapshots after emitter chan
 
 | Document | Purpose |
 |----------|---------|
-| [`ARCHITECTURE.md`](ARCHITECTURE.md) | Technical architecture (v0.2) |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Technical architecture (v0.2) |
+| [`docs/PRD_APMODE_v0.3.md`](docs/PRD_APMODE_v0.3.md) | Current PRD (v0.3, source of truth) |
 | [`docs/FORMULAR.md`](docs/FORMULAR.md) | Formular DSL full reference |
 | [`policies/*.json`](policies/) | Gate threshold policy files per lane |
+| [`.claude/skills/apmode/SKILL.md`](.claude/skills/apmode/SKILL.md) | Claude Skill for LLM assistants (Claude Code, Codex, Gemini, Droid, …) — lane guidance, verified flag defaults, bundle artifacts, gotchas |
 
 ---
 
@@ -655,7 +657,7 @@ uv run pytest tests/integration/test_llm_providers_live.py -m live -v
 - **Context of use**: Orchestrator auto-generates COU for Gate 2.5; production use needs user-provided COU via CLI or config
 - **Agentic LLM backend**: Requires funded API keys (Anthropic/OpenAI) or local Ollama with a chat-capable model (≥4B params recommended)
 
-See `ARCHITECTURE.md` for the full design rationale.
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design rationale.
 
 ---
 
