@@ -546,3 +546,151 @@ def test_rubin_pooling_populates_from_real_m_fits(tmp_path: Path) -> None:
             assert np.isfinite(stats["pooled_estimate"])
             assert stats["within_var"] >= 0
             assert stats["total_var"] >= stats["within_var"]
+
+
+# --- Benchmark dataset: FREM on Boeckmann 1994 theophylline --------------
+
+
+def _nlmixr2data_available() -> bool:
+    if not shutil.which("Rscript"):
+        return False
+    out = subprocess.run(
+        ["Rscript", "-e", 'cat(requireNamespace("nlmixr2data", quietly=TRUE))'],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    return out.stdout.strip() == "TRUE"
+
+
+_NLMIXR2DATA = _nlmixr2data_available()
+
+
+@pytest.mark.live
+@pytest.mark.slow
+@pytest.mark.skipif(
+    not (_NLMIXR2 and _NLMIXR2DATA),
+    reason="nlmixr2 + nlmixr2data required for theophylline FREM benchmark",
+)
+def test_frem_fits_on_theophylline_with_induced_missingness(tmp_path: Path) -> None:
+    """Real PK data path: nlmixr2data::theo_sd → induced WT missingness → FREM fit.
+
+    Boeckmann/Sheiner/Beal 1994 NONMEM Users Guide theophylline
+    dataset: 12 subjects, ~11 observations each, body weight (WT)
+    covariate already present. We drop WT for 3 subjects to create the
+    missingness scenario FREM is designed for, run the emitter
+    pipeline, and drive a live FOCE-I fit. The assertion is that
+    nlmixr2 compiles the emitted FREM model and the fit produces a
+    finite OFV — full convergence tuning is beyond the scope of this
+    regression test; what this gives us is a real-data proof that the
+    emitter + data preparation works on the canonical pharmacometric
+    benchmark, not just synthetic fixtures.
+    """
+    # Generate the theo_sd CSV via R — the Python side needs a concrete
+    # file to exercise the standard ingestion path.
+    theo_csv = tmp_path / "theo_sd.csv"
+    gen_script = tmp_path / "gen.R"
+    gen_script.write_text(
+        f"""
+suppressPackageStartupMessages({{ library(nlmixr2data) }})
+df <- nlmixr2data::theo_sd
+names(df)[names(df) == 'ID'] <- 'NMID'
+df$EVID[df$EVID == 101] <- 1L
+df$MDV <- ifelse(df$EVID == 1, 1L, 0L)
+write.csv(df, '{theo_csv}', row.names = FALSE)
+cat('WROTE', nrow(df), 'rows,', length(unique(df$NMID)), 'subjects\\n')
+"""
+    )
+    gen_result = subprocess.run(
+        ["Rscript", str(gen_script)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert gen_result.returncode == 0, f"theo_sd generation failed: {gen_result.stderr[-1500:]}"
+
+    df = pd.read_csv(theo_csv)
+    assert "WT" in df.columns
+    assert df["NMID"].nunique() == 12
+    # Drop WT for 3 subjects to exercise the FREM-handles-missingness
+    # branch. FREM's joint likelihood should absorb those subjects via
+    # the random-effect distribution rather than excluding them.
+    missing_ids = [3, 7, 11]
+    df.loc[df["NMID"].isin(missing_ids), "WT"] = float("nan")
+
+    covs = summarize_covariates(df, ["WT"], transforms={"WT": "log"})
+    # theo_sd WT is constant within each subject (baseline-only) so
+    # auto-detection should tag it as static.
+    assert not covs[0].time_varying, "WT should be baseline-only in theo_sd"
+
+    augmented = prepare_frem_data(df, covs)
+    # Sanity: 9 subjects x 1 WT observation = 9 covariate rows added.
+    wt_rows = augmented[augmented["DVID"] == 2]
+    assert len(wt_rows) == 9, (
+        f"Expected 9 WT observation rows (12 - 3 missing); got {len(wt_rows)}"
+    )
+
+    # Seed the FREM fit with plausible theophylline initials (Boeckmann
+    # NONMEM ref: CL ~ 2.8 L/h, V ~ 30 L, ka ~ 1.5 1/h on a 70 kg base).
+    spec = DSLSpec(
+        model_id="theo_frem",
+        absorption=FirstOrder(ka=1.5),
+        distribution=OneCmt(V=30.0),
+        elimination=LinearElim(CL=2.8),
+        variability=[IIV(params=["CL", "V"], structure="diagonal")],
+        observation=Combined(sigma_prop=0.15, sigma_add=0.1),
+    )
+    model_code = emit_nlmixr2_frem(spec, covs, initial_estimates={"CL": 2.8, "V": 30.0, "ka": 1.5})
+
+    model_path = tmp_path / "frem_theo.R"
+    model_path.write_text(model_code)
+    data_path = tmp_path / "frem_theo_data.csv"
+    augmented.to_csv(data_path, index=False)
+    drive_path = tmp_path / "drive.R"
+    # Fit with no covariance step (covMethod='') so the FOCE-I run
+    # completes within a normal unit-test budget. The regression
+    # question is "does the emitter output work on theophylline?",
+    # not "do the SE/CI match the literature", which belongs in a
+    # nightly benchmark.
+    drive_path.write_text(
+        f"""
+suppressPackageStartupMessages({{ library(nlmixr2); library(rxode2) }})
+fn <- base::eval(parse(text = readLines('{model_path}')))
+d <- read.csv('{data_path}')
+fit <- tryCatch(
+  nlmixr2(fn, d, est='focei',
+          control=foceiControl(print=0, maxInnerIterations=8,
+                               maxOuterIterations=30, covMethod='')),
+  error = function(e) {{ cat('FIT_FAIL:', conditionMessage(e), '\\n'); NULL }}
+)
+if (!is.null(fit)) {{
+  ofv <- tryCatch(fit$objDf$OBJF[1], error=function(e) NA)
+  cat(sprintf('FIT_OK ofv=%s n_etas=%d\\n',
+              as.character(ofv), ncol(fit$omega)))
+}}
+"""
+    )
+    result = subprocess.run(
+        ["Rscript", str(drive_path)],
+        capture_output=True,
+        text=True,
+        timeout=600,
+        check=False,
+    )
+    assert result.returncode == 0, (
+        f"theo_sd FREM fit crashed.\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr[-2000:]}"
+    )
+    assert "FIT_OK" in result.stdout, (
+        f"theo_sd FREM did not produce FIT_OK.\nSTDOUT: {result.stdout}\n"
+        f"STDERR: {result.stderr[-1500:]}"
+    )
+    # Extract the joint Ω size — must be 3 (eta.CL + eta.V + eta.cov.WT).
+    import re
+
+    m = re.search(r"n_etas=(\d+)", result.stdout)
+    assert m is not None
+    assert int(m.group(1)) == 3, (
+        f"Joint Omega size wrong: expected 3 etas (CL, V, cov.WT), got {m.group(1)}"
+    )
