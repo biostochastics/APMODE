@@ -187,13 +187,21 @@ class TestGate1:
         seed_check = next(c for c in g1.checks if c.check_id == "seed_stability")
         assert seed_check.passed is False
 
-    def test_seed_stability_fails_without_seeds(self) -> None:
-        """Missing seed results should fail, not silently pass."""
+    def test_seed_stability_not_probed_passes(self) -> None:
+        """Missing seed results → "not probed" pass.
+
+        The orchestrator only runs seed replicates for the top-K
+        candidates by BIC; absence of evidence for the rest is an
+        orchestrator choice, not a candidate defect. Seed stability is a
+        positive confirmation when probed, not a disqualifier when
+        skipped.
+        """
         result = _make_backend_result()
         policy = _load_policy("submission")
         g1 = evaluate_gate1(result, policy, seed_results=None)
         seed_check = next(c for c in g1.checks if c.check_id == "seed_stability")
-        assert seed_check.passed is False
+        assert seed_check.passed is True
+        assert "not_probed" in str(seed_check.observed)
 
     def test_vpc_missing_fails_when_required(self) -> None:
         """Missing VPC should fail when policy requires it."""

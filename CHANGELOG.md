@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.3.0-rc3] — 2026-04-15
 
+### Gate 1 semantic fixes
+
+- **`parameter_plausibility` now back-transforms log-space thetas.**
+  nlmixr2 parameterises structural PK thetas in log-space (`lCL`, `lV`,
+  `lka`, `lke`, `lktr`, `lQ`, `lVm`, `lKm`, `ln`). The previous check
+  compared the raw estimate to zero and flagged every negative log-
+  theta as "non-positive", disqualifying ~100 % of converged candidates
+  across every benchmark dataset. The check now detects log-space by
+  the `l` + alpha-char prefix convention and applies the sanity bounds
+  (positivity, `1e-4`–`1e5`) to `exp(estimate)`.
+- **`seed_stability` no longer disqualifies candidates the orchestrator
+  chose not to probe.** The orchestrator runs seed replicates only for
+  the top-K candidates by BIC; Gate 1 previously failed the remaining
+  candidates with "insufficient_seeds", eliminating otherwise-healthy
+  fits on the basis of an orchestrator optimisation. The check now
+  reports `not_probed` and passes when no replicates were supplied;
+  top-K candidates that actually have replicates still face the real
+  OFV-CV comparison.
+
+
+
 First release in which `apmode run` drives nlmixr2 end-to-end on every
 shipped benchmark dataset (Suite A fixtures + warfarin / theo_sd /
 mavoglurant real data).

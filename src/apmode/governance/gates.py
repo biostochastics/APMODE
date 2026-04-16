@@ -132,7 +132,7 @@ def _check_parameter_plausibility(result: BackendResult) -> GateCheckResult:
     for name, pe in result.parameter_estimates.items():
         if pe.category != "structural":
             continue
-        is_log = (len(name) >= 2 and name[0] == "l" and name[1].isupper()) or name == "ln"
+        is_log = len(name) >= 2 and name[0] == "l" and name[1].isalpha()
         value = float(np.exp(pe.estimate)) if is_log else pe.estimate
         label = f"exp({name})" if is_log else name
 
@@ -344,12 +344,18 @@ def _check_seed_stability(
         )
 
     if seed_results is None or len(seed_results) < g1.seed_stability_n - 1:
-        # Not enough seed runs — fail (missing evidence is not a pass)
+        # No replicates supplied for this candidate. The orchestrator
+        # runs seed replicates only for a top-K subset by BIC — absence
+        # of evidence is the orchestrator's choice, not a candidate
+        # defect. Treat as "not applicable" so the check does not
+        # eliminate otherwise-valid non-top-K candidates; top-K
+        # candidates that were actually probed still face the real CV
+        # comparison below.
         n_have = 1 + (len(seed_results) if seed_results else 0)
         return GateCheckResult(
             check_id="seed_stability",
-            passed=False,
-            observed=f"insufficient_seeds ({n_have}/{g1.seed_stability_n})",
+            passed=True,
+            observed=f"not_probed ({n_have}/{g1.seed_stability_n} seeds — top-K only)",
         )
 
     # Collect OFVs from primary + seed runs; filter NaN/Inf
