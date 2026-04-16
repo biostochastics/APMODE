@@ -153,9 +153,19 @@ def build_values() -> dict[str, str]:
     tests_total, tests_nonlive = collect_tests()
     version, version_tag = collect_version()
     gate_ver, profiler_ver, manifest_ver = collect_policy_versions()
+    # Badge keys wrap the full ``[![...](shields.io-url)]()`` span so the
+    # auto-update HTML comments live *outside* the URL. GitHub's markdown
+    # parser chokes on HTML comments inside an image URL and renders the
+    # whole `![Version](...)` as literal text.
+    badge_version = f"[![Version](https://img.shields.io/badge/version-{version_tag}-blue)]()"
+    badge_tests = (
+        f"[![Tests](https://img.shields.io/badge/tests-{tests_total}%20collected-success)]()"
+    )
     return {
         "version": version,
         "version_tag": version_tag,
+        "badge_version": badge_version,
+        "badge_tests": badge_tests,
         "tests": tests_total,
         "tests_nonlive": tests_nonlive,
         "policy_gate": gate_ver,

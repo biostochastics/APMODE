@@ -6,8 +6,8 @@
 
   **Adaptive Pharmacokinetic Model Discovery Engine**
 
-  [![Version](https://img.shields.io/badge/version-<!-- apmode:AUTO:version_tag -->v0.4.0<!-- apmode:/AUTO:version_tag -->-blue)]()
-  [![Tests](https://img.shields.io/badge/tests-<!-- apmode:AUTO:tests -->1673<!-- apmode:/AUTO:tests -->%20collected-success)]()
+  <!-- apmode:AUTO:badge_version -->[![Version](https://img.shields.io/badge/version-v0.4.0-blue)]()<!-- apmode:/AUTO:badge_version -->
+  <!-- apmode:AUTO:badge_tests -->[![Tests](https://img.shields.io/badge/tests-1673%20collected-success)]()<!-- apmode:/AUTO:badge_tests -->
   [![License](https://img.shields.io/badge/license-GPL--2.0--or--later-green)](LICENSE)
   [![Python](https://img.shields.io/badge/python-3.12%E2%80%933.14-yellow)]()
   [![mypy](https://img.shields.io/badge/mypy-strict%20%E2%9C%93-blue)]()
@@ -156,7 +156,7 @@ uv run python scripts/bayesian_smoke_theophylline.py
 
 ## Formular — The PK DSL
 
-**Formular** is APMODE's typed domain-specific language for specifying population PK models. The name evokes *formulary* (pharmacy) and *formula* (mathematics). It is the single source of truth for model structure: every model is expressed as a Formular specification, compiled to a typed AST, validated against pharmacometric constraints, and lowered to backend-specific code (nlmixr2 R, Stan, or JAX/Diffrax).
+**Formular** is APMODE's typed domain-specific language for specifying population PK models. It is the single source of truth for model structure: every model is expressed as a Formular specification, compiled to a typed AST, validated against pharmacometric constraints, and lowered to backend-specific code (nlmixr2 R, Stan, or JAX/Diffrax).
 
 > **Full reference:** [`docs/FORMULAR.md`](docs/FORMULAR.md) — grammar, compilation pipeline, constraint templates, semantic validation rules, extensibility.
 
