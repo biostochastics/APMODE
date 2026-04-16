@@ -6,7 +6,7 @@
 
   **Adaptive Pharmacokinetic Model Discovery Engine**
 
-  [![Phase](https://img.shields.io/badge/phase-3%20(P3.B%20%E2%80%94%20rc2)-blue)]()
+  [![Phase](https://img.shields.io/badge/phase-3%20(P3.B%20%E2%80%94%20rc4)-blue)]()
 
   [![Tests](https://img.shields.io/badge/tests-1558%20passing-success)]()
   [![License](https://img.shields.io/badge/license-GPL--2.0--or--later-green)](LICENSE)
@@ -30,7 +30,7 @@ APMODE is a **governed meta-system** that composes five population PK modeling p
 
 **Formular — a typed PK DSL — is the control surface.** Models are specified in [Formular](docs/FORMULAR.md), a structured grammar (`Absorption x Distribution x Elimination x Variability x Observation × Priors`), compiled to a typed AST, validated against pharmacometric constraints, and lowered to backend-specific code (nlmixr2 R, Stan/Torsten, JAX/Diffrax). The agentic LLM backend (Phase 3) operates exclusively through Formular transforms — including the new `SetPrior` transform for Bayesian workflows — it cannot emit raw code.
 
-> **Status**: **v0.3.0-rc2** (2026-04-15) — Phase 3 release candidate 2. Ships the Evidence Profiler refactor: manifest schema v2 (Smith 2000 dose-proportionality with translated-bound CI, Huang 2025 λz selector with Phoenix constraint, Wagner-Nelson ka, flip-flop risk, NODE-dim budget, TAD consistency, DVID-aware PK/PD filter, policy-externalised thresholds in `policies/profiler.json`), BLQ-aware shape geometry per Beal 2001 / Ahn 2008, Lane Router contract upgrade. Warfarin false-positive (0/24 convergence on rc1) is resolved: correctly classified as `one_compartment` / `nlc=none` / terminal R²=0.975. 1558 tests collected, full unit suite green; `mypy --strict` clean; `ruff` clean. Supports Python 3.12–3.14.
+> **Status**: **v0.3.0-rc4** (2026-04-16) — Phase 3 release candidate 4. Gate semantics fully validated end-to-end: **10/10 benchmark scenarios produce a recommended candidate** (Suite A + warfarin / theo_sd / mavoglurant). Fixes since rc2: structured `NonlinearClearanceSignal` provenance (manifest schema v3), nlmixr2 adapter DVID filter + covariate remapping, Gate 1 log-space plausibility back-transform + seed-stability `not_probed` semantics, Gate 2 shrinkage unit fix (percent → fraction). 1558 tests collected, full unit suite green; `mypy --strict` clean; `ruff` clean. Supports Python 3.12–3.14.
 
 ---
 
@@ -460,35 +460,40 @@ Rscript benchmarks/suite_a/simulate_all.R [output_dir]
 | B2 | Sparse data + NODE dispatch | Lane Router blocks NODE when data insufficient |
 | B3 | Cross-paradigm ranking | Gate 3 correctly ranks mixed nlmixr2 + jax_node candidates |
 
-### End-to-End Benchmark Results (v0.3.0-rc3, 2026-04-15)
+### End-to-End Benchmark Results (v0.3.0-rc4, 2026-04-16)
 
 Full `apmode run` pipeline on all Suite A fixtures plus the three real
 public datasets. Driver: `scripts/run_full_benchmark.sh`; bundles land
 in `benchmarks/runs/full-<timestamp>/`.
 
-| Dataset | Lane | NLC strength | Compartmentality | Flip-flop | SAEM converged |
+**Gate funnel — 10/10 scenarios produced a recommended candidate.**
+
+| Dataset | Lane | Gate 1 | Gate 2 | Recommended | Best BIC |
 |---|---|---|---|---|---|
-| a1_1cmt_oral_linear | submission | none | one_compartment | none | 40 / 40 |
-| a2_2cmt_iv_parallel_mm | discovery | moderate | two_compartment | unknown | 47 / 72 |
-| a3_transit_1cmt_linear | submission | none | one_compartment | none | 40 / 40 |
-| a4_1cmt_oral_mm | discovery | **strong** | multi_compartment_likely | none | 47 / 72 |
-| a5_tmdd_qss | discovery | none | one_compartment | possible | 40 / 40 |
-| a6_1cmt_covariates | submission | none | one_compartment | none | 40 / 40 |
-| a7_2cmt_node_absorption | discovery | none | insufficient | unknown | 40 / 40 |
-| warfarin (nlmixr2data) | submission | none | one_compartment | none | 39 / 40 |
-| theo_sd (nlmixr2data) | submission | none | one_compartment | none | 31 / 40 |
-| mavoglurant (nlmixr2data) | discovery | **strong** | multi_compartment_likely | none | 40 / 67 |
+| a1_1cmt_oral_linear | submission | 19 / 34 | 19 / 19 | ✓ | 2848.3 |
+| a2_2cmt_iv_parallel_mm | discovery | 8 / 41 | 8 / 8 | ✓ | 4396.7 |
+| a3_transit_1cmt_linear | submission | 9 / 34 | 9 / 9 | ✓ | 2623.2 |
+| a4_1cmt_oral_mm | discovery | 4 / 41 | 4 / 4 | ✓ | 3113.3 |
+| a5_tmdd_qss | discovery | 7 / 34 | 7 / 7 | ✓ | 4858.8 |
+| a6_1cmt_covariates | submission | 17 / 34 | 17 / 17 | ✓ | −317.5 |
+| a7_2cmt_node_absorption | discovery | 22 / 34 | 22 / 22 | ✓ | 807.4 |
+| warfarin (nlmixr2data) | submission | 19 / 33 | 19 / 19 | ✓ | 960.1 |
+| theo_sd (nlmixr2data) | submission | 10 / 25 | 8 / 10 | ✓ | 396.3 |
+| mavoglurant (nlmixr2data) | discovery | 4 / 37 | 4 / 4 | ✓ | 28906.9 |
+| **Total** | | **119 / 347 (34%)** | **117 / 119 (98%)** | **10 / 10** | |
+
+Gate 1 rejects non-converged candidates and those failing plausibility,
+CWRES normality, or trajectory validity. Gate 2 (submission lane) applies
+shrinkage ≤ 30%, identifiability, and reproducible-estimation checks.
+Gate 2 now passes 98% of Gate 1 survivors across all scenarios — the rc3
+log-space plausibility fix and rc4 shrinkage unit fix (percentage → fraction)
+resolved the two systematic false-positive rejection sources.
 
 Every bundle passes `apmode validate` and emits the v3 structured
 `nonlinear_clearance_signals` record with full provenance (algorithm,
 citation, policy_key, threshold, observed value + 90% CI, eligibility
 reason, vote). `apmode inspect <bundle>` renders the per-signal table;
 `apmode lineage <bundle> <candidate_id>` traces the transform DAG.
-
-Aggregate: 404 / 464 candidates converged (≈87%). Warfarin recovered
-from 0 / 24 in rc1 to 39 / 40 in rc3 after the profiler + adapter
-rewrite (DVID `pca` PD-row contamination dropped, binary string
-covariates remapped).
 
 ---
 

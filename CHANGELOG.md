@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.3.0-rc4] — 2026-04-16
 
+### Benchmark: 10/10 scenarios recommended (Suite A + real datasets)
+
+Full run of `scripts/run_full_benchmark.sh` (all Suite A fixtures +
+warfarin / theo_sd / mavoglurant) with Gate 1 + Gate 2 fixes in place.
+
+| Dataset | Lane | Gate 1 | Gate 2 | Rec | Best BIC |
+|---|---|---|---|---|---|
+| a1_1cmt_oral_linear | submission | 19/34 | 19/19 | ✓ | 2848.3 |
+| a2_2cmt_iv_parallel_mm | discovery | 8/41 | 8/8 | ✓ | 4396.7 |
+| a3_transit_1cmt_linear | submission | 9/34 | 9/9 | ✓ | 2623.2 |
+| a4_1cmt_oral_mm | discovery | 4/41 | 4/4 | ✓ | 3113.3 |
+| a5_tmdd_qss | discovery | 7/34 | 7/7 | ✓ | 4858.8 |
+| a6_1cmt_covariates | submission | 17/34 | 17/17 | ✓ | −317.5 |
+| a7_2cmt_node_absorption | discovery | 22/34 | 22/22 | ✓ | 807.4 |
+| warfarin | submission | 19/33 | 19/19 | ✓ | 960.1 |
+| theo_sd | submission | 10/25 | 8/10 | ✓ | 396.3 |
+| mavoglurant | discovery | 4/37 | 4/4 | ✓ | 28906.9 |
+
+Total: 119/347 (34%) Gate 1 survivors → 117/119 (98%) Gate 2 →
+**10/10 scenarios with ≥1 recommended candidate.**
+
 ### Gate 2 fix: shrinkage unit mismatch
 
 - **`_check_shrinkage` now compares on the correct scale.**
