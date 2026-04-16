@@ -5,6 +5,19 @@ All notable changes to APMODE are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0-rc4] — 2026-04-16
+
+### Gate 2 fix: shrinkage unit mismatch
+
+- **`_check_shrinkage` now compares on the correct scale.**
+  `harness.R` was emitting SD shrinkage as a **percentage** (0–100; e.g., 2.91)
+  while `Gate2Config.shrinkage_max = 0.3` encodes the threshold as a
+  **fraction** (0–1; 30%).  Every submission-lane candidate with low
+  shrinkage (2–5 %) was therefore failing Gate 2 despite being well within
+  the 30 % policy limit.  The R harness now outputs fractions: `1 -
+  sqrt(pmax(0, 1 - var_shrinkage))` without the trailing `× 100`.  The
+  policy value is unchanged.
+
 ## [0.3.0-rc3] — 2026-04-15
 
 ### Gate 1 semantic fixes

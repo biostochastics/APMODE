@@ -81,10 +81,11 @@ response_path <- args[2]
       vals <- as.list(s["var", eta_cols, drop = FALSE])
       # Rename eta.CL -> CL etc for downstream compatibility
       names(vals) <- sub("^eta\\.", "", names(vals))
-      # Convert variance shrinkage to SD shrinkage percentage
-      # SD shrinkage = (1 - sqrt(1 - var_shrinkage)) * 100
+      # Convert variance shrinkage to SD shrinkage fraction (0–1 scale).
+      # SD shrinkage = 1 - sqrt(1 - var_shrinkage)
+      # Gate policy threshold (shrinkage_max = 0.3) is also a fraction.
       lapply(vals, function(v) {
-        if (is.numeric(v) && !is.na(v)) round((1 - sqrt(pmax(0, 1 - v))) * 100, 2)
+        if (is.numeric(v) && !is.na(v)) round(1 - sqrt(pmax(0, 1 - v)), 4)
         else NULL
       })
     } else if (!is.null(fit$shrinkage)) {
