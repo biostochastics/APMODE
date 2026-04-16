@@ -1,7 +1,7 @@
 {
   "$schema": "https://github.com/biostochastics/APMODE/policies/profiler.schema.json",
-  "policy_id": "profiler/v2.0.0",
-  "policy_version": "2.0.0",
+  "policy_id": "profiler/v2.1.0",
+  "policy_version": "2.1.0",
   "description": "Versioned thresholds for the Data Profiler. Lane Router fails fast on unknown policy_version. See docs/PROFILER_REFINEMENT_PLAN.md for derivation and citations.",
   "schema_version": 2,
   "manifest_schema_version": 2,
@@ -68,10 +68,15 @@
   },
   "flip_flop": {
     "ka_lambdaz_ratio_likely": 1.0,
-    "ka_lambdaz_ratio_possible": 1.5
+    "ka_lambdaz_ratio_possible": 1.5,
+    "quality_adj_r2_min": 0.85,
+    "quality_min_npts": 4
   },
   "tad_consistency": {
     "in_window_fraction_clean": 0.80
+  },
+  "protocol_heterogeneity": {
+    "obs_per_subject_cv_threshold": 0.5
   },
   "dvid_filter": {
     "pk_dvid_allowlist": ["cp", "1", "conc", "concentration"],
@@ -86,6 +91,7 @@
     "richardson_2025": "Richardson S, Irurzun-Arana I et al. (2025) Commun Med 5:327. doi:10.1038/s43856-025-01054-8",
     "chen_2024_pharmpy_amd": "Chen X, Hooker AC, Karlsson MO et al. (2024) CPT Pharmacometrics Syst Pharmacol 13:1785-1797",
     "wahlby_2002": "Wahlby U, Jonsson EN, Karlsson MO (2002) AAPS PharmSci 4(4):E27. doi:10.1208/ps040427",
-    "ribbing_jonsson_2004": "Ribbing J, Jonsson EN (2004) J Pharmacokinet Pharmacodyn 31(2):109-134. doi:10.1023/B:JOPA.0000034404.86036.72"
+    "ribbing_jonsson_2004": "Ribbing J, Jonsson EN (2004) J Pharmacokinet Pharmacodyn 31(2):109-134. doi:10.1023/B:JOPA.0000034404.86036.72",
+    "richardson_2025_flipflop": "Richardson S, Irurzun-Arana I et al. (2025) Commun Med 5:327 — flip-flop detection methodology requires terminal adj-R² >= 0.85 (strict) vs Huang 2025 routine threshold 0.70"
   }
 }

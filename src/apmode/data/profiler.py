@@ -44,11 +44,13 @@ from apmode.data.types import (
 _log = logging.getLogger(__name__)
 _POLICY = get_policy()
 
-# Thresholds below are now sourced from `policies/profiler.json` v2.0.0 via
-# the loader in `apmode/data/policy.py`. Follow-up: (
-# ): the JSON is the source of truth; the module-level constants
-# are derived and kept for readable call sites. Drift is prevented by
-# `tests/unit/test_profiler_policy_consistency.py`.
+# Thresholds below are sourced from `policies/profiler.json` (v2.1.0+) via
+# the loader in `apmode/data/policy.py`. The JSON is the source of truth;
+# these module-level constants are a derived view for readable call sites.
+# Drift between constants and JSON is guarded by
+# `tests/unit/test_profiler_policy_consistency.py` (added alongside this
+# refactor). Do NOT add bare numeric literals inside heuristic functions —
+# either add a new policy field or import an existing constant here.
 _PK_DVIDS: frozenset[str] = _POLICY.pk_dvid_allowlist
 _COVARIATE_CORRELATION_THRESHOLD: float = _POLICY.covariate_correlation_threshold_abs_r
 _NONLINEAR_MM_CURVATURE_RATIO: float = _POLICY.mm_curvature_ratio
@@ -71,6 +73,53 @@ _TERMINAL_FIT_MIN_POINTS: int = _POLICY.lambdaz_min_points
 _PEAK_PROMINENCE_RANGE_FRACTION: float = _POLICY.peak_prominence_range_fraction
 _PEAK_PROMINENCE_CMAX_FLOOR: float = _POLICY.peak_prominence_cmax_floor
 _PEAK_MIN_DISTANCE_INTERVALS: float = _POLICY.peak_min_distance_intervals
+
+# ---------------------------------------------------------------------------
+# Advisory vs disqualifying thresholds.
+#
+# The profiler emits EvidenceManifest fields. Downstream consumers (Lane
+# Router, Gate 1/2 evaluators) decide which fields are disqualifying and
+# which are advisory. The constants below map policy fields to code paths;
+# none of them are themselves disqualifying — a manifest field is never a
+# hard fail. Disqualification lives in governance/gates.py against the
+# GatePolicy (Gate 1 technical validity, Gate 2 lane admissibility, Gate 2.5
+# credibility).
+# ---------------------------------------------------------------------------
+
+# Routine λz quality threshold (Huang 2025 autoinit default). Advisory:
+# used to drop unreliable terminal fits from pool-level statistics.
+_LAMBDAZ_ADJ_R2_THRESHOLD: float = _POLICY.lambdaz_adj_r2_threshold
+
+# Subject-quality thresholds for richness / identifiability classification.
+_MIN_OBS_PER_SUBJECT_RICH: int = _POLICY.min_obs_per_subject_rich
+_MIN_OBS_PER_SUBJECT_MODERATE: int = _POLICY.min_obs_per_subject_moderate
+_ABSORPTION_COVERAGE_MIN_PRE_TMAX: float = _POLICY.absorption_coverage_min_pre_tmax
+_ELIMINATION_COVERAGE_MIN_POST_TMAX: float = _POLICY.elimination_coverage_min_post_tmax
+
+# NODE dim-budget thresholds (PRD §4.2.4 R6). Drives the `node_dim_budget`
+# field on EvidenceManifest which the Lane Router consumes to gate NODE
+# dispatch. 0 = NODE excluded; non-zero = eligible in matching lane only.
+_NODE_DISCOVERY_MIN_SUBJECTS: int = _POLICY.node_discovery_min_subjects
+_NODE_DISCOVERY_MIN_MEDIAN_SAMPLES: int = _POLICY.node_discovery_min_median_samples
+_NODE_DISCOVERY_BUDGET: int = _POLICY.node_discovery_budget
+_NODE_OPTIMIZATION_MIN_SUBJECTS: int = _POLICY.node_optimization_min_subjects
+_NODE_OPTIMIZATION_MIN_MEDIAN_SAMPLES: int = _POLICY.node_optimization_min_median_samples
+_NODE_OPTIMIZATION_BUDGET: int = _POLICY.node_optimization_budget
+
+# Flip-flop detection (Richardson 2025). Quality guard is stricter than
+# routine λz (0.85 vs 0.70) because flip-flop classification is structurally
+# sensitive to terminal-slope quality — kept as a separate policy key.
+_FLIP_FLOP_KA_LAMBDAZ_RATIO_POSSIBLE: float = _POLICY.flip_flop_ka_lambdaz_ratio_possible
+_FLIP_FLOP_QUALITY_ADJ_R2_MIN: float = _POLICY.flip_flop_quality_adj_r2_min
+_FLIP_FLOP_QUALITY_MIN_NPTS: int = _POLICY.flip_flop_quality_min_npts
+
+# Protocol heterogeneity (pooled-study CV gate).
+_PROTOCOL_HETEROGENEITY_CV_THRESHOLD: float = (
+    _POLICY.protocol_heterogeneity_obs_per_subject_cv_threshold
+)
+
+# Error model: narrow-range + low-CV additive detection.
+_LOW_CV_ADDITIVE_CEILING: float = _POLICY.low_cv_additive_ceiling
 
 
 def _fit_terminal(times: np.ndarray, concs: np.ndarray) -> TerminalPhase | None:
@@ -279,14 +328,29 @@ def _wagner_nelson_ka_median(
 def _assess_flip_flop_risk(
     obs: pd.DataFrame, doses: pd.DataFrame, *, multi_dose: bool
 ) -> Literal["none", "possible", "likely", "unknown"]:
-    """Flip-flop kinetics risk for oral profiles (Richardson 2025
-    automation pitfall). Combines Wagner-Nelson ka vs lambda_z with
-    quality guards.
+    """Flip-flop kinetics risk for oral profiles (Richardson 2025).
 
-    Tightened from the first draft: even if W-N ka < median λz, we only
-    return "likely" when the terminal fit is itself trustworthy. In true
-    flip-flop the terminal slope reflects ka, so W-N ka becomes
-    structurally biased; the guard prevents over-confident calls.
+    Combines Wagner-Nelson ka (Wagner 1963) vs population-median λz with a
+    tiered terminal-fit quality guard. Decision is **advisory** (surfaced
+    on the EvidenceManifest); disqualification happens downstream in the
+    Lane Router or ranking layer.
+
+    Tiered quality model:
+
+      * **Floor** (``lambdaz_adj_r2_threshold``, Huang 2025 default 0.70):
+        median terminal adj-R² below this → return ``"unknown"``. The
+        terminal fit is too poor to support *any* flip-flop call.
+      * **Strict** (``flip_flop_quality_adj_r2_min``, Richardson 2025
+        default 0.85): median adj-R² between floor and strict → a
+        ``"likely"`` call is downgraded to ``"possible"``. The fit is
+        usable for routine λz but not strong enough for the structurally
+        sensitive ka/ke-ordering decision.
+      * **Strong**: median adj-R² ≥ strict AND median terminal points ≥
+        ``flip_flop_quality_min_npts`` (default 4) → a ``"likely"`` call
+        is retained.
+
+    The ``1.5x`` population-median-λz ratio used for the ``"possible"``
+    boundary comes from ``flip_flop.ka_lambdaz_ratio_possible``.
     """
     if doses.empty:
         return "unknown"
@@ -321,33 +385,55 @@ def _assess_flip_flop_risk(
     median_lambdaz = float(np.median(lambdas))
     median_npts = float(np.median(n_used_pts))
     median_r2 = float(np.median(adj_r2s))
-    quality_ok = median_npts >= 4 and median_r2 >= 0.85
-    if wn_ka < median_lambdaz and quality_ok:
+
+    # Quality floor (routine λz threshold): below this we cannot speak
+    # meaningfully about ka vs ke ordering at all.
+    if median_r2 < _LAMBDAZ_ADJ_R2_THRESHOLD:
+        return "unknown"
+
+    strict_quality_ok = (
+        median_npts >= _FLIP_FLOP_QUALITY_MIN_NPTS and median_r2 >= _FLIP_FLOP_QUALITY_ADJ_R2_MIN
+    )
+    if wn_ka < median_lambdaz and strict_quality_ok:
         return "likely"
-    if wn_ka < median_lambdaz or wn_ka < 1.5 * median_lambdaz:
+    if wn_ka < _FLIP_FLOP_KA_LAMBDAZ_RATIO_POSSIBLE * median_lambdaz:
         return "possible"
     return "none"
 
 
 def _compute_node_dim_budget(obs: pd.DataFrame, n_subjects: int, *, multi_dose: bool) -> int:
-    """NODE input-dim budget per PRD §4.2.4 R6 (Pharmpy AMD design
-    feasibility,  ).
+    """NODE input-dim budget per PRD §4.2.4 R6 (Pharmpy AMD design feasibility).
 
-    0 → NODE not eligible (sparse data or inadequate absorption).
-    4 → Optimization lane budget (moderate density).
-    8 → Discovery lane budget (rich, well-powered).
+    Returns one of {0, ``_NODE_OPTIMIZATION_BUDGET``, ``_NODE_DISCOVERY_BUDGET``}.
+      * 0 → NODE not eligible (sparse data or inadequate absorption).
+      * Optimization budget → moderate density (policy-driven).
+      * Discovery budget → rich, well-powered (policy-driven).
+
+    All thresholds come from ``policies/profiler.json#/node_readiness``.
+    ``multi_dose`` is reserved for future multi-dose-sensitive adjustments
+    (the current v2.1 budget does not depend on it).
     """
-    if obs.empty or n_subjects < 5:
+    del multi_dose  # intentionally unused at v2.1; kept for signature stability
+    if obs.empty or n_subjects < _NODE_OPTIMIZATION_MIN_SUBJECTS // 2:
+        # Fewer subjects than half the optimization-lane minimum cannot
+        # power NODE at any policy setting; short-circuit to 0 without
+        # invoking the richer per-policy comparisons below.
         return 0
     per_subj_counts = obs.groupby("NMID").size()
     median_samples = float(per_subj_counts.median()) if len(per_subj_counts) > 0 else 0.0
     abs_cov = _assess_absorption_coverage(obs)
-    if median_samples < 4 or abs_cov == "inadequate":
+    if median_samples < _NODE_OPTIMIZATION_MIN_MEDIAN_SAMPLES or abs_cov == "inadequate":
         return 0
-    if median_samples >= 8 and n_subjects >= 20:
-        return 8
-    if median_samples >= 4 and n_subjects >= 10:
-        return 4
+    if (
+        median_samples >= _NODE_DISCOVERY_MIN_MEDIAN_SAMPLES
+        and n_subjects >= _NODE_DISCOVERY_MIN_SUBJECTS
+    ):
+        return _NODE_DISCOVERY_BUDGET
+    if (
+        median_samples >= _NODE_OPTIMIZATION_MIN_MEDIAN_SAMPLES
+        and n_subjects >= _NODE_OPTIMIZATION_MIN_SUBJECTS
+    ):
+        return _NODE_OPTIMIZATION_BUDGET
     return 0
 
 
@@ -577,15 +663,15 @@ def recommend_error_model(
         cmax_p95_p05_ratio is not None
         and cmax_p95_p05_ratio < _NARROW_RANGE_ADDITIVE
         and dv_cv_percent is not None
-        and dv_cv_percent < 30.0
+        and dv_cv_percent < _LOW_CV_ADDITIVE_CEILING
     ):
         return ErrorModelPreference(
             primary="additive",
             allowed=["additive", "combined"],
             confidence="low",
             rationale=(
-                f"narrow range={cmax_p95_p05_ratio:.1f} + CV={dv_cv_percent:.1f}% → "
-                "additive error plausible (biomarker-like)"
+                f"narrow range={cmax_p95_p05_ratio:.1f} + CV={dv_cv_percent:.1f}% "
+                f"(<{_LOW_CV_ADDITIVE_CEILING}%) → additive error plausible (biomarker-like)"
             ),
         )
 
@@ -1520,9 +1606,11 @@ def _nonlinear_clearance_confidence(
 def _classify_richness(obs: pd.DataFrame, n_subjects: int) -> str:
     """Classify sampling richness per PRD §4.2.1.
 
-    sparse: < 4 samples/subject
-    moderate: 4-8 samples/subject
-    rich: > 8 samples/subject
+    sparse:   < ``_MIN_OBS_PER_SUBJECT_MODERATE`` samples/subject
+    moderate: in [``_MIN_OBS_PER_SUBJECT_MODERATE``, ``_MIN_OBS_PER_SUBJECT_RICH``]
+    rich:     > ``_MIN_OBS_PER_SUBJECT_RICH`` samples/subject
+
+    Thresholds are sourced from ``policies/profiler.json#/subject_quality``.
     """
     if n_subjects == 0:
         return "sparse"
@@ -1531,9 +1619,9 @@ def _classify_richness(obs: pd.DataFrame, n_subjects: int) -> str:
     per_subj_counts = obs.groupby("NMID").size()
     median_samples = float(per_subj_counts.median()) if len(per_subj_counts) > 0 else 0.0
 
-    if median_samples < 4:
+    if median_samples < _MIN_OBS_PER_SUBJECT_MODERATE:
         return "sparse"
-    elif median_samples <= 8:
+    if median_samples <= _MIN_OBS_PER_SUBJECT_RICH:
         return "moderate"
     return "rich"
 
@@ -1541,20 +1629,28 @@ def _classify_richness(obs: pd.DataFrame, n_subjects: int) -> str:
 def _assess_identifiability(obs: pd.DataFrame, n_subjects: int) -> str:
     """Assess identifiability ceiling based on design and sampling.
 
-    high: rich data, many subjects, good phase coverage
-    medium: moderate data or limited subjects
-    low: sparse data, few subjects
+    high:   ≥ ``_NODE_DISCOVERY_MIN_SUBJECTS`` subjects AND median samples
+            > ``_MIN_OBS_PER_SUBJECT_RICH``
+    medium: ≥ ``_NODE_OPTIMIZATION_MIN_SUBJECTS`` subjects AND median samples
+            ≥ ``_MIN_OBS_PER_SUBJECT_MODERATE``
+    low:    otherwise
+
+    Thresholds are sourced from ``policies/profiler.json#/subject_quality``
+    and ``/node_readiness``. Median samples per subject is used (not mean)
+    to stay robust to PK-intensive outliers in heterogeneous studies (R11).
     """
-    # R11: use median samples per subject
-    # for consistency with _classify_richness (was: arithmetic mean, which
-    # is dragged up by PK-intensive outliers in heterogeneous studies).
-    if n_subjects < 5:
+    # Half-threshold short-circuit mirrors the NODE budget floor: too few
+    # subjects to power even the optimization lane → low.
+    if n_subjects < _NODE_OPTIMIZATION_MIN_SUBJECTS // 2:
         return "low"
     per_subj_counts = obs.groupby("NMID").size()
     median_samples = float(per_subj_counts.median()) if len(per_subj_counts) > 0 else 0.0
-    if median_samples > 8 and n_subjects >= 20:
+    if median_samples > _MIN_OBS_PER_SUBJECT_RICH and n_subjects >= _NODE_DISCOVERY_MIN_SUBJECTS:
         return "high"
-    if median_samples >= 4 and n_subjects >= 10:
+    if (
+        median_samples >= _MIN_OBS_PER_SUBJECT_MODERATE
+        and n_subjects >= _NODE_OPTIMIZATION_MIN_SUBJECTS
+    ):
         return "medium"
     return "low"
 
@@ -1682,9 +1778,11 @@ def _assess_protocol_heterogeneity(df: pd.DataFrame) -> str:
     if len(per_study_n_obs) < 2:
         return "single-study"
 
-    # Coefficient of variation of observations-per-subject across studies
+    # Coefficient of variation of observations-per-subject across studies.
+    # Threshold from policies/profiler.json#/protocol_heterogeneity.
     obs_per_subj = per_study_n_obs / per_study_n_subj
-    if obs_per_subj.std() / max(obs_per_subj.mean(), 1e-6) > 0.5:
+    cv = obs_per_subj.std() / max(obs_per_subj.mean(), 1e-6)
+    if cv > _PROTOCOL_HETEROGENEITY_CV_THRESHOLD:
         return "pooled-heterogeneous"
 
     return "pooled-similar"
@@ -1693,8 +1791,11 @@ def _assess_protocol_heterogeneity(df: pd.DataFrame) -> str:
 def _assess_absorption_coverage(obs: pd.DataFrame) -> str:
     """Assess whether absorption phase is adequately sampled.
 
-    adequate: >= 2 pre-Tmax observations per subject on average
-    inadequate: < 2 pre-Tmax observations per subject on average
+    adequate:   avg pre-Tmax obs/subject ≥ ``_ABSORPTION_COVERAGE_MIN_PRE_TMAX``
+    inadequate: otherwise
+
+    Threshold is sourced from
+    ``policies/profiler.json#/subject_quality/absorption_coverage_min_pre_tmax``.
     """
     if obs.empty:
         return "inadequate"
@@ -1718,14 +1819,17 @@ def _assess_absorption_coverage(obs: pd.DataFrame) -> str:
         return "inadequate"
 
     avg_pre_tmax = sum(pre_tmax_counts) / len(pre_tmax_counts)
-    return "adequate" if avg_pre_tmax >= 2.0 else "inadequate"
+    return "adequate" if avg_pre_tmax >= _ABSORPTION_COVERAGE_MIN_PRE_TMAX else "inadequate"
 
 
 def _assess_elimination_coverage(obs: pd.DataFrame) -> str:
     """Assess whether elimination phase is adequately sampled.
 
-    adequate: >= 3 post-Tmax observations per subject on average
-    inadequate: < 3 post-Tmax observations per subject on average
+    adequate:   avg post-Tmax obs/subject ≥ ``_ELIMINATION_COVERAGE_MIN_POST_TMAX``
+    inadequate: otherwise
+
+    Threshold is sourced from
+    ``policies/profiler.json#/subject_quality/elimination_coverage_min_post_tmax``.
     """
     if obs.empty:
         return "inadequate"
@@ -1751,4 +1855,4 @@ def _assess_elimination_coverage(obs: pd.DataFrame) -> str:
         return "inadequate"
 
     avg_post_tmax = sum(post_tmax_counts) / len(post_tmax_counts)
-    return "adequate" if avg_post_tmax >= 3.0 else "inadequate"
+    return "adequate" if avg_post_tmax >= _ELIMINATION_COVERAGE_MIN_POST_TMAX else "inadequate"

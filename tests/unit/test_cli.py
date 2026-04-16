@@ -744,6 +744,8 @@ class TestRunWiring:
             assert not mock_build.called, "agentic must be ignored on submission lane"
 
             # Discovery lane: agentic flag MUST trigger the builder.
+            # --yes bypasses the data-sharing confirmation prompt added for
+            # non-local providers (required since the test runner provides no stdin).
             mock_build.reset_mock()
             mock_build.return_value = None  # builder may return None if provider missing
             runner.invoke(
@@ -754,6 +756,7 @@ class TestRunWiring:
                     "--lane",
                     "discovery",
                     "--agentic",
+                    "--yes",
                     "--output",
                     str(tmp_path / "disc"),
                 ],

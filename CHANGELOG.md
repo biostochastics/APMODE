@@ -5,6 +5,163 @@ All notable changes to APMODE are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0-rc5] — 2026-04-16
+
+### Profiler policy: drift remediation, dead-policy wiring, schema v2.1.0
+
+`policies/profiler.json` bumped from `v2.0.0` → `v2.1.0`. All changes
+preserve default behaviour (thresholds equal prior hard-coded values);
+the point of the bump is that deployments tuning the JSON now actually
+see the change propagate. Multi-model consensus (gpt-5.2-pro, glm-5.1)
+informed the approach; consensus notes are in the PR description.
+
+#### Drift eliminated (bare literals → policy-sourced constants)
+
+Eight heuristic call sites in `src/apmode/data/profiler.py` previously
+used bare numeric literals that mirrored (but did not source from)
+policy fields. Editing the JSON had no effect. All now go through
+module-level `_POLICY.*` constants:
+
+| Function (file:line) | Before | Now sourced from |
+|---|---|---|
+| `recommend_error_model` (profiler.py:670) | `dv_cv_percent < 30.0` | `low_cv_additive_ceiling` |
+| `_compute_node_dim_budget` (profiler.py:400) | `4 / 8 / 10 / 20` literals | `node_{discovery,optimization}_{min_subjects,min_median_samples,budget}` |
+| `_classify_richness` | `< 4`, `<= 8` | `min_obs_per_subject_{moderate,rich}` |
+| `_assess_identifiability` | `4 / 8 / 10 / 20` literals | `min_obs_per_subject_*` + `node_*_min_subjects` |
+| `_assess_absorption_coverage` | `>= 2.0` | `absorption_coverage_min_pre_tmax` |
+| `_assess_elimination_coverage` | `>= 3.0` | `elimination_coverage_min_post_tmax` |
+| `_assess_flip_flop_risk` | `1.5 *`, `>= 0.85`, `>= 4` | `flip_flop.{ka_lambdaz_ratio_possible,quality_adj_r2_min,quality_min_npts}` |
+| `_assess_protocol_heterogeneity` | `> 0.5` CV | `protocol_heterogeneity.obs_per_subject_cv_threshold` |
+
+#### Dead policy field wired
+
+`huang_2025_lambda_z.adj_r2_threshold = 0.7` was loaded into
+`ProfilerPolicy.lambdaz_adj_r2_threshold` but never consumed. Now
+used as the **advisory quality floor** for flip-flop detection:
+below this, the profiler returns `"unknown"` rather than
+`"possible"` / `"likely"`. Distinct from the stricter
+`flip_flop.quality_adj_r2_min = 0.85` (Richardson 2025) required to
+retain `"likely"`.
+
+#### New policy fields (backward-compatible — defaults match prior hard-coded behaviour)
+
+- `flip_flop.quality_adj_r2_min` (0.85) — Richardson 2025 strict
+  terminal-fit adj-R² for flip-flop classification.
+- `flip_flop.quality_min_npts` (4) — companion min terminal-window
+  size for the strict-quality gate.
+- `protocol_heterogeneity.obs_per_subject_cv_threshold` (0.5) —
+  across-study CV of observations/subject above which a pooled study
+  is classified `pooled-heterogeneous`.
+
+#### Advisory vs disqualifying taxonomy (documented)
+
+Profiler fields are **advisory** — they populate the
+`EvidenceManifest` and inform Lane Router / Gate 3 ranking but do not
+themselves disqualify candidates. **Disqualification** is driven by
+`GatePolicy` (Gate 1/2/2.5 evaluators in `governance/gates.py`). The
+distinction is now called out in
+`docs/PROFILER_REFINEMENT_PLAN.md`, the module docstring of
+`apmode/data/profiler.py`, and the README's parameter dictionary.
+
+#### Drift guard
+
+Added `tests/unit/test_profiler_policy_consistency.py` (34 tests):
+
+1. Every active JSON leaf in `profiler.json` must map to a
+   `ProfilerPolicy` field.
+2. Every `_POLICY.*` module-level constant must equal its JSON source.
+3. AST-level scan of eight drift-prone heuristic functions flags
+   bare numeric literals (allowlist covers loop bounds, indices,
+   numerical-stability floors, and display fraction→percent
+   conversions).
+4. `policy_id` and `policy_version` must agree.
+5. `docs/PROFILER_REFINEMENT_PLAN.md` exists (referenced from the
+   JSON description).
+
+#### Documentation
+
+- **New**: `docs/PROFILER_REFINEMENT_PLAN.md` — derivation and
+  primary-source citation for every profiler policy field.
+- **README**: `Data Profiler Parameter Dictionary` updated to
+  v2.1.0; missing error-model / subject-quality rows added
+  (`high_cv_ceiling`, `narrow_range_additive`,
+  `low_cv_additive_ceiling`, `min_subjects_for_dynamic_range`,
+  `min_obs_per_subject_moderate`, `min_obs_per_subject_rich`).
+- **README**: new **Gate policy parameters** table covering
+  Gate 1 / Gate 2 / Gate 2.5 / missing-data defaults across all
+  three lanes, with primary-source citations.
+
+#### Deferred (needs baseline regression sign-off)
+
+Gate 3 cross-paradigm ranking cleanup (zeroing BIC weight, Borda
+rank aggregation, AUC/Cmax bioequivalence scoring, wiring dead
+`GatePolicy.vpc_concordance_target`, removing magic-number caps) is
+out of scope for this commit per consensus — scheduled as a
+separate `gate3-composite-policy` PR once benchmark baselines are
+refreshed.
+
+### CLI: comprehensive overhaul (pharmacometrician UX)
+
+All changes to `src/apmode/cli.py`.
+
+#### New commands
+
+- **`apmode doctor`** — R/nlmixr2/rxode2/CmdStan/Python package and LLM
+  provider health check.  Probes R via subprocess, checks `packageVersion()`
+  for nlmixr2 and rxode2, queries API key environment variables for all
+  supported providers, and pings Ollama at `localhost:11434`.
+- **`apmode ls [RUNS_DIR]`** — List run bundles with a summary table (lane,
+  candidate count, best BIC, best candidate ID).  Supports `--sort` (time,
+  lane, bic, status) and `--limit`.
+- **`apmode policies [LANE]`** — List and inspect gate policy files from the
+  `policies/` directory.  Shows policy version, gate coverage, and validation
+  status.  With a single lane argument, expands the full threshold table.
+  `--validate` checks required keys.
+- **`apmode report`** upgraded — Now checks for existing `report.md` /
+  `report.html` artifacts and displays them (HTML: `webbrowser.open`;
+  MD: `console.pager`).  `--no-browser` prints path instead.  Shows the
+  Phase 3 stub only when no artifacts exist.
+
+#### Existing command improvements
+
+- **`apmode run --dry-run`** — Profiles data, runs NCA, enumerates the
+  search space, and prints a dispatch-plan panel (root candidates, nlmixr2 /
+  JAX-NODE split, compartments, absorption types, elimination types, lane)
+  without executing any R backends.
+- **`apmode run --yes/-y`** — Bypass the agentic data-sharing confirmation
+  prompt (useful for CI).
+- **Agentic submission-lane note** — `--agentic` on the submission lane now
+  prints a one-liner explaining why it is disabled (PRD §3) instead of
+  silently ignoring the flag.
+- **Policy version in Data Summary panel** — Reads the lane's policy file
+  before the run starts and shows `policy_version` so the user can verify
+  they are running the expected thresholds.
+- **Top-Model panel at run completion** — Loads `ranking.json` and the
+  winner's `results/{id}_result.json` to display OFV, BIC, AIC, and
+  η-shrinkage immediately after the run.
+- **`apmode inspect` ranking table** — Added OFV and η-shrinkage columns
+  (loaded from `results/{id}_result.json` per candidate).  Fixed Gate 3
+  display (winner, metric, ΔBIC vs runner-up, summary_reason).
+- **`apmode log --failed`** — Fixed field names to match `FailedCandidate`
+  model (`candidate_id`, `gate_failed`, `summary_reason`, `failed_checks`).
+- **`apmode log --top`** — Added SE/RSE%/CI95 and η-shrinkage rows per
+  candidate; OFV in subtitle.
+- **`apmode diff`** — Fixed `candidate_id` key (with `model_id` fallback);
+  added BIC_A/BIC_B comparison columns.
+- **`_show_gate_details`** — Now handles `list[GateCheckResult]` (not just
+  dict), shows observed/threshold values, adds policy_version and
+  summary_reason rows, raised column widths to 100/120.
+
+#### Colorblind accessibility
+
+All status indicators now pair color with a text symbol — ✓/✗/⚠/~ — so
+they are unambiguous without relying on hue alone.  Neutral-good values use
+cyan instead of green; ✗/✓/~ replace pure-color-only statuses throughout
+`_validate_file`, `_pass_fraction`, `_node_label`, trace/lineage views,
+`_bool_badge`, and all new panels.
+
+---
+
 ## [0.3.0-rc4] — 2026-04-16
 
 ### Benchmark: 10/10 scenarios recommended (Suite A + real datasets)

@@ -112,9 +112,17 @@ class ProfilerPolicy:
     # Flip-flop
     flip_flop_ka_lambdaz_ratio_likely: float
     flip_flop_ka_lambdaz_ratio_possible: float
+    # Quality guards for flip-flop classification (advisory — Richardson 2025
+    # stricter than routine λz; terminal fits below this threshold cannot
+    # support a "likely" flip-flop call).
+    flip_flop_quality_adj_r2_min: float
+    flip_flop_quality_min_npts: int
 
     # TAD consistency
     tad_in_window_fraction_clean: float
+
+    # Protocol heterogeneity
+    protocol_heterogeneity_obs_per_subject_cv_threshold: float
 
     # DVID filter
     pk_dvid_allowlist: frozenset[str]
@@ -139,6 +147,7 @@ def _load_from_path(path: Path) -> ProfilerPolicy:
     ff = raw["flip_flop"]
     tad = raw["tad_consistency"]
     dvid = raw["dvid_filter"]
+    ph = raw.get("protocol_heterogeneity", {})
     return ProfilerPolicy(
         policy_id=raw["policy_id"],
         policy_version=raw["policy_version"],
@@ -195,7 +204,12 @@ def _load_from_path(path: Path) -> ProfilerPolicy:
         node_optimization_budget=int(node["dim_budget"]["optimization"]),
         flip_flop_ka_lambdaz_ratio_likely=float(ff["ka_lambdaz_ratio_likely"]),
         flip_flop_ka_lambdaz_ratio_possible=float(ff["ka_lambdaz_ratio_possible"]),
+        flip_flop_quality_adj_r2_min=float(ff.get("quality_adj_r2_min", 0.85)),
+        flip_flop_quality_min_npts=int(ff.get("quality_min_npts", 4)),
         tad_in_window_fraction_clean=float(tad["in_window_fraction_clean"]),
+        protocol_heterogeneity_obs_per_subject_cv_threshold=float(
+            ph.get("obs_per_subject_cv_threshold", 0.5)
+        ),
         pk_dvid_allowlist=frozenset(str(x).lower() for x in dvid["pk_dvid_allowlist"]),
         dvid_fail_open_when_no_match=bool(dvid["fail_open_when_no_match"]),
     )

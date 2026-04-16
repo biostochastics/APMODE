@@ -6,7 +6,7 @@
 
   **Adaptive Pharmacokinetic Model Discovery Engine**
 
-  [![Phase](https://img.shields.io/badge/phase-3%20(P3.B%20%E2%80%94%20rc4)-blue)]()
+  [![Phase](https://img.shields.io/badge/phase-3%20(P3.B%20%E2%80%94%20rc5)-blue)]()
 
   [![Tests](https://img.shields.io/badge/tests-1558%20passing-success)]()
   [![License](https://img.shields.io/badge/license-GPL--2.0--or--later-green)](LICENSE)
@@ -30,7 +30,7 @@ APMODE is a **governed meta-system** that composes five population PK modeling p
 
 **Formular — a typed PK DSL — is the control surface.** Models are specified in [Formular](docs/FORMULAR.md), a structured grammar (`Absorption x Distribution x Elimination x Variability x Observation × Priors`), compiled to a typed AST, validated against pharmacometric constraints, and lowered to backend-specific code (nlmixr2 R, Stan/Torsten, JAX/Diffrax). The agentic LLM backend (Phase 3) operates exclusively through Formular transforms — including the new `SetPrior` transform for Bayesian workflows — it cannot emit raw code.
 
-> **Status**: **v0.3.0-rc4** (2026-04-16) — Phase 3 release candidate 4. Gate semantics fully validated end-to-end: **10/10 benchmark scenarios produce a recommended candidate** (Suite A + warfarin / theo_sd / mavoglurant). Fixes since rc2: structured `NonlinearClearanceSignal` provenance (manifest schema v3), nlmixr2 adapter DVID filter + covariate remapping, Gate 1 log-space plausibility back-transform + seed-stability `not_probed` semantics, Gate 2 shrinkage unit fix (percent → fraction). 1558 tests collected, full unit suite green; `mypy --strict` clean; `ruff` clean. Supports Python 3.12–3.14.
+> **Status**: **v0.3.0-rc5** (2026-04-16) — Phase 3 release candidate 5. Comprehensive CLI overhaul: new `apmode doctor`, `apmode ls`, `apmode policies` commands; `apmode report` now opens existing artifacts; `--dry-run` dispatch preview; colorblind-safe status indicators throughout; RSE%/η-shrinkage in parameter tables; policy version in run header; agentic-on-submission lane note. 10/10 benchmark scenarios produce a recommended candidate. 1541 tests passing (non-live); `mypy --strict` clean; `ruff` clean. Supports Python 3.12–3.14.
 
 ---
 
@@ -87,18 +87,42 @@ uv run apmode run ./data/theo_sd.csv --lane discovery \
     --backend bayesian_stan --bayes-chains 4 --bayes-warmup 1000 --bayes-sampling 1000
 ```
 
+### Environment Check
+
+```bash
+# Verify R, nlmixr2, rxode2, CmdStan, Python packages, and LLM provider keys
+uv run apmode doctor
+```
+
+### List and Preview Runs
+
+```bash
+# List all bundles in ./runs (most recent first)
+uv run apmode ls
+
+# Sort by BIC, show top 10
+uv run apmode ls --sort bic --limit 10
+
+# Preview a run without executing R backends
+uv run apmode run <dataset.csv> --lane submission --dry-run
+```
+
 ### Inspect Results
 
 ```bash
 # Bundle summary
 uv run apmode inspect <bundle_dir>
 
-# Top 3 candidates with parameter estimates
+# Top 3 candidates with parameter estimates, RSE%, η-shrinkage
 uv run apmode log <bundle_dir> --top 3
 
 # Gate failure analysis
 uv run apmode log <bundle_dir> --failed
 uv run apmode log <bundle_dir> --gate gate1
+
+# View the run report (HTML in browser, or Markdown in pager)
+uv run apmode report <bundle_dir>
+uv run apmode report <bundle_dir> --format md
 
 # Compare two runs side-by-side
 uv run apmode diff ./runs/run_a ./runs/run_b
@@ -110,6 +134,19 @@ uv run apmode trace <bundle_dir> --cost                  # token/cost rollup
 uv run apmode lineage <bundle_dir> <candidate_id>        # transform chain root→target
 uv run apmode graph <bundle_dir>                         # search DAG tree view
 uv run apmode graph <bundle_dir> --format dot -o dag.dot # Graphviz export
+```
+
+### Governance
+
+```bash
+# List gate policy versions for all lanes
+uv run apmode policies
+
+# Inspect submission-lane thresholds in detail
+uv run apmode policies submission
+
+# Validate policy files
+uv run apmode policies --validate
 ```
 
 ### Run the Test Suite
@@ -556,7 +593,9 @@ policy artifact so runs are reproducible without touching Python source:
 
 - **Source of truth**: [`policies/profiler.json`](policies/profiler.json)
 - **Loader**: [`src/apmode/data/policy.py`](src/apmode/data/policy.py) — `get_policy()` returns a typed frozen `ProfilerPolicy` dataclass; `policy_sha256` is embedded in every `EvidenceManifest`.
-- **Current version**: `profiler/v2.0.0` (`manifest_schema_version = 3`; structured `nonlinear_clearance_signals` replaces the flat scalars/masks)
+- **Current version**: `profiler/v2.1.0` (`manifest_schema_version = 3`; structured `nonlinear_clearance_signals` replaces the flat scalars/masks)
+- **Derivation & citations**: [`docs/PROFILER_REFINEMENT_PLAN.md`](docs/PROFILER_REFINEMENT_PLAN.md) — one paragraph per policy group tying each default to a primary source.
+- **Drift guard**: [`tests/unit/test_profiler_policy_consistency.py`](tests/unit/test_profiler_policy_consistency.py) — enforces JSON↔dataclass↔constants equality and AST-scans drift-prone heuristic functions for bare numeric literals.
 
 | Group | Parameter | Default | Purpose |
 |-------|-----------|---------|---------|
@@ -581,15 +620,21 @@ policy artifact so runs are reproducible without touching Python source:
 | | `missingness_full_information_cutoff` | 0.15 | Fraction above → full-information likelihood |
 | **Error model** | `blq_m3_trigger` | 0.10 | BLQ fraction triggering M3 |
 | | `dynamic_range_proportional` | 50.0 | Cmax_p95/p05 triggering proportional error |
+| | `high_cv_ceiling` | 80.0 | Suppresses proportional recommendation at extreme CV% |
 | | `lloq_cmax_combined` | 0.05 | LLOQ/Cmax median triggering combined |
 | | `terminal_log_mad_combined` | 0.35 | Terminal log-residual MAD triggering combined |
+| | `narrow_range_additive` | 5.0 | Dynamic range below this + low CV → additive error plausible |
+| | `low_cv_additive_ceiling` | 30.0 | DV CV% ceiling for additive recommendation (biomarker-like) |
 | **NODE readiness** | `dim_budget.discovery` | 8 | NODE dim cap for Discovery lane |
 | | `dim_budget.optimization` | 4 | NODE dim cap for Optimization lane |
 | | `min_subjects.{discovery,optimization}` | 20 / 10 | Minimum subjects per lane |
 | | `min_median_samples.{discovery,optimization}` | 8 / 4 | Minimum median samples/subject |
 | **Flip-flop** | `ka_lambdaz_ratio_likely` | 1.0 | `ka < λz` → flip-flop "likely" |
 | | `ka_lambdaz_ratio_possible` | 1.5 | `ka < 1.5·λz` → "possible" |
+| | `quality_adj_r2_min` | 0.85 | **Strict** terminal adj-R² required to retain `"likely"` (Richardson 2025) |
+| | `quality_min_npts` | 4 | Minimum median terminal-window size for the strict-quality check |
 | **TAD consistency** | `in_window_fraction_clean` | 0.80 | Fraction of obs within union of per-dose intervals |
+| **Protocol heterogeneity** | `obs_per_subject_cv_threshold` | 0.5 | Across-study CV of obs/subject above this flags `pooled-heterogeneous` |
 | **DVID filter** | `pk_dvid_allowlist` | ["cp", "1", "conc", "concentration"] | Accepted observation DVIDs |
 | | `fail_open_when_no_match` | true | Keep all rows and WARN (vs raise ValueError) when allowlist matches nothing |
 | **Shape detection** | `multi_peak_fraction_threshold` | 0.3 | Fraction of subjects with ≥2 prominent peaks |
@@ -599,12 +644,85 @@ policy artifact so runs are reproducible without touching Python source:
 | | `peak_min_distance_intervals` | 2.0 | Minimum inter-peak distance in sampling intervals |
 | **Subject quality** | `min_concs_for_profile` | 5 | Minimum per-subject observations for shape analysis |
 | | `min_subjects_for_median` | 4 | Minimum subjects for population-median statistics |
+| | `min_subjects_for_dynamic_range` | 10 | Minimum positive-Cmax subjects for p95/p05 ratio |
+| | `min_obs_per_subject_moderate` | 4 | Richness band: sparse / moderate boundary |
+| | `min_obs_per_subject_rich` | 8 | Richness band: moderate / rich boundary |
 | | `absorption_coverage_min_pre_tmax` | 2.0 | Mean pre-Tmax samples for "adequate" coverage |
 | | `elimination_coverage_min_post_tmax` | 3.0 | Mean post-Tmax samples for "adequate" coverage |
 
-To tune for a deployment, edit `policies/profiler.json`, re-run
+### Advisory vs disqualifying
+
+Profiler fields populate the EvidenceManifest — they are **advisory**
+inputs that shape dispatch (Lane Router) and ranking (Gate 3). None of
+them on their own remove a candidate. Hard disqualification lives in
+the **Gate policies** (`policies/submission.json`, `discovery.json`,
+`optimization.json`) and is evaluated by `governance/gates.py`.
+
+The Huang-2025 `lambdaz_adj_r2_threshold = 0.7` is used as a
+**quality floor** (advisory) inside `_assess_flip_flop_risk`: below
+this, the profiler returns `"unknown"` because the terminal fit is
+too poor to support any flip-flop call. The stricter
+`flip_flop.quality_adj_r2_min = 0.85` is required to retain a
+`"likely"` call — a lower-quality-but-still-usable fit downgrades to
+`"possible"`.
+
+### Gate policy parameters (`policies/{submission,discovery,optimization}.json`)
+
+Gate policies are lane-specific, versioned, and discoverable via
+`apmode policies <lane>`. The Pydantic schema lives in
+[`src/apmode/governance/policy.py`](src/apmode/governance/policy.py)
+and is validated by the CI hook
+[`src/apmode/governance/validate_policies.py`](src/apmode/governance/validate_policies.py).
+
+| Gate | Parameter | Submission | Discovery | Optimization | Purpose |
+|---|---|---|---|---|---|
+| **Gate 1 — Technical validity** | `cwres_mean_max` | 0.10 | 0.15 | 0.12 | Max magnitude of population-level CWRES mean |
+| | `outlier_fraction_max` | 0.05 | 0.08 | 0.06 | Max fraction of \|CWRES\| > 4 outliers |
+| | `vpc_coverage_lower` / `_upper` | 0.85 / 0.995 | 0.80 / 0.995 | 0.82 / 0.995 | Per-band VPC coverage bounds |
+| | `seed_stability_n` | 3 | 3 | 3 | Required seed replicates (top-K candidates only) |
+| | `seed_stability_cv_max` | 0.10 | 0.10 | 0.10 | Max CV of OFV across seeds |
+| | `obs_vs_pred_r2_min` | 0.30 | 0.30 | 0.30 | Minimum R² for state-trajectory validity |
+| | `cwres_sd_min` / `_max` | 0.50 / 2.0 | 0.50 / 2.0 | 0.50 / 2.0 | CWRES SD should hug 1.0 |
+| | `gradient_norm_max` | 100.0 | 100.0 | 100.0 | Convergence gradient norm ceiling |
+| | Bayesian `rhat_max` | 1.01 | 1.01 | 1.01 | Vehtari 2021 rank-normalized R̂ |
+| | Bayesian `ess_bulk_min` / `_tail_min` | 400 / 400 | 400 / 400 | 400 / 400 | Vehtari 2021 ESS floor |
+| | Bayesian `n_divergent_max` | 0 | 0 | 0 | HMC divergence ceiling |
+| **Gate 2 — Lane admissibility** | `interpretable_parameterization` | required | not_required | preferred | Blocks NODE in Submission |
+| | `shrinkage_max` | 0.30 | null | 0.30 | Max η-shrinkage (null = no threshold) |
+| | `identifiability_required` | true | false | true | Profile-likelihood CI + condition number check |
+| | `node_eligible` | false | true | true | Hard Submission exclusion (PRD §3) |
+| | `loro_required` | false | false | true | LORO-CV required for Optimization |
+| | LORO `loro_npde_mean_max` | — | — | 0.3 | NPE pool-mean ceiling |
+| | LORO `loro_npde_variance_{min,max}` | — | — | 0.5 / 1.5 | NPE pool-variance bounds |
+| | LORO `loro_vpc_coverage_min` | — | — | 0.80 | VPC coverage concordance floor |
+| | LORO `loro_min_folds` | — | — | 3 | Minimum regimen folds |
+| **Gate 2.5 — Credibility (ICH M15)** | `context_of_use_required` | n/a | true | true | COU statement present |
+| | `limitation_to_risk_mapping_required` | n/a | false | true | Risk-mapped limitations |
+| | `data_adequacy_required` | n/a | true | true | n_obs / n_params check |
+| | `data_adequacy_ratio_min` | n/a | 5.0 | 5.0 | Minimum obs/params ratio |
+| | `sensitivity_analysis_required` | n/a | false | true | Sensitivity artifact present |
+| | `ai_ml_transparency_required` | n/a | true | true | Statement required for NODE/agentic |
+| **Missing data** | `mi_pmm_max_missingness` | 0.20 | 0.30 | 0.25 | Above → FREM preferred |
+| | `frem_preferred_above` | 0.25 | 0.40 | 0.30 | Explicit FREM trigger |
+| | `m_imputations` | 20 | 5 | 10 | Default MI multiplicity |
+| | `adaptive_m` | true | false | true | Escalate m up to `m_max` on variance |
+| | `m_max` | 40 | 10 | 20 | Adaptive ceiling |
+| | `adaptive_variance_threshold` | 0.05 | 0.10 | 0.08 | Between-imputation variance trigger |
+| | `blq_m3_threshold` | 0.05 | 0.15 | 0.10 | BLQ burden → M3 (else M7+) |
+| | `imputation_stability_penalty` | 0.0 | 0.25 | 0.5 | Rank-stability threshold = 1 − penalty |
+
+All gate thresholds are sourced from primary literature:
+CWRES conventions (Nguyen et al. 2017, *CPT PSP* 6:87), VPC coverage
+(Bergstrand & Karlsson 2009, *AAPS J* 11:371), R̂/ESS (Vehtari et al.
+2021, *Bayesian Analysis* 16:667), BLQ M3/M7 (Beal 2001, *JPKPD* 28:481;
+Wijk et al. 2025), FREM (Nyberg 2024). Lane-specific tolerances
+follow the PRD §4.3.1 submission/discovery/optimization risk profile.
+
+To tune for a deployment, edit the relevant policy JSON, re-run
 `apmode run ...`, and inspect the emitted
-`evidence_manifest.policy_sha256` to confirm the change propagated.
+`evidence_manifest.policy_sha256` (profiler) or
+`policy_file.json` (gate) in the reproducibility bundle to confirm
+the change propagated.
 
 ---
 
