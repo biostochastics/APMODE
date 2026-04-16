@@ -4,7 +4,14 @@
 from __future__ import annotations
 
 from apmode.bundle.models import EvidenceManifest
+from apmode.governance.policy import MissingDataPolicy
 from apmode.routing import route
+
+# Default policy used when a test needs the BLQ advisory string. All live
+# orchestrator calls pass a policy; the pre-v0.3 unversioned 0.20 literal
+# fallback has been removed, so tests that exercise BLQ routing must
+# explicitly opt in to a policy to match production behavior.
+_DEFAULT_BLQ_POLICY = MissingDataPolicy(blq_m3_threshold=0.10)
 
 
 def _make_manifest(**overrides: object) -> EvidenceManifest:
@@ -60,8 +67,9 @@ class TestLaneRouter:
 
     def test_blq_constraint_noted(self) -> None:
         manifest = _make_manifest(blq_burden=0.25)
-        decision = route("submission", manifest)
-        assert any("M3/M4" in c for c in decision.constraints)
+        decision = route("submission", manifest, _DEFAULT_BLQ_POLICY)
+        # Directive-driven advisory replaces the legacy "M3/M4 required" string.
+        assert any("BLQ method M3" in c for c in decision.constraints)
 
     def test_heterogeneous_constraint_noted(self) -> None:
         manifest = _make_manifest(protocol_heterogeneity="pooled-heterogeneous")
@@ -77,39 +85,46 @@ class TestLaneRouter:
         assert "nlmixr2" in decision.backends
         assert decision.node_eligible is True
 
-    def test_blq_burden_at_boundary_no_constraint(self) -> None:
-        """blq_burden=0.20 exactly should NOT trigger the M3/M4 constraint (> 0.20)."""
-        manifest = _make_manifest(blq_burden=0.20)
-        decision = route("submission", manifest)
-        assert not any("M3/M4" in c for c in decision.constraints)
+    def test_blq_below_policy_threshold_selects_m7plus(self) -> None:
+        """blq_burden below the policy's ``blq_m3_threshold`` → M7+."""
+        manifest = _make_manifest(blq_burden=0.05)
+        decision = route("submission", manifest, _DEFAULT_BLQ_POLICY)
+        # Directive resolves to M7+ when burden ≤ threshold (Wijk 2025).
+        assert any("BLQ method M7+" in c for c in decision.constraints)
 
-    def test_blq_burden_just_above_boundary(self) -> None:
-        """blq_burden=0.21 should trigger the M3/M4 constraint."""
+    def test_blq_above_policy_threshold_selects_m3(self) -> None:
+        """blq_burden above ``blq_m3_threshold`` → M3 (Beal 2001)."""
         manifest = _make_manifest(blq_burden=0.21)
-        decision = route("submission", manifest)
-        assert any("M3/M4" in c for c in decision.constraints)
+        decision = route("submission", manifest, _DEFAULT_BLQ_POLICY)
+        assert any("BLQ method M3" in c for c in decision.constraints)
 
     def test_compound_blq_and_heterogeneous(self) -> None:
-        """Both BLQ > 0.20 AND pooled-heterogeneous: both constraints noted."""
+        """High BLQ + pooled-heterogeneous: both constraints noted."""
         manifest = _make_manifest(
             blq_burden=0.25,
             protocol_heterogeneity="pooled-heterogeneous",
         )
-        decision = route("submission", manifest)
-        assert any("M3/M4" in c for c in decision.constraints)
+        decision = route("submission", manifest, _DEFAULT_BLQ_POLICY)
+        assert any("BLQ method M3" in c for c in decision.constraints)
         assert any("IOV" in c for c in decision.constraints)
 
     def test_compound_sparse_and_blq(self) -> None:
-        """Sparse + inadequate + high BLQ: NODE removed AND BLQ constraint noted."""
+        """Sparse + inadequate + high BLQ: NODE removed AND M3 advisory present."""
         manifest = _make_manifest(
             richness_category="sparse",
             absorption_phase_coverage="inadequate",
             blq_burden=0.30,
         )
-        decision = route("discovery", manifest)
+        decision = route("discovery", manifest, _DEFAULT_BLQ_POLICY)
         assert "jax_node" not in decision.backends
         assert decision.data_sufficient_for_node is False
-        assert any("M3/M4" in c for c in decision.constraints)
+        assert any("BLQ method M3" in c for c in decision.constraints)
+
+    def test_no_policy_suppresses_blq_advisory(self) -> None:
+        """Without a policy, no BLQ advisory is emitted (pre-v0.3 0.20 literal removed)."""
+        manifest = _make_manifest(blq_burden=0.50)
+        decision = route("submission", manifest)
+        assert not any(c.startswith("BLQ") for c in decision.constraints)
 
     def test_invalid_lane_raises(self) -> None:
         import pytest

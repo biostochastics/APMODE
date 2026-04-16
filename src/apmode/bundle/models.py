@@ -155,13 +155,28 @@ class SplitGOFMetrics(BaseModel):
 
 
 class DiagnosticBundle(BaseModel):
-    """All diagnostic outputs for a candidate model."""
+    """All diagnostic outputs for a candidate model.
+
+    ``npe_score`` is the canonical simulation-based Nonparametric
+    Prediction Error (median absolute prediction error from posterior
+    predictive simulations; see :func:`apmode.benchmarks.scoring.compute_npe`).
+    Backends that generate VPC / posterior-predictive simulations must
+    populate this field using the benchmarks helper so every site in
+    APMODE consumes the *same* NPE definition. When ``npe_score`` is
+    ``None`` the ranking layer falls back to a documented CWRES proxy
+    (:func:`apmode.governance.ranking.compute_cwres_npe_proxy`) —
+    never silently redefining NPE.
+    """
 
     gof: GOFMetrics
     split_gof: SplitGOFMetrics | None = None
     vpc: VPCSummary | None = None
     identifiability: IdentifiabilityFlags
     blq: BLQHandling
+    # Non-negative by construction: NPE is an absolute-error summary.
+    # Backends that can't compute it must leave this None and let the
+    # ranking layer fall back to the documented CWRES proxy.
+    npe_score: float | None = Field(default=None, ge=0.0)
     diagnostic_plots: dict[str, str] = Field(default_factory=dict)
 
 

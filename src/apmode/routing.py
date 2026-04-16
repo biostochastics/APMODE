@@ -131,15 +131,14 @@ def route(
     # Resolve the missing-data directive (policy-driven).
     directive = resolve_directive(policy, manifest) if policy is not None else None
 
-    # BLQ constraint note. When a directive is present the method is already
-    # resolved; otherwise fall back to the historical 0.20 heuristic.
+    # BLQ constraint note. A directive is always present on the live
+    # orchestrator path; legacy callers that pass ``policy=None`` get no
+    # BLQ advisory. The pre-v0.3 ``0.20`` fallback was removed because it
+    # was an unversioned literal that drifted from every lane policy
+    # (submission 0.05, optimization 0.10, discovery 0.15).
     if directive is not None:
         constraints.append(
             f"BLQ method {directive.blq_method} selected (burden={manifest.blq_burden:.2%})"
-        )
-    elif manifest.blq_burden > 0.20:
-        constraints.append(
-            f"BLQ burden {manifest.blq_burden:.2f} > 0.20: M3/M4 likelihood required"
         )
 
     # Protocol heterogeneity note

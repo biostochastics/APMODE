@@ -171,16 +171,33 @@ class TestSuiteBCrossParadigmRanking:
     """B3: Cross-paradigm ranking with mixed backends."""
 
     def test_b3_ranking_orders_by_composite(self) -> None:
-        """Better BIC should rank higher when VPC is comparable."""
-        classical = make_b3_result("classical_1", "nlmixr2", bic=550.0)
-        node = make_b3_result("node_1", "jax_node", bic=520.0)
+        """Better VPC concordance should rank higher when cross-paradigm.
+
+        Updated in v0.3.0-rc5: Gate 3 cross-paradigm composite defaults now
+        have ``bic_weight=0`` (PRD §10 Q2 — likelihoods incomparable across
+        observation models), so BIC alone cannot decide ranking. Tests
+        exercising cross-paradigm precedence must vary VPC/NPE instead.
+        """
+        # NODE fits the observed percentile bands more tightly.
+        classical = make_b3_result(
+            "classical_1",
+            "nlmixr2",
+            bic=550.0,
+            vpc_coverage={"p5": 0.85, "p50": 0.87, "p95": 0.84},
+        )
+        node = make_b3_result(
+            "node_1",
+            "jax_node",
+            bic=520.0,
+            vpc_coverage={"p5": 0.91, "p50": 0.93, "p95": 0.90},
+        )
 
         policy = _load_policy("discovery")
         g3, ranked = evaluate_gate3([classical, node], policy)
 
         assert g3.passed
         assert len(ranked) == 2
-        # NODE has lower BIC → should rank first
+        # Better VPC concordance (NODE) should rank first.
         assert ranked[0].candidate_id == "node_1"
         assert ranked[1].candidate_id == "classical_1"
 
@@ -207,17 +224,38 @@ class TestSuiteBCrossParadigmRanking:
         assert ranked[0].candidate_id == "c2"  # lower BIC
 
     def test_b3_three_candidate_ranking(self) -> None:
-        """Three candidates from mixed backends ranked correctly."""
-        c1 = make_b3_result("classical_a", "nlmixr2", bic=560.0)
-        c2 = make_b3_result("node_a", "jax_node", bic=525.0)
-        c3 = make_b3_result("classical_b", "nlmixr2", bic=535.0)
+        """Three candidates from mixed backends ranked by VPC/NPE composite.
+
+        Updated in v0.3.0-rc5 for the same reason as
+        ``test_b3_ranking_orders_by_composite``. VPC concordance is set to
+        monotonically differ across candidates so the ordering is
+        deterministic under the default Gate3Config (BIC off).
+        """
+        c1 = make_b3_result(
+            "classical_a",
+            "nlmixr2",
+            bic=560.0,
+            vpc_coverage={"p5": 0.80, "p50": 0.82, "p95": 0.81},
+        )
+        c2 = make_b3_result(
+            "node_a",
+            "jax_node",
+            bic=525.0,
+            vpc_coverage={"p5": 0.91, "p50": 0.93, "p95": 0.90},
+        )
+        c3 = make_b3_result(
+            "classical_b",
+            "nlmixr2",
+            bic=535.0,
+            vpc_coverage={"p5": 0.87, "p50": 0.88, "p95": 0.86},
+        )
 
         policy = _load_policy("discovery")
         g3, ranked = evaluate_gate3([c1, c2, c3], policy)
 
         assert g3.passed
         assert len(ranked) == 3
-        # Ordered by BIC: node_a (525) < classical_b (535) < classical_a (560)
+        # Ordered by VPC concordance: node_a > classical_b > classical_a.
         assert ranked[0].candidate_id == "node_a"
         assert ranked[1].candidate_id == "classical_b"
         assert ranked[2].candidate_id == "classical_a"

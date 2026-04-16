@@ -702,6 +702,13 @@ and is validated by the CI hook
 | | `data_adequacy_ratio_min` | n/a | 5.0 | 5.0 | Minimum obs/params ratio |
 | | `sensitivity_analysis_required` | n/a | false | true | Sensitivity artifact present |
 | | `ai_ml_transparency_required` | n/a | true | true | Statement required for NODE/agentic |
+| **Gate 3 — Cross-paradigm composite** | `gate3.composite_method` | `weighted_sum` | `weighted_sum` | `weighted_sum` | Aggregation: `"weighted_sum"` or `"borda"` (rank-based, scale-invariant) |
+| | `gate3.vpc_weight` | 0.5 | 0.5 | 0.5 | VPC coverage concordance weight |
+| | `gate3.npe_weight` | 0.5 | 0.5 | 0.5 | NPE (simulation if available, else CWRES proxy) weight |
+| | `gate3.bic_weight` | 0.0 | 0.0 | 0.0 | **BIC off by default** (PRD §10 Q2 — likelihoods incomparable cross-paradigm) |
+| | `gate3.npe_cap` | 5.0 | 5.0 | 5.0 | Weighted-sum only: NPE value above this clamps to 1.0 |
+| | `gate3.bic_norm_scale` | 1000.0 | 1000.0 | 1000.0 | Weighted-sum only: divisor for BIC normalization |
+| | `vpc_concordance_target` | 0.90 | 0.90 | 0.90 | Target coverage for concordance score |
 | **Missing data** | `mi_pmm_max_missingness` | 0.20 | 0.30 | 0.25 | Above → FREM preferred |
 | | `frem_preferred_above` | 0.25 | 0.40 | 0.30 | Explicit FREM trigger |
 | | `m_imputations` | 20 | 5 | 10 | Default MI multiplicity |

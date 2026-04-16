@@ -572,10 +572,7 @@ def run(
                 border_style="yellow",
             )
         )
-        console.print(
-            "  [dim]To execute:[/] "
-            "[bold]apmode run[/] [dim](remove --dry-run)[/]"
-        )
+        console.print("  [dim]To execute:[/] [bold]apmode run[/] [dim](remove --dry-run)[/]")
         return
 
     # --- Write nlmixr2-ready CSV ---
@@ -794,8 +791,7 @@ def run(
         console.print(Panel(_top_table, title="[bold]Top Model[/]", border_style="cyan"))
 
     console.print(
-        f"  [dim]Full parameters:[/] "
-        f"[bold]apmode log {escape(str(result.bundle_dir))} --top 3[/]"
+        f"  [dim]Full parameters:[/] [bold]apmode log {escape(str(result.bundle_dir))} --top 3[/]"
     )
 
 
@@ -2067,7 +2063,10 @@ def _show_top_candidates(bundle_dir: Path, n: int) -> None:
                     t.add_row(
                         escape(pname),
                         f"{pdata:.4g}" if isinstance(pdata, float) else str(pdata),
-                        "—", "—", "—", "",
+                        "—",
+                        "—",
+                        "—",
+                        "",
                     )
 
         # η-shrinkage mini-table (appended as separate rows below params)
@@ -2088,7 +2087,10 @@ def _show_top_candidates(bundle_dir: Path, n: int) -> None:
                     t.add_row(
                         f"[dim]{escape(eta_name)} (η-shk)[/]",
                         shk_str,
-                        "—", "—", "—", "iiv",
+                        "—",
+                        "—",
+                        "—",
+                        "iiv",
                     )
 
         subtitle: list[str] = []
@@ -2720,9 +2722,7 @@ def report(
     prefer_md = fmt.lower() == "md" or (not html_path.exists() and md_path.exists())
 
     if prefer_md and md_path.exists():
-        console.print(
-            f"[dim]Viewing [bold]{escape(str(md_path))}[/] — press q to exit.[/]"
-        )
+        console.print(f"[dim]Viewing [bold]{escape(str(md_path))}[/] — press q to exit.[/]")
         with open(md_path) as fh:
             content = fh.read()
         with console.pager():
@@ -2743,9 +2743,7 @@ def report(
             import webbrowser
 
             webbrowser.open(html_path.as_uri())
-            console.print(
-                f"[dim]Opened [bold]{escape(str(html_path))}[/] in browser.[/]"
-            )
+            console.print(f"[dim]Opened [bold]{escape(str(html_path))}[/] in browser.[/]")
         return
 
     # No artifacts yet — show stub with context.
@@ -2808,7 +2806,9 @@ def doctor() -> None:
             r_ver = "?"
         table.add_row("R (Rscript)", "[green]✓ found[/]", r_ver)
     else:
-        table.add_row("R (Rscript)", "[red]✗ missing[/]", "Install R ≥ 4.4 from https://cran.r-project.org")
+        table.add_row(
+            "R (Rscript)", "[red]✗ missing[/]", "Install R ≥ 4.4 from https://cran.r-project.org"
+        )
         all_ok = False
 
     # ---- nlmixr2 ----
@@ -2923,8 +2923,7 @@ def doctor() -> None:
         console.print("[green bold]✓ All required components found.[/]")
     else:
         err_console.print(
-            "[yellow bold]⚠ Some required components are missing. "
-            "See table above for details.[/]"
+            "[yellow bold]⚠ Some required components are missing. See table above for details.[/]"
         )
         raise typer.Exit(code=1)
 
@@ -2961,9 +2960,7 @@ def ls_command(
       apmode ls --sort bic --limit 10
     """
     if not runs_dir.is_dir():
-        err_console.print(
-            f"[red bold]Error:[/] directory not found: {escape(str(runs_dir))}"
-        )
+        err_console.print(f"[red bold]Error:[/] directory not found: {escape(str(runs_dir))}")
         raise typer.Exit(code=1)
 
     import os
@@ -2999,8 +2996,7 @@ def ls_command(
                     converged = [
                         json.loads(ln)
                         for ln in traj_lines
-                        if ln.strip()
-                        and json.loads(ln).get("converged")
+                        if ln.strip() and json.loads(ln).get("converged")
                     ]
                     if converged:
                         best_row = min(converged, key=lambda r: float(r.get("bic", float("inf"))))
@@ -3014,9 +3010,7 @@ def ls_command(
         traj_p = entry / "search_trajectory.jsonl"
         if traj_p.exists():
             try:
-                n_candidates = str(
-                    sum(1 for ln in traj_p.read_text().splitlines() if ln.strip())
-                )
+                n_candidates = str(sum(1 for ln in traj_p.read_text().splitlines() if ln.strip()))
             except Exception:
                 n_candidates = str(len(ranked)) if ranked else "?"
         else:
@@ -3035,9 +3029,7 @@ def ls_command(
         )
 
     if not bundles:
-        console.print(
-            f"[dim]No run bundles found in [bold]{escape(str(runs_dir))}[/].[/]"
-        )
+        console.print(f"[dim]No run bundles found in [bold]{escape(str(runs_dir))}[/].[/]")
         return
 
     # Sort
@@ -3064,9 +3056,12 @@ def ls_command(
 
     for b in bundles:
         lane_color = (
-            "cyan" if b["lane"] == "submission"
-            else "yellow" if b["lane"] == "discovery"
-            else "magenta" if b["lane"] == "optimization"
+            "cyan"
+            if b["lane"] == "submission"
+            else "yellow"
+            if b["lane"] == "discovery"
+            else "magenta"
+            if b["lane"] == "optimization"
             else "dim"
         )
         table.add_row(
@@ -3081,8 +3076,7 @@ def ls_command(
     console.print(table)
     console.print()
     console.print(
-        f"[dim]{len(bundles)} run(s) shown. "
-        "Use [bold]apmode inspect <bundle>[/] for details.[/]"
+        f"[dim]{len(bundles)} run(s) shown. Use [bold]apmode inspect <bundle>[/] for details.[/]"
     )
 
 
@@ -3136,9 +3130,7 @@ def policies(
     for ln in lanes_to_show:
         pfile = policies_dir / f"{ln}.json"
         if not pfile.exists():
-            table.add_row(
-                ln, f"{ln}.json", "—", "[dim]-- missing[/]", "—"
-            )
+            table.add_row(ln, f"{ln}.json", "—", "[dim]-- missing[/]", "—")
             all_ok = False
             continue
 

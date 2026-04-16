@@ -7,6 +7,100 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.3.0-rc5] — 2026-04-16
 
+### Gate 3 cross-paradigm ranking: policy-driven composite, Borda, NPE unification
+
+Lands Tier 1 + Tier 2 of the ranking cleanup flagged in `v0.3.0-rc5`'s
+profiler-refinement commit. Multi-model review via xen clink (droid,
+crush, gemini, codex, opencode) informed the hardening pass.
+
+**Tier 1 — plumbing (no behavior change on default paths):**
+
+- `governance/ranking.py` — `compute_npe` renamed to
+  `compute_cwres_npe_proxy`. The name is now honest: this is a CWRES
+  proxy, not the simulation-based NPE that
+  `apmode/benchmarks/scoring.compute_npe` computes for Suite C.
+- `governance/ranking.py` — `rank_cross_paradigm` now **requires**
+  `gate3: Gate3Config` and `vpc_concordance_target: float` as keyword
+  arguments. No defaults, no hidden magic. `compute_vpc_concordance`
+  loses its 0.90 default for the same reason.
+- `governance/gates.py` — the previously dead
+  `GatePolicy.vpc_concordance_target` is now threaded into the
+  `rank_cross_paradigm` call site (`gates.py:865`).
+- `routing.py` — the unversioned `0.20` BLQ advisory fallback has been
+  removed. The live orchestrator always passes a `MissingDataPolicy`;
+  legacy callers that don't now get no BLQ advisory rather than a
+  number that never matched any lane policy (submission 0.05,
+  optimization 0.10, discovery 0.15).
+- `bundle/models.py` — `DiagnosticBundle.npe_score: float | None =
+  Field(default=None, ge=0.0)` is the canonical simulation-based NPE
+  slot. Backends populate it via
+  `apmode.benchmarks.scoring.compute_npe`. Ranking prefers this over
+  the CWRES proxy and records which one was used via
+  `CrossParadigmMetrics.npe_source: Literal["simulation",
+  "cwres_proxy"]`.
+
+**Tier 2 — policy-driven composite (opt-in behavior change):**
+
+- `governance/policy.py` — new `Gate3Config`:
+  - `composite_method: Literal["weighted_sum", "borda"] = "weighted_sum"`
+  - `vpc_weight: float = 0.5`, `npe_weight: float = 0.5`,
+    `bic_weight: float = 0.0` — **PRD §10 Q2 default: cross-paradigm
+    BIC off** (likelihood incomparability across observation models).
+    Within-paradigm ranking uses pure BIC and is unchanged. Legacy
+    0.4/0.4/0.2 split is reachable by explicit override.
+  - `npe_cap: float = 5.0`, `bic_norm_scale: float = 1000.0` — the
+    previously hard-coded weighted-sum normalization constants, now
+    policy fields.
+  - Invariant: weights sum to 1.0 within 1e-6.
+- `governance/ranking.py` — added Borda-count aggregation. Each
+  enabled metric (weight > 0) ranks candidates via average-rank on
+  ties; composite is the rank sum (lower wins). Scale-invariant;
+  preferred by multi-model consensus for cross-paradigm Gate 3. The
+  weighted-sum path is retained as the default for backward-
+  compatibility-of-semantics with v0.3.0-rc4 benchmarks.
+- Non-finite metric inputs (NaN / ±Inf) are now coerced to the worst
+  value for their ordering direction before ranking (gemini review
+  catch): VPC → -Inf, NPE/BIC → +Inf. Python's unstable NaN sort can
+  no longer land a broken candidate at rank 1.
+
+**Test coverage (`tests/unit/test_cross_paradigm_ranking.py`):**
+
+- Borda correctness: rank-sum under explicit ordering, tie averaging,
+  scale-invariance under pathological NPE (multiplying CWRES by 1000
+  does not change rank).
+- NPE unification: `diagnostics.npe_score` always overrides the
+  CWRES proxy when finite and non-negative; `None` or NaN falls back
+  with `npe_source == "cwres_proxy"`.
+- `Gate3Config` validators: sum-to-1, all-zero rejection, round-trip.
+- Zero-BIC scenarios under both weighted-sum and Borda — identical
+  metrics with wildly different BIC produce identical composite
+  scores when `bic_weight = 0`.
+- NaN sanitization: a NaN CWRES cannot beat a clean candidate under
+  Borda; missing VPC cannot beat a valid candidate under
+  weighted-sum.
+
+**Test updates (`tests/unit/test_lane_router.py`):**
+
+- BLQ advisory assertions rewritten to exercise the directive-driven
+  string (`"BLQ method M3 selected"`) instead of the removed legacy
+  `"M3/M4 required"` string. New test asserts that a policy-less
+  call path emits no BLQ advisory.
+
+**Deferred:**
+
+- True AUC/Cmax bioequivalence scoring (Smith 2000 GMR vs NCA
+  reference) remains unwired. The infrastructure is ready
+  (`compute_npe` exists in `benchmarks/scoring.py`); once backends
+  emit posterior-predictive simulations alongside the VPC summary,
+  a GMR metric can plug into the same composite pipeline without
+  API churn.
+- Lane-specific `gate3` policy blocks (submission.json /
+  discovery.json / optimization.json) are not yet populated. Every
+  lane currently falls back to the `Gate3Config` default (weighted
+  sum, BIC off). Adding explicit opt-ins (e.g., Discovery lane opts
+  into Borda) is a separate PR once benchmark baselines quantify
+  the behavioral delta.
+
 ### Profiler policy: drift remediation, dead-policy wiring, schema v2.1.0
 
 `policies/profiler.json` bumped from `v2.0.0` → `v2.1.0`. All changes

@@ -83,6 +83,60 @@ class Gate2Config(BaseModel):
     loro_budget_top_n: int | None = None
 
 
+class Gate3Config(BaseModel):
+    """Gate 3: Cross-paradigm ranking composite configuration (PRD §4.3.1).
+
+    Cross-paradigm ranking must use simulation-based metrics because
+    likelihoods (NLPD, BIC) are not comparable across different observation
+    models. This config externalizes the composite-score machinery so
+    deployments can choose between two aggregation strategies without
+    touching source code:
+
+      * ``composite_method="weighted_sum"`` — the legacy weighted sum of
+        ``(1 - vpc_concordance)``, normalized NPE-proxy, and normalized
+        BIC. Sensitive to metric scaling; ``npe_cap`` and
+        ``bic_norm_scale`` tame the range.
+      * ``composite_method="borda"`` — rank each candidate on each
+        enabled metric (weight > 0), sum the ranks, lower total wins.
+        Scale-invariant by construction; recommended for cross-paradigm
+        comparisons per multi-model consensus.
+
+    Metric inclusion is keyed on weight: setting ``bic_weight=0.0``
+    drops BIC from the composite under both methods. This is the PRD
+    v0.3-aligned default for cross-paradigm ranking (likelihood
+    incomparability). Within-paradigm BIC ranking is unaffected — this
+    config only governs the cross-paradigm / mixed-BLQ path.
+    """
+
+    # PRD §10 Q2: BIC / NLPD are incomparable across observation models, so
+    # the cross-paradigm default is BIC off. Deployments wanting BIC in
+    # cross-paradigm must opt in by setting ``bic_weight > 0`` explicitly.
+    # Within-paradigm BIC ranking lives in a separate code path and is
+    # unaffected.
+    composite_method: Literal["weighted_sum", "borda"] = "weighted_sum"
+    vpc_weight: float = Field(default=0.5, ge=0.0, le=1.0)
+    npe_weight: float = Field(default=0.5, ge=0.0, le=1.0)
+    bic_weight: float = Field(default=0.0, ge=0.0, le=1.0)
+    # Weighted-sum normalization caps. Ignored under ``borda``.
+    npe_cap: float = Field(default=5.0, gt=0.0)
+    bic_norm_scale: float = Field(default=1000.0, gt=0.0)
+
+    @model_validator(mode="after")
+    def weights_sum_to_one(self) -> Self:
+        total = self.vpc_weight + self.npe_weight + self.bic_weight
+        # Tolerate small rounding error in policy JSON.
+        if abs(total - 1.0) > 1e-6:
+            msg = (
+                f"gate3 composite weights must sum to 1.0 (got "
+                f"vpc={self.vpc_weight} + npe={self.npe_weight} + "
+                f"bic={self.bic_weight} = {total})"
+            )
+            raise ValueError(msg)
+        # sum_to_one with non-negative components implies at least one weight
+        # is strictly positive; no separate invariant needed.
+        return self
+
+
 class Gate25Config(BaseModel):
     """Gate 2.5: Credibility Qualification (Phase 2, PRD §4.3.1 / ICH M15).
 
@@ -170,6 +224,7 @@ class GatePolicy(BaseModel):
     gate1: Gate1Config
     gate2: Gate2Config
     gate2_5: Gate25Config | None = None
+    gate3: Gate3Config = Field(default_factory=Gate3Config)
     missing_data: MissingDataPolicy = Field(default_factory=MissingDataPolicy)
     vpc_concordance_target: float = Field(default=0.90, ge=0.0, le=1.0)
 

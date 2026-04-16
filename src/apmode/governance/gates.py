@@ -862,7 +862,12 @@ def _gate3_cross_paradigm(
     """
     from apmode.governance.ranking import rank_cross_paradigm
 
-    cp_result = rank_cross_paradigm(survivors, qualification_reason=qualification_reason)
+    cp_result = rank_cross_paradigm(
+        survivors,
+        gate3=policy.gate3,
+        vpc_concordance_target=policy.vpc_concordance_target,
+        qualification_reason=qualification_reason,
+    )
 
     def _safe_bic(r: BackendResult) -> float:
         if r.bic is None or not np.isfinite(r.bic):
