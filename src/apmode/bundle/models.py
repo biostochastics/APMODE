@@ -131,9 +131,28 @@ class IdentifiabilityFlags(BaseModel):
 
 
 class BLQHandling(BaseModel):
-    """Below-limit-of-quantification handling method."""
+    """Below-limit-of-quantification handling method.
 
-    method: Literal["none", "m3", "m4"]
+    Method values correspond to Beal (2001) nomenclature, preserved across
+    the policy→bundle boundary via
+    :func:`apmode.data.missing_data.normalize_blq_method_for_bundle`:
+
+    - ``"none"`` — no BLQ handling (data has no BLQ records).
+    - ``"m1"`` — discard BLQ records (biased; retained for benchmark/legacy).
+    - ``"m3"`` — likelihood-based censoring (Beal 2001 Method 3).
+    - ``"m4"`` — likelihood-based censoring + positivity constraint.
+    - ``"m6_plus"`` — substitute BLQ with LLOQ/2 for first BLQ per subject,
+      drop rest (Beal 2001 Method 6+).
+    - ``"m7_plus"`` — substitute BLQ with 0 + inflated additive error
+      (Wijk 2025; preferred when BLQ burden is low).
+
+    ``method`` must be consistent across survivors entering the same Gate 3
+    ranking — mixing (e.g.) ``"m3"`` and ``"m7_plus"`` forces simulation-based
+    ranking because likelihood scales are not comparable (PRD §10 Q2, routed
+    by :func:`apmode.governance.ranking.ranking_requires_simulation_metrics`).
+    """
+
+    method: Literal["none", "m1", "m3", "m4", "m6_plus", "m7_plus"]
     lloq: float | None = None
     n_blq: int = Field(ge=0)
     blq_fraction: float = Field(ge=0.0, le=1.0)
@@ -157,6 +176,16 @@ class SplitGOFMetrics(BaseModel):
 class DiagnosticBundle(BaseModel):
     """All diagnostic outputs for a candidate model.
 
+    **Intentionally mutable** (no ``frozen=True``). The entire backend-
+    result family — :class:`GOFMetrics`, :class:`IdentifiabilityFlags`,
+    :class:`BLQHandling`, :class:`SplitGOFMetrics`, :class:`BackendResult`,
+    and this class — is mutable because results get populated in stages
+    (convergence, diagnostics, then later post-hoc fields like
+    ``npe_score`` after posterior-predictive simulations land). Bundle
+    classes representing fixed inputs (``EvidenceManifest``,
+    ``NonlinearClearanceSignal``, ``MissingDataDirective``) are
+    ``frozen=True`` — that asymmetry is by design, not an oversight.
+
     ``npe_score`` is the canonical simulation-based Nonparametric
     Prediction Error (median absolute prediction error from posterior
     predictive simulations; see :func:`apmode.benchmarks.scoring.compute_npe`).
@@ -166,6 +195,18 @@ class DiagnosticBundle(BaseModel):
     ``None`` the ranking layer falls back to a documented CWRES proxy
     (:func:`apmode.governance.ranking.compute_cwres_npe_proxy`) —
     never silently redefining NPE.
+
+    ``auc_cmax_be_score`` is the per-subject AUC/Cmax bioequivalence rate:
+    fraction of subjects whose geometric mean ratios (candidate sim ÷ NCA
+    reference) fall in [0.80, 1.25] for *both* AUC and Cmax (see
+    :func:`apmode.benchmarks.scoring.compute_auc_cmax_be_score`). Populated
+    from the same posterior-predictive simulation matrix as ``npe_score``
+    when NCA eligibility holds (adequate absorption/elimination coverage,
+    BLQ burden below policy threshold). ``None`` otherwise — the ranking
+    layer drops the ``auc_cmax`` component uniformly across candidates
+    rather than using a candidate-derived fallback (avoids circular bias).
+    ``auc_cmax_source`` records provenance so reports can surface *why* the
+    score was computed or skipped.
     """
 
     gof: GOFMetrics
@@ -177,6 +218,11 @@ class DiagnosticBundle(BaseModel):
     # Backends that can't compute it must leave this None and let the
     # ranking layer fall back to the documented CWRES proxy.
     npe_score: float | None = Field(default=None, ge=0.0)
+    # AUC/Cmax bioequivalence fraction in [0, 1]. ``None`` when the NCA
+    # reference is ineligible (policy-gated) or when the backend has not
+    # yet produced posterior-predictive simulations. See class docstring.
+    auc_cmax_be_score: float | None = Field(default=None, ge=0.0, le=1.0)
+    auc_cmax_source: Literal["observed_trapezoid"] | None = None
     diagnostic_plots: dict[str, str] = Field(default_factory=dict)
 
 
@@ -259,6 +305,34 @@ class BackendResult(BaseModel):
     posterior_draws_path: str | None = None  # relative to bundle root
     prior_manifest_path: str | None = None  # bundle-relative path to prior_manifest.json
     simulation_protocol_path: str | None = None  # bundle-relative path to simulation_protocol.json
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_predicted_simulations_field(cls, data: object) -> object:
+        """Guard against schema drift with the out-of-band `predicted_simulations` carrier.
+
+        Backends that produce posterior-predictive draws ship them as an
+        out-of-band ``predicted_simulations`` key on the raw harness
+        response dict (see ``Nlmixr2Runner._parse_response`` and
+        ``r/harness.R::.extract_backend_result``). The runner pops that
+        key *before* validating into :class:`BackendResult`. If a future
+        schema migration accidentally adds ``predicted_simulations`` as a
+        real field here, the out-of-band pattern would silently route
+        sims into a Pydantic-owned slot instead of the helper path.
+
+        Multi-model review consensus (rc8): raise loudly here so that
+        drift is a loud test failure rather than a silent audit-trail
+        inconsistency. No-op for every well-formed payload today.
+        """
+        if isinstance(data, dict) and "predicted_simulations" in data:
+            msg = (
+                "BackendResult payload contains 'predicted_simulations' — this key "
+                "must be stripped by the runner before validation (out-of-band "
+                "carrier pattern; see apmode.backends.nlmixr2_runner._parse_response). "
+                "If this field is now schema-owned, remove this validator."
+            )
+            raise ValueError(msg)
+        return data
 
 
 # --- Data Manifest ---

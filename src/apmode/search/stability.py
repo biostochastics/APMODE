@@ -370,7 +370,7 @@ async def run_with_imputations(
     directive: MissingDataDirective,
     provider: ImputationProvider,
     source_csv: Path,
-    search: Callable[[Path, int], Awaitable[list[PerImputationFit]]],
+    search: Callable[[Path, int, int], Awaitable[list[PerImputationFit]]],
     seed: int,
     *,
     top_k: int = 3,
@@ -385,8 +385,11 @@ async def run_with_imputations(
         directive: Resolved missing-data directive.
         provider: Imputation provider (mice, missForest, or other).
         source_csv: Source CSV with missingness. Absolute path required.
-        search: Callable that fits all candidates on one imputed CSV and
-            returns ``PerImputationFit`` rows for that imputation.
+        search: Callable ``(imputed_path, seed, imputation_idx) → fits``.
+            The per-imputation seed is ``seed + imputation_idx`` and is
+            passed pre-computed; ``imputation_idx`` is passed separately
+            so the callable can populate ``PerImputationFit.imputation_idx``
+            explicitly instead of relying on an implicit overwrite.
         seed: Base seed; per-imputation seeds are derived deterministically
             as ``seed + imputation_idx``.
         top_k: Rank cutoff for rank_stability.
@@ -415,21 +418,18 @@ async def run_with_imputations(
 
     all_fits: list[PerImputationFit] = []
     for idx, path in enumerate(imputed_paths):
-        per_imp_fits = await search(path, seed + idx)
-        # Tag fits with their imputation index; the search callable is not
-        # required to know it.
-        all_fits.extend(
-            PerImputationFit(
-                imputation_idx=idx,
-                candidate_id=f.candidate_id,
-                converged=f.converged,
-                ofv=f.ofv,
-                aic=f.aic,
-                bic=f.bic,
-                covariate_effect_signs=f.covariate_effect_signs,
-            )
-            for f in per_imp_fits
-        )
+        per_imp_fits = await search(path, seed + idx, idx)
+        # Callable is now responsible for setting imputation_idx. Defensive
+        # assert keeps the contract explicit.
+        for f in per_imp_fits:
+            if f.imputation_idx != idx:
+                msg = (
+                    f"search callable returned imputation_idx={f.imputation_idx} "
+                    f"but loop is on idx={idx}. The callable must populate "
+                    "imputation_idx with the value it was passed."
+                )
+                raise RuntimeError(msg)
+        all_fits.extend(per_imp_fits)
 
     entries = aggregate_stability(all_fits, m=m, top_k=top_k)
     return build_stability_manifest(directive, entries, top_k=top_k)

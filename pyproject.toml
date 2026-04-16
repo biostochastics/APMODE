@@ -111,8 +111,15 @@ select = [
     "SIM",       # flake8-simplify
     "TCH",       # flake8-type-checking
     "RUF",       # ruff-specific
+    "A",         # flake8-builtins (shadowing)
 ]
-ignore = []
+ignore = [
+    # Typer command callbacks legitimately shadow builtins like ``format``
+    # and ``type`` in keyword-argument position; enforcing A002/A003 would
+    # require renaming option labels seen by users.
+    "A002",
+    "A003",
+]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["TCH001", "TCH003", "RUF012"]

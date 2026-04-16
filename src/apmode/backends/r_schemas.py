@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from apmode.dsl.ast_models import DSLSpec  # noqa: TC001 — Pydantic needs runtime access
 
@@ -32,6 +32,12 @@ class RSubprocessRequest(BaseModel):
     initial_estimate_source: Literal["nca", "warm_start", "fallback"] = "fallback"
     # Optional split manifest for split-aware CWRES diagnostics
     split_manifest: dict[str, object] | None = None
+    # Number of posterior-predictive simulation draws for VPC/NPE/AUC-Cmax
+    # (see apmode.backends.predictive_summary). 0 disables simulation;
+    # the R harness leaves ``predicted_simulations`` NULL and Gate 3
+    # ranking falls back to the CWRES NPE proxy. Wired to
+    # Gate3Config.n_posterior_predictive_sims by the runner.
+    n_posterior_predictive_sims: int = Field(default=0, ge=0)
 
     @field_validator("data_path")
     @classmethod
@@ -43,6 +49,27 @@ class RSubprocessRequest(BaseModel):
         if not p.is_absolute():
             raise ValueError("data_path must be an absolute path")
         return v
+
+
+class PredictedSimulationsSubject(BaseModel):
+    """One subject's posterior-predictive simulation matrix.
+
+    Carries the subject_id + observed time vector + observed DV vector
+    + nested-list simulation matrix (n_sims rows, n_obs columns). The
+    runner converts this into :class:`apmode.backends.predictive_summary.
+    SubjectSimulation` and hands it to
+    :func:`build_predictive_diagnostics` for atomic VPC/NPE/AUC-Cmax
+    computation.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    subject_id: str
+    t_observed: list[float] = Field(min_length=1)
+    observed_dv: list[float] = Field(min_length=1)
+    # JSON round-trips n_sims * n_obs as list[list[float]]; the runner
+    # reshapes into a numpy (n_sims, n_obs) array before validation.
+    sims_at_observed: list[list[float]] = Field(min_length=1)
 
 
 class RSessionInfo(BaseModel):

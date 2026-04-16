@@ -18,11 +18,11 @@ import asyncio
 import json
 import platform
 from dataclasses import dataclass, field
-from datetime import UTC
-from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any, Literal
 
 import structlog
+from pydantic import ValidationError
 
 from apmode import __version__ as _apmode_version
 from apmode.bundle.emitter import BundleEmitter
@@ -51,6 +51,8 @@ from apmode.report.credibility import generate_credibility_report
 from apmode.routing import route
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     import pandas as pd
 
     from apmode.backends.nlmixr2_runner import Nlmixr2Runner
@@ -160,6 +162,8 @@ class Orchestrator:
         manifest: DataManifest,
         df: pd.DataFrame,
         data_path: Path,
+        *,
+        skip_classical: bool = False,
     ) -> RunOutcome:
         """Execute the full APMODE pipeline.
 
@@ -167,13 +171,41 @@ class Orchestrator:
             manifest: DataManifest from ingestion step.
             df: Validated DataFrame (post-CanonicalPKSchema).
             data_path: Path to the nlmixr2-ready CSV file.
+            skip_classical: When True, look for an existing
+                ``classical_checkpoint.json`` in the bundle base directory and
+                skip Stage 5 (automated search), jumping straight to the
+                agentic refinement loop.  Use ``apmode run --resume-agentic``
+                to restart a run after an LLM API failure without re-running
+                the expensive classical SAEM search.
         """
-        from datetime import datetime
-
         from apmode.search.engine import SearchEngine
 
-        # Initialize bundle
-        emitter = BundleEmitter(self._bundle_base)
+        # Initialize bundle — when resuming, reuse the existing run dir so
+        # all artifacts land in the same bundle as the original classical run.
+        existing_run_id: str | None = None
+        if skip_classical:
+            existing_run_id = self._find_existing_run_id()
+            if existing_run_id is None:
+                # Fail-fast: silently falling back would burn 55+ min SAEM.
+                # The user explicitly asked to skip classical search; if we
+                # cannot locate exactly one bundle to resume, tell them why.
+                n_dirs = sum(
+                    1
+                    for d in (self._bundle_base.iterdir() if self._bundle_base.is_dir() else [])
+                    if d.is_dir() and not d.name.startswith("_")
+                )
+                if n_dirs == 0:
+                    raise RuntimeError(
+                        f"--resume-agentic requested but no existing bundle found in "
+                        f"{self._bundle_base}. Run without --resume-agentic first."
+                    )
+                raise RuntimeError(
+                    f"--resume-agentic requested but {n_dirs} bundle directories found in "
+                    f"{self._bundle_base} — cannot auto-select. "
+                    f"Remove all but the target bundle directory and retry."
+                )
+
+        emitter = BundleEmitter(self._bundle_base, run_id=existing_run_id)
         run_dir = emitter.initialize()
         outcome = RunOutcome(run_id=emitter.run_id, bundle_dir=run_dir)
 
@@ -279,29 +311,47 @@ class Orchestrator:
 
         # --- Stage 5: Automated Search ---
         split_manifest_dict = split.model_dump()
-        # Build multi-backend runner map for SearchEngine
-        runners: dict[str, BackendRunner] = {"nlmixr2": self._runner}
-        if self._node_runner is not None and "jax_node" in dispatch.backends:
-            runners["jax_node"] = self._node_runner
-        if self._agentic_runner is not None and "agentic_llm" in dispatch.backends:
-            runners["agentic_llm"] = self._agentic_runner
-        search_engine = SearchEngine(
-            runner=self._runner,
-            data_manifest=manifest,
-            data_path=data_path,
-            seed=self._config.seed,
-            timeout_seconds=self._config.timeout_seconds,
-            allowed_backends=dispatch.backends,
-            split_manifest=split_manifest_dict,
-            runners=runners,
-            max_concurrency=self._config.max_concurrency,
-        )
-        search_outcome = await search_engine.run(
-            evidence_manifest=evidence,
-            initial_estimates=nca_estimates,
-            emitter=emitter,
-            covariate_names=self._config.covariate_names,
-        )
+
+        # Resume path: load classical results from checkpoint, skip R search.
+        _checkpoint_loaded = False
+        if skip_classical:
+            _ckpt = self._load_classical_checkpoint(run_dir)
+            if _ckpt is not None:
+                search_outcome, nca_estimates = _ckpt
+                _checkpoint_loaded = True
+                logger.info(
+                    "Resuming from classical checkpoint: skipping Stage 5 (%d candidates loaded)",
+                    len(search_outcome.results),
+                )
+
+        if not _checkpoint_loaded:
+            # Build multi-backend runner map for SearchEngine
+            runners: dict[str, BackendRunner] = {"nlmixr2": self._runner}
+            if self._node_runner is not None and "jax_node" in dispatch.backends:
+                runners["jax_node"] = self._node_runner
+            if self._agentic_runner is not None and "agentic_llm" in dispatch.backends:
+                runners["agentic_llm"] = self._agentic_runner
+            search_engine = SearchEngine(
+                runner=self._runner,
+                data_manifest=manifest,
+                data_path=data_path,
+                seed=self._config.seed,
+                timeout_seconds=self._config.timeout_seconds,
+                allowed_backends=dispatch.backends,
+                split_manifest=split_manifest_dict,
+                runners=runners,
+                max_concurrency=self._config.max_concurrency,
+            )
+            search_outcome = await search_engine.run(
+                evidence_manifest=evidence,
+                initial_estimates=nca_estimates,
+                emitter=emitter,
+                covariate_names=self._config.covariate_names,
+            )
+            # Write checkpoint immediately so --resume-agentic can restart
+            # the agentic loop without re-running the classical search.
+            self._write_classical_checkpoint(run_dir, search_outcome, nca_estimates)
+
         outcome.search_outcome = search_outcome
         # Build candidate→spec mapping for LORO-CV spec lookup
         self._spec_map = {sr.candidate_id: sr.spec for sr in search_outcome.results}
@@ -318,7 +368,6 @@ class Orchestrator:
                 data_path=data_path,
                 nca_estimates=nca_estimates,
                 split_manifest_dict=split_manifest_dict,
-                evidence=evidence,
             )
             # Merge agentic results into search outcome
             for ar in agentic_results:
@@ -388,14 +437,35 @@ class Orchestrator:
         # SearchNode requires a full DSLSpec that matches the final candidate
         # id, which we don't have post-agentic; recording them here keeps the
         # reproducibility bundle consistent without polluting the DAG type).
-        lineage_entries = [
-            CandidateLineageEntry(
-                candidate_id=e["candidate_id"],
-                parent_id=e["parent_id"],
-                transform=e["transform"],
-            )
-            for e in search_outcome.dag.to_lineage_entries()
-        ]
+        # On checkpoint resume the SearchOutcome.dag is empty (not serialized).
+        # Read the existing candidate_lineage.json to preserve classical entries;
+        # only append net-new agentic entries produced in this session.
+        if _checkpoint_loaded:
+            _existing_lineage_path = run_dir / "candidate_lineage.json"
+            if _existing_lineage_path.exists():
+                try:
+                    _existing = CandidateLineage.model_validate_json(
+                        _existing_lineage_path.read_text()
+                    )
+                    lineage_entries = list(_existing.entries)
+                except (json.JSONDecodeError, ValidationError, OSError) as exc:
+                    logger.warning(
+                        "candidate_lineage_load_failed",
+                        path=str(_existing_lineage_path),
+                        error=str(exc),
+                    )
+                    lineage_entries = []
+            else:
+                lineage_entries = []
+        else:
+            lineage_entries = [
+                CandidateLineageEntry(
+                    candidate_id=e["candidate_id"],
+                    parent_id=e["parent_id"],
+                    transform=e["transform"],
+                )
+                for e in search_outcome.dag.to_lineage_entries()
+            ]
         dag_ids = {e.candidate_id for e in lineage_entries}
         for ar in search_outcome.results:
             if ar.result and ar.result.backend == "agentic_llm" and ar.candidate_id not in dag_ids:
@@ -411,6 +481,12 @@ class Orchestrator:
         emitter.write_candidate_lineage(CandidateLineage(entries=lineage_entries))
 
         # --- Stage 6: Governance Gates ---
+        # On checkpoint resume, clear failed_candidates.jsonl before re-running
+        # gate evaluation to prevent duplicate entries from the original run.
+        if _checkpoint_loaded:
+            _fc_path = run_dir / "failed_candidates.jsonl"
+            if _fc_path.exists():
+                _fc_path.unlink()
         from apmode.bundle.models import BackendResult as BRModel
 
         gate12_survivors: list[BRModel] = []
@@ -550,7 +626,7 @@ class Orchestrator:
                 )
 
             # Stage 6c: Gate 2 + Gate 2.5 evaluation (with LORO metrics)
-            for _sr, sr_result in gate1_survivors:
+            for _, sr_result in gate1_survivors:
                 loro_m = loro_metrics_map.get(sr_result.model_id)
 
                 g2 = evaluate_gate2(sr_result, policy, self._config.lane, loro_metrics=loro_m)
@@ -706,7 +782,6 @@ class Orchestrator:
         data_path: Path,
         nca_estimates: dict[str, float],
         split_manifest_dict: dict[str, object],
-        evidence: EvidenceManifest,
     ) -> list[SearchResult]:
         """Run the agentic LLM refinement stage (PRD §4.2.6).
 
@@ -734,9 +809,18 @@ class Orchestrator:
             )
             raise TypeError(msg)
         agentic = self._agentic_runner
-        base_trace_dir = agentic._trace_dir
+        base_trace_dir = agentic.trace_dir
 
         results: list[SR] = []
+
+        # NOTE: refine and independent modes run serially. Parallelization
+        # via TaskGroup is tempting — distinct trace subdirs, distinct
+        # seeds — but the underlying ``inner_runner`` (Nlmixr2Runner) shares
+        # a single ``work_dir`` across both calls, so R subprocess writes
+        # would race on intermediate files. Any future parallelization
+        # must (1) give each mode its own Nlmixr2Runner with a distinct
+        # ``work_dir``, and (2) verify the LLM client has no shared
+        # mutable state (connection pool, rate limiter).
 
         # --- Mode 1: Refine best classical candidate ---
         converged_srs = sorted(
@@ -1014,12 +1098,17 @@ class Orchestrator:
         async def _fit_one_imputation(
             imputed_csv: Path,
             seed: int,
+            imputation_idx: int,
         ) -> list[PerImputationFit]:
             """Refit each classical candidate on a single imputed dataset.
 
             Calls the main runner directly so candidate_ids align with the
             classical search exactly — aggregation can pool per-candidate
             across imputations without alignment issues.
+
+            ``imputation_idx`` is stamped on each ``PerImputationFit``
+            explicitly so there is no implicit overwrite in
+            ``run_with_imputations``.
             """
             fits: list[PerImputationFit] = []
             for spec in ref_specs:
@@ -1034,7 +1123,7 @@ class Orchestrator:
                     )
                     fits.append(
                         PerImputationFit(
-                            imputation_idx=0,  # filled in by run_with_imputations
+                            imputation_idx=imputation_idx,
                             candidate_id=spec.model_id,
                             converged=result.converged,
                             ofv=result.ofv,
@@ -1051,7 +1140,7 @@ class Orchestrator:
                     logger.warning("MI per-imputation fit failed for %s: %s", spec.model_id, e)
                     fits.append(
                         PerImputationFit(
-                            imputation_idx=0,
+                            imputation_idx=imputation_idx,
                             candidate_id=spec.model_id,
                             converged=False,
                         )
@@ -1175,19 +1264,180 @@ class Orchestrator:
                 )
         return loro_map
 
+    def _find_existing_run_id(self) -> str | None:
+        """Return the run_id of the single existing bundle in ``_bundle_base``.
+
+        Looks for exactly one non-``_`` prefixed subdirectory.  Returns
+        ``None`` if zero or more than one are found (ambiguous resume).
+        """
+        if not self._bundle_base.is_dir():
+            return None
+        candidates = [
+            d.name
+            for d in self._bundle_base.iterdir()
+            if d.is_dir() and not d.name.startswith("_")
+        ]
+        if len(candidates) == 1:
+            return candidates[0]
+        if len(candidates) > 1:
+            logger.warning(
+                "Multiple run dirs in %s — cannot auto-select for resume: %s",
+                self._bundle_base,
+                candidates,
+            )
+        return None
+
+    def _write_classical_checkpoint(
+        self,
+        run_dir: Path,
+        search_outcome: SearchOutcome,
+        nca_estimates: dict[str, float],
+    ) -> None:
+        """Persist classical search results so the agentic step can be resumed.
+
+        Written to ``run_dir/classical_checkpoint.json`` immediately after
+        Stage 5 completes.  Contains all converged-candidate specs and
+        parameter estimates needed to reconstruct a ``SearchOutcome`` for
+        ``_run_agentic_stage`` without re-running SAEM.
+        """
+        results_data = []
+        for sr in search_outcome.results:
+            if sr.result is None:
+                continue
+            # Use model_dump(mode="json") so specs/results appear as native
+            # dicts inside the checkpoint, making the artifact directly
+            # inspectable with jq and avoiding the double-parse on load.
+            results_data.append(
+                {
+                    "candidate_id": sr.candidate_id,
+                    "spec": sr.spec.model_dump(mode="json"),
+                    "result": sr.result.model_dump(mode="json"),
+                    "converged": sr.converged,
+                    "bic": sr.bic,
+                    "aic": sr.aic,
+                    "n_params": sr.n_params,
+                }
+            )
+
+        best_bic_val = search_outcome.best_bic.bic if search_outcome.best_bic is not None else None
+        checkpoint: dict[str, Any] = {
+            # Schema bumped to 1.1 because "spec"/"result" replaced the
+            # legacy "spec_json"/"result_json" nested-string fields.
+            # ``_load_classical_checkpoint`` still understands both.
+            "schema_version": "1.1",
+            "checkpoint_type": "classical_search",
+            "results": results_data,
+            "nca_estimates": nca_estimates,
+            "best_candidate_id": (
+                search_outcome.best_bic.candidate_id
+                if search_outcome.best_bic is not None
+                else None
+            ),
+            "best_bic": best_bic_val,
+        }
+        path = run_dir / "classical_checkpoint.json"
+        path.write_text(json.dumps(checkpoint, indent=2))
+        logger.info(
+            "Classical checkpoint written: %d results, best_bic=%s",
+            len(results_data),
+            f"{best_bic_val:.1f}" if best_bic_val is not None else "n/a",
+        )
+
+    def _load_classical_checkpoint(
+        self,
+        run_dir: Path,
+    ) -> tuple[SearchOutcome, dict[str, float]] | None:
+        """Load ``classical_checkpoint.json`` and reconstruct a ``SearchOutcome``.
+
+        Returns ``(SearchOutcome, nca_estimates)`` or ``None`` when no valid
+        checkpoint is found.
+        """
+        from apmode.bundle.models import BackendResult as _BRModel
+        from apmode.dsl.ast_models import DSLSpec as _DSLSpec
+        from apmode.search.engine import SearchOutcome as _SO
+        from apmode.search.engine import SearchResult as _SR
+
+        path = run_dir / "classical_checkpoint.json"
+        if not path.exists():
+            logger.info("No classical_checkpoint.json in %s", run_dir)
+            return None
+
+        try:
+            data = json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning("Failed to read classical checkpoint: %s", exc)
+            return None
+
+        if data.get("schema_version") not in {"1.0", "1.1"} or (
+            data.get("checkpoint_type") != "classical_search"
+        ):
+            logger.warning(
+                "classical_checkpoint.json has unexpected schema (version=%s type=%s); ignoring",
+                data.get("schema_version"),
+                data.get("checkpoint_type"),
+            )
+            return None
+
+        results: list[SearchResult] = []
+        for rd in data.get("results", []):
+            try:
+                # 1.1 stores nested dicts; 1.0 stored nested JSON strings.
+                if "spec" in rd and "result" in rd:
+                    spec = _DSLSpec.model_validate(rd["spec"])
+                    result = _BRModel.model_validate(rd["result"])
+                else:
+                    spec = _DSLSpec.model_validate_json(rd["spec_json"])
+                    result = _BRModel.model_validate_json(rd["result_json"])
+            except (ValidationError, json.JSONDecodeError, KeyError) as exc:
+                logger.warning(
+                    "Skipping malformed checkpoint entry %s: %s",
+                    rd.get("candidate_id"),
+                    exc,
+                )
+                continue
+            results.append(
+                _SR(
+                    candidate_id=rd["candidate_id"],
+                    spec=spec,
+                    result=result,
+                    converged=rd.get("converged", False),
+                    bic=rd.get("bic"),
+                    aic=rd.get("aic"),
+                    n_params=rd.get("n_params", 0),
+                )
+            )
+
+        outcome = _SO(results=results)
+        converged = [r for r in results if r.converged and r.bic is not None]
+        if converged:
+            outcome.best_bic = min(converged, key=lambda r: r.bic or float("inf"))
+
+        nca_estimates: dict[str, float] = {
+            k: float(v)
+            for k, v in data.get("nca_estimates", {}).items()
+            if isinstance(v, (int, float))
+        }
+        logger.info(
+            "Loaded classical checkpoint: %d results (%d converged), best_bic=%s",
+            len(results),
+            len(converged),
+            data.get("best_bic"),
+        )
+        return outcome, nca_estimates
+
     def _load_policy(self) -> GatePolicy | None:
         """Load gate policy from file or default."""
         if self._config.policy_path and self._config.policy_path.exists():
             data = json.loads(self._config.policy_path.read_text())
             return GatePolicy.model_validate(data)
 
-        # Default policy directory is resolved relative to the repo root,
-        # not the process CWD — otherwise invoking the CLI from any other
-        # directory silently skips all governance gates.
-        # Path: src/apmode/orchestrator/__init__.py → repo root is four parents up.
-        repo_root = Path(__file__).resolve().parents[3]
-        default_path = repo_root / "policies" / f"{self._config.lane}.json"
-        if default_path.exists():
+        # Fallback to the versioned policy shipped in the repo/package. The
+        # lookup is delegated to ``apmode.paths`` so CLI and orchestrator
+        # cannot drift on parent-count heuristics.
+        from apmode.paths import policy_path_for_lane
+
+        default_path = policy_path_for_lane(self._config.lane)
+        if default_path is not None:
             data = json.loads(default_path.read_text())
             return GatePolicy.model_validate(data)
 

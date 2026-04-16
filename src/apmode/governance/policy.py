@@ -51,6 +51,14 @@ class Gate1Config(BaseModel):
     cwres_sd_min: float = Field(default=0.50, gt=0.0)
     cwres_sd_max: float = Field(default=2.0, gt=0.0)
     gradient_norm_max: float = Field(default=100.0, gt=0.0)
+    # Split-integrity thresholds (previously hard-coded in gates.py).
+    # ``split_cwres_drift_max`` caps |abs(test_cwres_mean) - abs(train_cwres_mean)|.
+    # ``split_outlier_ratio_slope``/``split_outlier_ratio_intercept`` define
+    # the admissible ceiling on test outlier fraction as
+    # ``slope * train_outlier_fraction + intercept`` (legacy: 2.0, 0.05).
+    split_cwres_drift_max: float = Field(default=0.5, gt=0.0)
+    split_outlier_ratio_slope: float = Field(default=2.0, gt=0.0)
+    split_outlier_ratio_intercept: float = Field(default=0.05, ge=0.0, le=1.0)
     # Bayesian-only thresholds (applied when backend == "bayesian_stan")
     bayesian: BayesianThresholds = Field(default_factory=BayesianThresholds)
 
@@ -93,19 +101,23 @@ class Gate3Config(BaseModel):
     touching source code:
 
       * ``composite_method="weighted_sum"`` — the legacy weighted sum of
-        ``(1 - vpc_concordance)``, normalized NPE-proxy, and normalized
-        BIC. Sensitive to metric scaling; ``npe_cap`` and
-        ``bic_norm_scale`` tame the range.
+        ``(1 - vpc_concordance)``, normalized NPE-proxy, normalized BIC,
+        and ``(1 - auc_cmax_be_score)``. Sensitive to metric scaling;
+        ``npe_cap`` and ``bic_norm_scale`` tame the range.
       * ``composite_method="borda"`` — rank each candidate on each
         enabled metric (weight > 0), sum the ranks, lower total wins.
         Scale-invariant by construction; recommended for cross-paradigm
-        comparisons per multi-model consensus.
+        comparisons because likelihood scales are incomparable (PRD §10 Q2).
 
-    Metric inclusion is keyed on weight: setting ``bic_weight=0.0``
-    drops BIC from the composite under both methods. This is the PRD
-    v0.3-aligned default for cross-paradigm ranking (likelihood
-    incomparability). Within-paradigm BIC ranking is unaffected — this
-    config only governs the cross-paradigm / mixed-BLQ path.
+    Metric inclusion is keyed on weight: setting ``bic_weight=0.0`` or
+    ``auc_cmax_weight=0.0`` drops that component from the composite. When a
+    candidate legitimately lacks a weighted component (e.g. NCA reference is
+    ineligible → ``auc_cmax_be_score is None``) the rule is uniform-drop:
+    the component is removed from the composite for *every* candidate in
+    that ranking and the remaining weights renormalized. Per-candidate
+    renormalization is rejected because it lets data-poor candidates dodge
+    metrics their siblings are scored on — defeats the comparability goal
+    of Gate 3 (PRD §4.3.1).
     """
 
     # PRD §10 Q2: BIC / NLPD are incomparable across observation models, so
@@ -117,19 +129,74 @@ class Gate3Config(BaseModel):
     vpc_weight: float = Field(default=0.5, ge=0.0, le=1.0)
     npe_weight: float = Field(default=0.5, ge=0.0, le=1.0)
     bic_weight: float = Field(default=0.0, ge=0.0, le=1.0)
+    # AUC/Cmax bioequivalence component (Smith 2000 style GMR in [0.80, 1.25]).
+    # Default off: computing it requires both a candidate posterior-predictive
+    # simulation matrix AND an NCA-admissible observed dataset. Enable it in
+    # policy (e.g. optimization lane) once the backend VPC pipeline is wired.
+    auc_cmax_weight: float = Field(default=0.0, ge=0.0, le=1.0)
     # Weighted-sum normalization caps. Ignored under ``borda``.
     npe_cap: float = Field(default=5.0, gt=0.0)
     bic_norm_scale: float = Field(default=1000.0, gt=0.0)
+    # Eligibility threshold for deriving an observed-NCA reference for
+    # auc_cmax_be. Above this BLQ fraction, per-subject AUC is biased by
+    # censoring (Thway 2018) and the candidate score falls back to ``None``
+    # rather than a candidate-derived reference (avoids circular herd bias).
+    auc_cmax_nca_max_blq_burden: float = Field(default=0.20, ge=0.0, le=1.0)
+    # Number of posterior-predictive simulation replicates backends draw
+    # per candidate. 500 matches Bergstrand 2011 VPC convention; lower
+    # bound 100 preserves variance estimates, upper 5000 caps ODE cost.
+    # Policy-versioned so deployments tuning this see the change in the
+    # bundle's policy_file.json.
+    n_posterior_predictive_sims: int = Field(default=500, ge=100, le=5000)
+    # Time-bin count for post-hoc VPC coverage aggregation (no pre-
+    # declared simulation grid — binning happens on observation times
+    # after backends simulate at observed records only). Default 10
+    # preserves the bin count used by existing rc7 tests.
+    vpc_n_bins: int = Field(default=10, ge=3, le=100)
+    # Per-subject NCA eligibility floors for emitting auc_cmax_be_score.
+    # Below either floor the score drops to ``None`` rather than being
+    # computed on an unreliably small reference set. ``min_eligible`` is
+    # the absolute subject count; ``min_eligible_fraction`` is the
+    # fraction of the ranked survivor's cohort that must be NCA-admissible.
+    # Both must hold: floors are AND-combined.
+    auc_cmax_nca_min_eligible: int = Field(default=8, ge=1)
+    auc_cmax_nca_min_eligible_fraction: float = Field(default=0.5, ge=0.0, le=1.0)
+    # Warn when the effective VPC bin count (after ``np.unique`` on quantile
+    # edges collapses ties) falls below this fraction of ``vpc_n_bins``.
+    # 0.5 = half the requested bins; below that the post-hoc binning is
+    # producing a noisy VPC the audit log must flag.
+    vpc_n_bin_collapse_warn_ratio: float = Field(default=0.5, ge=0.0, le=1.0)
+    # NPE aggregation across subjects. ``"flatten"`` (default, rc8 behavior)
+    # pools all observed (obs, sim-median) pairs before the median-absolute-
+    # error; well-sampled subjects contribute more. ``"per_subject_median"``
+    # computes NPE per subject first, then medians across subjects — reduces
+    # bias toward dense-sampled subjects in unbalanced designs.
+    npe_aggregation: Literal["flatten", "per_subject_median"] = "flatten"
+    # AUC/Cmax per-subject summary across simulation draws.
+    # ``"median_trajectory"`` (default, rc8 behavior) collapses sims to a
+    # per-sim median trajectory then trapezoids once — a point-estimate
+    # summary. ``"median_of_aucs"`` trapezoidates each sim separately per
+    # subject and takes the median of those scalar AUC/Cmax values —
+    # preserves distributional uncertainty for nonlinear profiles.
+    auc_cmax_aggregation: Literal["median_trajectory", "median_of_aucs"] = "median_trajectory"
+    # When True, backends emit a second simulation pass on a pooled time
+    # grid (uniform spacing across observed range) in addition to the
+    # observed-time sims. The resulting VPCSummary carries
+    # ``prediction_corrected=True`` and is preferred by the ranker for
+    # regulatory-facing runs where a smoothed VPC curve is expected.
+    # Default False: rc8 ships the observed-time VPC only. The R harness
+    # side of the second pass is tracked as a follow-up commit.
+    vpc_include_prediction_corrected: bool = False
 
     @model_validator(mode="after")
     def weights_sum_to_one(self) -> Self:
-        total = self.vpc_weight + self.npe_weight + self.bic_weight
+        total = self.vpc_weight + self.npe_weight + self.bic_weight + self.auc_cmax_weight
         # Tolerate small rounding error in policy JSON.
         if abs(total - 1.0) > 1e-6:
             msg = (
                 f"gate3 composite weights must sum to 1.0 (got "
                 f"vpc={self.vpc_weight} + npe={self.npe_weight} + "
-                f"bic={self.bic_weight} = {total})"
+                f"bic={self.bic_weight} + auc_cmax={self.auc_cmax_weight} = {total})"
             )
             raise ValueError(msg)
         # sum_to_one with non-negative components implies at least one weight

@@ -21,6 +21,7 @@ from apmode.bundle.models import (
 from apmode.data.missing_data import (
     OMEGA_POOLING_CAVEATS,
     build_stability_manifest,
+    normalize_blq_method_for_bundle,
     resolve_directive,
 )
 from apmode.governance.policy import MissingDataPolicy
@@ -107,6 +108,29 @@ class TestResolveDirective:
     def test_blq_below_threshold_uses_m7plus(self) -> None:
         d = resolve_directive(MissingDataPolicy(), _manifest(blq_burden=0.05))
         assert d.blq_method == "M7+"
+
+
+class TestNormalizeBLQMethodForBundle:
+    """Policy-side uppercase BLQ nomenclature ↔ bundle-side lowercase enum.
+
+    Every method emitted by :func:`resolve_directive` must round-trip through
+    this helper; an unmapped method would be silently coerced by downstream
+    code and hide mixed-BLQ survivors from Gate 3 simulation routing.
+    """
+
+    def test_maps_every_directive_method(self) -> None:
+        for policy_method, bundle_method in [
+            ("M1", "m1"),
+            ("M3", "m3"),
+            ("M4", "m4"),
+            ("M6+", "m6_plus"),
+            ("M7+", "m7_plus"),
+        ]:
+            assert normalize_blq_method_for_bundle(policy_method) == bundle_method
+
+    def test_unknown_method_raises(self) -> None:
+        with pytest.raises(ValueError, match="Unknown BLQ method"):
+            normalize_blq_method_for_bundle("M99")
 
 
 class TestStabilityManifest:

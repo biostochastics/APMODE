@@ -26,15 +26,24 @@ from apmode.benchmarks.models import (
 )
 
 if TYPE_CHECKING:
-    from apmode.bundle.models import BackendResult
+    from apmode.bundle.models import BackendResult, EvidenceManifest, NCASubjectDiagnostic
     from apmode.dsl.ast_models import DSLSpec
+
+# Smith (2000) FDA BE goalposts: a candidate is "bioequivalent per subject"
+# when the GMR of its simulated exposure vs the NCA reference lies inside
+# this interval for *both* AUC and Cmax.
+_BE_GMR_LOWER: float = 0.80
+_BE_GMR_UPPER: float = 1.25
 
 __all__ = [
     "aggregate_suite",
+    "compute_auc_cmax_be_score",
     "compute_fraction_beats_expert",
     "compute_npe",
     "compute_prediction_interval_calibration",
     "evaluate_expert_comparison",
+    "is_nca_eligible_for_auc_cmax",
+    "is_nca_eligible_per_subject",
     "score_case",
     "score_convergence",
     "score_parameter_bias",
@@ -101,6 +110,14 @@ def score_parameter_bias(
 
     Missing reference params that are absent from estimates are flagged
     with bias = NaN (not silently skipped).
+
+    A reference value of exactly ``0`` is ``NaN`` (unscorable) rather
+    than falling back to ``abs(est)``. The old absolute-value fallback
+    silently mixed unit-ful absolute error with unitless relative bias
+    under the same dict key, which poisoned downstream ``max()``-style
+    aggregation across parameters with different scales. Callers should
+    treat a zero reference as "unscorable at this point" and rely on
+    the missingness branch of the aggregator.
     """
     biases: dict[str, float] = {}
     for param_name, ref_value in case.reference_params.items():
@@ -109,7 +126,7 @@ def score_parameter_bias(
             if ref_value != 0:
                 biases[param_name] = abs(est - ref_value) / abs(ref_value)
             else:
-                biases[param_name] = abs(est)
+                biases[param_name] = float("nan")  # ref==0 is unscorable relative bias
         else:
             biases[param_name] = float("nan")  # Missing estimate
     return biases
@@ -188,6 +205,176 @@ def compute_prediction_interval_calibration(
         in_interval = (observed >= lower) & (observed <= upper)
         calibration[str(int(level))] = float(np.mean(in_interval))
     return calibration
+
+
+def is_nca_eligible_for_auc_cmax(
+    manifest: EvidenceManifest,
+    *,
+    max_blq_burden: float = 0.20,
+) -> tuple[bool, str]:
+    """Decide whether an observed-data NCA reference is admissible for Gate 3.
+
+    AUC/Cmax bioequivalence scoring (``compute_auc_cmax_be_score``) compares
+    each candidate's simulated exposure against a per-subject NCA reference
+    derived from observed data. The NCA estimate is only trustworthy when:
+
+    1. The absorption phase is adequately sampled (otherwise Cmax is biased
+       by missing the peak).
+    2. The elimination phase is adequately sampled (otherwise AUC(0-inf)
+       extrapolation inflates error).
+    3. BLQ burden is low enough that trapezoidal AUC is not censoring-biased.
+       Default threshold 0.20 matches Thway 2018 recommendation; policies
+       may tighten via ``Gate3Config.auc_cmax_nca_max_blq_burden``.
+
+    Returns ``(eligible, reason)`` — the reason string is meant to be
+    surfaced in the ranking audit trail when the metric is dropped.
+    """
+    if manifest.absorption_phase_coverage != "adequate":
+        return False, "absorption phase coverage inadequate — Cmax from NCA is biased"
+    if manifest.elimination_phase_coverage != "adequate":
+        return False, "elimination phase coverage inadequate — AUC extrapolation is biased"
+    if manifest.blq_burden > max_blq_burden:
+        return False, (
+            f"BLQ burden {manifest.blq_burden:.2%} > "
+            f"auc_cmax_nca_max_blq_burden {max_blq_burden:.2%}: "
+            "trapezoidal NCA AUC is censoring-biased (Thway 2018)"
+        )
+    return True, "observed-data NCA admissible"
+
+
+def is_nca_eligible_per_subject(
+    diagnostic: NCASubjectDiagnostic,
+) -> tuple[bool, str]:
+    """Per-subject NCA eligibility for AUC/Cmax bioequivalence scoring.
+
+    Unlike :func:`is_nca_eligible_for_auc_cmax` (pooled across the whole
+    manifest), this checks a single subject's observed-data NCA QC record.
+    The eligibility signal is the QC verdict already encoded during NCA
+    profiling (``NCASubjectDiagnostic.excluded``) — adj_R² on λz,
+    AUC extrapolation fraction, span ratio, and minimum λz point count
+    are all rolled into that bool by the profiler. Reusing it here keeps
+    per-subject eligibility consistent with the initial-estimates path
+    and avoids duplicating QC logic.
+
+    Returns ``(eligible, reason)`` mirroring the pooled sibling so both
+    can feed the audit trail. Ineligible subjects are mask-dropped (not
+    counted as BE-fail) by :func:`compute_auc_cmax_be_score` when an
+    eligibility mask is supplied — the QC is observed-data-only so
+    candidates cannot influence the mask and there is no dodge surface.
+    """
+    if diagnostic.excluded:
+        return False, diagnostic.excluded_reason or "subject excluded by NCA QC"
+    return True, "per-subject observed-data NCA admissible"
+
+
+def compute_auc_cmax_be_score(
+    candidate_auc_per_subject: np.ndarray,
+    candidate_cmax_per_subject: np.ndarray,
+    nca_auc_per_subject: np.ndarray,
+    nca_cmax_per_subject: np.ndarray,
+    *,
+    eligible_mask: np.ndarray | None = None,
+    min_eligible: int | None = None,
+    min_eligible_fraction: float | None = None,
+) -> float | None:
+    """Fraction of eligible subjects whose candidate-vs-NCA GMRs are bioequivalent.
+
+    A subject counts as "BE-pass" when both its AUC and Cmax geometric mean
+    ratios (candidate ÷ NCA) fall inside the Smith 2000 FDA goalposts
+    ``[0.80, 1.25]``. The returned score is the mean pass rate across
+    *eligible* subjects — a fraction in ``[0, 1]`` with useful dynamic range.
+
+    All inputs are per-subject vectors (shape ``(n_subjects,)``). NaN or
+    non-positive AUC/Cmax values on either side disqualify that subject
+    within the BE check (contribute a 0 to the numerator) — this is
+    separate from NCA eligibility, which is mask-controlled.
+
+    **Eligibility (optional).** When ``eligible_mask`` is supplied, only
+    subjects with ``eligible_mask[i] == True`` contribute to the score:
+
+      * Numerator: count of BE-pass *AND* eligible subjects.
+      * Denominator: count of eligible subjects (mask-drop, not BE-fail).
+
+    Observed-data NCA QC (per subject) is the intended mask source —
+    candidate-independent, so there is no dodge surface. When
+    ``min_eligible`` is provided, the function returns ``None`` if fewer
+    eligible subjects survive; ``min_eligible_fraction`` applies the
+    same rule to the eligible fraction of the total cohort. Both floors
+    are AND-combined so a policy can require both an absolute count and
+    a representative fraction. Returning ``None`` triggers the uniform-
+    drop path in :func:`apmode.governance.ranking.rank_cross_paradigm`.
+
+    Empty cohort (``n == 0``) returns ``None`` — an empty cohort is
+    semantically "undefined / no data," not "BE-failed." Callers that
+    want "BE-fail" semantics should check for ``None`` explicitly. The
+    uniform-drop rule in
+    :func:`apmode.governance.ranking._apply_uniform_auc_cmax_drop`
+    already treats ``None`` correctly.
+
+    Raises ``ValueError`` when array lengths do not match or when the
+    mask is supplied with a mismatched length.
+    """
+    n = candidate_auc_per_subject.shape[0]
+    if not (
+        candidate_cmax_per_subject.shape[0] == n
+        and nca_auc_per_subject.shape[0] == n
+        and nca_cmax_per_subject.shape[0] == n
+    ):
+        shapes = (
+            candidate_auc_per_subject.shape[0],
+            candidate_cmax_per_subject.shape[0],
+            nca_auc_per_subject.shape[0],
+            nca_cmax_per_subject.shape[0],
+        )
+        msg = f"Per-subject AUC/Cmax arrays must share length; got {shapes}"
+        raise ValueError(msg)
+    if eligible_mask is not None and eligible_mask.shape[0] != n:
+        msg = (
+            f"eligible_mask length {eligible_mask.shape[0]} must match "
+            f"per-subject array length {n}"
+        )
+        raise ValueError(msg)
+    if n == 0:
+        # Empty cohort is undefined, not BE-failed. Return None so the
+        # uniform-drop rule in rank_cross_paradigm drops the component
+        # cleanly. Callers that need "BE-fail" semantics check for None.
+        return None
+
+    # Subjects with any non-finite or non-positive component are treated as
+    # BE-fail within the BE check (separate concept from NCA eligibility).
+    valid = (
+        np.isfinite(candidate_auc_per_subject)
+        & np.isfinite(candidate_cmax_per_subject)
+        & np.isfinite(nca_auc_per_subject)
+        & np.isfinite(nca_cmax_per_subject)
+        & (candidate_auc_per_subject > 0)
+        & (candidate_cmax_per_subject > 0)
+        & (nca_auc_per_subject > 0)
+        & (nca_cmax_per_subject > 0)
+    )
+    with np.errstate(divide="ignore", invalid="ignore"):
+        auc_gmr = candidate_auc_per_subject / nca_auc_per_subject
+        cmax_gmr = candidate_cmax_per_subject / nca_cmax_per_subject
+    auc_pass = (auc_gmr >= _BE_GMR_LOWER) & (auc_gmr <= _BE_GMR_UPPER)
+    cmax_pass = (cmax_gmr >= _BE_GMR_LOWER) & (cmax_gmr <= _BE_GMR_UPPER)
+    per_subject_pass = valid & auc_pass & cmax_pass
+
+    if eligible_mask is None:
+        # Legacy path: mean over all subjects. Floors-without-mask would be
+        # ambiguous (no eligibility signal to compare against), so they are
+        # a no-op here.
+        return float(np.mean(per_subject_pass))
+
+    eligible_bool = eligible_mask.astype(bool)
+    n_eligible = int(eligible_bool.sum())
+    if min_eligible is not None and n_eligible < min_eligible:
+        return None
+    if min_eligible_fraction is not None and (n_eligible / n) < min_eligible_fraction:
+        return None
+    if n_eligible == 0:
+        return None
+    wins = int((per_subject_pass & eligible_bool).sum())
+    return wins / n_eligible
 
 
 # ---------------------------------------------------------------------------

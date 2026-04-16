@@ -13,6 +13,10 @@
 suppressPackageStartupMessages({
   library(jsonlite)
   library(nlmixr2)
+  # rxode2 is a transitive dep of nlmixr2 and supplies rxSolve for
+  # posterior-predictive simulation. Loaded explicitly so the
+  # VPC helper does not rely on nlmixr2's re-exports.
+  library(rxode2)
 })
 
 args <- commandArgs(trailingOnly = TRUE)
@@ -40,6 +44,87 @@ response_path <- args[2]
     platform = R.version$platform,
     packages = as.list(pkg_versions)
   )
+}
+
+
+.simulate_posterior_predictive <- function(fit, data, n_sims) {
+  # Generate n_sims posterior-predictive replicates by sampling ETAs from
+  # the fitted Omega (and residual noise from Sigma) and re-solving the
+  # structural model at each subject's observed time points.
+  #
+  # Returns a list (one entry per subject) of:
+  #   list(subject_id, t_observed, observed_dv, sims_at_observed)
+  # where ``sims_at_observed`` is an n_sims x n_obs nested list (row = sim
+  # replicate, col = observed time point), JSON-serializable.
+  #
+  # Returns NULL on any simulation error — the Python side treats NULL as
+  # "backend did not emit sims" and falls back to the CWRES proxy for
+  # Gate 3 ranking. Never raises, to keep the main harness path alive.
+  if (is.null(n_sims) || n_sims <= 0) return(NULL)
+  tryCatch({
+    sim_df <- rxode2::rxSolve(
+      object = fit,
+      events = data,
+      nStud = as.integer(n_sims),
+      keep = c("DV", "EVID"),
+      returnType = "data.frame"
+    )
+
+    # Observation rows only (drop dosing events).
+    if ("EVID" %in% names(sim_df)) {
+      sim_df <- sim_df[sim_df$EVID == 0, , drop = FALSE]
+    }
+
+    # Identify the simulated DV column — rxode2 conventionally uses "sim",
+    # but fits that carry a named endpoint sometimes use the DV variable.
+    sim_col <- if ("sim" %in% names(sim_df)) "sim"
+               else if ("cp" %in% names(sim_df)) "cp"
+               else if ("DV.1" %in% names(sim_df)) "DV.1"
+               else stop("could not identify simulated DV column in rxSolve output")
+
+    sim_idx_col <- if ("sim.id" %in% names(sim_df)) "sim.id"
+                   else if ("nSub" %in% names(sim_df)) "nSub"
+                   else if ("nStud" %in% names(sim_df)) "nStud"
+                   else stop("could not identify sim index column")
+
+    data_obs <- data[data$EVID == 0, , drop = FALSE]
+    subjects <- unique(as.character(data_obs$ID))
+
+    out <- vector("list", length(subjects))
+    for (i in seq_along(subjects)) {
+      sid <- subjects[i]
+      subj_data <- data_obs[as.character(data_obs$ID) == sid, , drop = FALSE]
+      # Order by TIME for stable AUC math downstream.
+      subj_data <- subj_data[order(subj_data$TIME), , drop = FALSE]
+      t_obs <- as.numeric(subj_data$TIME)
+      dv_obs <- as.numeric(subj_data$DV)
+
+      subj_sims <- sim_df[as.character(sim_df$id) == sid, , drop = FALSE]
+      n_obs <- length(t_obs)
+      mat <- matrix(NA_real_, nrow = n_sims, ncol = n_obs)
+      for (s in seq_len(n_sims)) {
+        s_rows <- subj_sims[subj_sims[[sim_idx_col]] == s, , drop = FALSE]
+        s_rows <- s_rows[order(s_rows$time), , drop = FALSE]
+        if (nrow(s_rows) == n_obs) {
+          mat[s, ] <- as.numeric(s_rows[[sim_col]])
+        }
+      }
+
+      # Convert matrix to nested list for JSON. lapply preserves row order.
+      sims_nested <- lapply(seq_len(n_sims), function(r) as.numeric(mat[r, ]))
+
+      out[[i]] <- list(
+        subject_id = sid,
+        t_observed = t_obs,
+        observed_dv = dv_obs,
+        sims_at_observed = sims_nested
+      )
+    }
+    out
+  }, error = function(e) {
+    message(paste("APMODE: VPC simulation failed:", e$message))
+    NULL
+  })
 }
 
 
@@ -191,6 +276,17 @@ response_path <- args[2]
   aic_val <- tryCatch(AIC(fit), error = function(e) NULL)
   bic_val <- tryCatch(BIC(fit), error = function(e) NULL)
 
+  # Posterior-predictive simulation (VPC/NPE/AUC-Cmax source). Python
+  # side derives VPC summary + npe_score + auc_cmax_be_score atomically
+  # from this matrix via ``apmode.backends.predictive_summary.
+  # build_predictive_diagnostics``. When n_posterior_predictive_sims is
+  # 0 (default) or rxSolve fails, ``predicted_simulations`` is NULL and
+  # the runner leaves the three diagnostics unset → Gate 3 falls back
+  # to the CWRES proxy.
+  n_sims <- if (!is.null(req$n_posterior_predictive_sims))
+              as.integer(req$n_posterior_predictive_sims) else 0L
+  predicted_sims <- .simulate_posterior_predictive(fit, req$.data_frame, n_sims)
+
   list(
     model_id = req$candidate_id,
     backend = "nlmixr2",
@@ -201,6 +297,10 @@ response_path <- args[2]
     parameter_estimates = param_list,
     eta_shrinkage = shrinkage,
     convergence_metadata = conv_meta,
+    # ``diagnostics.vpc`` / ``npe_score`` / ``auc_cmax_be_score`` are
+    # populated on the Python side via ``predicted_simulations`` below
+    # — the single canonical path keeps VPC, NPE, and AUC/Cmax BE from
+    # drifting apart across backends (see DiagnosticBundle docstring).
     diagnostics = list(
       gof = gof,
       split_gof = split_gof,
@@ -213,6 +313,10 @@ response_path <- args[2]
       blq = list(method = "none", lloq = NULL, n_blq = 0L, blq_fraction = 0.0),
       diagnostic_plots = setNames(list(), character(0))
     ),
+    # Out-of-band carrier for build_predictive_diagnostics. Stays in the
+    # raw dict (never validates into BackendResult) and is consumed by
+    # Nlmixr2Runner._parse_response.
+    predicted_simulations = predicted_sims,
     wall_time_seconds = wall_secs,
     backend_versions = list(
       nlmixr2 = as.character(packageVersion("nlmixr2")),
@@ -243,6 +347,10 @@ tryCatch({
 
   # 3. Load data
   data <- read.csv(req$data_path, header = TRUE, stringsAsFactors = FALSE)
+  # Stash on req for use inside .extract_backend_result (posterior-predictive
+  # simulation needs the original event table). Keyed with a leading dot
+  # so it can't collide with a schema field.
+  req$.data_frame <- data
 
   # 4. Build model function from DSL-compiled R code
   model_fn <- parse(text = req$compiled_r_code)

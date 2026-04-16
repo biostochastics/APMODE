@@ -355,7 +355,7 @@ class BundleEmitter:
         """Write bayesian/{candidate_id}_prior_manifest.json.
 
         FDA 2026 draft guidance requires the prior justification artifact to be
-        persisted with the run (kimi review Issue 2).
+        persisted with the run.
         """
         _validate_path_component(candidate_id, "candidate_id")
         path = self._bayesian_dir() / f"{candidate_id}_prior_manifest.json"
@@ -374,7 +374,7 @@ class BundleEmitter:
         return path
 
     def write_mcmc_diagnostics(self, diagnostics: PosteriorDiagnostics, candidate_id: str) -> Path:
-        """Write bayesian/{candidate_id}_mcmc_diagnostics.json (kimi review Issue 4).
+        """Write bayesian/{candidate_id}_mcmc_diagnostics.json.
 
         Deep-inspection tools expect diagnostics as a standalone artifact in
         addition to the nested ``BackendResult.posterior_diagnostics`` field.
@@ -389,7 +389,6 @@ class BundleEmitter:
 
         Returns the bundle-relative path that should be stored on
         ``BackendResult.posterior_draws_path`` so the reference is durable.
-        (kimi review Issue 2.)
         """
         import shutil
 

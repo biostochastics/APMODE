@@ -142,6 +142,11 @@ class AgenticRunner:
         self._config = config
         self._trace_dir = trace_dir
 
+    @property
+    def trace_dir(self) -> Path:
+        """Current directory where iteration traces are written."""
+        return self._trace_dir
+
     @contextlib.contextmanager
     def with_trace_dir(self, trace_dir: Path) -> Iterator[AgenticRunner]:
         """Temporarily redirect trace output to ``trace_dir``.

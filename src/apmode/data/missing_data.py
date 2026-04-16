@@ -35,8 +35,46 @@ from apmode.bundle.models import (
 )
 
 if TYPE_CHECKING:
+    from typing import Literal
+
     from apmode.bundle.models import CovariateStrategy, EvidenceManifest
     from apmode.governance.policy import MissingDataPolicy
+
+# Canonical mapping from the policy-side uppercase BLQ nomenclature
+# (``MissingDataDirective.blq_method`` — "M1" / "M3" / "M4" / "M6+" / "M7+")
+# to the bundle-side lowercase enum (``BLQHandling.method``). The bundle form
+# uses underscores so it stays a valid Python ``Literal`` member and is
+# directly comparable via equality; the policy form preserves the Beal (2001)
+# notation for audit readability. Extending one side without the other
+# silently breaks Gate 3 simulation-metric dispatch (see
+# :func:`apmode.governance.ranking.ranking_requires_simulation_metrics`), so
+# both are defined in a single map here.
+_BLQ_POLICY_TO_BUNDLE: dict[str, Literal["none", "m1", "m3", "m4", "m6_plus", "m7_plus"]] = {
+    "M1": "m1",
+    "M3": "m3",
+    "M4": "m4",
+    "M6+": "m6_plus",
+    "M7+": "m7_plus",
+}
+
+
+def normalize_blq_method_for_bundle(
+    policy_method: str,
+) -> Literal["none", "m1", "m3", "m4", "m6_plus", "m7_plus"]:
+    """Map a policy-side BLQ method string to its bundle enum value.
+
+    ``policy_method`` is the string in ``MissingDataDirective.blq_method``
+    (``"M1"``/``"M3"``/``"M4"``/``"M6+"``/``"M7+"``). Returns the matching
+    ``BLQHandling.method`` literal. Raises ``ValueError`` on unknown inputs
+    rather than coercing to a default — coercion is what let M7+ be silently
+    dropped before this helper existed.
+    """
+    try:
+        return _BLQ_POLICY_TO_BUNDLE[policy_method]
+    except KeyError as exc:
+        allowed = sorted(_BLQ_POLICY_TO_BUNDLE.keys())
+        msg = f"Unknown BLQ method {policy_method!r}; expected one of {allowed}"
+        raise ValueError(msg) from exc
 
 
 def resolve_directive(

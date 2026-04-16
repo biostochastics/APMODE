@@ -1492,8 +1492,7 @@ def _lambda_z_analyzable_fraction(
 ) -> float | None:
     """Fraction of subjects with >=3 positive non-BLQ post-Cmax samples
     within their analysis window — the minimum required for terminal-slope
-    estimation. R5 (BLQ-aware) + R22 (multi-dose windowing) — multi-model
-    consensus .
+    estimation. R5 (BLQ-aware) + R22 (multi-dose windowing).
     """
     if obs.empty:
         return None

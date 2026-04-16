@@ -36,6 +36,20 @@ if TYPE_CHECKING:
     from apmode.governance.policy import Gate1Config, Gate2Config, GatePolicy
 
 
+def _safe_bic(result: BackendResult) -> float:
+    """Return ``result.bic`` coerced to ``+inf`` when missing or non-finite.
+
+    Used as a sort key in within-paradigm ranking — a missing BIC must
+    land a candidate at the *bottom*, never at the top via Python's
+    unstable NaN sort. Defined once at module level because both
+    ``_gate3_within_paradigm`` and the simulation-based ranking pipeline
+    call it (formerly duplicated as nested functions).
+    """
+    if result.bic is None or not np.isfinite(result.bic):
+        return float("inf")
+    return result.bic
+
+
 # ---------------------------------------------------------------------------
 # Gate 1: Technical Validity
 # ---------------------------------------------------------------------------
@@ -303,14 +317,17 @@ def _check_split_integrity(result: BackendResult, g1: Gate1Config) -> GateCheckR
 
     # Test CWRES mean should not drift far from train
     cwres_drift = abs(sgof.test_cwres_mean) - abs(sgof.train_cwres_mean)
-    if cwres_drift > 0.5:
+    if cwres_drift > g1.split_cwres_drift_max:
         issues.append(
             f"cwres_drift={cwres_drift:.3f} "
             f"(test={sgof.test_cwres_mean:.3f}, train={sgof.train_cwres_mean:.3f})"
         )
 
-    # Test outlier fraction should not be >2x train + buffer
-    outlier_ratio_threshold = 2.0 * sgof.train_outlier_fraction + 0.05
+    # Test outlier fraction should not exceed slope * train + intercept
+    outlier_ratio_threshold = (
+        g1.split_outlier_ratio_slope * sgof.train_outlier_fraction
+        + g1.split_outlier_ratio_intercept
+    )
     if sgof.test_outlier_fraction > outlier_ratio_threshold:
         issues.append(
             f"test_outliers={sgof.test_outlier_fraction:.3f} (>{outlier_ratio_threshold:.3f})"
@@ -321,7 +338,10 @@ def _check_split_integrity(result: BackendResult, g1: Gate1Config) -> GateCheckR
         check_id="split_integrity",
         passed=passed,
         observed="; ".join(issues) if issues else "train_test_consistent",
-        threshold="cwres_drift<=0.5, outliers<=2x+0.05",
+        threshold=(
+            f"cwres_drift<={g1.split_cwres_drift_max}, "
+            f"outliers<={g1.split_outlier_ratio_slope}x+{g1.split_outlier_ratio_intercept}"
+        ),
     )
 
 
@@ -667,6 +687,7 @@ def _check_loro_requirement(
     LORO-CV against policy-driven thresholds. Uses law of total variance for
     pooled variance.
     """
+    del result  # candidate is identified upstream; evaluation uses loro_metrics only
     if not g2.loro_required or lane != "optimization":
         return GateCheckResult(
             check_id="loro_required",
@@ -771,7 +792,9 @@ def evaluate_gate3(
             [],
         )
 
-    requires_sim, qualification_reason = ranking_requires_simulation_metrics(survivors)
+    requires_sim, qualification_reason = ranking_requires_simulation_metrics(
+        survivors, gate3=policy.gate3
+    )
 
     if requires_sim:
         # Covers both cross-paradigm and within-paradigm-with-mixed-BLQ
@@ -786,12 +809,6 @@ def _gate3_within_paradigm(
     policy: GatePolicy,
 ) -> tuple[GateResult, list[RankedCandidate]]:
     """Within-paradigm ranking by BIC (Phase 1 behavior, preserved)."""
-
-    def _safe_bic(r: BackendResult) -> float:
-        if r.bic is None or not np.isfinite(r.bic):
-            return float("inf")
-        return r.bic
-
     sorted_survivors = sorted(survivors, key=_safe_bic)
 
     ranked: list[RankedCandidate] = []
@@ -869,17 +886,15 @@ def _gate3_cross_paradigm(
         qualification_reason=qualification_reason,
     )
 
-    def _safe_bic(r: BackendResult) -> float:
-        if r.bic is None or not np.isfinite(r.bic):
-            return float("inf")
-        return r.bic
-
     survivors_by_id = {s.model_id: s for s in survivors}
     ranked: list[RankedCandidate] = []
     for i, m in enumerate(cp_result.ranked_candidates):
         # Find the original survivor to extract BIC/AIC/n_params.
-        # A missing entry is a ranking-module invariant violation, not a
-        # recoverable state — log and skip rather than crash the bundle.
+        # A missing entry is a ranking-module invariant violation — the
+        # ranking returned an id we never put in. Raise so CI catches the
+        # bug; the orchestrator converts this into a BackendError with
+        # exit code 2. Silently skipping would produce an inconsistent
+        # ranked list and mask the underlying bug.
         orig = survivors_by_id.get(m.candidate_id)
         if orig is None:
             logger.error(
@@ -887,7 +902,12 @@ def _gate3_cross_paradigm(
                 candidate_id=m.candidate_id,
                 known_survivors=list(survivors_by_id.keys()),
             )
-            continue
+            msg = (
+                f"Gate 3 ranking returned orphan candidate_id={m.candidate_id!r} "
+                f"not present in survivors (known: {sorted(survivors_by_id)}). "
+                "This is a ranking-module invariant violation — please file a bug."
+            )
+            raise RuntimeError(msg)
 
         ranked.append(
             RankedCandidate(

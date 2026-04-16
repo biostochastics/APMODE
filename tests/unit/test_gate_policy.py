@@ -144,3 +144,69 @@ class TestValidatePolicyFile:
         f.write_text("not json at all")
         errors = validate_policy_file(f)
         assert len(errors) > 0
+
+
+class TestLanePoliciesGate3Contract:
+    """Each lane policy under ``policies/`` must parse with the intended Gate3.
+
+    These assertions pin the on-disk shape of the gate3 block so an
+    accidental edit does not silently revert a lane to the default config
+    (which would, e.g., flip discovery back to weighted_sum from Borda).
+    """
+
+    _POLICY_DIR = Path(__file__).parent.parent.parent / "policies"
+
+    def _load(self, lane: str) -> GatePolicy:
+        data = json.loads((self._POLICY_DIR / f"{lane}.json").read_text())
+        return GatePolicy.model_validate(data)
+
+    def test_submission_keeps_default_gate3(self) -> None:
+        # Submission has no explicit gate3 block — the default applies
+        # (weighted_sum, BIC off, AUC/Cmax off). BIC off is correct cross-
+        # paradigm for submission because likelihood scales are
+        # incomparable across observation models (PRD §10 Q2).
+        policy = self._load("submission")
+        assert policy.gate3.composite_method == "weighted_sum"
+        assert policy.gate3.vpc_weight == pytest.approx(0.5)
+        assert policy.gate3.npe_weight == pytest.approx(0.5)
+        assert policy.gate3.bic_weight == 0.0
+        assert policy.gate3.auc_cmax_weight == 0.0
+
+    def test_discovery_uses_borda_with_equal_vpc_npe(self) -> None:
+        policy = self._load("discovery")
+        assert policy.gate3.composite_method == "borda"
+        assert policy.gate3.vpc_weight == pytest.approx(0.5)
+        assert policy.gate3.npe_weight == pytest.approx(0.5)
+        assert policy.gate3.bic_weight == 0.0
+        # AUC/Cmax disabled until backend VPC pipeline produces simulation
+        # matrices; enabling it forces simulation-based ranking which today
+        # would uniform-drop every ranking and just burn cycles.
+        assert policy.gate3.auc_cmax_weight == 0.0
+
+    def test_optimization_uses_borda_with_auc_cmax_active(self) -> None:
+        policy = self._load("optimization")
+        assert policy.gate3.composite_method == "borda"
+        # AUC/Cmax BE is active in Optimization now that the nlmixr2
+        # backend can emit posterior-predictive simulations. The uniform-
+        # drop rule (governance/ranking.py) removes the component when
+        # any survivor lacks the score, so mixed-backend survivor sets
+        # degrade gracefully to vpc + npe.
+        assert policy.gate3.vpc_weight == pytest.approx(0.35)
+        assert policy.gate3.npe_weight == pytest.approx(0.35)
+        assert policy.gate3.bic_weight == 0.0
+        assert policy.gate3.auc_cmax_weight == pytest.approx(0.30)
+
+    def test_optimization_policy_version_bumped_to_0_4_0(self) -> None:
+        # gate3 weight shape changed (auc_cmax_weight flipped to 0.30).
+        # Consumers pinning on 0.3.1 need to know this is an evidence-
+        # model shift, not a defaults-only tick.
+        policy = self._load("optimization")
+        assert policy.policy_version == "0.4.0"
+
+    def test_submission_discovery_policy_version_bumped(self) -> None:
+        # Submission and Discovery stay at 0.3.1 (foundation bump only).
+        # Optimization is at 0.4.0 because its gate3 weights changed (see
+        # test_optimization_policy_version_bumped_to_0_4_0). CI hooks
+        # that gate on version need the per-lane distinction.
+        for lane in ("submission", "discovery"):
+            assert self._load(lane).policy_version == "0.3.1"

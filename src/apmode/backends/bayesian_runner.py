@@ -218,8 +218,7 @@ class BayesianRunner:
         return BackendResult.model_validate(response.result)
 
 
-# Harness contract (out of scope for this skeleton):
-#   The harness lives at src/apmode/bayes/harness.py and shall:
+# Harness contract (implemented in src/apmode/bayes/harness.py):
 #   1. Read/validate request.json as BayesianSubprocessRequest.
 #   2. Convert {data_path, spec} into the Stan data dict matching the
 #      stan_emitter data block (event_subject/event_time/event_amt/event_cmt/
@@ -239,3 +238,12 @@ class BayesianRunner:
 #      failure is detected (all chains stuck, R-hat>2, divergences>25%).
 #  10. On uncaught exception -> error_type="crash"; Stan compile failure ->
 #      error_type="compile_error".
+#  11. VPC/NPE/AUC-Cmax predictive diagnostics: the
+#      apmode.bayes.harness.build_predictive_from_draws helper plumbs
+#      Stan's posterior-predictive y_pred draws into the shared
+#      apmode.backends.predictive_summary.build_predictive_diagnostics
+#      helper. The stan_emitter generated-quantities block must first
+#      emit y_pred[n] — tracked as a follow-up commit per CHANGELOG.
+#      Until that lands, BayesianRunner does not populate
+#      diagnostics.{vpc, npe_score, auc_cmax_be_score} and Gate 3 falls
+#      back to the CWRES proxy for Bayesian candidates.

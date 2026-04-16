@@ -15,19 +15,33 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import signal
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from apmode.backends.r_schemas import RSubprocessRequest, RSubprocessResponse
+import numpy as np
+
+from apmode.backends.predictive_summary import (
+    SubjectSimulation,
+    build_predictive_diagnostics,
+)
+from apmode.backends.r_schemas import (
+    PredictedSimulationsSubject,
+    RSubprocessRequest,
+    RSubprocessResponse,
+)
 from apmode.dsl.nlmixr2_emitter import emit_nlmixr2
 from apmode.errors import BackendTimeoutError, ConvergenceError, CrashError
 from apmode.ids import generate_run_id
 
+logger = logging.getLogger(__name__)
+
 if TYPE_CHECKING:
-    from apmode.bundle.models import BackendResult, DataManifest
+    from apmode.bundle.models import BackendResult, DataManifest, NCASubjectDiagnostic
     from apmode.dsl.ast_models import DSLSpec
+    from apmode.governance.policy import Gate3Config
 
 # Location of the R harness script, relative to this package
 _DEFAULT_HARNESS = Path(__file__).parent.parent / "r" / "harness.R"
@@ -63,6 +77,8 @@ class Nlmixr2Runner:
         data_path: Path | None = None,
         split_manifest: dict[str, object] | None = None,
         compiled_code_override: str | None = None,
+        gate3_policy: Gate3Config | None = None,
+        nca_diagnostics: list[NCASubjectDiagnostic] | None = None,
     ) -> BackendResult:
         """Run nlmixr2 estimation via R subprocess.
 
@@ -77,6 +93,20 @@ class Nlmixr2Runner:
                 augmented covariate endpoints. When provided, ``spec``
                 still supplies ``model_id`` and ``data_manifest`` for
                 metadata, but its AST is not re-emitted.
+            gate3_policy: When provided, requests
+                ``n_posterior_predictive_sims`` simulation replicates
+                from the R harness and populates
+                ``diagnostics.{vpc,npe_score,auc_cmax_be_score,
+                auc_cmax_source}`` via
+                :func:`apmode.backends.predictive_summary.
+                build_predictive_diagnostics`. When ``None`` (default),
+                simulation is skipped and Gate 3 ranking falls back to
+                the CWRES NPE proxy.
+            nca_diagnostics: Per-subject NCA QC records (from the
+                orchestrator's initial-estimates stage). Used as the
+                per-subject NCA-eligibility mask for AUC/Cmax BE
+                scoring. Subjects without a matching record are treated
+                as ineligible (mask-dropped).
 
         Raises:
             BackendTimeoutError: If R process exceeds timeout.
@@ -100,6 +130,10 @@ class Nlmixr2Runner:
             else emit_nlmixr2(spec, initial_estimates=initial_estimates)
         )
 
+        n_sims_req = (
+            int(gate3_policy.n_posterior_predictive_sims) if gate3_policy is not None else 0
+        )
+
         # Build and write request
         request = RSubprocessRequest(
             schema_version="1.0",
@@ -114,6 +148,7 @@ class Nlmixr2Runner:
             estimation=self.estimation,
             compiled_r_code=compiled_r_code,
             split_manifest=split_manifest,
+            n_posterior_predictive_sims=n_sims_req,
         )
 
         request_path = run_dir / "request.json"
@@ -123,8 +158,14 @@ class Nlmixr2Runner:
         response_path = run_dir / "response.json"
         exit_code = await self._spawn_r(request_path, response_path, timeout_seconds)
 
-        # Parse response
-        return self._parse_response(response_path, exit_code, spec.model_id)
+        # Parse response + optionally enrich with simulation-based diagnostics
+        return self._parse_response(
+            response_path,
+            exit_code,
+            spec.model_id,
+            gate3_policy=gate3_policy,
+            nca_diagnostics=nca_diagnostics,
+        )
 
     async def _spawn_r(
         self,
@@ -167,8 +208,21 @@ class Nlmixr2Runner:
         response_path: Path,
         exit_code: int,
         model_id: str,
+        *,
+        gate3_policy: Gate3Config | None = None,
+        nca_diagnostics: list[NCASubjectDiagnostic] | None = None,
     ) -> BackendResult:
-        """Parse response.json and map to BackendResult or raise error."""
+        """Parse response.json and map to BackendResult or raise error.
+
+        When ``gate3_policy`` is supplied, any ``predicted_simulations``
+        payload emitted by the R harness is atomically converted into
+        VPC/NPE/AUC-Cmax diagnostics via
+        :func:`apmode.backends.predictive_summary.build_predictive_diagnostics`
+        and merged onto the returned :class:`BackendResult`. A simulation
+        failure on the R side (``predicted_simulations = NULL``) is
+        non-fatal: the BackendResult is returned without simulation-based
+        diagnostics and Gate 3 falls back to the CWRES proxy.
+        """
         from apmode.bundle.models import BackendResult
 
         # No response file means crash
@@ -199,4 +253,61 @@ class Nlmixr2Runner:
                 exit_code=exit_code,
             )
 
-        return BackendResult.model_validate(response.result)
+        # Strip out-of-band predicted_simulations before BackendResult
+        # validation — the field is consumed here and not part of the
+        # BackendResult schema.
+        result_dict = dict(response.result)
+        predicted_sims_raw = result_dict.pop("predicted_simulations", None)
+        backend_result = BackendResult.model_validate(result_dict)
+
+        if gate3_policy is None:
+            # Caller did not request simulation-based diagnostics — silent
+            # fallback is the contract.
+            return backend_result
+
+        if (
+            predicted_sims_raw is None
+            or not isinstance(predicted_sims_raw, list)
+            or not predicted_sims_raw
+        ):
+            # A Gate3Config was supplied but no sims arrived (R rxSolve
+            # tryCatch swallowed the error in harness.R). This is a
+            # non-fatal audit-trail event — log structured so the bundle
+            # has provenance for why Gate 3 fell back to the CWRES proxy.
+            logger.warning(
+                "nlmixr2 posterior-predictive simulation absent for model %s "
+                "(n_posterior_predictive_sims=%d requested); Gate 3 will use "
+                "the CWRES NPE proxy and uniform-drop the AUC/Cmax component.",
+                model_id,
+                gate3_policy.n_posterior_predictive_sims,
+            )
+            return backend_result
+
+        diagnostics_by_subject = {d.subject_id: d for d in (nca_diagnostics or [])}
+        subject_sims: list[SubjectSimulation] = []
+        for entry in predicted_sims_raw:
+            payload = PredictedSimulationsSubject.model_validate(entry)
+            sims_matrix = np.array(payload.sims_at_observed, dtype=float)
+            subject_sims.append(
+                SubjectSimulation(
+                    subject_id=payload.subject_id,
+                    t_observed=np.array(payload.t_observed, dtype=float),
+                    observed_dv=np.array(payload.observed_dv, dtype=float),
+                    sims_at_observed=sims_matrix,
+                    nca_diagnostic=diagnostics_by_subject.get(payload.subject_id),
+                )
+            )
+
+        if not subject_sims:
+            return backend_result
+
+        predictive = build_predictive_diagnostics(subject_sims, policy=gate3_policy)
+        backend_result.diagnostics = backend_result.diagnostics.model_copy(
+            update={
+                "vpc": predictive.vpc,
+                "npe_score": predictive.npe_score,
+                "auc_cmax_be_score": predictive.auc_cmax_be_score,
+                "auc_cmax_source": predictive.auc_cmax_source,
+            }
+        )
+        return backend_result

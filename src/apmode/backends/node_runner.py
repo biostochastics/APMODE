@@ -91,6 +91,49 @@ class NodeBackendRunner:
         if execution_mode == "cpu_deterministic":
             configure_jax_platform("cpu")
 
+    def sample_posterior_predictive(
+        self,
+        training_result: object,
+        subjects: object,
+        *,
+        n_sims: int,
+        seed: int,
+    ) -> None:
+        """Draw posterior-predictive simulations for Gate 3 diagnostics.
+
+        Returns ``None`` until NODE Phase 3 random-effects infrastructure
+        (per-subject input-layer RE weights with Laplace-approximate
+        posterior) lands in
+        :mod:`apmode.backends.node_trainer`. The cross-paradigm ranker's
+        uniform-drop rule already treats ``None`` as "backend did not
+        emit sims" and falls back to the CWRES NPE proxy, so the return
+        type here is load-bearing for Gate 3.
+
+        When implemented, this method must:
+          1. Sample ``n_sims`` ETA vectors from the Laplace-approximate
+             posterior on the trained model's input-layer RE weights.
+          2. Forward-solve the structural model via
+             :func:`apmode.backends.node_trainer._solve_multidose_eager`
+             at each subject's observed time vector for every draw.
+          3. Return a ``list[SubjectSimulation]`` ready to feed
+             :func:`apmode.backends.predictive_summary.
+             build_predictive_diagnostics`.
+
+        The runtime stub emits a :class:`UserWarning` so a caller that
+        accidentally wires this in today sees the deferral loudly rather
+        than treating the ``None`` return as an expected no-op.
+        """
+        _ = training_result, subjects, n_sims, seed  # explicit unused
+        warnings.warn(
+            "NodeBackendRunner.sample_posterior_predictive is a Phase 3 stub "
+            "and returns None. Random-effects infrastructure must land in "
+            "node_trainer before this can emit real simulations. Gate 3 "
+            "falls back to the CWRES NPE proxy for NODE candidates.",
+            UserWarning,
+            stacklevel=2,
+        )
+        return None
+
     async def run(
         self,
         spec: DSLSpec,
@@ -199,6 +242,22 @@ class NodeBackendRunner:
                 minimization_status=result.minimization_status,
                 wall_time_seconds=result.wall_time_seconds,
             ),
+            # ``vpc`` / ``npe_score`` / ``auc_cmax_be_score`` are intentionally
+            # left unset: the NODE backend does not yet emit posterior-
+            # predictive simulations. The canonical path is the shared helper
+            # in ``apmode.backends.predictive_summary.build_predictive_diagnostics``
+            # — drop in by (1) extending ``node_trainer.train_node`` to retain
+            # the Ω / per-subject eta MAP estimates for input-layer random
+            # effects (PRD §4.2.4 R6), (2) adding
+            # ``sample_posterior_predictive`` that draws n_sims ETA vectors
+            # via Laplace approximation at the MAP, forward-solves via
+            # ``_solve_multidose_eager`` at each subject's observed times,
+            # (3) calling ``build_predictive_diagnostics(subject_sims,
+            # policy=gate3_policy)`` and ``diagnostics.model_copy(update=...)``
+            # with the four returned fields.  Random-effects infrastructure
+            # is Phase 3 scope per ``node_trainer.py`` module docstring.
+            # Until then Gate 3 falls back to the CWRES NPE proxy for NODE
+            # candidates (see ``apmode.governance.ranking._resolve_npe``).
             diagnostics=DiagnosticBundle(
                 gof=GOFMetrics(
                     cwres_mean=0.0,

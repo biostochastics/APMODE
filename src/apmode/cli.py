@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import enum
 import json
+import re
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any
@@ -375,6 +376,18 @@ def run(
             ),
         ),
     ] = False,
+    resume_agentic: Annotated[
+        bool,
+        typer.Option(
+            "--resume-agentic",
+            help=(
+                "Skip classical search (Stage 5) and resume from an existing "
+                "``classical_checkpoint.json`` in the output bundle directory. "
+                "Use after an agentic API failure to restart the LLM loop without "
+                "re-running the full SAEM search."
+            ),
+        ),
+    ] = False,
     dry_run: Annotated[
         bool,
         typer.Option(
@@ -505,13 +518,12 @@ def run(
         ingest_table.add_row("Doses", str(manifest.n_doses))
         ingest_table.add_row("Lane", lane.value)
         ingest_table.add_row("Seed", str(seed))
-        # Resolve and display policy path + version for traceability
-        _policy_path: Path | None = policy
-        if _policy_path is None:
-            _repo_root = Path(__file__).resolve().parents[2]
-            _policy_path = _repo_root / "policies" / f"{lane.value}.json"
-            if not _policy_path.exists():
-                _policy_path = None
+        # Resolve and display policy path + version for traceability.
+        # Delegate the fallback lookup to apmode.paths so CLI and
+        # orchestrator share one source of truth.
+        from apmode.paths import policy_path_for_lane as _policy_path_for_lane
+
+        _policy_path: Path | None = policy or _policy_path_for_lane(lane.value)
         if _policy_path is not None:
             _pol_version = "?"
             try:
@@ -687,7 +699,9 @@ def run(
         console.print("  [dim]Running pipeline (stage progress via log)...[/]")
 
     try:
-        result = asyncio.run(orchestrator.run(manifest, df, data_csv))
+        result = asyncio.run(
+            orchestrator.run(manifest, df, data_csv, skip_classical=resume_agentic)
+        )
     except BackendError as e:
         err_console.print(f"[red bold]Backend error:[/] {escape(str(e))}")
         if isinstance(e, CrashError) and e.stderr_tail:
@@ -1680,11 +1694,14 @@ def _launch_run(
     seed: int,
     output: Path,
     parallel_models: int = 1,
+    timeout: int = 900,
 ) -> None:
     """Delegate to the run command by invoking it directly.
 
     Propagates any non-zero exit code from the underlying pipeline so
-    ``explore -y`` does not lie about success.
+    ``explore -y`` does not lie about success. ``timeout`` matches the
+    default used by the standalone ``run`` command (900s). Callers can
+    override when they know the dataset size warrants it.
     """
     try:
         run(
@@ -1692,7 +1709,7 @@ def _launch_run(
             lane=lane,
             seed=seed,
             output=output,
-            timeout=600,
+            timeout=timeout,
             parallel_models=parallel_models,
             verbose=False,
             quiet=False,
@@ -2100,6 +2117,35 @@ def _show_top_candidates(bundle_dir: Path, n: int) -> None:
             subtitle.append(f"BIC={bic:.1f}")
         if _is_real_number(aic):
             subtitle.append(f"AIC={aic:.1f}")
+        # Simulation-based diagnostics (populated by backends that emit
+        # posterior-predictive draws via build_predictive_diagnostics).
+        # Absent → quietly omitted so legacy bundles still render.
+        _diag = (_res or {}).get("diagnostics", {}) or {}
+        _npe = _diag.get("npe_score") if isinstance(_diag, dict) else None
+        _auc_cmax = _diag.get("auc_cmax_be_score") if isinstance(_diag, dict) else None
+        _auc_src = _diag.get("auc_cmax_source") if isinstance(_diag, dict) else None
+        _vpc_obj = _diag.get("vpc") if isinstance(_diag, dict) else None
+        if _is_real_number(_npe):
+            subtitle.append(f"NPE={_npe:.3g}")
+        if _is_real_number(_auc_cmax):
+            assert isinstance(_auc_cmax, (int, float))
+            src_tag = f" [{_auc_src}]" if _auc_src else ""
+            subtitle.append(f"AUC/Cmax BE={float(_auc_cmax):.0%}{src_tag}")
+        # Per-percentile VPC coverage when populated. The ranker's scalar
+        # concordance hides which percentile failed; surfacing the raw
+        # per-percentile dict here lets a reviewer distinguish median
+        # miscalibration from tail underprediction.
+        if isinstance(_vpc_obj, dict):
+            _cov_raw = _vpc_obj.get("coverage")
+            if isinstance(_cov_raw, dict) and _cov_raw:
+                vpc_parts: list[str] = []
+                for _pkey in sorted(_cov_raw.keys()):
+                    _pval = _cov_raw[_pkey]
+                    if _is_real_number(_pval):
+                        assert isinstance(_pval, (int, float))
+                        vpc_parts.append(f"{_pkey}={float(_pval):.2f}")
+                if vpc_parts:
+                    subtitle.append("VPC[" + "/".join(vpc_parts) + "]")
         sub = f" ({', '.join(subtitle)})" if subtitle else ""
 
         console.print(
@@ -2146,7 +2192,10 @@ def _show_bundle_overview(bundle_dir: Path) -> None:
     if rank:
         cands = rank.get("ranked_candidates", [])
         if cands:
-            top3 = ", ".join(c.get("model_id", "?") for c in cands[:3])
+            # Prefer candidate_id (current schema) with model_id fallback
+            # for legacy bundles — matches the pattern used elsewhere in
+            # the CLI.
+            top3 = ", ".join(c.get("candidate_id", c.get("model_id", "?")) for c in cands[:3])
             t.add_row("Top ranked", top3)
 
     console.print(Panel(t, title="[bold]Bundle Overview[/]", border_style="blue"))
@@ -3108,11 +3157,14 @@ def policies(
       apmode policies submission
       apmode policies --validate
     """
-    # Locate policies/ directory relative to cli.py (same logic as orchestrator)
-    policies_dir = Path(__file__).resolve().parents[2] / "policies"
-    if not policies_dir.is_dir():
+    # Locate policies/ via shared helper (H3: single source of truth).
+    from apmode.paths import policies_dir as _policies_dir
+
+    policies_dir = _policies_dir()
+    if policies_dir is None or not policies_dir.is_dir():
         err_console.print(
-            f"[red bold]Error:[/] policies directory not found: {escape(str(policies_dir))}"
+            "[red bold]Error:[/] policies directory not found (set APMODE_POLICIES_DIR "
+            "to override)."
         )
         raise typer.Exit(code=1)
 
@@ -3187,10 +3239,10 @@ def policies(
                 if not isinstance(gdata, dict):
                     continue
                 checks = gdata.get("checks", {})
-                if isinstance(checks, dict):
+                if isinstance(checks, dict) and checks:
                     for cname, cval in checks.items():
                         dtable.add_row(g.replace("_", "."), cname, str(cval))
-                elif isinstance(checks, list):
+                elif isinstance(checks, list) and checks:
                     for ch in checks:
                         if isinstance(ch, dict):
                             dtable.add_row(
@@ -3198,6 +3250,13 @@ def policies(
                                 str(ch.get("check_id", "?")),
                                 str(ch.get("threshold", "?")),
                             )
+                else:
+                    # Flat-style block (Gate 3 shape: top-level keys, no
+                    # nested "checks"). Render each leaf so predictive-
+                    # diagnostics knobs (vpc_n_bins, npe_weight,
+                    # auc_cmax_nca_min_eligible, …) are visible.
+                    for cname, cval in gdata.items():
+                        dtable.add_row(g.replace("_", "."), cname, str(cval))
 
             console.print(dtable)
             console.print()
@@ -3451,8 +3510,6 @@ def _graph_to_mermaid(nodes: list[dict[str, Any]], edges: list[dict[str, Any]]) 
 
     def _mermaid_id(s: str) -> str:
         """Sanitize a string for use as a Mermaid node ID."""
-        import re
-
         return re.sub(r"[^a-zA-Z0-9_]", "_", s)
 
     def _mermaid_label(s: str) -> str:

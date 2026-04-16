@@ -1,5 +1,5 @@
 {
-  "policy_version": "0.2.0",
+  "policy_version": "0.4.0",
   "lane": "optimization",
   "gate1": {
     "convergence_required": true,
@@ -25,6 +25,13 @@
     "data_adequacy_ratio_min": 5.0,
     "sensitivity_analysis_required": true,
     "ai_ml_transparency_required": true
+  },
+  "gate3": {
+    "composite_method": "borda",
+    "vpc_weight": 0.35,
+    "npe_weight": 0.35,
+    "bic_weight": 0.0,
+    "auc_cmax_weight": 0.30
   },
   "missing_data": {
     "mi_pmm_max_missingness": 0.25,

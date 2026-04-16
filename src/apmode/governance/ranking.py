@@ -23,7 +23,8 @@ chooses between:
     ``npe_cap`` and ``bic_norm_scale`` to keep components commensurable.
   * ``"borda"`` — rank each candidate on each *enabled* metric (weight
     > 0), sum the ranks (average-rank for ties), lower wins. Scale-
-    invariant; preferred by multi-model consensus (gpt-5.2-pro, glm-5.1).
+    invariant across paradigms — the preferred cross-paradigm aggregator
+    because likelihood-scale metrics can't be compared directly (§10 Q2).
 
 Within-paradigm BIC ranking (``_gate3_within_paradigm`` in
 ``gates.py``) is NOT governed by this module and is unchanged.
@@ -31,6 +32,7 @@ Within-paradigm BIC ranking (``_gate3_within_paradigm`` in
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
@@ -41,6 +43,7 @@ if TYPE_CHECKING:
     from apmode.governance.policy import Gate3Config
 
 NPESource = Literal["simulation", "cwres_proxy"]
+AUCCmaxSource = Literal["observed_trapezoid"]
 
 
 @dataclass(frozen=True)
@@ -58,6 +61,12 @@ class CrossParadigmMetrics:
     (``"simulation"``) or the CWRES distance fallback
     (``"cwres_proxy"``) — downstream reports should surface this to
     avoid overclaiming.
+
+    ``auc_cmax_be`` is the per-subject AUC/Cmax bioequivalence rate (see
+    :func:`apmode.benchmarks.scoring.compute_auc_cmax_be_score`); it is
+    ``None`` when the NCA reference is ineligible for one or more
+    candidates and the uniform-drop rule suppressed the metric for the
+    ranking. ``auc_cmax_source`` is ``"observed_trapezoid"`` when populated.
     """
 
     candidate_id: str
@@ -67,6 +76,8 @@ class CrossParadigmMetrics:
     npe_source: NPESource
     composite_score: float
     component_scores: dict[str, float] = field(default_factory=dict)
+    auc_cmax_be: float | None = None
+    auc_cmax_source: AUCCmaxSource | None = None
 
 
 @dataclass
@@ -96,12 +107,14 @@ def is_cross_paradigm(survivors: list[BackendResult]) -> bool:
 
 def ranking_requires_simulation_metrics(
     survivors: list[BackendResult],
+    *,
+    gate3: Gate3Config | None = None,
 ) -> tuple[bool, str]:
     """Decide whether Gate 3 ranking must use simulation-based metrics.
 
     Implements PRD §10 Q2 — NLPD/BIC are likelihood-scale metrics and
     are only comparable when every candidate shares the **same observation
-    model**. Two conditions force a switch to simulation-based ranking:
+    model**. Three conditions force a switch to simulation-based ranking:
 
     1. **Cross-paradigm**: survivors come from ≥ 2 backends (e.g.,
        nlmixr2 + jax_node). Each paradigm has its own observation model
@@ -111,12 +124,18 @@ def ranking_requires_simulation_metrics(
        contributes a censored-likelihood term; M7+ replaces BLQ with an
        imputed zero + inflated additive error. The two likelihoods are
        on different scales even when the structural model is identical.
+    3. **Policy opts into a simulation-only metric**: when ``gate3`` is
+       provided and ``gate3.auc_cmax_weight > 0`` the AUC/Cmax BE score
+       (fraction-within-BE-goalposts) must be computed from posterior
+       predictive sims, so the simulation-based path is required even
+       when backends and BLQ handling are uniform.
 
     Returns:
         ``(requires_simulation, reason)``. ``requires_simulation=False``
-        only when all survivors share a backend and a single BLQ method.
-        The ``reason`` string is human-readable and gets surfaced into
-        the Gate 3 qualified-comparison annotation.
+        only when survivors share a backend, a single BLQ method, and
+        the policy does not enable a simulation-only metric. The
+        ``reason`` string is human-readable and gets surfaced into the
+        Gate 3 qualified-comparison annotation.
     """
     if not survivors:
         return False, "no survivors"
@@ -131,6 +150,13 @@ def ranking_requires_simulation_metrics(
             f"within-paradigm but BLQ handling differs across survivors "
             f"({sorted(blq_methods)}); likelihood scales are not "
             "comparable — PRD §10 Q2 routes to simulation-based metrics"
+        )
+
+    if gate3 is not None and gate3.auc_cmax_weight > 0.0:
+        return True, (
+            "policy enables AUC/Cmax BE component "
+            f"(auc_cmax_weight={gate3.auc_cmax_weight:.3f}); "
+            "AUC/Cmax BE is a simulation-based metric per PRD §4.3.1"
         )
 
     return False, "within-paradigm, uniform observation model"
@@ -182,6 +208,22 @@ def _resolve_npe(result: BackendResult) -> tuple[float, NPESource]:
     return compute_cwres_npe_proxy(result), "cwres_proxy"
 
 
+def _resolve_auc_cmax(result: BackendResult) -> tuple[float | None, AUCCmaxSource | None]:
+    """Return ``(auc_cmax_be, source)`` for a candidate.
+
+    Unlike :func:`_resolve_npe` there is no proxy fallback: using a
+    candidate-derived reference (e.g. median candidate GMR) would be
+    circular and bias Gate 3 ranking toward cohort center. When the
+    backend omits the score the ranking layer's uniform-drop rule
+    removes the component from the composite for *all* candidates
+    rather than synthesizing a value here.
+    """
+    score = result.diagnostics.auc_cmax_be_score
+    if score is None or not np.isfinite(score):
+        return None, None
+    return float(score), result.diagnostics.auc_cmax_source
+
+
 # ---------------------------------------------------------------------------
 # Aggregation strategies (policy-driven)
 # ---------------------------------------------------------------------------
@@ -191,17 +233,22 @@ def _weighted_sum_composite(
     vpc_concordance: float,
     npe: float,
     bic: float | None,
+    auc_cmax_be: float | None,
     config: Gate3Config,
 ) -> tuple[float, dict[str, float]]:
     """Legacy weighted-sum aggregation (lower = better).
 
-    VPC concordance is inverted so all three components share the
-    "lower is better" convention. NPE is divided by ``config.npe_cap``
-    (clipped to ``[0, 1]``); BIC by ``config.bic_norm_scale`` (also
-    clipped). Components with weight 0 contribute 0 regardless of raw
-    value, which lets a lane disable BIC entirely. Non-finite inputs
-    (NaN/Inf) are coerced to the worst possible component value so
-    they cannot silently win a ranking.
+    VPC concordance and AUC/Cmax BE score are both inverted so every
+    component shares the "lower is better" convention. NPE is divided
+    by ``config.npe_cap`` (clipped to ``[0, 1]``); BIC by
+    ``config.bic_norm_scale`` (also clipped). Components with weight 0
+    contribute 0 regardless of raw value, which lets a lane disable BIC
+    or AUC/Cmax entirely. Non-finite inputs (NaN/Inf) are coerced to
+    the worst possible component value so they cannot silently win a
+    ranking. AUC/Cmax missingness for individual candidates is handled
+    upstream by the uniform-drop rule in :func:`rank_cross_paradigm` —
+    by the time this function sees ``auc_cmax_weight > 0``, every
+    candidate is guaranteed to have a finite score.
     """
     components: dict[str, float] = {}
     total = 0.0
@@ -227,6 +274,16 @@ def _weighted_sum_composite(
     components["bic"] = bic_component
     total += bic_component
 
+    if config.auc_cmax_weight > 0.0 and auc_cmax_be is not None and np.isfinite(auc_cmax_be):
+        # Clip to [0, 1] defensively; the Pydantic field validator already
+        # enforces the bound but an upstream bug could slip through.
+        be_clipped = min(max(float(auc_cmax_be), 0.0), 1.0)
+        auc_cmax_component = (1.0 - be_clipped) * config.auc_cmax_weight
+    else:
+        auc_cmax_component = 0.0
+    components["auc_cmax"] = auc_cmax_component
+    total += auc_cmax_component
+
     return total, components
 
 
@@ -236,6 +293,13 @@ def _average_rank(values: list[float], *, lower_is_better: bool) -> list[float]:
     ``lower_is_better=True`` means rank 1 is the minimum value; the NPE
     and BIC components follow this convention. VPC concordance uses
     ``lower_is_better=False`` (highest concordance gets rank 1).
+
+    Tie detection uses :func:`math.isclose` (``rel_tol=1e-9, abs_tol=1e-12``)
+    rather than exact float equality: metric values here flow through
+    arithmetic (e.g. `1 - mean(deviations)` for VPC concordance), so
+    candidates that are tied in exact real arithmetic can differ by one
+    ULP after rounding. Exact ``==`` would silently break ties in favor
+    of whichever order Python's sort happened to produce.
     """
     n = len(values)
     if n == 0:
@@ -247,7 +311,7 @@ def _average_rank(values: list[float], *, lower_is_better: bool) -> list[float]:
     while i < n:
         # Find run of tied values.
         j = i + 1
-        while j < n and indexed[j][1] == indexed[i][1]:
+        while j < n and math.isclose(indexed[j][1], indexed[i][1], rel_tol=1e-9, abs_tol=1e-12):
             j += 1
         avg = (i + 1 + j) / 2.0  # mean of ordinal positions i+1..j
         for k in range(i, j):
@@ -260,6 +324,7 @@ def _borda_composite(
     vpc_list: list[float],
     npe_list: list[float],
     bic_list: list[float | None],
+    auc_cmax_list: list[float | None],
     config: Gate3Config,
 ) -> tuple[list[float], list[dict[str, float]]]:
     """Borda-count aggregation across all candidates (lower sum = better).
@@ -270,6 +335,9 @@ def _borda_composite(
     component_scores for audit traceability. Candidates with missing
     BIC (None / non-finite) receive the worst rank on that metric when
     BIC is enabled; if BIC is disabled the missingness is irrelevant.
+    AUC/Cmax missingness is handled upstream by the uniform-drop rule
+    in :func:`rank_cross_paradigm` — by the time this function sees
+    ``auc_cmax_weight > 0`` every candidate has a finite score.
     """
     n = len(vpc_list)
     if n == 0:
@@ -296,6 +364,14 @@ def _borda_composite(
             (b if (b is not None and np.isfinite(b)) else float("inf")) for b in bic_list
         ]
         per_metric_ranks["bic"] = _average_rank(bic_numeric, lower_is_better=True)
+    if config.auc_cmax_weight > 0.0:
+        # AUC/Cmax BE higher is better; None / non-finite → -inf (worst).
+        # Uniform-drop upstream guarantees all entries are not-None here,
+        # so the non-finite branch is defensive-only.
+        auc_numeric = [
+            (a if (a is not None and np.isfinite(a)) else float("-inf")) for a in auc_cmax_list
+        ]
+        per_metric_ranks["auc_cmax"] = _average_rank(auc_numeric, lower_is_better=False)
 
     if not per_metric_ranks:
         # Guarded by Gate3Config.at_least_one_metric_active, so this is
@@ -314,6 +390,67 @@ def _borda_composite(
 # ---------------------------------------------------------------------------
 # Public entrypoint
 # ---------------------------------------------------------------------------
+
+
+def _apply_uniform_auc_cmax_drop(
+    gate3: Gate3Config,
+    auc_cmax_list: list[float | None],
+) -> tuple[Gate3Config, list[float | None], str | None]:
+    """Return (effective_gate3, effective_auc_cmax_list, drop_reason).
+
+    Gate 3 ranking requires every candidate to be scored on the *same*
+    component set — letting a data-poor candidate "dodge" a metric its
+    siblings must satisfy defeats the whole point of a cross-paradigm
+    comparability gate (PRD §4.3.1). So when any candidate lacks an
+    AUC/Cmax BE score (NCA ineligible, or backend omitted it), the
+    component is dropped for *all* candidates and the remaining weights
+    are proportionally renormalized. Per-candidate renormalization is
+    rejected because it produces apples-to-oranges composite scores.
+
+    A no-op path is taken when (a) ``auc_cmax_weight == 0`` (nothing to
+    drop) or (b) every candidate has a finite score.
+    """
+    if gate3.auc_cmax_weight <= 0.0:
+        return gate3, auc_cmax_list, None
+    if all(s is not None and np.isfinite(s) for s in auc_cmax_list):
+        return gate3, auc_cmax_list, None
+
+    remaining = gate3.vpc_weight + gate3.npe_weight + gate3.bic_weight
+    if remaining <= 0.0:
+        # Pathological policy: auc_cmax_weight was the only positive
+        # component and it's now dropped. Fall back to equal VPC+NPE so
+        # ranking still produces a defensible ordering instead of raising.
+        effective = gate3.model_copy(
+            update={
+                "vpc_weight": 0.5,
+                "npe_weight": 0.5,
+                "bic_weight": 0.0,
+                "auc_cmax_weight": 0.0,
+            }
+        )
+        reason = (
+            "auc_cmax_be unavailable for at least one survivor and "
+            "auc_cmax was the only enabled component; policy is "
+            "under-specified, falling back to vpc=0.5/npe=0.5"
+        )
+    else:
+        scale = 1.0 / remaining
+        effective = gate3.model_copy(
+            update={
+                "vpc_weight": gate3.vpc_weight * scale,
+                "npe_weight": gate3.npe_weight * scale,
+                "bic_weight": gate3.bic_weight * scale,
+                "auc_cmax_weight": 0.0,
+            }
+        )
+        reason = (
+            "auc_cmax_be unavailable for at least one survivor; "
+            f"component dropped uniformly, remaining weights renormalized "
+            f"(vpc={effective.vpc_weight:.3f}, npe={effective.npe_weight:.3f}, "
+            f"bic={effective.bic_weight:.3f})"
+        )
+    dropped_list: list[float | None] = [None] * len(auc_cmax_list)
+    return effective, dropped_list, reason
 
 
 def rank_cross_paradigm(
@@ -350,16 +487,27 @@ def rank_cross_paradigm(
     npe_list = [pair[0] for pair in npe_pairs]
     npe_sources = [pair[1] for pair in npe_pairs]
     bic_list: list[float | None] = [r.bic for r in survivors]
+    auc_cmax_pairs = [_resolve_auc_cmax(r) for r in survivors]
+    auc_cmax_values: list[float | None] = [pair[0] for pair in auc_cmax_pairs]
+    auc_cmax_sources: list[AUCCmaxSource | None] = [pair[1] for pair in auc_cmax_pairs]
+
+    effective_gate3, effective_auc_cmax, drop_reason = _apply_uniform_auc_cmax_drop(
+        gate3, auc_cmax_values
+    )
 
     scores: list[float]
     components_list: list[dict[str, float]]
-    if gate3.composite_method == "borda":
-        scores, components_list = _borda_composite(vpc_list, npe_list, bic_list, gate3)
+    if effective_gate3.composite_method == "borda":
+        scores, components_list = _borda_composite(
+            vpc_list, npe_list, bic_list, effective_auc_cmax, effective_gate3
+        )
     else:
         scores = []
         components_list = []
-        for vpc, npe, bic in zip(vpc_list, npe_list, bic_list, strict=True):
-            score, comp = _weighted_sum_composite(vpc, npe, bic, gate3)
+        for vpc, npe, bic, auc_cmax in zip(
+            vpc_list, npe_list, bic_list, effective_auc_cmax, strict=True
+        ):
+            score, comp = _weighted_sum_composite(vpc, npe, bic, auc_cmax, effective_gate3)
             scores.append(score)
             components_list.append(comp)
 
@@ -372,15 +520,44 @@ def rank_cross_paradigm(
             npe_source=source,
             composite_score=score,
             component_scores=components,
+            # Report the *original* per-candidate auc_cmax value + source
+            # for audit traceability, even when the component was uniformly
+            # dropped from the composite. Callers inspecting component_scores
+            # will see ``auc_cmax`` absent under Borda or zero under weighted
+            # sum — that's the authoritative signal for whether it factored
+            # into the rank.
+            auc_cmax_be=auc_cmax_value,
+            auc_cmax_source=auc_cmax_source,
         )
-        for result, vpc, npe, source, score, components in zip(
-            survivors, vpc_list, npe_list, npe_sources, scores, components_list, strict=True
+        for (
+            result,
+            vpc,
+            npe,
+            source,
+            score,
+            components,
+            auc_cmax_value,
+            auc_cmax_source,
+        ) in zip(
+            survivors,
+            vpc_list,
+            npe_list,
+            npe_sources,
+            scores,
+            components_list,
+            auc_cmax_values,
+            auc_cmax_sources,
+            strict=True,
         )
     ]
     metrics.sort(key=lambda m: m.composite_score)
 
     if qualification_reason is None:
-        _, qualification_reason = ranking_requires_simulation_metrics(survivors)
+        _, qualification_reason = ranking_requires_simulation_metrics(survivors, gate3=gate3)
+    if drop_reason is not None:
+        qualification_reason = (
+            f"{qualification_reason}; {drop_reason}" if qualification_reason else drop_reason
+        )
 
     return CrossParadigmRankingResult(
         is_cross_paradigm=cross,

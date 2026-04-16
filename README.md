@@ -6,9 +6,9 @@
 
   **Adaptive Pharmacokinetic Model Discovery Engine**
 
-  [![Phase](https://img.shields.io/badge/phase-3%20(P3.B%20%E2%80%94%20rc5)-blue)]()
+  [![Phase](https://img.shields.io/badge/phase-3%20(P3.B%20%E2%80%94%20rc6)-blue)]()
 
-  [![Tests](https://img.shields.io/badge/tests-1558%20passing-success)]()
+  [![Tests](https://img.shields.io/badge/tests-1593%20passing-success)]()
   [![License](https://img.shields.io/badge/license-GPL--2.0--or--later-green)](LICENSE)
   [![Python](https://img.shields.io/badge/python-3.12%E2%80%933.14-yellow)]()
   [![mypy](https://img.shields.io/badge/mypy-strict%20%E2%9C%93-blue)]()
@@ -30,7 +30,7 @@ APMODE is a **governed meta-system** that composes five population PK modeling p
 
 **Formular — a typed PK DSL — is the control surface.** Models are specified in [Formular](docs/FORMULAR.md), a structured grammar (`Absorption x Distribution x Elimination x Variability x Observation × Priors`), compiled to a typed AST, validated against pharmacometric constraints, and lowered to backend-specific code (nlmixr2 R, Stan/Torsten, JAX/Diffrax). The agentic LLM backend (Phase 3) operates exclusively through Formular transforms — including the new `SetPrior` transform for Bayesian workflows — it cannot emit raw code.
 
-> **Status**: **v0.3.0-rc5** (2026-04-16) — Phase 3 release candidate 5. Comprehensive CLI overhaul: new `apmode doctor`, `apmode ls`, `apmode policies` commands; `apmode report` now opens existing artifacts; `--dry-run` dispatch preview; colorblind-safe status indicators throughout; RSE%/η-shrinkage in parameter tables; policy version in run header; agentic-on-submission lane note. 10/10 benchmark scenarios produce a recommended candidate. 1541 tests passing (non-live); `mypy --strict` clean; `ruff` clean. Supports Python 3.12–3.14.
+> **Status**: **v0.3.0-rc6** (2026-04-16) — Phase 3 release candidate 6. Checkpoint/resume: `--resume-agentic` skips SAEM and restarts the LLM loop from `classical_checkpoint.json`; three correctness bugs fixed (DAG lineage destruction, duplicate `failed_candidates.jsonl`, silent fallback on ambiguous bundle state). Transform parser now accepts LLM short-form module strings for `swap_module`; `_MODULE_DEFAULTS` fallback estimates corrected against nlmixr2 SOTA (OneCmt V=90 L, TwoCmt/ThreeCmt central-first ordering). 1593 tests passing (non-live); `mypy --strict` clean; `ruff` clean. Supports Python 3.12–3.14.
 
 ---
 
@@ -152,7 +152,7 @@ uv run apmode policies --validate
 ### Run the Test Suite
 
 ```bash
-uv run pytest tests/ -q                    # 1525 collected (skip live tests with -m "not live")
+uv run pytest tests/ -q                    # 1593 collected (skip live tests with -m "not live")
 uv run mypy src/apmode/ --strict           # type checking
 uv run ruff check src/apmode/ tests/       # linting (0 errors)
 
@@ -702,10 +702,16 @@ and is validated by the CI hook
 | | `data_adequacy_ratio_min` | n/a | 5.0 | 5.0 | Minimum obs/params ratio |
 | | `sensitivity_analysis_required` | n/a | false | true | Sensitivity artifact present |
 | | `ai_ml_transparency_required` | n/a | true | true | Statement required for NODE/agentic |
-| **Gate 3 — Cross-paradigm composite** | `gate3.composite_method` | `weighted_sum` | `weighted_sum` | `weighted_sum` | Aggregation: `"weighted_sum"` or `"borda"` (rank-based, scale-invariant) |
+| **Gate 3 — Cross-paradigm composite** | `gate3.composite_method` | `weighted_sum` | `borda` | `borda` | Aggregation: `"weighted_sum"` or `"borda"` (rank-based, scale-invariant) |
 | | `gate3.vpc_weight` | 0.5 | 0.5 | 0.5 | VPC coverage concordance weight |
 | | `gate3.npe_weight` | 0.5 | 0.5 | 0.5 | NPE (simulation if available, else CWRES proxy) weight |
 | | `gate3.bic_weight` | 0.0 | 0.0 | 0.0 | **BIC off by default** (PRD §10 Q2 — likelihoods incomparable cross-paradigm) |
+| | `gate3.auc_cmax_weight` | 0.0 | 0.0 | 0.0 | Smith 2000 AUC/Cmax BE fraction weight (flips to 0.30 in Optimization once nlmixr2 VPC lands, commit 2) |
+| | `gate3.auc_cmax_nca_max_blq_burden` | 0.20 | 0.20 | 0.20 | BLQ% above which observed-NCA reference is ineligible pooled (Thway 2018) |
+| | `gate3.auc_cmax_nca_min_eligible` | 8 | 8 | 8 | Min per-subject NCA-eligible count to emit `auc_cmax_be_score` |
+| | `gate3.auc_cmax_nca_min_eligible_fraction` | 0.5 | 0.5 | 0.5 | Min eligible / total fraction — AND-combined with absolute floor |
+| | `gate3.n_posterior_predictive_sims` | 500 | 500 | 500 | Backend posterior-predictive draws per candidate (Bergstrand 2011 VPC convention) |
+| | `gate3.vpc_n_bins` | 10 | 10 | 10 | Post-hoc time bins for VPC coverage aggregation (no pre-declared grid) |
 | | `gate3.npe_cap` | 5.0 | 5.0 | 5.0 | Weighted-sum only: NPE value above this clamps to 1.0 |
 | | `gate3.bic_norm_scale` | 1000.0 | 1000.0 | 1000.0 | Weighted-sum only: divisor for BIC normalization |
 | | `vpc_concordance_target` | 0.90 | 0.90 | 0.90 | Target coverage for concordance score |
@@ -789,6 +795,7 @@ Please cite the individual papers listed under *Pharmacometric References* when 
 | `--parallel-models N` / `-j N` | `1` | Max concurrent model evaluations (R subprocesses). Higher values speed up search but use more memory. |
 | `--timeout` | `600` | Backend timeout in seconds |
 | `--agentic/--no-agentic` | **off** | Enable the agentic LLM backend (discovery/optimization lanes). OFF by default because the loop ships aggregated diagnostics to a third-party LLM provider; pass `--agentic` to opt in. |
+| `--resume-agentic` | **off** | Skip Stage 5 (classical SAEM search) and load `classical_checkpoint.json` from the existing bundle directory. Use after an agentic API failure to restart the LLM loop without re-running a multi-hour SAEM search. |
 | `--provider` | `anthropic` | LLM provider: `anthropic`, `openai`, `gemini`, `ollama`, `openrouter` |
 | `--policy` | auto | Gate policy JSON file (falls back to `policies/<lane>.json`) |
 

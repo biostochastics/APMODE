@@ -63,6 +63,27 @@ _MODULE_REGISTRY: dict[str, type[BaseModel]] = {
     "Combined": Combined,
 }
 
+# Fallback initial-estimate kwargs for the short-form string syntax
+# ("new_module": "MichaelisMenten").  Values are in typical population-PK
+# units; the R harness will override with NCA-derived estimates if available.
+_MODULE_DEFAULTS: dict[str, dict[str, float | int | str]] = {
+    "FirstOrder": {"ka": 1.0},
+    "ZeroOrder": {"dur": 1.0},
+    "LaggedFirstOrder": {"ka": 1.0, "tlag": 0.5},
+    "Transit": {"n": 3, "ktr": 2.0, "ka": 1.0},
+    "MixedFirstZero": {"ka": 1.0, "dur": 1.0, "frac": 0.5},
+    "OneCmt": {"V": 90.0},
+    "TwoCmt": {"V1": 50.0, "V2": 20.0, "Q": 2.0},
+    "ThreeCmt": {"V1": 50.0, "V2": 20.0, "V3": 10.0, "Q2": 5.0, "Q3": 2.0},
+    "Linear": {"CL": 5.0},
+    "MichaelisMenten": {"Vmax": 50.0, "Km": 10.0},
+    "ParallelLinearMM": {"CL": 3.0, "Vmax": 30.0, "Km": 10.0},
+    "TimeVarying": {"CL": 5.0, "kdecay": 0.1, "decay_fn": "exponential"},
+    "Proportional": {"sigma_prop": 0.2},
+    "Additive": {"sigma_add": 1.0},
+    "Combined": {"sigma_prop": 0.15, "sigma_add": 0.5},
+}
+
 
 class ParseResult(BaseModel):
     """Result of parsing an LLM response."""
@@ -176,12 +197,19 @@ def _parse_single_transform(raw: dict[str, Any], t_type: str | None) -> Formular
     """Parse a single transform dict into a typed FormularTransform."""
     if t_type == "swap_module":
         new_module_raw = raw.get("new_module", {})
+        # Accept both short form ("new_module": "Linear") and long form
+        # ("new_module": {"type": "Linear", ...}) for LLM robustness.
+        if isinstance(new_module_raw, str):
+            new_module_raw = {"type": new_module_raw}
         module_type = new_module_raw.get("type")
         if module_type not in _MODULE_REGISTRY:
             msg = f"Unknown module type '{module_type}' in swap_module"
             raise ValueError(msg)
         module_cls = _MODULE_REGISTRY[module_type]
-        new_module = module_cls(**{k: v for k, v in new_module_raw.items() if k != "type"})
+        # Merge: LLM-provided fields override defaults; drop the "type" key.
+        kwargs = dict(_MODULE_DEFAULTS.get(module_type, {}))
+        kwargs.update({k: v for k, v in new_module_raw.items() if k != "type"})
+        new_module = module_cls(**kwargs)
         return SwapModule(position=raw["position"], new_module=new_module)
 
     if t_type == "add_covariate_link":

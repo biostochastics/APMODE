@@ -38,6 +38,12 @@ from typing import TYPE_CHECKING, Any, cast
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    import numpy.typing as npt
+
+    from apmode.backends.predictive_summary import PredictiveSummaryBundle
+    from apmode.bundle.models import NCASubjectDiagnostic
+    from apmode.governance.policy import Gate3Config
+
 # Optional imports — deferred so tests and import-time checks don't fail when
 # the bayesian extras are absent.
 _CMDSTAN_AVAILABLE = False
@@ -792,6 +798,99 @@ def _stan_version() -> str:
         return str(getattr(cs, "__version__", ""))
     except Exception:
         return ""
+
+
+# ---------------------------------------------------------------------------
+# Predictive diagnostics from posterior draws (PRD §4.3.1)
+# ---------------------------------------------------------------------------
+#
+# The Stan emitter's ``generated quantities`` block currently emits only
+# ``log_lik[n]`` for LOO-CV. Full VPC/NPE/AUC-Cmax support requires
+# emitting an observation-model-specific ``y_pred[n]`` alongside each
+# log_lik entry (e.g. ``lognormal_rng`` for proportional error,
+# ``normal_rng`` for additive) — deferred to the stan_emitter follow-up
+# commit tracked in CHANGELOG.
+#
+# Until that lands, the harness exposes the Python-side plumbing as a
+# testable helper so the integration path is verified end-to-end and
+# drops in as a one-liner once y_pred is present in the Stan output.
+
+
+def build_predictive_from_draws(
+    y_pred_draws: npt.ArrayLike,
+    obs_subject_idx: npt.ArrayLike,
+    obs_times: npt.ArrayLike,
+    observed_dv: npt.ArrayLike,
+    nca_diagnostics: list[NCASubjectDiagnostic] | None,
+    gate3_policy: Gate3Config,
+) -> PredictiveSummaryBundle:
+    """Reshape posterior predictive draws into :class:`PredictiveSummaryBundle`.
+
+    Takes the flat ``(n_sims, N)`` posterior predictive draw matrix (as
+    produced by a Stan ``generated quantities`` ``y_pred[n]`` block) plus
+    the per-observation ``(subject, time)`` index vectors, groups by
+    subject, and calls
+    :func:`apmode.backends.predictive_summary.build_predictive_diagnostics`.
+
+    Parameters mirror the contract on the Python side of the Stan
+    adapter:
+
+    * ``y_pred_draws`` — shape ``(n_sims, N)`` where N is the total
+      observation count (``sum_subjects(n_obs_i)``). ``n_sims`` is
+      ``n_chains * n_post_warmup_draws`` thinned if configured.
+    * ``obs_subject_idx`` — length-N integer vector of Stan-style
+      1-indexed subject indices.
+    * ``obs_times`` — length-N float vector of observation times.
+    * ``observed_dv`` — length-N float vector of observed DV.
+    * ``nca_diagnostics`` — optional per-subject NCA QC records, indexed
+      so ``nca_diagnostics[s - 1]`` matches Stan subject index ``s``.
+    * ``gate3_policy`` — :class:`apmode.governance.policy.Gate3Config`
+      (floors, bin counts).
+
+    Returns a :class:`PredictiveSummaryBundle`. Shape mismatches raise
+    ``ValueError`` — same contract as ``build_predictive_diagnostics``.
+    """
+    import numpy as np
+
+    from apmode.backends.predictive_summary import (
+        SubjectSimulation,
+        build_predictive_diagnostics,
+    )
+
+    y_pred_arr = np.asarray(y_pred_draws, dtype=float)
+    idx_arr = np.asarray(obs_subject_idx, dtype=int)
+    time_arr = np.asarray(obs_times, dtype=float)
+    dv_arr = np.asarray(observed_dv, dtype=float)
+
+    n_obs_total = idx_arr.shape[0]
+    if y_pred_arr.ndim != 2 or y_pred_arr.shape[1] != n_obs_total:
+        msg = (
+            f"y_pred_draws shape {y_pred_arr.shape} inconsistent with "
+            f"observation count {n_obs_total} (expected (n_sims, N))"
+        )
+        raise ValueError(msg)
+    if time_arr.shape[0] != n_obs_total or dv_arr.shape[0] != n_obs_total:
+        msg = (
+            f"obs_times ({time_arr.shape[0]}) / observed_dv ({dv_arr.shape[0]}) "
+            f"must match observation count {n_obs_total}"
+        )
+        raise ValueError(msg)
+
+    diag_by_idx = {i + 1: d for i, d in enumerate(nca_diagnostics or [])}
+    unique_subjects = np.unique(idx_arr)
+    subject_sims: list[Any] = []
+    for s in unique_subjects:
+        mask = idx_arr == s
+        subject_sims.append(
+            SubjectSimulation(
+                subject_id=str(int(s)),
+                t_observed=time_arr[mask],
+                observed_dv=dv_arr[mask],
+                sims_at_observed=y_pred_arr[:, mask],
+                nca_diagnostic=diag_by_idx.get(int(s)),
+            )
+        )
+    return build_predictive_diagnostics(subject_sims, policy=gate3_policy)
 
 
 if __name__ == "__main__":

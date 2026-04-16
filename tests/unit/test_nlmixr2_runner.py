@@ -286,3 +286,226 @@ class TestNlmixr2RunnerRequestCreation:
         assert req_data["candidate_id"] == "test_model_id_0000000"
         assert "compiled_r_code" in req_data
         assert "ini({" in req_data["compiled_r_code"]
+        # New rc8 field: n_posterior_predictive_sims defaults to 0 when no
+        # Gate3Config policy is threaded through (CLI one-shot runs).
+        assert req_data["n_posterior_predictive_sims"] == 0
+
+
+class TestParseResponseWithPredictedSimulations:
+    """rc8 wiring: Nlmixr2Runner populates VPC/NPE/AUC-Cmax from R harness sims."""
+
+    def _base_result(self) -> dict[str, object]:
+        return {
+            "model_id": "test_model_id_0000000",
+            "backend": "nlmixr2",
+            "converged": True,
+            "ofv": 100.0,
+            "aic": 110.0,
+            "bic": 120.0,
+            "parameter_estimates": {
+                "CL": {
+                    "name": "CL",
+                    "estimate": 5.0,
+                    "se": 0.3,
+                    "rse": 6.0,
+                    "ci95_lower": 4.5,
+                    "ci95_upper": 5.5,
+                    "fixed": False,
+                    "category": "structural",
+                },
+            },
+            "eta_shrinkage": {"CL": 0.05},
+            "convergence_metadata": {
+                "method": "saem",
+                "converged": True,
+                "iterations": 200,
+                "gradient_norm": 0.001,
+                "minimization_status": "successful",
+                "wall_time_seconds": 10.0,
+            },
+            "diagnostics": {
+                "gof": {
+                    "cwres_mean": 0.01,
+                    "cwres_sd": 1.0,
+                    "outlier_fraction": 0.02,
+                    "obs_vs_pred_r2": 0.95,
+                },
+                "vpc": None,
+                "identifiability": {
+                    "condition_number": 10.0,
+                    "profile_likelihood_ci": {"CL": True},
+                    "ill_conditioned": False,
+                },
+                "blq": {"method": "none", "lloq": None, "n_blq": 0, "blq_fraction": 0.0},
+                "diagnostic_plots": {},
+            },
+            "wall_time_seconds": 10.0,
+            "backend_versions": {"nlmixr2": "3.0.0", "R": "4.4.1"},
+            "initial_estimate_source": "nca",
+        }
+
+    def _predicted_sims_cohort(
+        self, *, n_subjects: int, n_obs: int, n_sims: int
+    ) -> list[dict[str, object]]:
+        import numpy as np
+
+        rng = np.random.default_rng(42)
+        out: list[dict[str, object]] = []
+        for i in range(n_subjects):
+            times = list(np.linspace(0.5, 10.0, n_obs))
+            observed = [5.0] * n_obs
+            sims = rng.normal(loc=5.0, scale=0.1, size=(n_sims, n_obs)).tolist()
+            out.append(
+                {
+                    "subject_id": f"s{i}",
+                    "t_observed": times,
+                    "observed_dv": observed,
+                    "sims_at_observed": sims,
+                }
+            )
+        return out
+
+    def _wrap_response(self, result: dict[str, object]) -> dict[str, object]:
+        return {
+            "schema_version": "1.0",
+            "status": "success",
+            "error_type": None,
+            "result": result,
+            "r_session_info": {
+                "r_version": "4.4.1",
+                "nlmixr2_version": "3.0.0",
+                "platform": "test",
+                "packages": {},
+            },
+            "random_seed_state": [1, 2, 3],
+        }
+
+    def test_without_policy_ignores_predicted_simulations(self, tmp_path: Path) -> None:
+        """No Gate3Config → VPC/NPE stay None even if harness emitted sims."""
+        runner = Nlmixr2Runner(work_dir=tmp_path)
+        response_path = tmp_path / "response.json"
+
+        result = self._base_result()
+        result["predicted_simulations"] = self._predicted_sims_cohort(
+            n_subjects=10, n_obs=5, n_sims=20
+        )
+        response_path.write_text(json.dumps(self._wrap_response(result)))
+
+        backend_result = runner._parse_response(response_path, 0, "test_model_id_0000000")
+        assert backend_result.diagnostics.vpc is None
+        assert backend_result.diagnostics.npe_score is None
+        assert backend_result.diagnostics.auc_cmax_be_score is None
+
+    def test_with_policy_populates_all_three_diagnostics(self, tmp_path: Path) -> None:
+        """Gate3Config + sims → VPC, npe_score, auc_cmax_be_score all set atomically."""
+        from apmode.bundle.models import NCASubjectDiagnostic
+        from apmode.governance.policy import Gate3Config
+
+        runner = Nlmixr2Runner(work_dir=tmp_path)
+        response_path = tmp_path / "response.json"
+
+        # 12 subjects all admissible → passes the 8-floor AND 0.5-fraction.
+        result = self._base_result()
+        result["predicted_simulations"] = self._predicted_sims_cohort(
+            n_subjects=12, n_obs=6, n_sims=30
+        )
+        response_path.write_text(json.dumps(self._wrap_response(result)))
+
+        policy = Gate3Config(
+            composite_method="weighted_sum",
+            vpc_weight=0.5,
+            npe_weight=0.5,
+            bic_weight=0.0,
+            auc_cmax_weight=0.0,
+            n_posterior_predictive_sims=100,
+            vpc_n_bins=4,
+        )
+        diagnostics = [NCASubjectDiagnostic(subject_id=f"s{i}", excluded=False) for i in range(12)]
+
+        backend_result = runner._parse_response(
+            response_path,
+            0,
+            "test_model_id_0000000",
+            gate3_policy=policy,
+            nca_diagnostics=diagnostics,
+        )
+        assert backend_result.diagnostics.vpc is not None
+        assert backend_result.diagnostics.npe_score is not None
+        # All subjects eligible + observed ≈ sim mean → score should pass BE.
+        assert backend_result.diagnostics.auc_cmax_be_score is not None
+        assert backend_result.diagnostics.auc_cmax_source == "observed_trapezoid"
+
+    def test_null_predicted_simulations_keeps_baseline_diagnostics(self, tmp_path: Path) -> None:
+        """R harness emitted predicted_simulations=null → non-fatal, no VPC/NPE."""
+        from apmode.governance.policy import Gate3Config
+
+        runner = Nlmixr2Runner(work_dir=tmp_path)
+        response_path = tmp_path / "response.json"
+
+        result = self._base_result()
+        result["predicted_simulations"] = None  # R sim failed
+        response_path.write_text(json.dumps(self._wrap_response(result)))
+
+        policy = Gate3Config(
+            composite_method="weighted_sum",
+            vpc_weight=0.5,
+            npe_weight=0.5,
+            bic_weight=0.0,
+            auc_cmax_weight=0.0,
+            n_posterior_predictive_sims=100,
+        )
+        backend_result = runner._parse_response(
+            response_path, 0, "test_model_id_0000000", gate3_policy=policy
+        )
+        # Baseline diagnostics still populated; VPC/NPE remain unset.
+        assert backend_result.diagnostics.vpc is None
+        assert backend_result.diagnostics.npe_score is None
+
+    def test_below_floor_drops_auc_cmax_keeps_vpc_npe(self, tmp_path: Path) -> None:
+        """Few eligible subjects → VPC + NPE still emit; auc_cmax_be_score None."""
+        from apmode.bundle.models import NCASubjectDiagnostic
+        from apmode.governance.policy import Gate3Config
+
+        runner = Nlmixr2Runner(work_dir=tmp_path)
+        response_path = tmp_path / "response.json"
+
+        result = self._base_result()
+        result["predicted_simulations"] = self._predicted_sims_cohort(
+            n_subjects=12, n_obs=5, n_sims=20
+        )
+        response_path.write_text(json.dumps(self._wrap_response(result)))
+
+        # 12 subjects in cohort but only 2 eligible (fraction 2/12 ≈ 0.17)
+        # → below 0.5 fraction floor AND 8 absolute floor.
+        diagnostics: list[NCASubjectDiagnostic] = []
+        for i in range(12):
+            diagnostics.append(
+                NCASubjectDiagnostic(
+                    subject_id=f"s{i}",
+                    excluded=(i >= 2),
+                    excluded_reason="auc_extrap>20%" if i >= 2 else None,
+                )
+            )
+
+        policy = Gate3Config(
+            composite_method="weighted_sum",
+            vpc_weight=0.5,
+            npe_weight=0.5,
+            bic_weight=0.0,
+            auc_cmax_weight=0.0,
+            n_posterior_predictive_sims=100,
+            vpc_n_bins=4,
+            auc_cmax_nca_min_eligible=8,
+            auc_cmax_nca_min_eligible_fraction=0.5,
+        )
+        backend_result = runner._parse_response(
+            response_path,
+            0,
+            "test_model_id_0000000",
+            gate3_policy=policy,
+            nca_diagnostics=diagnostics,
+        )
+        assert backend_result.diagnostics.vpc is not None
+        assert backend_result.diagnostics.npe_score is not None
+        assert backend_result.diagnostics.auc_cmax_be_score is None
+        assert backend_result.diagnostics.auc_cmax_source is None
