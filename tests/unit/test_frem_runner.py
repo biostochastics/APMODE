@@ -62,8 +62,10 @@ class _StubRunner:
         data_path: Path | None = None,
         split_manifest: dict[str, object] | None = None,
         compiled_code_override: str | None = None,
+        gate3_policy: object | None = None,
+        nca_diagnostics: object | None = None,
     ) -> BackendResult:
-        del data_manifest, split_manifest, timeout_seconds
+        del data_manifest, split_manifest, timeout_seconds, gate3_policy, nca_diagnostics
         self.last_spec = spec
         self.last_data_path = data_path
         self.last_code = compiled_code_override

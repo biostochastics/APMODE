@@ -63,9 +63,11 @@ if TYPE_CHECKING:
         EvidenceManifest,
         ImputationStabilityManifest,
         MissingDataDirective,
+        NCASubjectDiagnostic,
         Ranking,
     )
     from apmode.dsl.ast_models import DSLSpec
+    from apmode.governance.policy import Gate3Config
     from apmode.routing import DispatchDecision
     from apmode.search.engine import SearchOutcome, SearchResult
     from apmode.search.stability import ImputationProvider
@@ -305,6 +307,19 @@ class Orchestrator:
             sum(1 for d in estimator.diagnostics if d.excluded),
         )
 
+        # rc9 predictive-diagnostics threading. ``gate3_policy`` drives the
+        # R harness posterior-predictive pass
+        # (``n_posterior_predictive_sims``); ``nca_diagnostics`` gates
+        # per-subject NCA eligibility for AUC/Cmax BE scoring. Both flow to
+        # every backend dispatch site (search engine, seed runs, agentic
+        # loop, FREM, MI per-imputation fits, LORO-CV folds) so
+        # :func:`apmode.backends.predictive_summary.build_predictive_diagnostics`
+        # populates ``DiagnosticBundle.{vpc,npe_score,auc_cmax_be_score}``
+        # atomically. ``policy is None`` (no GatePolicy loaded) → Gate 3
+        # falls back to the CWRES NPE proxy.
+        gate3_policy = policy.gate3 if policy is not None else None
+        nca_diagnostics = list(estimator.diagnostics) if estimator.diagnostics else None
+
         # --- Stage 3: Data Splitting ---
         split = split_subjects(df, seed=self._config.seed)
         emitter.write_split_manifest(split)
@@ -341,6 +356,8 @@ class Orchestrator:
                 split_manifest=split_manifest_dict,
                 runners=runners,
                 max_concurrency=self._config.max_concurrency,
+                gate3_policy=gate3_policy,
+                nca_diagnostics=nca_diagnostics,
             )
             search_outcome = await search_engine.run(
                 evidence_manifest=evidence,
@@ -368,6 +385,8 @@ class Orchestrator:
                 data_path=data_path,
                 nca_estimates=nca_estimates,
                 split_manifest_dict=split_manifest_dict,
+                gate3_policy=gate3_policy,
+                nca_diagnostics=nca_diagnostics,
             )
             # Merge agentic results into search outcome
             for ar in agentic_results:
@@ -397,6 +416,8 @@ class Orchestrator:
                         covariate_names=covariate_names,
                         run_dir=run_dir,
                         nca_estimates=nca_estimates,
+                        gate3_policy=gate3_policy,
+                        nca_diagnostics=nca_diagnostics,
                     )
                     if frem_result is not None:
                         search_outcome.results.append(frem_result)
@@ -421,6 +442,8 @@ class Orchestrator:
                         covariate_names=covariate_names,
                         run_dir=run_dir,
                         nca_estimates=nca_estimates,
+                        gate3_policy=gate3_policy,
+                        nca_diagnostics=nca_diagnostics,
                     )
                     if stability_manifest is not None:
                         emitter.write_imputation_stability(stability_manifest)
@@ -538,6 +561,8 @@ class Orchestrator:
                                 timeout_seconds=self._config.timeout_seconds,
                                 data_path=data_path,
                                 split_manifest=split_manifest_dict,
+                                gate3_policy=gate3_policy,
+                                nca_diagnostics=nca_diagnostics,
                             )
                             return cid, seed_offset, result
                         except BackendError as e:
@@ -623,6 +648,8 @@ class Orchestrator:
                     nca_estimates=nca_estimates,
                     emitter=emitter,
                     policy=policy,
+                    gate3_policy=gate3_policy,
+                    nca_diagnostics=nca_diagnostics,
                 )
 
             # Stage 6c: Gate 2 + Gate 2.5 evaluation (with LORO metrics)
@@ -782,6 +809,9 @@ class Orchestrator:
         data_path: Path,
         nca_estimates: dict[str, float],
         split_manifest_dict: dict[str, object],
+        *,
+        gate3_policy: Gate3Config | None = None,
+        nca_diagnostics: list[NCASubjectDiagnostic] | None = None,
     ) -> list[SearchResult]:
         """Run the agentic LLM refinement stage (PRD §4.2.6).
 
@@ -850,6 +880,8 @@ class Orchestrator:
                         timeout_seconds=self._config.timeout_seconds,
                         data_path=data_path,
                         split_manifest=split_manifest_dict,
+                        gate3_policy=gate3_policy,
+                        nca_diagnostics=nca_diagnostics,
                     )
                 results.append(
                     SR(
@@ -910,6 +942,8 @@ class Orchestrator:
                     timeout_seconds=self._config.timeout_seconds,
                     data_path=data_path,
                     split_manifest=split_manifest_dict,
+                    gate3_policy=gate3_policy,
+                    nca_diagnostics=nca_diagnostics,
                 )
             results.append(
                 SR(
@@ -946,6 +980,8 @@ class Orchestrator:
         covariate_names: list[str],
         run_dir: Path,
         nca_estimates: dict[str, float],
+        gate3_policy: Gate3Config | None = None,
+        nca_diagnostics: list[NCASubjectDiagnostic] | None = None,
     ) -> SearchResult | None:
         """Run a single FREM fit on the best classical candidate.
 
@@ -1018,6 +1054,8 @@ class Orchestrator:
             timeout_seconds=self._config.timeout_seconds,
             initial_estimates=init,
             binary_encode_overrides=self._config.binary_encode_overrides,
+            gate3_policy=gate3_policy,
+            nca_diagnostics=nca_diagnostics,
         )
         return _SR(
             candidate_id=frem_spec.model_id,
@@ -1039,6 +1077,8 @@ class Orchestrator:
         covariate_names: list[str],
         run_dir: Path,
         nca_estimates: dict[str, float],
+        gate3_policy: Gate3Config | None = None,
+        nca_diagnostics: list[NCASubjectDiagnostic] | None = None,
     ) -> ImputationStabilityManifest | None:
         """Drive the MI loop: produce m imputed CSVs, refit each, aggregate.
 
@@ -1120,6 +1160,8 @@ class Orchestrator:
                         seed=seed,
                         timeout_seconds=self._config.timeout_seconds,
                         data_path=imputed_csv,
+                        gate3_policy=gate3_policy,
+                        nca_diagnostics=nca_diagnostics,
                     )
                     fits.append(
                         PerImputationFit(
@@ -1164,6 +1206,9 @@ class Orchestrator:
         nca_estimates: dict[str, float],
         emitter: BundleEmitter,
         policy: GatePolicy,
+        *,
+        gate3_policy: Gate3Config | None = None,
+        nca_diagnostics: list[NCASubjectDiagnostic] | None = None,
     ) -> dict[str, LOROMetrics]:
         """Run LORO-CV for optimization lane Gate 1 survivors.
 
@@ -1235,6 +1280,8 @@ class Orchestrator:
                         initial_estimates=warm_estimates,
                         seed=self._config.seed,
                         timeout_seconds=self._config.timeout_seconds,
+                        gate3_policy=gate3_policy,
+                        nca_diagnostics=nca_diagnostics,
                     )
                 except BackendError:
                     logger.warning(

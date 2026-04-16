@@ -30,9 +30,6 @@ dependencies = [
     "sparkid>=0.2",
     "typer>=0.12",
     "structlog>=24.1",
-    "tenacity>=8.3",
-    "opentelemetry-api>=1.25",
-    "opentelemetry-sdk>=1.25",
     "numpy>=1.25",
     "pandas>=2.0",
     "rich>=13.0",
@@ -85,7 +82,7 @@ apmode = "apmode.cli:app"
 
 [tool.hatch.version]
 source = "vcs"
-fallback-version = "0.2.0.dev0"
+fallback-version = "0.4.0.dev0"
 
 [tool.hatch.build.hooks.vcs]
 version-file = "src/apmode/_version.py"

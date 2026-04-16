@@ -42,8 +42,9 @@ if TYPE_CHECKING:
     import pandas as pd
 
     from apmode.backends.nlmixr2_runner import Nlmixr2Runner
-    from apmode.bundle.models import BackendResult, DataManifest
+    from apmode.bundle.models import BackendResult, DataManifest, NCASubjectDiagnostic
     from apmode.dsl.ast_models import DSLSpec
+    from apmode.governance.policy import Gate3Config
 
 
 async def run_frem_fit(
@@ -60,6 +61,8 @@ async def run_frem_fit(
     transforms: dict[str, str] | None = None,
     binary_encode_overrides: dict[str, dict[object, int]] | None = None,
     initial_estimates: dict[str, float] | None = None,
+    gate3_policy: Gate3Config | None = None,
+    nca_diagnostics: list[NCASubjectDiagnostic] | None = None,
 ) -> BackendResult:
     """Execute a single FREM fit end-to-end.
 
@@ -117,4 +120,6 @@ async def run_frem_fit(
         timeout_seconds=timeout_seconds,
         data_path=aug_path.resolve(),
         compiled_code_override=frem_code,
+        gate3_policy=gate3_policy,
+        nca_diagnostics=nca_diagnostics,
     )

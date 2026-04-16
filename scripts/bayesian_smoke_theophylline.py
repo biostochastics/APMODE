@@ -21,6 +21,7 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import math
 import sys
@@ -124,10 +125,8 @@ async def main() -> int:
         latest = sorted(work.glob("*/response.json"))
         if latest:
             print(f"  latest response.json: {latest[-1]}")
-            try:
+            with contextlib.suppress(Exception):
                 print(json.dumps(json.loads(latest[-1].read_text()), indent=2)[:2000])
-            except Exception:
-                pass
         return 1
 
     print("\n=== Results ===")
@@ -180,7 +179,8 @@ async def main() -> int:
             ok = lo <= est <= hi
             marker = "OK" if ok else "SUSPECT"
             print(
-                f"  [{marker}] {name} posterior mean {est:.2f} (reference ~{ref}, plausible {lo}-{hi})"
+                f"  [{marker}] {name} posterior mean {est:.2f} "
+                f"(reference ~{ref}, plausible {lo}-{hi})"
             )
 
     return 0

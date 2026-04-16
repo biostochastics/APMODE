@@ -204,9 +204,8 @@ class TestLanePoliciesGate3Contract:
         assert policy.policy_version == "0.4.0"
 
     def test_submission_discovery_policy_version_bumped(self) -> None:
-        # Submission and Discovery stay at 0.3.1 (foundation bump only).
-        # Optimization is at 0.4.0 because its gate3 weights changed (see
-        # test_optimization_policy_version_bumped_to_0_4_0). CI hooks
-        # that gate on version need the per-lane distinction.
+        # All three lanes now on 0.4.0 (README-sync bump, 2026-04-16 +0.1).
+        # Optimization was 0.4.0 because its gate3 weights changed; submission
+        # and discovery were moved from 0.3.1 → 0.4.0 for uniform release tag.
         for lane in ("submission", "discovery"):
-            assert self._load(lane).policy_version == "0.3.1"
+            assert self._load(lane).policy_version == "0.4.0"

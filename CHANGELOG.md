@@ -7,7 +7,108 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Consensus review fixes (2026-04-16, rc8 review pass)
+### rc9 Scope 1 — orchestrator threading of posterior-predictive kwargs
+
+The rc8 pipeline built the posterior-predictive diagnostics machinery
+(R-harness `predicted_simulations` payload → `build_predictive_diagnostics`
+→ `DiagnosticBundle.{vpc,npe_score,auc_cmax_be_score,auc_cmax_source}`)
+and the runner-side wiring in `Nlmixr2Runner`, but the orchestrator
+never actually forwarded `gate3_policy` or `nca_diagnostics` to the
+runner, so every rc8 run silently fell back to the CWRES NPE proxy.
+This pass threads both kwargs end-to-end:
+
+- **`BackendRunner` protocol** extended with the two kwargs
+  (`backends/protocol.py`). Every concrete runner now accepts them for
+  Protocol-conformance and forwards (or explicitly defers) accordingly.
+- **`Nlmixr2Runner`** already consumed both kwargs in rc8 — no change.
+- **`AgenticRunner`** forwards verbatim into `self._inner.run(...)` on
+  every iteration so the LLM loop sees the same cross-paradigm signal
+  Gate 3 will evaluate (`backends/agentic_runner.py`).
+- **`run_frem_fit`** forwards into the wrapped `Nlmixr2Runner`
+  (`backends/frem_runner.py`).
+- **`NodeBackendRunner` / `BayesianRunner`** accept and explicitly defer
+  — NODE posterior-predictive is the Phase 3 random-effects stub
+  (Scope 4); the Bayesian path lands in Scope 2 (Stan `y_pred`
+  generated-quantities emission) (`backends/node_runner.py`,
+  `backends/bayesian_runner.py`).
+- **`SearchEngine`** accepts the kwargs in its constructor, stores them,
+  and forwards at `runner.run` in `_evaluate_candidate`
+  (`search/engine.py`).
+- **`evaluate_loro_cv`** forwards the kwargs per-fold so the per-fold
+  VPC populates from the posterior-predictive path instead of
+  degenerating to the empty-dict CWRES fallback (`evaluation/loro_cv.py`).
+- **Orchestrator** pulls `gate3_policy = policy.gate3` and
+  `nca_diagnostics = estimator.diagnostics` once after the
+  initial-estimates stage and threads them to every runner dispatch
+  site: `SearchEngine` ctor, the seed-stability loop (`_seed_run`),
+  `_run_agentic_stage` (both refine + independent modes),
+  `_run_frem_stage` → `run_frem_fit`, `_run_mi_stage::_fit_one_imputation`,
+  and `_run_loro_cv::_eval_one` → `evaluate_loro_cv`
+  (`orchestrator/__init__.py`).
+- **Threading test** pins the contract: the new
+  `TestDiscoveryLaneIntegration::test_orchestrator_threads_gate3_policy_to_runner`
+  wires a recording mock runner against the submission-lane policy and
+  asserts the last dispatch carried a `Gate3Config` — regressions where
+  the orchestrator silently drops the policy fail this test loudly
+  (`tests/integration/test_discovery_lane.py`).
+- **FREM stub-runner test** (`tests/unit/test_frem_runner.py`) updated
+  to accept the new kwargs so the plumbing test stays green.
+
+With this threading in place, an end-to-end run now activates the full
+rc8 posterior-predictive pipeline when the R harness supplies
+`predicted_simulations`. When rxode2 simulation fails the existing
+structured warning in `Nlmixr2Runner._parse_response` surfaces and Gate
+3 falls back to CWRES — no change to that path.
+
+## [0.4.0] — 2026-04-16
+
+### Version bump + README single-source automation (+0.1 from 0.3.0-rc series)
+
+**Summary.** Rolls up rc7/rc8 + the post-rc8 consensus-review patches into
+0.4.0. Tightens the README ↔ codebase contract so numeric claims can't
+drift again.
+
+- **Gate policy version unified to `0.4.0`** across all three lanes.
+  Submission and Discovery were previously `0.3.1`; Optimization was
+  already `0.4.0` (gate3 weight-shape change). Uniform tag now lets CI
+  hooks enforce a single version for the whole policy set
+  (`policies/submission.json`, `policies/discovery.json`,
+  `tests/unit/test_gate_policy.py`).
+- **`fallback-version` in pyproject bumped** from `0.2.0.dev0` →
+  `0.4.0.dev0` so hatch-vcs editable installs without a recent tag
+  report a sensible near-release version.
+- **`scripts/sync_readme.py` (new)** — single-sources 9 numeric claims
+  from the codebase into `README.md` + `CLAUDE.md` via
+  `<!-- apmode:AUTO:<key> -->…<!-- apmode:/AUTO:<key> -->` markers:
+  `version`, `version_tag`, `tests`, `tests_nonlive`, `policy_gate`,
+  `policy_profiler`, `profiler_manifest`, `transforms`, `cli_cmds`,
+  `datasets`, `backends`. `--check` exits 1 on drift — wire into
+  pre-commit/CI.
+- **README comprehensively rewritten**:
+  - Architecture ASCII diagram now shows all four backends (nlmixr2 /
+    Bayesian-Stan / NODE / Agentic LLM), not two.
+  - Key Components table adds rows for `bayesian_runner.py`,
+    `bayes/harness.py`, `frem_runner.py`, `predictive_summary.py`,
+    `report/`, `paths.py`.
+  - Agentic Transforms section corrected to 7 (was 6 — missed
+    `set_prior`).
+  - Bayesian Gate 1 thresholds table gains `ebfmi_min` (0.30) and
+    `pareto_k_max` (0.70) rows to match what the prose already claimed.
+  - CLI Reference extended from 7 to 14 commands with `report`,
+    `doctor`, `ls`, `policies`, `trace`, `lineage`, `graph`.
+  - Adds env-var documentation (`APMODE_POLICIES_DIR`, provider keys,
+    `OLLAMA_HOST`) and a "worked end-to-end walkthrough" seven-step
+    script.
+  - Adds the Bayesian backend, FREM emitter, and FREM runner to the
+    Phasing table (formerly only in prose).
+  - Fixes profiler policy version (README had said
+    `manifest_schema_version = 3`; the JSON was always `2`).
+  - Adds Known Limitations entry for
+    `NodeBackendRunner.sample_posterior_predictive` returning `None`
+    stub (post-rc8 review item) and the Optimization-lane Gate 3
+    uniform-drop caveat.
+
+### Consensus review fixes (folded in from the post-rc8 Unreleased block)
 
 Post-rc8 multi-model review identified six ship-now items and a
 deferred-research list. All six ship items landed in this pass;

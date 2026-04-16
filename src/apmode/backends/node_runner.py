@@ -26,8 +26,9 @@ from apmode.bundle.models import ParameterEstimate
 from apmode.errors import InvalidSpecError
 
 if TYPE_CHECKING:
-    from apmode.bundle.models import BackendResult, DataManifest
+    from apmode.bundle.models import BackendResult, DataManifest, NCASubjectDiagnostic
     from apmode.dsl.ast_models import DSLSpec
+    from apmode.governance.policy import Gate3Config
 
 _JAX_PLATFORM_LOCKED: str | None = None
 
@@ -144,6 +145,8 @@ class NodeBackendRunner:
         *,
         data_path: Path | None = None,
         split_manifest: dict[str, object] | None = None,
+        gate3_policy: Gate3Config | None = None,
+        nca_diagnostics: list[NCASubjectDiagnostic] | None = None,
     ) -> BackendResult:
         """Run NODE estimation.
 
@@ -155,6 +158,12 @@ class NodeBackendRunner:
             timeout_seconds: Not enforced for in-process JAX (JAX is non-interruptible).
             data_path: Path to CSV data file.
             split_manifest: Split assignments (unused in Phase 2 NODE).
+            gate3_policy: Accepted for BackendRunner-protocol conformance but
+                currently ignored — NODE posterior-predictive sampling is a
+                Phase 3 stub (see ``sample_posterior_predictive``). Gate 3
+                falls back to the CWRES NPE proxy for NODE candidates.
+            nca_diagnostics: Accepted for protocol conformance. Unused until
+                ``sample_posterior_predictive`` lands.
 
         Returns:
             BackendResult with backend="jax_node".
@@ -162,6 +171,7 @@ class NodeBackendRunner:
         Raises:
             InvalidSpecError: If spec has no NODE modules.
         """
+        _ = gate3_policy, nca_diagnostics  # reserved for Phase 3 posterior-predictive path
         from apmode.bundle.models import (
             BackendResult,
             BLQHandling,

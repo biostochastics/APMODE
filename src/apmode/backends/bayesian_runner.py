@@ -27,8 +27,9 @@ from apmode.errors import BackendTimeoutError, ConvergenceError, CrashError
 from apmode.ids import generate_run_id
 
 if TYPE_CHECKING:
-    from apmode.bundle.models import BackendResult, DataManifest
+    from apmode.bundle.models import BackendResult, DataManifest, NCASubjectDiagnostic
     from apmode.dsl.ast_models import DSLSpec
+    from apmode.governance.policy import Gate3Config
 
 
 _DEFAULT_HARNESS = Path(__file__).parent.parent / "bayes" / "harness.py"
@@ -90,12 +91,23 @@ class BayesianRunner:
         *,
         data_path: Path | None = None,
         split_manifest: dict[str, object] | None = None,
+        gate3_policy: Gate3Config | None = None,
+        nca_diagnostics: list[NCASubjectDiagnostic] | None = None,
     ) -> BackendResult:
         """Run Stan sampling via Python subprocess.
 
         Raises ValueError if spec contains NODE modules (not supported by the
         Stan emitter) or if data_path is missing.
+
+        ``gate3_policy`` and ``nca_diagnostics`` are accepted for
+        ``BackendRunner``-protocol conformance. Scope 2 (Stan
+        ``generated quantities`` y_pred emission) wires them into
+        :func:`apmode.bayes.harness.build_predictive_from_draws` so the
+        BayesianRunner populates VPC/NPE/AUC-Cmax atomically via
+        :func:`apmode.backends.predictive_summary.build_predictive_diagnostics`.
+        Until that lands the kwargs are recorded and ignored.
         """
+        _ = gate3_policy, nca_diagnostics  # Scope 2: Stan y_pred wiring
         if data_path is None:
             raise ValueError("data_path is required for BayesianRunner")
 

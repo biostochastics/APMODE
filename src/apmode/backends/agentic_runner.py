@@ -45,8 +45,13 @@ if TYPE_CHECKING:
 
     from apmode.backends.llm_client import LLMResponse
     from apmode.backends.protocol import BackendRunner
-    from apmode.bundle.models import ImputationStabilityManifest, MissingDataDirective
+    from apmode.bundle.models import (
+        ImputationStabilityManifest,
+        MissingDataDirective,
+        NCASubjectDiagnostic,
+    )
     from apmode.dsl.ast_models import DSLSpec
+    from apmode.governance.policy import Gate3Config
 
 logger = structlog.get_logger(__name__)
 
@@ -172,6 +177,8 @@ class AgenticRunner:
         *,
         data_path: Path | None = None,
         split_manifest: dict[str, object] | None = None,
+        gate3_policy: Gate3Config | None = None,
+        nca_diagnostics: list[NCASubjectDiagnostic] | None = None,
         stability_manifest: ImputationStabilityManifest | None = None,
         directive: MissingDataDirective | None = None,
     ) -> BackendResult:
@@ -186,6 +193,11 @@ class AgenticRunner:
         imputation cherry-picking (PRD §4.2.1). When either argument is
         absent the runner falls back to the classical per-fit diagnostic
         summary.
+
+        ``gate3_policy`` and ``nca_diagnostics`` are forwarded verbatim to
+        the inner runner on every iteration so posterior-predictive
+        diagnostics populate on each fit and the LLM sees the same
+        cross-paradigm signal Gate 3 will evaluate.
         """
         pooled_only = directive is not None and directive.llm_pooled_only
         stability_by_candidate: dict[str, Any] = (
@@ -249,6 +261,8 @@ class AgenticRunner:
                     timeout_seconds=timeout_seconds,
                     data_path=data_path,
                     split_manifest=split_manifest,
+                    gate3_policy=gate3_policy,
+                    nca_diagnostics=nca_diagnostics,
                 )
             except Exception as e:
                 logger.warning("Iteration %d: inner runner failed: %s", iteration, e)

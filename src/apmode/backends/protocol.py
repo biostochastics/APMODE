@@ -8,8 +8,9 @@ from pathlib import Path  # noqa: TC003 — used at runtime in Protocol signatur
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from apmode.bundle.models import BackendResult, DataManifest
+    from apmode.bundle.models import BackendResult, DataManifest, NCASubjectDiagnostic
     from apmode.dsl.ast_models import DSLSpec
+    from apmode.governance.policy import Gate3Config
 
 
 class Lane(StrEnum):
@@ -38,4 +39,6 @@ class BackendRunner(Protocol):
         *,
         data_path: Path | None = None,
         split_manifest: dict[str, object] | None = None,
+        gate3_policy: Gate3Config | None = None,
+        nca_diagnostics: list[NCASubjectDiagnostic] | None = None,
     ) -> BackendResult: ...

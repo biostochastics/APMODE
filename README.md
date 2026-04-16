@@ -6,9 +6,8 @@
 
   **Adaptive Pharmacokinetic Model Discovery Engine**
 
-  [![Phase](https://img.shields.io/badge/phase-3%20(P3.B%20%E2%80%94%20rc6)-blue)]()
-
-  [![Tests](https://img.shields.io/badge/tests-1593%20passing-success)]()
+  [![Version](https://img.shields.io/badge/version-<!-- apmode:AUTO:version_tag -->v0.4.0<!-- apmode:/AUTO:version_tag -->-blue)]()
+  [![Tests](https://img.shields.io/badge/tests-<!-- apmode:AUTO:tests -->1673<!-- apmode:/AUTO:tests -->%20collected-success)]()
   [![License](https://img.shields.io/badge/license-GPL--2.0--or--later-green)](LICENSE)
   [![Python](https://img.shields.io/badge/python-3.12%E2%80%933.14-yellow)]()
   [![mypy](https://img.shields.io/badge/mypy-strict%20%E2%9C%93-blue)]()
@@ -24,13 +23,15 @@ APMODE is a **governed meta-system** that composes five population PK modeling p
 
 **Five paradigms, one pipeline.** Classical NLME (nlmixr2), automated structural search, hybrid mechanistic-NODE (JAX/Diffrax), agentic LLM model construction (Phase 3), and **Bayesian PK (Stan/Torsten via cmdstanpy, Phase 2+)** — each dispatched, evaluated, and ranked through a unified governance funnel.
 
-**Evidence gates.** Every candidate passes Gate 1 (technical validity), Gate 2 (lane admissibility), Gate 2.5 (ICH M15 credibility), and Gate 3 (cross-paradigm ranking) before it can be recommended. The Bayesian backend adds MCMC-specific Gate 1 thresholds (R̂ ≤ 1.01, ESS ≥ 400, divergences = 0, E-BFMI ≥ 0.3, Pareto-k ≤ 0.7) and a Gate 2 prior-justification artifact aligned with FDA's Jan 2026 draft Bayesian methodology guidance (FDA-2025-D-3217). NODE models are never eligible for regulatory submission — this is a hard rule, not a tunable weight.
+**Evidence gates.** Every candidate passes Gate 1 (technical validity), Gate 2 (lane admissibility), Gate 2.5 (ICH M15 credibility), and Gate 3 (cross-paradigm ranking) before it can be recommended. The Bayesian backend adds MCMC-specific Gate 1 thresholds (R̂ ≤ 1.01, bulk/tail ESS ≥ 400, divergences = 0, E-BFMI ≥ 0.3, Pareto-k ≤ 0.7) and a Gate 2 prior-justification artifact aligned with FDA's Jan 2026 draft Bayesian methodology guidance (FDA-2025-D-3217). NODE models are never eligible for regulatory submission — this is a hard rule, not a tunable weight.
 
 **Reproducibility is the unit of output.** Every run emits a versioned JSON bundle — data manifest, search trajectory, gate decisions, candidate lineage DAG, compiled specs — so any result can be audited or replayed.
 
-**Formular — a typed PK DSL — is the control surface.** Models are specified in [Formular](docs/FORMULAR.md), a structured grammar (`Absorption x Distribution x Elimination x Variability x Observation × Priors`), compiled to a typed AST, validated against pharmacometric constraints, and lowered to backend-specific code (nlmixr2 R, Stan/Torsten, JAX/Diffrax). The agentic LLM backend (Phase 3) operates exclusively through Formular transforms — including the new `SetPrior` transform for Bayesian workflows — it cannot emit raw code.
+**Formular — a typed PK DSL — is the control surface.** Models are specified in [Formular](docs/FORMULAR.md), a structured grammar (`Absorption × Distribution × Elimination × Variability × Observation × Priors`), compiled to a typed AST, validated against pharmacometric constraints, and lowered to backend-specific code (nlmixr2 R, Stan/Torsten, JAX/Diffrax). The agentic LLM backend (Phase 3) operates exclusively through Formular transforms — including the `SetPrior` transform for Bayesian workflows — it cannot emit raw code.
 
-> **Status**: **v0.3.0-rc6** (2026-04-16) — Phase 3 release candidate 6. Checkpoint/resume: `--resume-agentic` skips SAEM and restarts the LLM loop from `classical_checkpoint.json`; three correctness bugs fixed (DAG lineage destruction, duplicate `failed_candidates.jsonl`, silent fallback on ambiguous bundle state). Transform parser now accepts LLM short-form module strings for `swap_module`; `_MODULE_DEFAULTS` fallback estimates corrected against nlmixr2 SOTA (OneCmt V=90 L, TwoCmt/ThreeCmt central-first ordering). 1593 tests passing (non-live); `mypy --strict` clean; `ruff` clean. Supports Python 3.12–3.14.
+> **Status**: **<!-- apmode:AUTO:version_tag -->v0.4.0<!-- apmode:/AUTO:version_tag -->** (2026-04-16) — Phase 3 release. <!-- apmode:AUTO:tests_nonlive -->1656<!-- apmode:/AUTO:tests_nonlive --> tests passing (`-m "not live"`); `mypy --strict` clean; `ruff` clean. Supports Python 3.12–3.14. Gate policy schema <!-- apmode:AUTO:policy_gate -->0.4.0<!-- apmode:/AUTO:policy_gate -->; profiler policy <!-- apmode:AUTO:policy_profiler -->2.1.0<!-- apmode:/AUTO:policy_profiler --> (manifest_schema_version = <!-- apmode:AUTO:profiler_manifest -->2<!-- apmode:/AUTO:profiler_manifest -->). Checkpoint/resume via `--resume-agentic`; predictive-diagnostics helper is canonical; per-subject NCA eligibility floors on `Gate3Config`.
+
+All numeric badges + status counts are rewritten from the source tree by `scripts/sync_readme.py` — see [Keeping the README honest](#keeping-the-readme-honest).
 
 ---
 
@@ -40,8 +41,9 @@ APMODE is a **governed meta-system** that composes five population PK modeling p
 
 - **Python**: 3.12, 3.13, or 3.14
 - **Package manager**: [uv](https://docs.astral.sh/uv/)
-- **Optional**: R 4.4+ with `nlmixr2`, `rxode2`, `jsonlite`, `lotri` for classical NLME (mock R subprocess tests work without R)
+- **Optional (classical)**: R 4.4+ with `nlmixr2`, `rxode2`, `jsonlite`, `lotri`, `mice`, `missRanger` — mock R subprocess tests work without R
 - **Optional (Bayesian)**: CmdStan 2.36+ via `cmdstanpy.install_cmdstan()` for the Stan/Torsten backend
+- **Optional (agentic)**: An LLM API key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`) or a local Ollama install
 
 ### Installation
 
@@ -49,112 +51,102 @@ APMODE is a **governed meta-system** that composes five population PK modeling p
 git clone https://github.com/biostochastics/apmode.git
 cd apmode
 
-# Install all dependencies
+# Core install
 uv sync --all-extras
 
-# Verify
+# Verify toolchain (R/nlmixr2, CmdStan, Python deps, LLM keys)
+uv run apmode doctor
+
+# Verify CLI entry point
 uv run apmode --help
 ```
 
-### Explore a Public Dataset (Interactive)
+### A worked end-to-end walkthrough
+
+This is the canonical "first hour with APMODE" — it exercises the full pipeline front-to-back and lands you at a readable regulatory report.
 
 ```bash
-# Browse 14 available PK datasets (real clinical + simulated ground-truth)
+# 1. Browse the registry (14 datasets; 5 real + 9 simulated ground-truth)
 uv run apmode datasets
 
-# Interactive exploration: fetch → profile → NCA → search space preview
-uv run apmode explore theo_sd
-uv run apmode explore mavoglurant --lane discovery
+# 2. Download a single-dose theophylline dataset
+uv run apmode datasets theo_sd -o ./data
 
-# Non-interactive (CI): runs full pipeline automatically
-uv run apmode explore Oral_1CPTMM -y -o ./runs
+# 3. Explore before you commit to a full run — profiler + NCA + search-space preview
+uv run apmode explore ./data/theo_sd.csv
+
+# 4. Full submission-lane pipeline (classical NLME, deterministic budget)
+uv run apmode run ./data/theo_sd.csv --lane submission --parallel-models 4 -o ./runs
+
+# 5. Inspect the best candidate, then trace the whole DAG
+BUNDLE=$(uv run apmode ls --sort bic --limit 1 --format path)
+uv run apmode inspect "$BUNDLE"
+uv run apmode log "$BUNDLE" --top 3
+uv run apmode graph "$BUNDLE" --format tree
+
+# 6. Open the regulatory report
+uv run apmode report "$BUNDLE"                      # HTML in browser
+uv run apmode report "$BUNDLE" --format md | less   # Markdown in pager
+
+# 7. Validate the bundle is complete + replayable
+uv run apmode validate "$BUNDLE"
 ```
 
-### Run the Full Pipeline
+### Lane variants
 
 ```bash
-# Run on your own NONMEM-format CSV (classical SAEM, default)
-uv run apmode run <dataset.csv> --lane submission
-
-# Download a dataset first, then run
-uv run apmode datasets theo_sd -o ./data
+# Discovery lane — classical + NODE + agentic LLM admissible
 uv run apmode run ./data/theo_sd.csv --lane discovery
 
-# Bayesian backend (requires bayesian extras + CmdStan)
+# Bayesian backend on Discovery (requires bayesian extras + CmdStan)
 uv sync --extra bayesian
 uv run python -c "import cmdstanpy; cmdstanpy.install_cmdstan()"
 uv run apmode run ./data/theo_sd.csv --lane discovery \
     --backend bayesian_stan --bayes-chains 4 --bayes-warmup 1000 --bayes-sampling 1000
+
+# Agentic LLM backend (discovery/optimization lanes only; OFF by default)
+uv run apmode run ./data/theo_sd.csv --lane discovery --agentic --provider anthropic
+
+# Optimization lane — adds LORO-CV Gate 2 (Phase 3)
+uv run apmode run ./data/theo_sd.csv --lane optimization
 ```
 
-### Environment Check
+### If a long agentic run crashes
+
+`--resume-agentic` skips the multi-hour classical SAEM stage and restarts the LLM loop from the existing `classical_checkpoint.json` in the bundle directory. Use this after an API 5xx, quota trip, or `KeyboardInterrupt`:
 
 ```bash
-# Verify R, nlmixr2, rxode2, CmdStan, Python packages, and LLM provider keys
-uv run apmode doctor
+uv run apmode run ./data/theo_sd.csv --lane discovery --agentic --resume-agentic \
+    -o ./runs/run_<timestamp>
 ```
 
-### List and Preview Runs
+### Comparing two runs
 
 ```bash
-# List all bundles in ./runs (most recent first)
-uv run apmode ls
-
-# Sort by BIC, show top 10
-uv run apmode ls --sort bic --limit 10
-
-# Preview a run without executing R backends
-uv run apmode run <dataset.csv> --lane submission --dry-run
-```
-
-### Inspect Results
-
-```bash
-# Bundle summary
-uv run apmode inspect <bundle_dir>
-
-# Top 3 candidates with parameter estimates, RSE%, η-shrinkage
-uv run apmode log <bundle_dir> --top 3
-
-# Gate failure analysis
-uv run apmode log <bundle_dir> --failed
-uv run apmode log <bundle_dir> --gate gate1
-
-# View the run report (HTML in browser, or Markdown in pager)
-uv run apmode report <bundle_dir>
-uv run apmode report <bundle_dir> --format md
-
-# Compare two runs side-by-side
-uv run apmode diff ./runs/run_a ./runs/run_b
-
-# Deep inspection (Phase 3)
-uv run apmode trace <bundle_dir>                         # agentic iteration summary
-uv run apmode trace <bundle_dir> --iteration 5           # detail for iteration 5
-uv run apmode trace <bundle_dir> --cost                  # token/cost rollup
-uv run apmode lineage <bundle_dir> <candidate_id>        # transform chain root→target
-uv run apmode graph <bundle_dir>                         # search DAG tree view
-uv run apmode graph <bundle_dir> --format dot -o dag.dot # Graphviz export
+uv run apmode diff ./runs/run_a ./runs/run_b           # side-by-side summary
+uv run apmode lineage "$BUNDLE" <candidate_id>         # transform chain root→candidate
+uv run apmode trace "$BUNDLE"                          # agentic iteration summary
+uv run apmode trace "$BUNDLE" --iteration 5            # one iteration in detail
+uv run apmode trace "$BUNDLE" --cost                   # token + $ rollup
+uv run apmode trace "$BUNDLE" --json                   # machine-readable
 ```
 
 ### Governance
 
 ```bash
-# List gate policy versions for all lanes
-uv run apmode policies
-
-# Inspect submission-lane thresholds in detail
-uv run apmode policies submission
-
-# Validate policy files
-uv run apmode policies --validate
+uv run apmode policies                  # list versions for all lanes
+uv run apmode policies submission       # inspect submission thresholds
+uv run apmode policies --validate       # CI-grade schema + constraint check
 ```
 
-### Run the Test Suite
+### Test + typecheck + lint
 
 ```bash
-uv run pytest tests/ -q                    # 1593 collected (skip live tests with -m "not live")
-uv run mypy src/apmode/ --strict           # type checking
-uv run ruff check src/apmode/ tests/       # linting (0 errors)
+uv run pytest tests/ -q                         # <!-- apmode:AUTO:tests -->1673<!-- apmode:/AUTO:tests --> collected
+uv run pytest tests/ -q -m "not live"           # <!-- apmode:AUTO:tests_nonlive -->1656<!-- apmode:/AUTO:tests_nonlive --> skip live LLM tests
+uv run mypy src/apmode/ --strict                # type checking
+uv run ruff check src/apmode/ tests/            # linting
+uv run python scripts/sync_readme.py --check    # README ↔ codebase drift guard
 
 # Bayesian smoke test against Boeckmann 1994 theophylline (~5 min)
 uv run python scripts/bayesian_smoke_theophylline.py
@@ -198,7 +190,7 @@ model {
 
 **NODE constraint templates:** `monotone_increasing`, `monotone_decreasing`, `bounded_positive`, `saturable`, `unconstrained_smooth` — with lane-dependent dim ceilings (≤8 Discovery, ≤4 Optimization, excluded from Submission).
 
-**Formular transforms** (agentic LLM admissible operations): `swap_module`, `add_covariate_link`, `adjust_variability`, `set_transit_n`, `toggle_lag`, `replace_with_node`, **`set_prior`** — seven typed transforms that produce new `DSLSpec` instances. `set_prior` is parameterization-schema validated: only HalfNormal/HalfCauchy/Gamma/InvGamma families are admissible on IIV ω and residual σ targets; only Normal/LogNormal/Mixture/HistoricalBorrowing on log-scale structural params; LKJ only on correlation matrices. Invalid pairs are rejected at compile time so the LLM cannot propose nonsense priors.
+**Formular transforms** (agentic LLM admissible operations): <!-- apmode:AUTO:transforms -->7<!-- apmode:/AUTO:transforms --> typed transforms produce new `DSLSpec` instances — `swap_module`, `add_covariate_link`, `adjust_variability`, `set_transit_n`, `toggle_lag`, `replace_with_node`, **`set_prior`**. `set_prior` is parameterization-schema validated: only HalfNormal/HalfCauchy/Gamma/InvGamma families are admissible on IIV ω and residual σ targets; only Normal/LogNormal/Mixture/HistoricalBorrowing on log-scale structural params; LKJ only on correlation matrices. Invalid pairs are rejected at compile time so the LLM cannot propose nonsense priors. The transform count badge above is auto-synced from `src/apmode/dsl/transforms.py` + `src/apmode/dsl/prior_transforms.py` — if the number drifts, `scripts/sync_readme.py --check` fails CI.
 
 ---
 
@@ -353,11 +345,11 @@ For a typical rich dataset with nonlinear CL and multi-phase absorption:
 | Phase 3 children | up to 18 |
 | **Total** | **~30-50 candidates** |
 
-The search **does not** iterate until convergence, apply transforms beyond warm-start children, or have a user-tunable `--max-candidates` flag. The budget is fully determined by the Evidence Manifest. This makes wall time estimable as `total_budget × avg_fit_seconds / max_concurrency`.
+Empirically, the [benchmark-results table](#end-to-end-benchmark-results) shows Gate-1-entered counts of 25–41 per dataset — consistent with this envelope. The search **does not** iterate until convergence, apply transforms beyond warm-start children, or have a user-tunable `--max-candidates` flag. The budget is fully determined by the Evidence Manifest. This makes wall time estimable as `total_budget × avg_fit_seconds / max_concurrency`.
 
 ### What About DSL Transforms?
 
-The DSL supports typed transforms (`add_iiv`, `change_absorption`, `add_covariate`, etc.) documented in [`docs/FORMULAR.md`](docs/FORMULAR.md). These are used by the **agentic LLM backend** (Phase 3 of APMODE, see [Agentic LLM Backend](#agentic-llm-backend) below), which applies them iteratively based on LLM proposals up to `--max-iterations`. The **automated search engine does not apply transforms iteratively** — it only does the Phase 1 cross-product + Phase 3 warm-start children. If you want iterative transform-based exploration, enable the agentic backend with `apmode run --agentic --lane discovery`.
+The DSL supports typed transforms (`add_iiv`, `change_absorption`, `add_covariate`, etc.) documented in [`docs/FORMULAR.md`](docs/FORMULAR.md). These are used by the **agentic LLM backend** (Phase 3 of APMODE, see [Agentic LLM Backend](#agentic-llm-backend-phase-3) below), which applies them iteratively based on LLM proposals up to `--max-iterations`. The **automated search engine does not apply transforms iteratively** — it only does the Phase 1 cross-product + Phase 3 warm-start children. If you want iterative transform-based exploration, enable the agentic backend with `apmode run --agentic --lane discovery`.
 
 ### Example: What This Produces on Mavoglurant
 
@@ -395,24 +387,30 @@ NONMEM CSV ──→ Ingest + Validate ──→ Canonical PK Schema (Pandera)
                           (CL, V, ka,            (dispatch constraints)
                            multi-dose)                 │
                                   │                    ↓
-DSL text ──→ Lark parser ──→ AST ──→        Search Engine
+Formular text ──→ Lark parser ──→ AST ──→     Search Engine
                           │                  ├─ Candidate generation
                   Semantic validator         ├─ Multi-backend dispatch
-                          │                  │   ├─ Classical → nlmixr2
-                  split_subjects()           │   └─ NODE     → JAX/Diffrax
-                  (k-fold, LORO)             └─ Pareto frontier + BIC scoring
+                          │                  │   ├─ Classical   → nlmixr2 (R subprocess)
+                  split_subjects()           │   ├─ Bayesian    → Stan/Torsten (cmdstanpy)
+                  (k-fold, LORO)             │   ├─ NODE        → JAX/Diffrax
+                                             │   └─ Agentic LLM → Formular transforms only
+                                             └─ Pareto frontier + BIC scoring
                                                        │
                                           ┌────────────┼────────────┐
                                           ↓            ↓            ↓
                                     Gate 1:       Gate 2:      Gate 2.5:
                                     Technical     Lane         ICH M15
                                     Validity      Admissibility Credibility
-                                    (7 checks)    (6 checks)   (5 checks)
+                                    (CWRES,       (identifiability, (COU,
+                                     VPC,          shrinkage,       data adequacy,
+                                     R̂/ESS/        NODE exclusion,  limitation-
+                                     divergences)  LORO-CV)         risk map)
                                           └────────────┴────────────┘
                                                        │
                                                   Gate 3: Ranking
                                             (within-paradigm BIC or
-                                             cross-paradigm VPC/NPE)
+                                             cross-paradigm VPC/NPE
+                                             + AUC/Cmax BE composite)
                                                        │
                                                        ↓
                                         Reproducibility Bundle (JSON/JSONL)
@@ -425,20 +423,27 @@ DSL text ──→ Lark parser ──→ AST ──→        Search Engine
 | PK DSL grammar | `src/apmode/dsl/pk_grammar.lark` | Full Lark EBNF for PK model specs |
 | AST models | `src/apmode/dsl/ast_models.py` | Typed Pydantic nodes for all DSL axes |
 | Semantic validator | `src/apmode/dsl/validator.py` | Constraint table enforcement (PRD §4.2.5) |
+| Transforms | `src/apmode/dsl/transforms.py` + `prior_transforms.py` | The <!-- apmode:AUTO:transforms -->7<!-- apmode:/AUTO:transforms --> typed `FormularTransform`s — agentic-safe DSL operations |
 | nlmixr2 emitter | `src/apmode/dsl/nlmixr2_emitter.py` | DSL AST → R code for nlmixr2/rxode2 |
-| Stan emitter | `src/apmode/dsl/stan_emitter.py` | DSL AST → Stan program |
-| Data pipeline | `src/apmode/data/` | Ingestion, profiling, NCA estimates, splitting |
+| Stan emitter | `src/apmode/dsl/stan_emitter.py` | DSL AST → Stan program (Phase 2+; Bayesian backend) |
+| FREM emitter | `src/apmode/dsl/frem_emitter.py` | Joint-Ω FREM code for covariate-missingness workflows |
+| Data pipeline | `src/apmode/data/` | Ingestion, profiling, NCA estimates, splitting, imputation |
 | Dose expansion | `src/apmode/data/dosing.py` | ADDL/II expansion, infusion events, event table builder |
 | Classical backend | `src/apmode/backends/nlmixr2_runner.py` | Async subprocess runner with file-based IPC |
-| NODE backend | `src/apmode/backends/node_*.py` | Bram-style hybrid MLP, Diffrax ODE, Optax training |
-| Agentic LLM backend | `src/apmode/backends/agentic_runner.py` | Closed-loop LLM model improvement via Formular transforms |
+| Bayesian backend | `src/apmode/backends/bayesian_runner.py` + `src/apmode/bayes/harness.py` | Stan/Torsten via `cmdstanpy`; R̂/ESS/E-BFMI/Pareto-k Gate 1 integration |
+| FREM runner | `src/apmode/backends/frem_runner.py` | FOCE-I FREM driver for the orchestrator's missing-data stage |
+| NODE backend | `src/apmode/backends/node_*.py` | Bräm-style hybrid MLP, Diffrax ODE, Optax training, constraint templates |
+| Agentic LLM backend | `src/apmode/backends/agentic_runner.py` | Closed-loop LLM model improvement via Formular transforms (≤25 iters) |
 | LLM providers | `src/apmode/backends/llm_providers.py` | Anthropic, OpenAI, Gemini, Ollama, OpenRouter, litellm |
-| Governance | `src/apmode/governance/` | Gates 1/2/2.5/3, cross-paradigm ranking, policy files |
+| Predictive-diagnostics helper | `src/apmode/backends/predictive_summary.py` | Canonical VPC / NPE / AUC-Cmax-BE builder (single path) |
+| Governance | `src/apmode/governance/` | Gates 1/2/2.5/3, cross-paradigm ranking, policy schemas + validator |
 | Search engine | `src/apmode/search/engine.py` | Multi-backend dispatch, BIC scoring, Pareto frontier |
-| Orchestrator | `src/apmode/orchestrator/` | Full pipeline: ingest → gates → bundle |
+| Orchestrator | `src/apmode/orchestrator/` | Full pipeline: ingest → profile → NCA → search → gates → bundle → report |
 | Bundle emitter | `src/apmode/bundle/` | All reproducibility bundle artifacts per PRD §5 |
-| Dataset registry | `src/apmode/data/datasets.py` | 14 public PK datasets from nlmixr2data with auto-fetch |
-| CLI | `src/apmode/cli.py` | Typer CLI: `run`, `explore`, `datasets`, `inspect`, `log`, `diff`, `validate` |
+| Report generator | `src/apmode/report/` | HTML + Markdown regulatory report with credibility framing |
+| Dataset registry | `src/apmode/data/datasets.py` | <!-- apmode:AUTO:datasets -->14<!-- apmode:/AUTO:datasets --> public PK datasets from nlmixr2data with auto-fetch |
+| Path resolver | `src/apmode/paths.py` | `APMODE_POLICIES_DIR` env override + pyproject-walk fallback for CLI/orchestrator |
+| CLI | `src/apmode/cli.py` | Typer CLI with <!-- apmode:AUTO:cli_cmds -->14<!-- apmode:/AUTO:cli_cmds --> commands (see [CLI Reference](#cli-reference)) |
 
 ---
 
@@ -448,12 +453,12 @@ APMODE enforces a **gated funnel** — not a weighted sum. Each gate is disquali
 
 | Gate | Purpose | Checks |
 |------|---------|--------|
-| **Gate 1** | Technical Validity | Convergence, parameter plausibility, CWRES normality, VPC coverage, condition number, seed stability, split integrity |
-| **Gate 2** | Lane Admissibility | Interpretability, shrinkage, identifiability (profile-likelihood CI), NODE exclusion (Submission lane) |
+| **Gate 1** | Technical Validity | Convergence, parameter plausibility, CWRES normality, VPC coverage, condition number, seed stability, split integrity; Bayesian: R̂, bulk/tail ESS, divergences, E-BFMI, Pareto-k |
+| **Gate 2** | Lane Admissibility | Interpretability, shrinkage, identifiability (profile-likelihood CI), NODE exclusion (Submission lane), LORO-CV (Optimization lane), prior-justification artifact (Bayesian) |
 | **Gate 2.5** | Credibility Qualification | ICH M15 context-of-use, data adequacy, ML transparency, limitation-risk mapping, operational qualification |
-| **Gate 3** | Ranking | Within-paradigm BIC; cross-paradigm VPC concordance + NPE + composite score |
+| **Gate 3** | Ranking | Within-paradigm BIC; cross-paradigm VPC concordance + NPE + AUC/Cmax BE composite (Borda or weighted sum) |
 
-Gate thresholds are **versioned policy artifacts** in `policies/*.json` — not hard-coded constants.
+Gate thresholds are **versioned policy artifacts** in `policies/*.json` (schema v<!-- apmode:AUTO:policy_gate -->0.4.0<!-- apmode:/AUTO:policy_gate -->) — not hard-coded constants.
 
 ---
 
@@ -461,11 +466,11 @@ Gate thresholds are **versioned policy artifacts** in `policies/*.json` — not 
 
 APMODE routes work through separate pipelines with different admissible backends and evidence standards:
 
-| Lane | Purpose | Admissible Backends | NODE Eligible? |
-|------|---------|-------------------|----------------|
-| **Submission** | Regulatory-grade models | Classical NLME only | No (hard rule) |
-| **Discovery** | Broad exploration | Classical + NODE | Yes (Gate 2.5 required) |
-| **Translational Optimization** | LORO-CV prediction (Phase 3) | All backends | Yes |
+| Lane | Purpose | Admissible Backends | NODE Eligible? | LORO-CV |
+|------|---------|-------------------|----------------|---------|
+| **Submission** | Regulatory-grade models | Classical NLME (+ Bayesian for prior-informed fits) | No (hard rule) | Not required |
+| **Discovery** | Broad exploration | Classical + Bayesian + NODE + Agentic LLM | Yes (Gate 2.5 required) | Not required |
+| **Optimization** | LORO-CV prediction (Phase 3) | All backends | Yes | Required (Gate 2) |
 
 ---
 
@@ -497,9 +502,9 @@ Rscript benchmarks/suite_a/simulate_all.R [output_dir]
 | B2 | Sparse data + NODE dispatch | Lane Router blocks NODE when data insufficient |
 | B3 | Cross-paradigm ranking | Gate 3 correctly ranks mixed nlmixr2 + jax_node candidates |
 
-### End-to-End Benchmark Results (v0.3.0-rc4, 2026-04-16)
+### End-to-End Benchmark Results
 
-Full `apmode run` pipeline on all Suite A fixtures plus the three real
+Full `apmode run` pipeline on all Suite A fixtures plus three real
 public datasets. Driver: `scripts/run_full_benchmark.sh`; bundles land
 in `benchmarks/runs/full-<timestamp>/`.
 
@@ -522,11 +527,11 @@ in `benchmarks/runs/full-<timestamp>/`.
 Gate 1 rejects non-converged candidates and those failing plausibility,
 CWRES normality, or trajectory validity. Gate 2 (submission lane) applies
 shrinkage ≤ 30%, identifiability, and reproducible-estimation checks.
-Gate 2 now passes 98% of Gate 1 survivors across all scenarios — the rc3
-log-space plausibility fix and rc4 shrinkage unit fix (percentage → fraction)
+Gate 2 now passes 98% of Gate 1 survivors across all scenarios — the
+log-space plausibility fix and shrinkage unit fix (percentage → fraction)
 resolved the two systematic false-positive rejection sources.
 
-Every bundle passes `apmode validate` and emits the v3 structured
+Every bundle passes `apmode validate` and emits the v<!-- apmode:AUTO:profiler_manifest -->2<!-- apmode:/AUTO:profiler_manifest --> structured
 `nonlinear_clearance_signals` record with full provenance (algorithm,
 citation, policy_key, threshold, observed value + 90% CI, eligibility
 reason, vote). `apmode inspect <bundle>` renders the per-signal table;
@@ -536,7 +541,7 @@ reason, vote). `apmode inspect <bundle>` renders the per-signal table;
 
 ## Test Suite
 
-1525 tests across multiple strategies:
+**<!-- apmode:AUTO:tests -->1673<!-- apmode:/AUTO:tests --> tests collected** (<!-- apmode:AUTO:tests_nonlive -->1656<!-- apmode:/AUTO:tests_nonlive --> non-live) across multiple strategies — all counts auto-synced by `scripts/sync_readme.py`:
 
 ```bash
 uv run pytest tests/unit/ -q               # unit tests
@@ -548,11 +553,11 @@ uv run pytest tests/ --snapshot-update     # update snapshots after emitter chan
 
 | Directory | Coverage |
 |-----------|----------|
-| `tests/unit/` | All modules: DSL, data, backends, search, governance, routing, bundle |
-| `tests/integration/` | Mock R pipeline, Discovery lane, LLM providers |
-| `tests/property/` | Hypothesis property-based tests |
+| `tests/unit/` | All modules: DSL, data, backends (classical/Bayesian/NODE/agentic), search, governance, routing, bundle, report |
+| `tests/integration/` | Mock R pipeline, Discovery lane, LLM providers, Suite A/B/C E2E, BLQ flows |
+| `tests/property/` | Hypothesis: DSL round-trip, transforms, LORO split invariants |
 | `tests/golden/` | Syrupy snapshots for emitter output |
-| `tests/r_syntax/` | R code syntax validation |
+| `tests/fixtures/` | Benchmark Suite A CSVs + stored policies |
 
 ---
 
@@ -561,9 +566,10 @@ uv run pytest tests/ --snapshot-update     # update snapshots after emitter chan
 | Phase | Scope | Status |
 |-------|-------|--------|
 | **Phase 0** | Schemas, protocols, grammar, error taxonomy, sparkid integration | Complete |
-| **Phase 1** (6 months) | DSL + compiler, classical NLME backend, automated search, Gates 1-3, reproducibility bundle, CLI, Suite A | Complete |
+| **Phase 1** (6 months) | DSL + compiler, classical NLME backend, automated search, Gates 1-3, reproducibility bundle, CLI, Suite A (7 scenarios) | Complete |
 | **Phase 2** (4 months) | Hybrid NODE backend, functional distillation, Discovery lane, cross-paradigm ranking, Suite B, Stan codegen (IOV + BLQ), NODE init strategy, dataset registry, interactive CLI | Complete |
-| **Phase 3** (4 months) | Agentic LLM backend (DSL transforms only), Optimization lane + LORO-CV, report generator, Suite C, API | In progress |
+| **Phase 2+** | Bayesian backend (Stan/Torsten via cmdstanpy), prior DSL (10 families), `SetPrior` transform, MCMC Gate 1 thresholds, FDA-aligned prior justification | Complete |
+| **Phase 3** (4 months) | Agentic LLM backend (Formular transforms only, ≤25 iters), Optimization lane + LORO-CV, HTML/Markdown report generator, Suite C, checkpoint/resume, predictive-diagnostics canonical helper | **In progress** |
 
 ---
 
@@ -582,6 +588,9 @@ uv run pytest tests/ --snapshot-update     # update snapshots after emitter chan
 - **TMDD QSS**: Gibiansky et al. (2008), J Pharmacokinet Pharmacodyn 35:573-591
 - **Transit compartments**: Savic et al. (2007), J Pharmacokinet Pharmacodyn 34:711-726
 - **Allometric scaling**: Anderson & Holford (2008), Clin Pharmacokinet 47:455-467
+- **Rank-normalized R̂ + ESS**: Vehtari A, Gelman A, Simpson D, Carpenter B, Bürkner P-C (2021). Rank-normalization, folding, and localization: an improved R̂ for assessing convergence of MCMC. *Bayesian Analysis* 16(2):667-718
+- **FREM**: Nyberg J et al. (2024). Full Random Effects Modeling (FREM) — conditioning covariates as observations. *AAPS J* / Jonsson 2024
+- **Robust MAP / Historical Borrowing**: Schmidli H, Gsteiger S, Roychoudhury S et al. (2014). Robust MAP priors for design and analysis with historical control data. *Biometrics* 70(4):1023-1032
 - **NCA**: PKNCA-style curve-stripping for terminal lambda_z (`pk.calc.half.life`, adjusted R² with most-points tiebreak), linear-up/log-down AUC integration (Purves 1992, `pk.calc.auc`). Reference: Purves (1992) J Pharmacokin Biopharm 20:211; PKNCA vignettes at https://humanpred.github.io/pknca/
 
 ---
@@ -593,7 +602,7 @@ policy artifact so runs are reproducible without touching Python source:
 
 - **Source of truth**: [`policies/profiler.json`](policies/profiler.json)
 - **Loader**: [`src/apmode/data/policy.py`](src/apmode/data/policy.py) — `get_policy()` returns a typed frozen `ProfilerPolicy` dataclass; `policy_sha256` is embedded in every `EvidenceManifest`.
-- **Current version**: `profiler/v2.1.0` (`manifest_schema_version = 3`; structured `nonlinear_clearance_signals` replaces the flat scalars/masks)
+- **Current version**: `profiler/v<!-- apmode:AUTO:policy_profiler -->2.1.0<!-- apmode:/AUTO:policy_profiler -->` (`manifest_schema_version = <!-- apmode:AUTO:profiler_manifest -->2<!-- apmode:/AUTO:profiler_manifest -->`; structured `nonlinear_clearance_signals` replaces flat scalars/masks)
 - **Derivation & citations**: [`docs/PROFILER_REFINEMENT_PLAN.md`](docs/PROFILER_REFINEMENT_PLAN.md) — one paragraph per policy group tying each default to a primary source.
 - **Drift guard**: [`tests/unit/test_profiler_policy_consistency.py`](tests/unit/test_profiler_policy_consistency.py) — enforces JSON↔dataclass↔constants equality and AST-scans drift-prone heuristic functions for bare numeric literals.
 
@@ -668,7 +677,7 @@ too poor to support any flip-flop call. The stricter
 
 ### Gate policy parameters (`policies/{submission,discovery,optimization}.json`)
 
-Gate policies are lane-specific, versioned, and discoverable via
+Gate policies are lane-specific, versioned (currently **<!-- apmode:AUTO:policy_gate -->0.4.0<!-- apmode:/AUTO:policy_gate -->**), and discoverable via
 `apmode policies <lane>`. The Pydantic schema lives in
 [`src/apmode/governance/policy.py`](src/apmode/governance/policy.py)
 and is validated by the CI hook
@@ -687,6 +696,8 @@ and is validated by the CI hook
 | | Bayesian `rhat_max` | 1.01 | 1.01 | 1.01 | Vehtari 2021 rank-normalized R̂ |
 | | Bayesian `ess_bulk_min` / `_tail_min` | 400 / 400 | 400 / 400 | 400 / 400 | Vehtari 2021 ESS floor |
 | | Bayesian `n_divergent_max` | 0 | 0 | 0 | HMC divergence ceiling |
+| | Bayesian `ebfmi_min` | 0.30 | 0.30 | 0.30 | E-BFMI floor (Betancourt 2016) — flags pathological energy mixing |
+| | Bayesian `pareto_k_max` | 0.70 | 0.70 | 0.70 | PSIS-LOO Pareto-k ceiling (Vehtari 2017) |
 | **Gate 2 — Lane admissibility** | `interpretable_parameterization` | required | not_required | preferred | Blocks NODE in Submission |
 | | `shrinkage_max` | 0.30 | null | 0.30 | Max η-shrinkage (null = no threshold) |
 | | `identifiability_required` | true | false | true | Profile-likelihood CI + condition number check |
@@ -703,10 +714,10 @@ and is validated by the CI hook
 | | `sensitivity_analysis_required` | n/a | false | true | Sensitivity artifact present |
 | | `ai_ml_transparency_required` | n/a | true | true | Statement required for NODE/agentic |
 | **Gate 3 — Cross-paradigm composite** | `gate3.composite_method` | `weighted_sum` | `borda` | `borda` | Aggregation: `"weighted_sum"` or `"borda"` (rank-based, scale-invariant) |
-| | `gate3.vpc_weight` | 0.5 | 0.5 | 0.5 | VPC coverage concordance weight |
-| | `gate3.npe_weight` | 0.5 | 0.5 | 0.5 | NPE (simulation if available, else CWRES proxy) weight |
+| | `gate3.vpc_weight` | 0.5 | 0.5 | 0.35 | VPC coverage concordance weight |
+| | `gate3.npe_weight` | 0.5 | 0.5 | 0.35 | NPE (simulation if available, else CWRES proxy) weight |
 | | `gate3.bic_weight` | 0.0 | 0.0 | 0.0 | **BIC off by default** (PRD §10 Q2 — likelihoods incomparable cross-paradigm) |
-| | `gate3.auc_cmax_weight` | 0.0 | 0.0 | 0.0 | Smith 2000 AUC/Cmax BE fraction weight (flips to 0.30 in Optimization once nlmixr2 VPC lands, commit 2) |
+| | `gate3.auc_cmax_weight` | 0.0 | 0.0 | 0.30 | Smith 2000 AUC/Cmax BE fraction weight (Optimization-only until backends ship posterior-predictive sims) |
 | | `gate3.auc_cmax_nca_max_blq_burden` | 0.20 | 0.20 | 0.20 | BLQ% above which observed-NCA reference is ineligible pooled (Thway 2018) |
 | | `gate3.auc_cmax_nca_min_eligible` | 8 | 8 | 8 | Min per-subject NCA-eligible count to emit `auc_cmax_be_score` |
 | | `gate3.auc_cmax_nca_min_eligible_fraction` | 0.5 | 0.5 | 0.5 | Min eligible / total fraction — AND-combined with absolute floor |
@@ -727,7 +738,9 @@ and is validated by the CI hook
 All gate thresholds are sourced from primary literature:
 CWRES conventions (Nguyen et al. 2017, *CPT PSP* 6:87), VPC coverage
 (Bergstrand & Karlsson 2009, *AAPS J* 11:371), R̂/ESS (Vehtari et al.
-2021, *Bayesian Analysis* 16:667), BLQ M3/M7 (Beal 2001, *JPKPD* 28:481;
+2021, *Bayesian Analysis* 16:667), E-BFMI (Betancourt 2016,
+*arXiv:1604.00695*), PSIS-LOO Pareto-k (Vehtari et al. 2017,
+*Stat Comput* 27:1413), BLQ M3/M7 (Beal 2001, *JPKPD* 28:481;
 Wijk et al. 2025), FREM (Nyberg 2024). Lane-specific tolerances
 follow the PRD §4.3.1 submission/discovery/optimization risk profile.
 
@@ -749,6 +762,7 @@ pharmacometric community. We specifically build on:
 - **pyDarwin** (Certara; Sale, Sherer, Nieforth et al.) — the Bayesian-optimisation + penalty-function framework for popPK structural search motivated APMODE's penalty / plausibility signals. https://github.com/certara/pyDarwin
 - **rxode2 / nlmixr2est** — canonical oral / IV / infusion model code generation.
 - **PKNCA** (Denney) — the reference NCA implementation whose conventions (linear-up/log-down AUC, `pk.calc.half.life`) APMODE's profiler follows. https://github.com/humanpred/pknca
+- **Stan / Torsten / cmdstanpy** (Metrum Research Group + Stan dev team) — Bayesian backend depends on Torsten's PK-aware ODE integrators and cmdstanpy for CmdStan driving.
 - **pandas, numpy, scipy, scikit-learn, hypothesis, syrupy** — the Python scientific and testing stack.
 - **Pydantic, Lark, ruff, mypy, uv, pytest** — the type-safety, parsing, linting, and test toolchain.
 
@@ -763,6 +777,7 @@ Please cite the individual papers listed under *Pharmacometric References* when 
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Technical architecture (v0.2) |
 | [`docs/PRD_APMODE_v0.3.md`](docs/PRD_APMODE_v0.3.md) | Current PRD (v0.3, source of truth) |
 | [`docs/FORMULAR.md`](docs/FORMULAR.md) | Formular DSL full reference |
+| [`docs/PROFILER_REFINEMENT_PLAN.md`](docs/PROFILER_REFINEMENT_PLAN.md) | Profiler policy derivation + citations |
 | [`policies/*.json`](policies/) | Gate threshold policy files per lane |
 | [`.claude/skills/apmode/SKILL.md`](.claude/skills/apmode/SKILL.md) | Claude Skill for LLM assistants (Claude Code, Codex, Gemini, Droid, …) — lane guidance, verified flag defaults, bundle artifacts, gotchas |
 
@@ -770,40 +785,61 @@ Please cite the individual papers listed under *Pharmacometric References* when 
 
 ## CLI Reference
 
+<!-- apmode:AUTO:cli_cmds -->14<!-- apmode:/AUTO:cli_cmds --> commands exposed by `apmode --help` (count auto-synced from `src/apmode/cli.py`):
+
 | Command | Description |
 |---------|-------------|
-| `apmode run <csv> --lane <lane>` | Full pipeline: ingest → profile → NCA → search → gates → bundle |
+| `apmode run <csv> --lane <lane>` | Full pipeline: ingest → profile → NCA → search → gates → bundle → report |
+| `apmode validate <bundle>` | Validate bundle completeness + JSONL integrity |
+| `apmode inspect <bundle>` | Print bundle summary + structured nonlinear-clearance signals panel |
+| `apmode datasets [name]` | Browse or download <!-- apmode:AUTO:datasets -->14<!-- apmode:/AUTO:datasets --> public PK datasets from nlmixr2data |
 | `apmode explore <name-or-csv>` | Interactive wizard: step-by-step data exploration with optional pipeline launch |
-| `apmode datasets [name]` | Browse or download 14 public PK datasets from nlmixr2data |
-| `apmode inspect <bundle>` | Print summary of a reproducibility bundle |
-| `apmode log <bundle> --top N` | Show top-N ranked candidates with parameter estimates |
-| `apmode log <bundle> --failed` | List failed candidates with gate + reason |
-| `apmode log <bundle> --gate gate1` | Per-check pass/fail details for a specific gate |
 | `apmode diff <bundle-a> <bundle-b>` | Side-by-side comparison of evidence, rankings, gate pass rates |
+| `apmode log <bundle> --top N` | Show top-N ranked candidates; `--failed` / `--gate gate1` for failure triage |
 | `apmode trace <bundle>` | Agentic iteration traces: summary, `--iteration N`, `--cost`, `--json` |
-| `apmode lineage <bundle> <candidate>` | Transform chain from root to candidate with gate status |
-| `apmode graph <bundle>` | Search DAG visualization: `--format tree/dot/mermaid/json`, `--converged` |
-| `apmode validate <bundle>` | Validate bundle completeness |
-| `apmode --version` | Print version |
+| `apmode lineage <bundle> <candidate>` | Transform chain from root to candidate with per-gate status |
+| `apmode report <bundle>` | Open HTML (browser) or `--format md` regulatory report in pager |
+| `apmode doctor` | Check R/nlmixr2/CmdStan/Python deps + LLM provider keys |
+| `apmode ls [--sort bic\|time\|--limit N]` | List run bundles under `./runs` with summary table |
+| `apmode policies [lane] [--validate]` | List/inspect gate policies; `--validate` runs the CI schema hook |
+| `apmode graph <bundle>` | Search DAG visualization: `--format tree/dot/mermaid/json`, `--converged`, `--backend` |
 
 ### Key Options for `apmode run`
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--lane` | `submission` | Operating lane: `submission`, `discovery`, `optimization` |
+| `--backend` | `nlmixr2` | Estimation backend: `nlmixr2` (SAEM/FOCEi) or `bayesian_stan` (NUTS via cmdstanpy) |
+| `--bayes-chains` | `4` | NUTS chains (Bayesian backend only) |
+| `--bayes-warmup` | `1000` | Warmup iterations per chain (Bayesian backend only) |
+| `--bayes-sampling` | `1000` | Sampling iterations per chain (Bayesian backend only) |
+| `--bayes-adapt-delta` | `0.8` | NUTS target acceptance (Bayesian backend only) |
+| `--bayes-max-treedepth` | `12` | NUTS max treedepth (Bayesian backend only) |
 | `--seed` | `753849` | Root random seed for reproducibility |
 | `--parallel-models N` / `-j N` | `1` | Max concurrent model evaluations (R subprocesses). Higher values speed up search but use more memory. |
-| `--timeout` | `600` | Backend timeout in seconds |
+| `--timeout` | `900` | Per-candidate backend timeout in seconds (SAEM on 50 subj ≈ 10s; 120 subj ≈ 60–120s; 1000+ subj ≈ 300–600s) |
 | `--agentic/--no-agentic` | **off** | Enable the agentic LLM backend (discovery/optimization lanes). OFF by default because the loop ships aggregated diagnostics to a third-party LLM provider; pass `--agentic` to opt in. |
 | `--resume-agentic` | **off** | Skip Stage 5 (classical SAEM search) and load `classical_checkpoint.json` from the existing bundle directory. Use after an agentic API failure to restart the LLM loop without re-running a multi-hour SAEM search. |
+| `--max-iterations` | `10` (cap `25`) | Agentic LLM iteration count (PRD §4.2.6 hard-caps at 25). |
 | `--provider` | `anthropic` | LLM provider: `anthropic`, `openai`, `gemini`, `ollama`, `openrouter` |
+| `--model` | per-provider default (e.g., `claude-sonnet-4-20250514`, `qwen3:4b`) | Model name passed to the provider SDK |
 | `--policy` | auto | Gate policy JSON file (falls back to `policies/<lane>.json`) |
+| `-o, --output-dir` | `./runs` | Bundle parent directory |
+| `--dry-run` | off | Preview the pipeline without dispatching backends |
+
+### Environment variables
+
+| Variable | Purpose |
+|---|---|
+| `APMODE_POLICIES_DIR` | Override policy resolution in `src/apmode/paths.py` (defaults to pyproject-walk) |
+| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY` / `GOOGLE_API_KEY` / `OPENROUTER_API_KEY` | LLM provider auth (agentic backend) |
+| `OLLAMA_HOST` | Non-default local Ollama endpoint (agentic backend) |
 
 **Exit codes:** `0` success, `1` input/validation error, `2` backend error, `130` user interrupt.
 
 ### Public Dataset Registry
 
-14 datasets available via `apmode datasets`, including 5 real clinical datasets:
+<!-- apmode:AUTO:datasets -->14<!-- apmode:/AUTO:datasets --> datasets available via `apmode datasets`, including 5 real clinical datasets:
 
 | Dataset | Subjects | Route | Elimination | Covariates |
 |---------|----------|-------|-------------|------------|
@@ -813,7 +849,7 @@ Please cite the individual papers listed under *Pharmacometric References* when 
 | `pheno_sd` | 59 | IV | linear | WT, APGR |
 | `nimoData` | 40 | IV infusion | unknown | WT |
 
-Plus 9 simulated ground-truth datasets (1/2-cmt, oral/IV/infusion, linear/MM).
+Plus 9 simulated ground-truth datasets (1/2-cmt, oral/IV/infusion, linear/MM): `Oral_1CPT`, `Oral_1CPTMM`, `Oral_2CPT`, `Oral_2CPTMM`, `Bolus_1CPT`, `Bolus_2CPT`, `Bolus_2CPTMM`, `Infusion_1CPT`, `theo_md`.
 
 ---
 
@@ -829,19 +865,19 @@ The orchestrator runs the agentic stage **after** classical search, in two modes
 
 | Mode | Starting Spec | What the LLM Does |
 |------|--------------|-------------------|
-| **Refine** | Best classical candidate from search | Targeted improvement — add covariates, swap modules, adjust variability |
+| **Refine** | Best classical candidate from search | Targeted improvement — add covariates, swap modules, adjust variability, declare priors |
 | **Independent** | Minimal 1-cmt oral spec | Build from scratch — LLM discovers structure through transforms |
 
-In discovery/optimization lanes, the LLM can also propose `replace_with_node` transforms to introduce Neural ODE modules. All agentic candidates enter the same governance gate funnel as classical candidates.
+In discovery/optimization lanes, the LLM can also propose `replace_with_node` transforms to introduce Neural ODE modules, and `set_prior` transforms for Bayesian fits. All agentic candidates enter the same governance gate funnel as classical candidates.
 
 ### Iteration Loop
 
 ```
 AgenticRunner.run(initial_spec, data)
  │
- FOR each iteration (max 25):
- │  1. EVALUATE  → inner_runner fits current spec (nlmixr2/JAX)
- │  2. SUMMARIZE → convergence, CWRES, shrinkage, VPC → markdown
+ FOR each iteration (max 25, hard-clamped in AgenticConfig):
+ │  1. EVALUATE  → inner_runner fits current spec (nlmixr2 / Stan / JAX)
+ │  2. SUMMARIZE → convergence, CWRES, shrinkage, VPC (+ R̂/ESS if Bayesian) → markdown
  │  3. PROMPT    → system prompt + conversation history → LLM
  │  4. PARSE     → JSON extraction → typed FormularTransform objects
  │  5. VALIDATE  → precondition checks + post-apply semantic validation
@@ -854,7 +890,7 @@ AgenticRunner.run(initial_spec, data)
 
 ### Available Transforms
 
-The LLM cannot write raw code — it can only propose these 6 typed operations:
+The LLM cannot write raw code — it can only propose these <!-- apmode:AUTO:transforms -->7<!-- apmode:/AUTO:transforms --> typed operations (auto-synced from `dsl/transforms.py` + `dsl/prior_transforms.py`):
 
 | Transform | Purpose | Example |
 |-----------|---------|---------|
@@ -864,17 +900,18 @@ The LLM cannot write raw code — it can only propose these 6 typed operations:
 | `set_transit_n` | Change transit compartment count | Increase transit N for delayed absorption |
 | `toggle_lag` | Enable/disable absorption lag time | Add tlag for delayed onset |
 | `replace_with_node` | Swap to Neural ODE (discovery/optimization only) | NODE absorption with dim=4 |
+| `set_prior` | Declare/replace a typed prior (Bayesian workflows) | HalfNormal(0, 0.5) on IIV_CL ω |
 
 ### LLM Provider Support
 
-| Provider | SDK | Auth | Cost |
-|----------|-----|------|------|
-| **Anthropic** | `anthropic.AsyncAnthropic` | `ANTHROPIC_API_KEY` | Per-token |
-| **OpenAI** | `openai.AsyncOpenAI` | `OPENAI_API_KEY` | Per-token |
-| **Google Gemini** | `google.genai.Client` | `GEMINI_API_KEY` | Per-token |
-| **OpenRouter** | OpenAI-compatible | `OPENROUTER_API_KEY` | Per-token |
-| **Ollama** | `ollama.AsyncClient` | None (local) | Free |
-| **litellm** | `litellm.acompletion` | Per-provider | Fallback |
+| Provider | SDK | Auth | Default model | Cost |
+|----------|-----|------|---------------|------|
+| **Anthropic** | `anthropic.AsyncAnthropic` | `ANTHROPIC_API_KEY` | `claude-sonnet-4-20250514` | Per-token |
+| **OpenAI** | `openai.AsyncOpenAI` | `OPENAI_API_KEY` | `gpt-4o` | Per-token |
+| **Google Gemini** | `google.genai.Client` | `GEMINI_API_KEY` / `GOOGLE_API_KEY` | `gemini-2.5-flash` | Per-token |
+| **OpenRouter** | OpenAI-compatible | `OPENROUTER_API_KEY` | `anthropic/claude-sonnet-4-20250514` | Per-token |
+| **Ollama** | `ollama.AsyncClient` | None (local) | `qwen3:4b` | Free |
+| **litellm** | `litellm.acompletion` | Per-provider | caller-specified | Fallback |
 
 Install provider SDKs: `uv sync --extra llm`
 
@@ -885,6 +922,7 @@ Install provider SDKs: `uv sync --extra llm`
 - **Cached responses** — `ReplayClient` replays from `agentic_trace/` without API calls
 - **Model-version escrow** — deterministic fingerprint when available (Anthropic: `full`, others: `best-effort`)
 - **Conversation history** — multi-turn context preserved across iterations
+- **Checkpoint resume** — `--resume-agentic` reloads `classical_checkpoint.json` so a 5xx / timeout / quota-trip during the LLM loop does not discard multi-hour SAEM work
 
 ### Live Integration Tests
 
@@ -897,17 +935,51 @@ uv run pytest tests/integration/test_llm_providers_live.py -m live -v
 
 ---
 
+## Keeping the README honest
+
+This README's numeric claims (version, test count, transform count, CLI-command count, dataset count, policy versions, profiler manifest version) are rewritten from the codebase by [`scripts/sync_readme.py`](scripts/sync_readme.py). Each auto-synced value sits between HTML comment markers like:
+
+```
+<!-- apmode:AUTO:tests -->1673<!-- apmode:/AUTO:tests -->
+```
+
+Running the script:
+
+```bash
+uv run python scripts/sync_readme.py              # update
+uv run python scripts/sync_readme.py --check      # exit 1 if drift; CI-friendly
+```
+
+On `--check`, the script fails if any marker's value disagrees with the resolved authoritative value:
+
+| Key | Authoritative source |
+|---|---|
+| `version`, `version_tag` | Most recent `## [X.Y.Z]` header in `CHANGELOG.md` |
+| `tests`, `tests_nonlive` | `pytest --collect-only -q` (non-live: `-m "not live"`) |
+| `policy_gate` | `policies/{submission,discovery,optimization}.json` — all three must agree |
+| `policy_profiler`, `profiler_manifest` | `policies/profiler.json` |
+| `transforms` | `BaseModel` subclasses in `dsl/transforms.py` + `dsl/prior_transforms.py` |
+| `cli_cmds` | `@app.command(...)` decorators in `cli.py` |
+| `datasets` | `DatasetInfo(...)` entries in `data/datasets.py` |
+| `backends` | Non-dunder `.py` files under `src/apmode/backends/` |
+
+Wire `scripts/sync_readme.py --check` into pre-commit or CI to block PRs that let the README drift.
+
+---
+
 ## Known Limitations
 
-- **Multi-dose**: ADDL/II expansion supported across all backends; SS (steady-state) pass-through for nlmixr2 only — Stan/NODE reject SS!=0
-- **NODE infusions**: NODE backend rejects infusion data (RATE>0); use nlmixr2 for infusion dosing
-- **NODE training**: Pooled population NLL (no per-subject RE); Laplace approximation deferred to Phase 3
-- **NODE scaling**: Python-list subject loop (not vmap); scales to ~50 subjects, not 500+
-- **Stan codegen**: Maturation covariate form not yet supported (raises `NotImplementedError`)
-- **TMDD QSS**: Uses KD as approximation for KSS; when kint >> koff, this can overestimate complex formation
-- **TimeVaryingElim**: Only `exponential` decay supported; `half_life` and `linear` rejected by validator
-- **Context of use**: Orchestrator auto-generates COU for Gate 2.5; production use needs user-provided COU via CLI or config
-- **Agentic LLM backend**: Requires funded API keys (Anthropic/OpenAI) or local Ollama with a chat-capable model (≥4B params recommended)
+- **Multi-dose**: ADDL/II expansion supported across all backends; SS (steady-state) pass-through for nlmixr2 only — Stan/NODE reject SS!=0.
+- **NODE infusions**: NODE backend rejects infusion data (RATE>0); use nlmixr2 or Bayesian backend for infusion dosing.
+- **NODE training**: Pooled population NLL (no per-subject RE); Laplace approximation deferred to Phase 3.
+- **NODE scaling**: Python-list subject loop (not vmap); scales to ~50 subjects, not 500+.
+- **NODE posterior-predictive simulation**: `NodeBackendRunner.sample_posterior_predictive` is a discoverable-but-inert stub (returns `None` with `UserWarning`). Gate 3's uniform-drop rule treats `None` as "backend omitted sims" and removes the AUC/Cmax-BE component when any survivor lacks it — so a mixed nlmixr2 + NODE survivor set in Optimization currently degrades to vpc + npe only. Phase 3 random-effects infrastructure (`node_trainer.py`) is the concrete integration point.
+- **Stan codegen**: Maturation covariate form not yet supported (raises `NotImplementedError`). BLQ M3/M4 and IOV are staged for a follow-on.
+- **TMDD QSS**: Uses KD as approximation for KSS; when `kint ≫ koff`, this can overestimate complex formation.
+- **TimeVaryingElim**: Only `exponential` decay supported; `half_life` and `linear` rejected by validator.
+- **Context of use**: Orchestrator auto-generates COU for Gate 2.5; production use needs user-provided COU via CLI or config.
+- **Agentic LLM backend**: Requires funded API keys (Anthropic/OpenAI) or local Ollama with a chat-capable model (≥4B params recommended).
+- **Gate 3 composite lane drift**: Optimization's `auc_cmax_weight=0.30` is live, but in a mixed nlmixr2+NODE/Bayesian survivor set the uniform-drop rule reverts to the two-component (vpc + npe) composite until every backend emits posterior-predictive sims (intentional, creates integration pressure; documented in CHANGELOG).
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design rationale.
 
@@ -923,7 +995,8 @@ If you use APMODE in your research, please cite:
   author       = {Kornilov, Sergey A.},
   year         = {2026},
   url          = {https://github.com/biostochastics/apmode},
-  license      = {GPL-2.0-or-later}
+  license      = {GPL-2.0-or-later},
+  version      = {<!-- apmode:AUTO:version -->0.4.0<!-- apmode:/AUTO:version -->}
 }
 ```
 
@@ -941,6 +1014,8 @@ The primary engine is nlmixr2 (R), which is GPL-2 licensed. This license choice 
 
 **[Quick Start](#quick-start)** &bull;
 **[Formular DSL](#formular--the-pk-dsl)** &bull;
-**[Architecture](#architecture)**
+**[Architecture](#architecture)** &bull;
+**[Governance](#governance-funnel)** &bull;
+**[CLI](#cli-reference)**
 
 </div>

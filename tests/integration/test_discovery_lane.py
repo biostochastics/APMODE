@@ -140,6 +140,11 @@ class MockNlmixr2Runner:
     def __init__(self, bic: float = 540.0) -> None:
         self._bic = bic
         self.call_count = 0
+        # rc9 threading observation: record the most recent gate3_policy and
+        # nca_diagnostics the runner was dispatched with. ``None`` means the
+        # kwargs were either not forwarded by the caller or explicitly absent.
+        self.last_gate3_policy: object | None = None
+        self.last_nca_diagnostics: object | None = None
 
     async def run(
         self,
@@ -151,8 +156,12 @@ class MockNlmixr2Runner:
         *,
         data_path: Path | None = None,
         split_manifest: dict[str, object] | None = None,
+        gate3_policy: object | None = None,
+        nca_diagnostics: object | None = None,
     ) -> BackendResult:
         self.call_count += 1
+        self.last_gate3_policy = gate3_policy
+        self.last_nca_diagnostics = nca_diagnostics
         return _make_mock_result(spec.model_id, "nlmixr2", self._bic)
 
 
@@ -162,6 +171,8 @@ class MockNodeRunner:
     def __init__(self, bic: float = 530.0) -> None:
         self._bic = bic
         self.call_count = 0
+        self.last_gate3_policy: object | None = None
+        self.last_nca_diagnostics: object | None = None
 
     async def run(
         self,
@@ -173,8 +184,12 @@ class MockNodeRunner:
         *,
         data_path: Path | None = None,
         split_manifest: dict[str, object] | None = None,
+        gate3_policy: object | None = None,
+        nca_diagnostics: object | None = None,
     ) -> BackendResult:
         self.call_count += 1
+        self.last_gate3_policy = gate3_policy
+        self.last_nca_diagnostics = nca_diagnostics
         return _make_mock_result(spec.model_id, "jax_node", self._bic)
 
 
@@ -541,3 +556,74 @@ class TestDiscoveryLaneIntegration:
         assert node.call_count == 0
         # nlmixr2 should have been called
         assert nlmixr2.call_count > 0
+
+    def test_orchestrator_threads_gate3_policy_to_runner(self, tmp_path: Path) -> None:
+        """rc9: Orchestrator must forward gate3_policy and nca_diagnostics.
+
+        The orchestrator loads the lane policy and pulls its NCA estimates
+        from the initial-estimates stage before dispatching the search.
+        Every runner call site (search engine, seed runs, agentic loop,
+        FREM, MI per-imputation fits, LORO-CV folds) must forward both
+        ``gate3_policy`` and ``nca_diagnostics`` so the rc8 posterior-
+        predictive pipeline populates VPC/NPE/AUC-Cmax atomically. This
+        test pins the threading contract: once the orchestrator run
+        completes, the mock runner's most-recent call must carry the
+        policy's ``gate3`` config.
+        """
+        from apmode.governance.policy import Gate3Config
+        from apmode.orchestrator import Orchestrator, RunConfig
+
+        nlmixr2 = MockNlmixr2Runner(bic=540.0)
+
+        config = RunConfig(
+            lane="submission",
+            seed=42,
+            timeout_seconds=60,
+            policy_path=POLICY_DIR / "submission.json",
+        )
+        orch = Orchestrator(
+            runner=nlmixr2,  # type: ignore[arg-type]
+            bundle_base_dir=tmp_path,
+            config=config,
+        )
+
+        import pandas as pd
+
+        data_path = tmp_path / "test_data.csv"
+        df = pd.DataFrame(
+            {
+                "NMID": [1] * 10 + [2] * 10,
+                "TIME": list(range(10)) * 2,
+                "DV": [0.0, 5.0, 8.0, 6.0, 4.0, 3.0, 2.0, 1.5, 1.0, 0.5] * 2,
+                "EVID": [1] + [0] * 9 + [1] + [0] * 9,
+                "AMT": [100.0] + [0.0] * 9 + [100.0] + [0.0] * 9,
+                "MDV": [1] + [0] * 9 + [1] + [0] * 9,
+                "CMT": [1] + [2] * 9 + [1] + [2] * 9,
+            }
+        )
+        df.to_csv(data_path, index=False)
+
+        manifest = DataManifest(
+            data_sha256="d" * 64,
+            ingestion_format="nonmem_csv",
+            column_mapping=ColumnMapping(
+                subject_id="NMID",
+                time="TIME",
+                dv="DV",
+                evid="EVID",
+                amt="AMT",
+                mdv="MDV",
+            ),
+            n_subjects=2,
+            n_observations=18,
+            n_doses=2,
+        )
+
+        asyncio.get_event_loop().run_until_complete(orch.run(manifest, df, data_path))
+
+        # At least one dispatch must have happened.
+        assert nlmixr2.call_count > 0
+        # The last runner dispatch must carry the lane's Gate 3 config —
+        # anything else means the orchestrator silently swallowed the
+        # policy and the rc8 posterior-predictive pipeline is dark.
+        assert isinstance(nlmixr2.last_gate3_policy, Gate3Config)

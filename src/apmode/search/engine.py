@@ -32,8 +32,14 @@ if TYPE_CHECKING:
 
     from apmode.backends.protocol import BackendRunner
     from apmode.bundle.emitter import BundleEmitter
-    from apmode.bundle.models import BackendResult, DataManifest, EvidenceManifest
+    from apmode.bundle.models import (
+        BackendResult,
+        DataManifest,
+        EvidenceManifest,
+        NCASubjectDiagnostic,
+    )
     from apmode.dsl.ast_models import DSLSpec
+    from apmode.governance.policy import Gate3Config
 
 logger = structlog.get_logger(__name__)
 
@@ -83,6 +89,8 @@ class SearchEngine:
         split_manifest: dict[str, object] | None = None,
         runners: dict[str, BackendRunner] | None = None,
         max_concurrency: int = 1,
+        gate3_policy: Gate3Config | None = None,
+        nca_diagnostics: list[NCASubjectDiagnostic] | None = None,
     ) -> None:
         self._data_manifest = data_manifest
         self._data_path = data_path
@@ -92,6 +100,13 @@ class SearchEngine:
         self._split_manifest = split_manifest
         self._max_concurrency = max(1, max_concurrency)
         self._semaphore: asyncio.Semaphore | None = None
+        # Forwarded verbatim to the selected backend runner on each candidate
+        # dispatch so the rc8 posterior-predictive pipeline populates
+        # DiagnosticBundle.{vpc,npe_score,auc_cmax_be_score} atomically.
+        # When ``gate3_policy`` is None the runners skip simulation entirely
+        # and Gate 3 falls back to the CWRES NPE proxy (see Nlmixr2Runner).
+        self._gate3_policy = gate3_policy
+        self._nca_diagnostics = nca_diagnostics
 
         # Phase 2: multiple runners keyed by backend name.
         # ``runner`` is the default (nlmixr2); ``runners`` overrides.
@@ -315,6 +330,8 @@ class SearchEngine:
                 timeout_seconds=self._timeout,
                 data_path=self._data_path,
                 split_manifest=self._split_manifest,
+                gate3_policy=self._gate3_policy,
+                nca_diagnostics=self._nca_diagnostics,
             )
             return SearchResult(
                 candidate_id=spec.model_id,

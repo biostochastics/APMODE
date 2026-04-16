@@ -34,8 +34,14 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from apmode.backends.protocol import BackendRunner
-    from apmode.bundle.models import BackendResult, DataManifest, SplitManifest
+    from apmode.bundle.models import (
+        BackendResult,
+        DataManifest,
+        NCASubjectDiagnostic,
+        SplitManifest,
+    )
     from apmode.dsl.ast_models import DSLSpec
+    from apmode.governance.policy import Gate3Config
 
 logger = structlog.get_logger(__name__)
 
@@ -51,6 +57,8 @@ async def evaluate_loro_cv(
     seed: int,
     timeout_seconds: int = 600,
     regimen_labels: list[str] | None = None,
+    gate3_policy: Gate3Config | None = None,
+    nca_diagnostics: list[NCASubjectDiagnostic] | None = None,
 ) -> LOROCVResult:
     """Run LORO-CV for a single candidate across all folds.
 
@@ -113,6 +121,8 @@ async def evaluate_loro_cv(
                 timeout_seconds=timeout_seconds,
                 data_path=data_path,
                 split_manifest=fold_manifest.model_dump(),
+                gate3_policy=gate3_policy,
+                nca_diagnostics=nca_diagnostics,
             )
 
             fold_result = _extract_fold_metrics(
