@@ -460,6 +460,36 @@ Rscript benchmarks/suite_a/simulate_all.R [output_dir]
 | B2 | Sparse data + NODE dispatch | Lane Router blocks NODE when data insufficient |
 | B3 | Cross-paradigm ranking | Gate 3 correctly ranks mixed nlmixr2 + jax_node candidates |
 
+### End-to-End Benchmark Results (v0.3.0-rc3, 2026-04-15)
+
+Full `apmode run` pipeline on all Suite A fixtures plus the three real
+public datasets. Driver: `scripts/run_full_benchmark.sh`; bundles land
+in `benchmarks/runs/full-<timestamp>/`.
+
+| Dataset | Lane | NLC strength | Compartmentality | Flip-flop | SAEM converged |
+|---|---|---|---|---|---|
+| a1_1cmt_oral_linear | submission | none | one_compartment | none | 40 / 40 |
+| a2_2cmt_iv_parallel_mm | discovery | moderate | two_compartment | unknown | 47 / 72 |
+| a3_transit_1cmt_linear | submission | none | one_compartment | none | 40 / 40 |
+| a4_1cmt_oral_mm | discovery | **strong** | multi_compartment_likely | none | 47 / 72 |
+| a5_tmdd_qss | discovery | none | one_compartment | possible | 40 / 40 |
+| a6_1cmt_covariates | submission | none | one_compartment | none | 40 / 40 |
+| a7_2cmt_node_absorption | discovery | none | insufficient | unknown | 40 / 40 |
+| warfarin (nlmixr2data) | submission | none | one_compartment | none | 39 / 40 |
+| theo_sd (nlmixr2data) | submission | none | one_compartment | none | 31 / 40 |
+| mavoglurant (nlmixr2data) | discovery | **strong** | multi_compartment_likely | none | 40 / 67 |
+
+Every bundle passes `apmode validate` and emits the v3 structured
+`nonlinear_clearance_signals` record with full provenance (algorithm,
+citation, policy_key, threshold, observed value + 90% CI, eligibility
+reason, vote). `apmode inspect <bundle>` renders the per-signal table;
+`apmode lineage <bundle> <candidate_id>` traces the transform DAG.
+
+Aggregate: 404 / 464 candidates converged (≈87%). Warfarin recovered
+from 0 / 24 in rc1 to 39 / 40 in rc3 after the profiler + adapter
+rewrite (DVID `pca` PD-row contamination dropped, binary string
+covariates remapped).
+
 ---
 
 ## Test Suite

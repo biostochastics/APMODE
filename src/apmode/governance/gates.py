@@ -116,8 +116,15 @@ def _check_parameter_plausibility(result: BackendResult) -> GateCheckResult:
 
     Checks: no negative volumes or clearances, no RSE > 200% (when available),
     no estimates at boundary (0.01 or 10000 — our sanity bounds).
+
+    nlmixr2 (and most popPK backends) parameterise structural thetas in
+    log-space (``lCL``, ``lV``, ``lka``, ``lktr``, ``lQ``, ``lVm``, ``lKm``,
+    ``ln`` for transit counts). The underlying clearance/volume/rate is
+    ``exp(estimate)`` which is unconditionally positive, so negative log
+    estimates are valid. We detect log-space by the ``l`` prefix
+    convention and check the back-transformed value against the sanity
+    bounds.
     """
-    # Sanity bounds for boundary detection
     lower_bound = 1e-4
     upper_bound = 1e5
 
@@ -125,16 +132,16 @@ def _check_parameter_plausibility(result: BackendResult) -> GateCheckResult:
     for name, pe in result.parameter_estimates.items():
         if pe.category != "structural":
             continue
-        # Non-positive structural parameters are pharmacologically implausible
-        # (CL, V, ka must all be > 0)
-        if pe.estimate <= 0:
-            issues.append(f"{name}={pe.estimate:.4g} (non-positive)")
-        # Boundary estimates indicate structural misspecification
-        elif pe.estimate <= lower_bound:
-            issues.append(f"{name}={pe.estimate:.4g} (at lower bound)")
-        elif pe.estimate >= upper_bound:
-            issues.append(f"{name}={pe.estimate:.4g} (at upper bound)")
-        # RSE > 200% means effectively unidentifiable
+        is_log = (len(name) >= 2 and name[0] == "l" and name[1].isupper()) or name == "ln"
+        value = float(np.exp(pe.estimate)) if is_log else pe.estimate
+        label = f"exp({name})" if is_log else name
+
+        if value <= 0:
+            issues.append(f"{label}={value:.4g} (non-positive)")
+        elif value <= lower_bound:
+            issues.append(f"{label}={value:.4g} (at lower bound)")
+        elif value >= upper_bound:
+            issues.append(f"{label}={value:.4g} (at upper bound)")
         if pe.rse is not None and pe.rse > 200:
             issues.append(f"{name} RSE={pe.rse:.1f}% (>200%)")
 

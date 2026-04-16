@@ -890,6 +890,36 @@ def inspect(
             console.print(Panel(table, title="[bold]Evidence Profile[/]", border_style="cyan"))
             sections_shown += 1
 
+            # ---- Per-signal provenance (manifest schema v3) ----
+            signals = em.get("nonlinear_clearance_signals") or {}
+            if signals:
+                sig_table = Table(show_header=True, box=None, padding=(0, 2))
+                sig_table.add_column("Signal", style="dim")
+                sig_table.add_column("Eligible", justify="center")
+                sig_table.add_column("Voted", justify="center")
+                sig_table.add_column("Value", justify="right")
+                sig_table.add_column("Threshold", justify="right")
+                sig_table.add_column("Citation", style="dim")
+                for sid, sig in signals.items():
+                    obs = sig.get("observed_value")
+                    thr = sig.get("threshold_value")
+                    sig_table.add_row(
+                        escape(str(sid)),
+                        _bool_badge(bool(sig.get("eligible"))),
+                        _bool_badge(bool(sig.get("voted"))),
+                        f"{obs:.3f}" if isinstance(obs, (int, float)) else "—",
+                        f"{thr:.3f}" if isinstance(thr, (int, float)) else "—",
+                        escape(str(sig.get("citation", "")))[:32],
+                    )
+                console.print(
+                    Panel(
+                        sig_table,
+                        title="[bold]Nonlinear-Clearance Signals[/]",
+                        border_style="cyan",
+                    )
+                )
+                sections_shown += 1
+
     # --- Imputation stability (optional, MI runs only) ---
     stab_path = bundle_dir / "imputation_stability.json"
     if stab_path.exists():
