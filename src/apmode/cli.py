@@ -138,6 +138,14 @@ _PROVIDER_ENV_KEYS: dict[str, list[str]] = {
     "openrouter": ["OPENROUTER_API_KEY"],
 }
 
+# Display labels for `doctor` output; Ollama is probed separately (localhost HTTP).
+_PROVIDER_DISPLAY_LABELS: dict[str, str] = {
+    "anthropic": "Anthropic",
+    "openai": "OpenAI",
+    "gemini": "Google Gemini",
+    "openrouter": "OpenRouter",
+}
+
 
 def _try_build_agentic_runner(
     inner_runner: BackendRunner,
@@ -972,29 +980,34 @@ def _validate_jsonl(path: Path) -> str | None:
     return None
 
 
-def _validate_file(path: Path, filename: str) -> tuple[str, str]:
-    """Validate a single bundle file. Returns (status_markup, note)."""
+_STATUS_BAD = "[bold red]✗ BAD[/]"
+_STATUS_OK = "[green]✓ OK[/]"
+_STATUS_LEGACY = "[yellow]⚠ OLD[/]"
+
+
+def _validate_file(path: Path, filename: str) -> tuple[bool, str, str]:
+    """Validate a single bundle file. Returns (ok, status_markup, note)."""
     if filename.endswith(".jsonl"):
         err = _validate_jsonl(path)
         if err:
-            return "[bold red]✗ BAD[/]", err
-        return "[green]✓ OK[/]", ""
+            return False, _STATUS_BAD, err
+        return True, _STATUS_OK, ""
     try:
         raw = json.loads(path.read_text())
     except OSError as e:
-        return "[bold red]✗ BAD[/]", str(e)
+        return False, _STATUS_BAD, str(e)
     except json.JSONDecodeError as e:
-        return "[bold red]✗ BAD[/]", str(e)
+        return False, _STATUS_BAD, str(e)
     if not isinstance(raw, dict):
-        return "[bold red]✗ BAD[/]", f"expected JSON object, got {type(raw).__name__}"
-    return "[green]✓ OK[/]", ""
+        return False, _STATUS_BAD, f"expected JSON object, got {type(raw).__name__}"
+    return True, _STATUS_OK, ""
 
 
-def _validate_sentinel(bundle_dir: Path) -> tuple[str, str]:
+def _validate_sentinel(bundle_dir: Path) -> tuple[bool, str, str]:
     """Verify the ``_COMPLETE`` sentinel's SHA-256 digest matches bundle contents.
 
-    Returns (status_markup, note). A mismatch means the bundle was modified
-    after sealing; a missing sha256 field means an older schema.
+    Returns (ok, status_markup, note). A mismatch means the bundle was modified
+    after sealing; a missing sha256 field means an older schema (warning, not error).
     """
     from apmode.bundle.emitter import _compute_bundle_digest
 
@@ -1002,16 +1015,16 @@ def _validate_sentinel(bundle_dir: Path) -> tuple[str, str]:
     try:
         raw = json.loads(sentinel_path.read_text())
     except (OSError, json.JSONDecodeError) as e:
-        return "[bold red]✗ BAD[/]", f"sentinel unreadable: {e}"
+        return False, _STATUS_BAD, f"sentinel unreadable: {e}"
     if not isinstance(raw, dict):
-        return "[bold red]✗ BAD[/]", "sentinel is not a JSON object"
+        return False, _STATUS_BAD, "sentinel is not a JSON object"
     expected = raw.get("sha256")
     if not isinstance(expected, str):
-        return "[yellow]⚠ OLD[/]", "sentinel lacks sha256 (legacy schema)"
+        return True, _STATUS_LEGACY, "sentinel lacks sha256 (legacy schema)"
     actual = _compute_bundle_digest(bundle_dir)
     if actual != expected:
-        return "[bold red]✗ BAD[/]", "digest mismatch — bundle modified after seal"
-    return "[green]✓ OK[/]", "digest verified"
+        return False, _STATUS_BAD, "digest mismatch — bundle modified after seal"
+    return True, _STATUS_OK, "digest verified"
 
 
 # ---------------------------------------------------------------------------
@@ -1025,14 +1038,31 @@ def validate(
         Path,
         typer.Argument(help="Path to a run bundle directory."),
     ],
+    output_json: Annotated[
+        bool,
+        typer.Option(
+            "--json",
+            help="Emit machine-readable JSON to stdout and suppress Rich output.",
+        ),
+    ] = False,
 ) -> None:
     """Validate a reproducibility bundle for completeness.
 
     Checks required/optional JSON files and subdirectory contents.
+    With ``--json``, emits a structured result for scripting; exit code is
+    still 0 on success and 1 on failure.
     """
     if not bundle_dir.is_dir():
         kind = "not found" if not bundle_dir.exists() else "not a directory"
-        err_console.print(f"[red bold]Error:[/] {kind}: {escape(str(bundle_dir))}")
+        if output_json:
+            print(
+                json.dumps(
+                    {"ok": False, "error": kind, "bundle_dir": str(bundle_dir)},
+                    indent=2,
+                )
+            )
+        else:
+            err_console.print(f"[red bold]Error:[/] {kind}: {escape(str(bundle_dir))}")
         raise typer.Exit(code=1)
 
     # Bundle completeness contract (PRD §4.3.2): every successful run emits
@@ -1063,40 +1093,62 @@ def validate(
     table.add_column("Notes", style="dim")
 
     errors: list[str] = []
+    json_files: list[dict[str, object]] = []
+    json_dirs: list[dict[str, object]] = []
 
     for f in required_files:
         p = bundle_dir / f
         if not p.exists():
             errors.append(f)
             table.add_row("[bold red]✗ MISS[/]", f, "required")
+            json_files.append({"file": f, "required": True, "ok": False, "note": "missing"})
         elif f == "_COMPLETE":
-            status, note = _validate_sentinel(bundle_dir)
-            if "BAD" in status:
+            ok, status, note = _validate_sentinel(bundle_dir)
+            if not ok:
                 errors.append(f)
             table.add_row(status, f, note or "required")
+            json_files.append({"file": f, "required": True, "ok": ok, "note": note})
         else:
-            status, note = _validate_file(p, f)
-            if "BAD" in status:
+            ok, status, note = _validate_file(p, f)
+            if not ok:
                 errors.append(f)
             table.add_row(status, f, note or "required")
+            json_files.append({"file": f, "required": True, "ok": ok, "note": note})
 
     for f in optional_files:
         p = bundle_dir / f
         if not p.exists():
             table.add_row("[dim]--[/]", f, "[dim]optional[/]")
+            json_files.append({"file": f, "required": False, "ok": None, "note": "absent"})
         else:
-            status, note = _validate_file(p, f)
-            if "BAD" in status:
+            ok, status, note = _validate_file(p, f)
+            if not ok:
                 errors.append(f)
             table.add_row(status, f, note)
+            json_files.append({"file": f, "required": False, "ok": ok, "note": note})
 
     for d in ["compiled_specs", "gate_decisions", "results"]:
         dp = bundle_dir / d
         if dp.is_dir():
             n = len(list(dp.glob("*.json"))) + len(list(dp.glob("*.R")))
             table.add_row("[green]✓ OK[/]", f"{d}/", f"{n} files")
+            json_dirs.append({"dir": d, "present": True, "file_count": n})
         else:
             table.add_row("[dim]--[/]", f"{d}/", "[dim]optional[/]")
+            json_dirs.append({"dir": d, "present": False, "file_count": 0})
+
+    if output_json:
+        payload: dict[str, object] = {
+            "ok": not errors,
+            "bundle_dir": str(bundle_dir),
+            "errors": errors,
+            "files": json_files,
+            "dirs": json_dirs,
+        }
+        print(json.dumps(payload, indent=2))
+        if errors:
+            raise typer.Exit(code=1)
+        return
 
     console.print()
     console.print(table)
@@ -1116,21 +1168,109 @@ def validate(
 # ---------------------------------------------------------------------------
 
 
+def _inspect_emit_json(bundle_dir: Path) -> None:
+    """Emit a merged JSON summary of a bundle to stdout (used by ``inspect --json``).
+
+    Structure is stable for scripting: top-level keys mirror the on-disk
+    artifacts (manifests loaded verbatim) plus derived ``trajectory`` and
+    ``governance`` summaries. Missing artifacts are omitted rather than
+    represented as ``null`` so callers can test with ``"key" in payload``.
+    """
+    payload: dict[str, Any] = {"bundle_dir": str(bundle_dir), "name": bundle_dir.name}
+
+    for fname, key in [
+        ("data_manifest.json", "data_manifest"),
+        ("evidence_manifest.json", "evidence_manifest"),
+        ("backend_versions.json", "backend_versions"),
+        ("seed_registry.json", "seed_registry"),
+        ("ranking.json", "ranking"),
+        ("imputation_stability.json", "imputation_stability"),
+    ]:
+        p = bundle_dir / fname
+        if p.exists():
+            data = _load_json(p, fname)
+            if data is not None:
+                payload[key] = data
+
+    traj_path = bundle_dir / "search_trajectory.jsonl"
+    if traj_path.exists():
+        text = traj_path.read_text().strip()
+        if text:
+            lines = text.split("\n")
+            n_total = 0
+            n_conv = 0
+            for line in lines:
+                row = _parse_json_dict_row(line)
+                if row is None:
+                    continue
+                n_total += 1
+                if row.get("converged"):
+                    n_conv += 1
+            payload["trajectory"] = {"n_total": n_total, "n_converged": n_conv}
+
+    gd_dir = bundle_dir / "gate_decisions"
+    if gd_dir.is_dir():
+        gates: dict[str, dict[str, int]] = {}
+        for gate_label, pattern, exclude_g25 in [
+            ("gate1", "gate1_*.json", False),
+            ("gate2", "gate2_*.json", True),
+            ("gate2_5", "gate2_5_*.json", False),
+            ("gate3", "gate3_*.json", False),
+        ]:
+            files = list(gd_dir.glob(pattern))
+            if exclude_g25:
+                files = [f for f in files if not f.name.startswith("gate2_5")]
+            if not files:
+                continue
+            n_pass = sum(1 for f in files if (_load_json(f, "") or {}).get("passed"))
+            gates[gate_label] = {"passed": n_pass, "total": len(files)}
+        if gates:
+            payload["gates"] = gates
+
+    fc_path = bundle_dir / "failed_candidates.jsonl"
+    if fc_path.exists():
+        text = fc_path.read_text().strip()
+        payload["n_failed_candidates"] = len(text.split("\n")) if text else 0
+
+    print(json.dumps(payload, indent=2, default=str))
+
+
 @app.command()
 def inspect(
     bundle_dir: Annotated[
         Path,
         typer.Argument(help="Path to a run bundle directory."),
     ],
+    output_json: Annotated[
+        bool,
+        typer.Option(
+            "--json",
+            help="Emit the bundle summary as JSON to stdout and suppress Rich output.",
+        ),
+    ] = False,
 ) -> None:
     """Inspect a reproducibility bundle and print summary.
 
     Shows data manifest, evidence profile, search trajectory, and gate decisions.
+    With ``--json``, emits the underlying manifests and a trajectory/governance
+    summary as a single merged JSON payload for scripting.
     """
     if not bundle_dir.is_dir():
         kind = "not found" if not bundle_dir.exists() else "not a directory"
-        err_console.print(f"[red bold]Error:[/] {kind}: {escape(str(bundle_dir))}")
+        if output_json:
+            print(
+                json.dumps(
+                    {"ok": False, "error": kind, "bundle_dir": str(bundle_dir)},
+                    indent=2,
+                )
+            )
+        else:
+            err_console.print(f"[red bold]Error:[/] {kind}: {escape(str(bundle_dir))}")
         raise typer.Exit(code=1)
+
+    if output_json:
+        _inspect_emit_json(bundle_dir)
+        return
 
     console.print()
     console.rule(f"[bold]Bundle: {escape(bundle_dir.name)}[/]")
@@ -1871,6 +2011,11 @@ def diff(
 
     Shows differences in evidence manifest, search outcomes, gate
     decisions, and rankings between two APMODE runs.
+
+    \b
+    Examples:
+      apmode diff ./runs/run_abc123 ./runs/run_def456
+      apmode diff ./runs/baseline ./runs/candidate     # A=baseline, B=candidate
     """
     for p, label in [(bundle_a, "A"), (bundle_b, "B")]:
         if not p.is_dir():
@@ -1952,8 +2097,8 @@ def diff(
             t.add_column(escape(str(bundle_b.name)), justify="right", style="yellow")
 
             for gate, pattern in [("Gate 1", "gate1_*.json"), ("Gate 2", "gate2_*.json")]:
-                fa = [f for f in gd_a.glob(pattern) if "gate2_5" not in f.name]
-                fb = [f for f in gd_b.glob(pattern) if "gate2_5" not in f.name]
+                fa = [f for f in gd_a.glob(pattern) if not f.name.startswith("gate2_5")]
+                fb = [f for f in gd_b.glob(pattern) if not f.name.startswith("gate2_5")]
                 pa = sum(1 for f in fa if (_load_json(f, "") or {}).get("passed"))
                 pb = sum(1 for f in fb if (_load_json(f, "") or {}).get("passed"))
                 t.add_row(gate, f"{pa}/{len(fa)}", f"{pb}/{len(fb)}")
@@ -2179,10 +2324,12 @@ def _show_top_candidates(bundle_dir: Path, n: int) -> None:
                     est_str = f"{est:.4g}" if isinstance(est, float) else str(est)
                     se_str = f"{se:.4g}" if _is_real_number(se) else "—"
                     # RSE may be fractional (0-1) or already in percent; normalise to percent.
+                    # Threshold |rse| <= 1 is the conservative fraction range; a value of
+                    # 1.5 is treated as already-percent to avoid rendering 1.5% as 150%.
                     # ⚠/~ symbols ensure legibility without depending on color alone.
                     if _is_real_number(rse):
-                        assert isinstance(rse, (int, float))
-                        rse_pct = rse * 100 if abs(rse) <= 2 else float(rse)
+                        rse_f = float(rse)  # type: ignore[arg-type]
+                        rse_pct = rse_f * 100 if abs(rse_f) <= 1 else rse_f
                         if rse_pct > 50:
                             rse_str = f"[bold red]⚠ {rse_pct:.0f}%[/]"
                         elif rse_pct > 30:
@@ -2303,7 +2450,7 @@ def _show_bundle_overview(bundle_dir: Path) -> None:
     gd_dir = bundle_dir / "gate_decisions"
     if gd_dir.is_dir():
         for gate, pattern in [("Gate 1", "gate1_*.json"), ("Gate 2", "gate2_*.json")]:
-            files = [f for f in gd_dir.glob(pattern) if "gate2_5" not in f.name]
+            files = [f for f in gd_dir.glob(pattern) if not f.name.startswith("gate2_5")]
             if files:
                 passed = sum(1 for f in files if (_load_json(f, "") or {}).get("passed"))
                 t.add_row(gate, _pass_fraction(passed, len(files)))
@@ -2868,6 +3015,13 @@ def report(
         bool,
         typer.Option("--no-browser", help="Print path instead of opening browser (HTML)."),
     ] = False,
+    output_json: Annotated[
+        bool,
+        typer.Option(
+            "--json",
+            help="Emit a JSON manifest of available report artifacts and exit.",
+        ),
+    ] = False,
 ) -> None:
     """View or generate a structured regulatory report from a bundle.
 
@@ -2875,26 +3029,50 @@ def report(
     orchestrator at run completion), displays them immediately.  Full
     on-demand report generation (PDF, DOCX) is a Phase 3 feature.
 
+    With ``--json``, emits a structured manifest listing which artifacts exist
+    and their absolute paths; suppresses Rich rendering and browser opening.
+
     \b
     Examples:
       apmode report ./runs/run_abc123
       apmode report ./runs/run_abc123 --format md
       apmode report ./runs/run_abc123 --no-browser
+      apmode report ./runs/run_abc123 --json
     """
     if not bundle_dir.is_dir():
-        err_console.print(f"[red bold]Error:[/] not a directory: {escape(str(bundle_dir))}")
+        if output_json:
+            print(
+                json.dumps(
+                    {"ok": False, "error": "not a directory", "bundle_dir": str(bundle_dir)},
+                    indent=2,
+                )
+            )
+        else:
+            err_console.print(f"[red bold]Error:[/] not a directory: {escape(str(bundle_dir))}")
         raise typer.Exit(code=1)
 
     html_path = bundle_dir / "report.html"
     md_path = bundle_dir / "report.md"
+
+    if output_json:
+        payload = {
+            "ok": True,
+            "bundle_dir": str(bundle_dir),
+            "artifacts": {
+                "html": str(html_path.resolve()) if html_path.exists() else None,
+                "md": str(md_path.resolve()) if md_path.exists() else None,
+            },
+            "has_report": html_path.exists() or md_path.exists(),
+        }
+        print(json.dumps(payload, indent=2))
+        return
 
     # If the user asked for markdown or no html, prefer md.
     prefer_md = fmt == ReportFormat.md or (not html_path.exists() and md_path.exists())
 
     if prefer_md and md_path.exists():
         console.print(f"[dim]Viewing [bold]{escape(str(md_path))}[/] — press q to exit.[/]")
-        with open(md_path) as fh:
-            content = fh.read()
+        content = md_path.read_text(encoding="utf-8")
         with console.pager():
             console.print(content)
         return
@@ -3035,19 +3213,26 @@ def doctor() -> None:
         table.add_row("rxode2 (R pkg)", "[dim]-- skipped[/]", "R not found")
 
     # ---- CmdStan (optional) ----
-    cmdstan_home = shutil.which("cmdstan") or ""
+    # Distinguish "cmdstanpy not installed" from "installed but cmdstan_path() failed"
+    # so users with a broken CmdStan install see the underlying error, not "not found".
     try:
         import cmdstanpy
-
-        cs_path = cmdstanpy.cmdstan_path()
-        table.add_row("CmdStan (optional)", "[green]✓ found[/]", cs_path)
-    except Exception:
+    except ImportError:
         table.add_row(
             "CmdStan (optional)",
-            "[dim]-- not found[/]",
-            "Optional; needed for bayesian_stan backend",
+            "[dim]-- not installed[/]",
+            "Optional; `pip install cmdstanpy` for bayesian_stan backend",
         )
-        _ = cmdstan_home  # suppress unused-var warning
+    else:
+        try:
+            cs_path = cmdstanpy.cmdstan_path()
+            table.add_row("CmdStan (optional)", "[green]✓ found[/]", cs_path)
+        except Exception as e:  # CmdStan install path errors
+            table.add_row(
+                "CmdStan (optional)",
+                "[yellow]⚠ misconfigured[/]",
+                f"cmdstanpy installed but cmdstan_path() failed: {e}",
+            )
 
     # ---- Python packages ----
     for pkg in ("apmode", "pydantic", "typer", "rich", "lark", "pandera"):
@@ -3061,17 +3246,15 @@ def doctor() -> None:
             all_ok = False
 
     # ---- LLM providers (API key presence only) ----
-    # Derived from `_PROVIDER_ENV_KEYS` to stay in sync with runtime resolution.
+    # Iterate over `_PROVIDER_ENV_KEYS` so new providers appear here automatically;
+    # providers without an env-var contract (e.g. ollama, probed separately below)
+    # are skipped by an empty key list.
     import os
 
-    _provider_labels: dict[str, str] = {
-        "anthropic": "Anthropic",
-        "openai": "OpenAI",
-        "gemini": "Google Gemini",
-        "openrouter": "OpenRouter",
-    }
-    for provider_key, label in _provider_labels.items():
-        env_keys = _PROVIDER_ENV_KEYS.get(provider_key, [])
+    for provider_key, env_keys in _PROVIDER_ENV_KEYS.items():
+        if not env_keys:
+            continue
+        label = _PROVIDER_DISPLAY_LABELS.get(provider_key, provider_key.capitalize())
         found = next(((k, os.environ[k]) for k in env_keys if os.environ.get(k)), None)
         if found:
             hit_key, hit_val = found
@@ -3296,8 +3479,10 @@ def ls_command(
     else:  # time
         bundles.sort(key=lambda b: b["mtime"], reverse=True)
 
+    total_bundles = len(bundles)
     if limit > 0:
         bundles = bundles[:limit]
+    truncated = total_bundles > len(bundles)
 
     if output_format == LsFormat.path:
         # Shell-friendly: one absolute path per line on stdout, no Rich markup.
@@ -3352,9 +3537,18 @@ def ls_command(
     console.print()
     console.print(table)
     console.print()
-    console.print(
-        f"[dim]{len(bundles)} run(s) shown. Use [bold]apmode inspect <bundle>[/] for details.[/]"
-    )
+    if truncated:
+        shown_count = (
+            f"[dim]Showing {len(bundles)} of {total_bundles} run(s);"
+            " use [bold]--limit 0[/] for all.[/]"
+        )
+    else:
+        shown_count = (
+            f"[dim]{len(bundles)} run(s) shown."
+            " Use [bold]apmode inspect <bundle>[/] for details;"
+            " [bold]apmode diff <a> <b>[/] to compare two runs.[/]"
+        )
+    console.print(shown_count)
 
 
 # ---------------------------------------------------------------------------
