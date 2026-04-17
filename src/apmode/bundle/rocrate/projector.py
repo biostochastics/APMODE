@@ -56,6 +56,9 @@ from apmode.bundle.rocrate.entities import (
 from apmode.bundle.rocrate.entities import (
     policy as ent_policy,
 )
+from apmode.bundle.rocrate.entities import (
+    sbom as ent_sbom,
+)
 from apmode.bundle.rocrate.entities._common import (
     file_entity,
     load_json_optional,
@@ -300,6 +303,12 @@ class RoCrateEmitter:
 
         # 9. _COMPLETE sentinel — integrity anchor
         self._add_complete_sentinel(graph, bundle_dir, root_id)
+
+        # 9a. CycloneDX SBOM sidecar (optional; present when the bundle
+        # was post-processed with ``apmode bundle sbom`` or dropped in
+        # by CI). Excluded from the sealed digest so this is purely a
+        # projector-side addition — no integrity implications.
+        ent_sbom.add_sbom(graph, bundle_dir, root_id)
 
         # 10. Finalise — sort graph deterministically
         ordered_graph = self._order_graph(graph)

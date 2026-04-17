@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Supply-chain SBOM (CycloneDX)
+
+APMODE now ships a CycloneDX Software Bill of Materials (SBOM) as a
+producer-side sidecar and as a GitHub-release asset. The SBOM describes
+the Python dependency graph that produced the bundle; it is generated
+by `pip-audit --format cyclonedx-json` (pip-audit is already pinned in
+the dev group, so no new top-level dependency is introduced).
+
+- **`apmode bundle sbom <bundle_dir>`** (new CLI) — runs `pip-audit`
+  against the active environment and writes
+  `<bundle_dir>/bom.cdx.json`. Refuses to overwrite an existing SBOM
+  without `--force`. Emits a JSON summary with `--json`.
+- **Sealed-digest exclusion.** `bom.cdx.json` is excluded from
+  `apmode.bundle.emitter._compute_bundle_digest` and the matching
+  importer verifier, so adding or regenerating the SBOM on a sealed
+  bundle never invalidates `_COMPLETE`. This preserves bundle
+  immutability while still colocating the SBOM with the run.
+- **RO-Crate projection.** A new `src/apmode/bundle/rocrate/entities/sbom.py`
+  projector registers the SBOM as a `File` entity with
+  `encodingFormat="application/vnd.cyclonedx+json"` and
+  `additionalType="apmode:sbom"` (new term in `vocab.py`). The root
+  Dataset's `hasPart` gains the SBOM file when present; no-op when
+  absent (golden snapshot unchanged).
+- **CI gate.** The `security` job in `.github/workflows/ci.yml` now
+  emits `bom.cdx.json` on every push / PR and uploads it as a
+  workflow artifact (`sbom-cyclonedx-json`, 90-day retention).
+- **Release asset.** A new `.github/workflows/release.yml` triggers
+  on `v*` tag pushes, regenerates the SBOM against the released
+  environment, builds wheel + sdist with `uv build`, and attaches
+  `bom.cdx.json` + distribution archives to the GitHub release via
+  `gh release create`.
+- **Test coverage.** `tests/unit/rocrate/test_entities_sbom.py`
+  covers the no-op, successful projection (hash + media type +
+  `apmode:sbom`), and the invariant that injecting `bom.cdx.json`
+  after sealing does not trip `_verify_sentinel`.
+
 ### Added — RO-Crate v0.6 integration
 
 APMODE reproducibility bundles can now be projected onto a **Workflow Run

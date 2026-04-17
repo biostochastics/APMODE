@@ -26,7 +26,10 @@ from typing import Any
 def _digest_bundle(run_dir: Path) -> str:
     digest = hashlib.sha256()
     for p in sorted(run_dir.rglob("*"), key=lambda q: q.relative_to(run_dir).as_posix()):
-        if not p.is_file() or p.name == "_COMPLETE":
+        # Mirror ``apmode.bundle.emitter._compute_bundle_digest`` — skip
+        # the sentinel itself and the SBOM sidecar so fixtures that add
+        # bom.cdx.json after sealing still round-trip correctly.
+        if not p.is_file() or p.name in ("_COMPLETE", "bom.cdx.json"):
             continue
         digest.update(p.relative_to(run_dir).as_posix().encode("utf-8"))
         digest.update(b"\0")

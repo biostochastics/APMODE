@@ -65,6 +65,13 @@ COMPLETE_SENTINEL_TYPE = "apmode:completeSentinel"
 sentinel File entity. Consumers that know this type can cross-verify
 the SHA-256 bundle digest regardless of the RO-Crate packaging."""
 
+SBOM_TYPE = "apmode:sbom"
+"""``additionalType`` value for the producer-side CycloneDX SBOM
+(``bom.cdx.json``). Carried in the crate so consumers can audit the
+Python dependency graph that produced the bundle without fetching
+release-asset sidecars. Excluded from the sealed-bundle digest so
+regenerating the SBOM never invalidates ``_COMPLETE``."""
+
 
 class RegulatoryContext(StrEnum):
     """Allowed values of ``apmode:regulatoryContext``.

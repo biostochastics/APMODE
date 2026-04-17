@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+name: Release
+
+# Trigger on semver-ish tags. Tag pushes run the SBOM generator, attach
+# the CycloneDX artifact to the GitHub release, and build the wheel +
+# sdist. Source-of-truth for the release workflow is this file; the
+# regular ci.yml handles PR/branch validation.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+      - run: uv sync --all-extras
+
+      - name: Generate CycloneDX SBOM
+        # Non-zero exit from pip-audit = CVEs found. We still publish the
+        # SBOM and rely on the security CI job to gate merges; the
+        # release step only fails if the file was not produced.
+        run: |
+          uv run pip-audit --format cyclonedx-json --output bom.cdx.json || true
+          test -s bom.cdx.json
+
+      - name: Build wheel + sdist
+        run: uv build
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_REF: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG_REF" \
+            --title "$TAG_REF" \
+            --generate-notes \
+            bom.cdx.json \
+            dist/*

@@ -16,6 +16,8 @@ pretty-printing.
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 import sys
 from pathlib import Path  # noqa: TC003 — used at runtime in Typer annotations
 from typing import Annotated
@@ -182,6 +184,104 @@ def rocrate_export(
     console.print(
         f"[green bold]Exported.[/] Validate with: [dim]apmode validate "
         f"{escape(str(bundle_dir))} --rocrate --crate {escape(str(result_path))}[/]"
+    )
+
+
+@_bundle_app.command("sbom")
+def sbom_command(
+    bundle_dir: Annotated[
+        Path,
+        typer.Argument(
+            help="Path to a bundle directory. bom.cdx.json is written into it.",
+        ),
+    ],
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force/--no-force",
+            help="Overwrite an existing bom.cdx.json.",
+        ),
+    ] = False,
+    output_json: Annotated[
+        bool,
+        typer.Option(
+            "--json",
+            help="Emit JSON (path + size) to stdout for scripting.",
+        ),
+    ] = False,
+) -> None:
+    """Generate a CycloneDX SBOM into ``<bundle_dir>/bom.cdx.json``.
+
+    Runs ``pip-audit --format cyclonedx-json`` against the current
+    Python environment and writes the result as a producer-side sidecar
+    inside the bundle. The SBOM is **excluded from the sealed-bundle
+    digest** (see ``apmode.bundle.emitter._compute_bundle_digest``) so
+    adding it does not invalidate ``_COMPLETE``.
+
+    Subsequent ``apmode bundle rocrate export`` runs will pick up the
+    SBOM automatically and project it as a File entity tagged with
+    ``apmode:sbom``.
+    """
+    if not bundle_dir.exists():
+        err_console.print(f"[red bold]Error:[/] bundle_dir not found: {bundle_dir}")
+        raise typer.Exit(code=1)
+    if not bundle_dir.is_dir():
+        err_console.print(f"[red bold]Error:[/] bundle_dir is not a directory: {bundle_dir}")
+        raise typer.Exit(code=1)
+
+    sbom_path = bundle_dir / "bom.cdx.json"
+    if sbom_path.exists() and not force:
+        err_console.print(
+            f"[red bold]Error:[/] {sbom_path} already exists; pass --force to overwrite."
+        )
+        raise typer.Exit(code=1)
+
+    pip_audit = shutil.which("pip-audit")
+    if pip_audit is None:
+        err_console.print(
+            "[red bold]Error:[/] pip-audit not found on PATH. "
+            "Install it with `uv sync --all-extras` (it is a dev-group dep)."
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        result = subprocess.run(
+            [pip_audit, "--format", "cyclonedx-json", "--output", str(sbom_path)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError as exc:
+        err_console.print(f"[red bold]Error:[/] failed to run pip-audit: {exc}")
+        raise typer.Exit(code=1) from exc
+
+    # pip-audit returns non-zero when CVEs are found but still writes
+    # the SBOM — only treat a missing file as a hard failure.
+    if result.returncode != 0 and not sbom_path.is_file():
+        err_console.print(
+            f"[red bold]pip-audit failed (exit={result.returncode}):[/]\n{result.stderr}"
+        )
+        raise typer.Exit(code=1)
+
+    size = sbom_path.stat().st_size
+    if output_json:
+        sys.stdout.write(
+            json.dumps(
+                {
+                    "ok": True,
+                    "path": str(sbom_path),
+                    "size_bytes": size,
+                    "pip_audit_exit": result.returncode,
+                },
+                indent=2,
+            )
+            + "\n"
+        )
+        return
+
+    console.print(
+        f"[green bold]SBOM written.[/] {escape(str(sbom_path))} ({size} bytes) — "
+        "not counted in the sealed digest."
     )
 
 

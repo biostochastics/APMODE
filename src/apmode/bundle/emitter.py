@@ -59,6 +59,12 @@ _SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_\-]+$")
 # bundle, letting downstream tooling detect both incompleteness (absence of
 # the sentinel) and post-hoc tampering (digest mismatch).
 _COMPLETE_SENTINEL = "_COMPLETE"
+# Producer-side sidecar filename for the CycloneDX SBOM. Emitted by
+# ``apmode bundle sbom`` (and CI) as a post-seal provenance artifact.
+# Excluded from the sealed-bundle digest so that generating or
+# regenerating the SBOM does not invalidate ``_COMPLETE``.
+_SBOM_FILENAME = "bom.cdx.json"
+_DIGEST_EXCLUDED_NAMES: frozenset[str] = frozenset({_COMPLETE_SENTINEL, _SBOM_FILENAME})
 # Schema v2 (v0.5.0): adds per-candidate ``scoring_contract`` on
 # :class:`~apmode.bundle.models.DiagnosticBundle`. Bundles produced before
 # this version do not carry the field; they can be migrated at read time by
@@ -87,7 +93,7 @@ def _compute_bundle_digest(run_dir: Path) -> str:
     """
     digest = hashlib.sha256()
     for p in sorted(run_dir.rglob("*"), key=lambda q: q.relative_to(run_dir).as_posix()):
-        if not p.is_file() or p.name == _COMPLETE_SENTINEL:
+        if not p.is_file() or p.name in _DIGEST_EXCLUDED_NAMES:
             continue
         digest.update(p.relative_to(run_dir).as_posix().encode("utf-8"))
         digest.update(b"\0")

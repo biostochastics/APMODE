@@ -203,7 +203,11 @@ def _verify_sentinel(bundle: Path) -> None:
 
     digest = hashlib.sha256()
     for p in sorted(bundle.rglob("*"), key=lambda q: q.relative_to(bundle).as_posix()):
-        if not p.is_file() or p.name == _COMPLETE_SENTINEL:
+        # bom.cdx.json is a producer-side sidecar that may be generated
+        # post-seal (via ``apmode bundle sbom``); it is excluded from the
+        # digest just like the sentinel so its presence does not trip the
+        # tamper check on import.
+        if not p.is_file() or p.name in (_COMPLETE_SENTINEL, "bom.cdx.json"):
             continue
         digest.update(p.relative_to(bundle).as_posix().encode("utf-8"))
         digest.update(b"\0")

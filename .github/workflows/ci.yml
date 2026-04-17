@@ -71,3 +71,17 @@ jobs:
         run: uv run bandit -r src/apmode/ -ll
       - name: pip-audit dependency CVE scan
         run: uv run pip-audit
+      - name: Generate CycloneDX SBOM
+        # pip-audit exits non-zero if CVEs are present but still writes
+        # the SBOM; we always want the artifact, so tolerate a non-zero
+        # exit and gate only on file presence.
+        run: |
+          uv run pip-audit --format cyclonedx-json --output bom.cdx.json || true
+          test -s bom.cdx.json
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-cyclonedx-json
+          path: bom.cdx.json
+          if-no-files-found: error
+          retention-days: 90
