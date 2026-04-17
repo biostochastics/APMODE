@@ -85,6 +85,61 @@ rows (132 obs × 3 studies), and reconstruction into the per-subject
 (n_sims × n_obs) matrix now produces finite concentrations in the
 expected 0–9 mg/L range.
 
+### rc9 follow-up — R-harness NA pruning (jsonlite ``digits = NA`` string trap)
+
+First full-benchmark after the rxSolve + policy 0.4.1 fixes still crashed
+every candidate with a Pydantic ``float_parsing`` error on
+``PredictedSimulationsSubject.sims_at_observed``. Input values were the
+literal **string** ``"NA"``, not JSON ``null``. Root cause in
+``src/apmode/r/harness.R::.simulate_posterior_predictive``:
+
+1. rxode2 silently drops ODE-integration failures on extreme ETA draws,
+   leaving NA rows in the per-subject ``(n_sims × n_obs)`` matrix.
+   Observed in practice: 193 valid of 500 requested sims per subject,
+   consistent across all 50 subjects.
+2. ``jsonlite::write_json(..., digits = NA)`` takes a max-precision
+   format path that serializes ``NA_real_`` as the literal string
+   ``"NA"`` instead of JSON ``null`` — a known jsonlite behavior under
+   the ``digits = NA`` branch.
+3. Python Pydantic's ``list[list[float]]`` validator rejects
+   ``"NA"`` strings → every candidate raised a backend error and the
+   benchmark spun indefinitely.
+
+Fix (`src/apmode/r/harness.R`):
+
+- ``.simulate_posterior_predictive`` now collects per-subject matrices
+  first, computes the **intersection** of sim indices that are
+  all-finite across every subject, subsets to those rows, and returns
+  ``NULL`` if zero valid sims remain (existing CWRES-proxy fallback
+  kicks in). Logs how many sim replicates were dropped — useful
+  telemetry for solver-fragile models.
+- Both ``write_json`` calls (success + crash-response) now pass
+  ``na = "null"`` as defense-in-depth for any NA that escapes from
+  fit-summary fields (shrinkage, %RSE, etc.).
+
+### rc9 follow-up — empirical verification (Gate 1 target±tolerance actually works)
+
+Re-ran the benchmark after the harness fix. Three scenarios completed
+with full gate decisions before manual stop; all three produced real
+Gate 1 pass/fail verdicts for the first time, with failure reasons
+distributed across all four Gate 1 checks (not just
+``vpc_coverage``). Prior pre-fix run: **0 gate decisions written
+anywhere** (pipeline crashed before summarization).
+
+| Scenario | Lane | n cands | G1 pass | G2 | G2.5 | G3 |
+|---|---|---:|---:|---:|---:|---:|
+| a1 1cmt oral linear | submission | 34 | **11** | 11/11 | 11/11 | 1/1 |
+| a2 2cmt IV parallel MM | discovery | 66 (41 to G1) | **2** | 2/2 | 2/2 | 1/1 |
+| a3 transit 1cmt linear | submission | 34 | **9** | 9/9 | 9/9 | 1/1 |
+
+Harder discovery-lane scenarios (a2: MM kinetics on 2-compartment)
+produce expected low Gate 1 pass rates — the tolerance of 0.15 still
+requires VPC coverage ∈ [0.75, 1.0] so noisy fits are correctly
+rejected. The 25 candidates in a2 that didn't even reach Gate 1 hit
+``ConvergenceError`` at the backend (normal behavior for MM on
+2-cmt). Zero ``"NA"`` strings in any ``response.json`` across the
+entire run, confirming the harness pruning fix holds.
+
 ### rc9 follow-up — policy 0.4.1 (Gate 1 VPC coverage switched to target ± tolerance)
 
 With the rxSolve fix live, the benchmark suite exposed a second latent
