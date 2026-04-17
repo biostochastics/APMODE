@@ -370,8 +370,8 @@ def _validate_variability(spec: DSLSpec, errors: list[ValidationError]) -> None:
                         )
                     )
                 elif np in _NO_VARIABILITY_PARAMS:
-                    # M12: mirror the IIV check — the nlmixr2/Stan
-                    # emitters do not apply IOV eta to Transit 'n' either.
+                    # Mirror the IIV check — the nlmixr2 and Stan
+                    # emitters do not apply IOV eta to Transit ``n`` either.
                     errors.append(
                         ValidationError(
                             module=mod,

@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        # L4: pyproject declares 3.12-3.14 support; keep the CI matrix in
+        # pyproject declares 3.12-3.14 support; keep the CI matrix in
         # sync so 3.14-only regressions surface on every PR.
         python-version: ["3.12", "3.13", "3.14"]
     steps:

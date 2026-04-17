@@ -351,10 +351,9 @@ def _check_split_integrity(result: BackendResult, g1: Gate1Config) -> GateCheckR
 
     sgof = result.diagnostics.split_gof
     if sgof is None:
-        # H6: when a check is required, missing evidence FAILS — matches
-        # the invariant used by _check_pit_calibration (:278) and aligns
-        # with the disqualifying-funnel rule (CLAUDE.md). Passing on
-        # absent evidence was a silent bypass of the required-check
+        # When a check is required, missing evidence fails — matches
+        # the invariant used by ``_check_pit_calibration``. Passing on
+        # absent evidence would be a silent bypass of the required-check
         # semantics.
         return GateCheckResult(
             check_id="split_integrity",
@@ -448,15 +447,14 @@ def _check_seed_stability(
         else 0.0
     )
 
-    # N1: platform/BLAS float-accumulation differences can produce
-    # sub-OFV-unit variation in "identical" fits. A CV computed on
-    # near-equal OFVs would still exceed tight thresholds and cause
-    # spurious instability verdicts. Short-circuit to PASS when the
-    # absolute spread is below an OFV-unit floor — the "scientifically
-    # meaningful" seed stability threshold, not a percentage of a
-    # large OFV. Floor is hard-coded at 0.1 OFV units (Δ|AIC|<0.2,
-    # well below any textbook model-selection tolerance); promote to
-    # policy if lane-specific tuning becomes necessary.
+    # Platform/BLAS float-accumulation differences can produce sub-
+    # OFV-unit variation in "identical" fits. A CV computed on near-
+    # equal OFVs would still exceed tight thresholds and cause spurious
+    # instability verdicts. Short-circuit to PASS when the absolute
+    # spread is below 0.1 OFV units — the "scientifically meaningful"
+    # seed-stability threshold (Δ|AIC|<0.2, well below any textbook
+    # model-selection tolerance). Promote to policy if lane-specific
+    # tuning becomes necessary.
     ofv_abs_spread = float(np.ptp(ofv_arr))  # peak-to-peak = max - min
     if ofv_abs_spread < 0.1:
         return GateCheckResult(
@@ -504,9 +502,8 @@ def _check_imputation_stability(
     variant, or no stability entry is available), the check is marked
     ``not_applicable`` and passes.
     """
-    # L9: ``_result`` prefix signals unused param (candidate is
-    # identified via ``stability.candidate_id``). Previously used
-    # ``del result`` which Ruff's pyupgrade-set flags as unidiomatic.
+    # ``_result`` prefix signals unused param: candidate is identified
+    # via ``stability.candidate_id``.
     if directive is None or stability is None or not directive.covariate_method.startswith("MI-"):
         return GateCheckResult(
             check_id="imputation_stability",

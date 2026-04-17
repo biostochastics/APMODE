@@ -112,8 +112,8 @@ class AnthropicClient:
     ) -> LLMResponse:
         import anthropic
 
-        # H4: native SDK timeout closes the socket cleanly; _await_llm
-        # wraps the coroutine with an outer wait_for to bound total time.
+        # Native SDK timeout closes the socket cleanly; _await_llm wraps
+        # the coroutine with an outer wait_for to bound total time.
         timeout_s = self._config.timeout_seconds
         client = anthropic.AsyncAnthropic(
             api_key=None,  # reads ANTHROPIC_API_KEY from env
@@ -150,13 +150,10 @@ class AnthropicClient:
 
         raw_text = response.content[0].text if response.content else ""
 
-        # H3: Anthropic's Messages API does not expose a deterministic
-        # ``system_fingerprint``. Using ``response.model`` (equal to
-        # ``model_id``) silently masked this gap and tagged every run
-        # ``agentic_reproducibility="best-effort"``. Prefer the response's
-        # request ID (a unique server-side identifier of THIS call) so the
-        # escrow at least captures WHICH server-side invocation produced
-        # the text — ICH M15 reproducibility requires a fingerprint the
+        # Anthropic's Messages API does not expose a deterministic
+        # ``system_fingerprint``, so the escrow falls back to the
+        # response's request ID — a unique server-side identifier of
+        # THIS call. ICH M15 reproducibility requires a fingerprint the
         # sponsor can re-reference.
         request_id = getattr(response, "_request_id", None) or getattr(response, "id", None)
         model_version = f"{response.model}@{request_id}" if request_id else response.model
@@ -459,9 +456,9 @@ class OllamaClient:
         )
         elapsed = time.monotonic() - start
 
-        # M14: newer ollama SDK (>=0.4) returns a Pydantic ChatResponse;
-        # older versions returned a raw dict. Prefer attribute access,
-        # fall back to dict-subscript for legacy installs.
+        # ollama >=0.4 returns a Pydantic ChatResponse; older versions
+        # returned a raw dict. Prefer attribute access, fall back to
+        # dict-subscript for legacy installs.
         message = getattr(response, "message", None)
         if message is not None:
             raw_text = str(getattr(message, "content", "") or "")

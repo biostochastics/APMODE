@@ -6,7 +6,7 @@
 
   **Adaptive Pharmacokinetic Model Discovery Engine**
 
-  [![Version](https://img.shields.io/badge/version-<!-- apmode:AUTO:version_tag -->v0.4.0<!-- apmode:/AUTO:version_tag -->-blue)]()
+  [![Version](https://img.shields.io/badge/version-<!-- apmode:AUTO:version_tag -->v0.5.0-rc1<!-- apmode:/AUTO:version_tag -->-blue)]()
   [![Tests](https://img.shields.io/badge/tests-<!-- apmode:AUTO:tests -->1711<!-- apmode:/AUTO:tests -->%20collected-success)]()
   [![License](https://img.shields.io/badge/license-GPL--2.0--or--later-green)](LICENSE)
   [![Python](https://img.shields.io/badge/python-3.12%E2%80%933.14-yellow)]()
@@ -29,7 +29,7 @@ APMODE is a **governed meta-system** that composes five population PK modeling p
 
 **Formular — a typed PK DSL — is the control surface.** Models are specified in [Formular](docs/FORMULAR.md), a structured grammar (`Absorption × Distribution × Elimination × Variability × Observation × Priors`), compiled to a typed AST, validated against pharmacometric constraints, and lowered to backend-specific code (nlmixr2 R, Stan/Torsten, JAX/Diffrax). The agentic LLM backend (Phase 3) operates exclusively through Formular transforms — including the `SetPrior` transform for Bayesian workflows — it cannot emit raw code.
 
-> **Status**: **<!-- apmode:AUTO:version_tag -->v0.4.0<!-- apmode:/AUTO:version_tag -->** (2026-04-16) — Phase 3 release. <!-- apmode:AUTO:tests_nonlive -->1694<!-- apmode:/AUTO:tests_nonlive --> tests passing (`-m "not live"`); `mypy --strict` clean; `ruff` clean. Supports Python 3.12–3.14. Gate policy schema <!-- apmode:AUTO:policy_gate -->0.4.3<!-- apmode:/AUTO:policy_gate -->; profiler policy <!-- apmode:AUTO:policy_profiler -->2.1.0<!-- apmode:/AUTO:policy_profiler --> (manifest_schema_version = <!-- apmode:AUTO:profiler_manifest -->2<!-- apmode:/AUTO:profiler_manifest -->). Checkpoint/resume via `--resume-agentic`; predictive-diagnostics helper is canonical; per-subject NCA eligibility floors on `Gate3Config`.
+> **Status**: **<!-- apmode:AUTO:version_tag -->v0.5.0-rc1<!-- apmode:/AUTO:version_tag -->** (2026-04-17) — 0.5 release candidate. <!-- apmode:AUTO:tests_nonlive -->1694<!-- apmode:/AUTO:tests_nonlive --> tests passing (`-m "not live"`); `mypy --strict` clean; `ruff` clean. Supports Python 3.12–3.14. Gate policy schema <!-- apmode:AUTO:policy_gate -->0.4.3<!-- apmode:/AUTO:policy_gate -->; profiler policy <!-- apmode:AUTO:policy_profiler -->2.1.0<!-- apmode:/AUTO:policy_profiler --> (manifest_schema_version = <!-- apmode:AUTO:profiler_manifest -->2<!-- apmode:/AUTO:profiler_manifest -->). Reproducibility bundles now carry a `_COMPLETE` sentinel with a SHA-256 digest; `apmode validate` refuses unsealed bundles. Stan emitter handles IV bolus and sanitizes covariate identifiers. LLM providers enforce a 120s default timeout. See [CHANGELOG.md](CHANGELOG.md) for the full 0.5.0-rc1 changes.
 
 All numeric badges + status counts are rewritten from the source tree by `scripts/sync_readme.py` — see [Keeping the README honest](#keeping-the-readme-honest).
 
@@ -580,18 +580,6 @@ uv run pytest tests/ --snapshot-update     # update snapshots after emitter chan
 
 ---
 
-## Phasing
-
-| Phase | Scope | Status |
-|-------|-------|--------|
-| **Phase 0** | Schemas, protocols, grammar, error taxonomy, sparkid integration | Complete |
-| **Phase 1** (6 months) | DSL + compiler, classical NLME backend, automated search, Gates 1-3, reproducibility bundle, CLI, Suite A (7 scenarios) | Complete |
-| **Phase 2** (4 months) | Hybrid NODE backend, functional distillation, Discovery lane, cross-paradigm ranking, Suite B, Stan codegen (IOV + BLQ), NODE init strategy, dataset registry, interactive CLI | Complete |
-| **Phase 2+** | Bayesian backend (Stan/Torsten via cmdstanpy), prior DSL (10 families), `SetPrior` transform, MCMC Gate 1 thresholds, FDA-aligned prior justification | Complete |
-| **Phase 3** (4 months) | Agentic LLM backend (Formular transforms only, ≤25 iters), Optimization lane + LORO-CV, HTML/Markdown report generator, Suite C, checkpoint/resume, predictive-diagnostics canonical helper | **In progress** |
-
----
-
 ## Pharmacometric References
 
 - **Smith 2000 dose-proportionality power model**: Smith BP, Vandenhende FR, DeSante KA, Farid NA, Welch PA, Callaghan JT, Forgue ST (2000). Confidence interval criteria for assessment of dose proportionality. *Pharm Res* 17(10):1278-1283. doi:10.1023/a:1026451721686
@@ -1017,7 +1005,7 @@ If you use APMODE in your research, please cite:
   year         = {2026},
   url          = {https://github.com/biostochastics/apmode},
   license      = {GPL-2.0-or-later},
-  version      = {<!-- apmode:AUTO:version -->0.4.0<!-- apmode:/AUTO:version -->}
+  version      = {<!-- apmode:AUTO:version -->0.5.0-rc1<!-- apmode:/AUTO:version -->}
 }
 ```
 

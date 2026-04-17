@@ -61,10 +61,10 @@ class LLMConfig(BaseModel):
     temperature: float = 0.0
     max_tokens: int = 4096
     api_base: str | None = None
-    # H4: Hard ceiling on a single LLM API call so a hung provider
-    # cannot block the agentic loop indefinitely. Wraps both the native
-    # SDK timeout (where supported) and an outer ``asyncio.wait_for``
-    # to cover SDKs whose retry/backoff paths ignore the kwarg.
+    # Hard ceiling on a single LLM API call so a hung provider cannot
+    # block the agentic loop indefinitely. Wraps both the native SDK
+    # timeout (where supported) and an outer ``asyncio.wait_for`` to
+    # cover SDKs whose retry/backoff paths ignore the kwarg.
     timeout_seconds: float = Field(default=120.0, gt=0.0)
 
     @model_validator(mode="after")

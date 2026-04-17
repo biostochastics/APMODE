@@ -54,11 +54,9 @@ from apmode.benchmarks.scoring import (
 )
 from apmode.bundle.models import PITCalibrationSummary, VPCSummary, _pit_key
 
-# M3: ``np.trapezoid`` is the NumPy 2.0+ spelling; ``np.trapz`` is the
-# legacy name (removed in NumPy 2.0). Project minimum is numpy>=1.25.
-# Prefer ``trapezoid`` when present (modern installs) and fall back to
-# ``trapz`` on older numpy; ``getattr`` short-circuits so we never hit
-# the AttributeError case at import time on a modern numpy.
+# ``np.trapezoid`` is the NumPy 2.0+ spelling; ``np.trapz`` is the
+# legacy name. Project minimum is numpy>=1.25, so pick whichever the
+# installed numpy offers.
 _trapz = getattr(np, "trapezoid", None) or np.trapz  # type: ignore[attr-defined]
 
 if TYPE_CHECKING:

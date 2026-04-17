@@ -120,11 +120,9 @@ class RunOutcome:
     ranked: list[str] = field(default_factory=list)
 
 
-# L7: seed offset for the independent-start agentic mode. Large enough
-# that no sensible user seed (which is held constant across a run) can
-# collide with the derived seed, and small enough to be visible in
-# logs. Kept as a module-level named constant rather than a ``+1000``
-# magic number so the provenance is traceable.
+# Seed offset for the independent-start agentic mode. Large enough
+# that no sensible user seed (held constant across a run) collides
+# with the derived seed, and small enough to be visible in logs.
 _INDEPENDENT_MODE_SEED_OFFSET = 1000
 
 
@@ -256,10 +254,10 @@ class Orchestrator:
         # directive can be resolved and attached to DispatchDecision) ---
         policy = self._load_policy()
         if policy is None:
-            # M5: a missing policy means gates + ranking are skipped below,
-            # which is NEVER valid for submission lane (CLAUDE.md: the
+            # A missing policy means gates + ranking are skipped below,
+            # which is never valid for the submission lane — the
             # disqualifying funnel is load-bearing for regulatory
-            # defensibility). Fail loudly for submission; warn for
+            # defensibility. Fail loudly for submission; warn for
             # discovery/optimization where it is a recoverable
             # configuration.
             if self._config.lane == "submission":
@@ -703,9 +701,6 @@ class Orchestrator:
                     )
                     continue
 
-                # L8: CredibilityContext import moved to module top
-                # to avoid repeated import-lookup overhead inside the
-                # per-candidate loop.
                 # Gate 2.5: Credibility Qualification
 
                 cred_ctx = CredibilityContext(
@@ -864,9 +859,9 @@ class Orchestrator:
         from apmode.backends.agentic_runner import AgenticRunner
         from apmode.search.engine import SearchResult as SR
 
-        # H8: Runtime guards, not ``assert`` — assertions are stripped under
-        # ``python -O``. Both the None-check and the concrete-type check
-        # must remain effective in optimized builds.
+        # Runtime guards, not ``assert`` — assertions are stripped under
+        # ``python -O``, so both the None-check and the concrete-type
+        # check must remain effective in optimized builds.
         runner = self._agentic_runner
         if runner is None:
             msg = "_run_agentic_stage called but agentic_runner is not configured"
@@ -895,9 +890,9 @@ class Orchestrator:
         )
         if converged_srs:
             best_sr = converged_srs[0]
-            # H8: the sort filter above already excludes None results, but
-            # use explicit narrowing rather than ``assert`` so the invariant
-            # survives ``python -O``.
+            # The sort filter above already excludes None results, but
+            # use explicit narrowing rather than ``assert`` so the
+            # invariant survives ``python -O``.
             best_result = best_sr.result
             if best_result is None:
                 msg = (

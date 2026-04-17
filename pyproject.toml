@@ -82,7 +82,7 @@ apmode = "apmode.cli:app"
 
 [tool.hatch.version]
 source = "vcs"
-fallback-version = "0.4.1.dev0"
+fallback-version = "0.5.0-rc1"
 
 [tool.hatch.build.hooks.vcs]
 version-file = "src/apmode/_version.py"

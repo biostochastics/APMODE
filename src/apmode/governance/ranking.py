@@ -457,7 +457,7 @@ def _apply_uniform_bic_drop(
     gate3: Gate3Config,
     bic_list: list[float | None],
 ) -> tuple[Gate3Config, list[float | None], str | None]:
-    """M11: mirror of ``_apply_uniform_auc_cmax_drop`` for BIC.
+    """Mirror of ``_apply_uniform_auc_cmax_drop`` for the BIC component.
 
     When ``bic_weight > 0`` but some candidates lack a finite BIC, the
     composite produces apples-to-oranges totals (candidates without BIC
@@ -547,7 +547,7 @@ def rank_cross_paradigm(
     effective_gate3, effective_auc_cmax, drop_reason = _apply_uniform_auc_cmax_drop(
         gate3, auc_cmax_values
     )
-    # M11: apply uniform BIC drop on the already-adjusted gate3 so the
+    # Apply the uniform BIC drop on the already-adjusted gate3 so the
     # two renormalizations compose correctly when both components have
     # at least one missing candidate.
     effective_gate3, effective_bic, bic_drop_reason = _apply_uniform_bic_drop(

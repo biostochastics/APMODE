@@ -703,9 +703,9 @@ class AgenticRunner:
     def _write_iteration_records(self, records: list[IterationRecord]) -> None:
         """Write agentic_iterations.jsonl — complete audit trail of reasoning.
 
-        L5: the run-at-end ``"w"`` mode rewrites the whole file every call,
-        so a mid-run crash loses in-flight records. Flush each line as we
-        go and fsync so the audit trail survives abrupt termination.
+        Flush and fsync each line so the audit trail survives abrupt
+        termination; otherwise a mid-run crash loses in-flight records
+        under the default buffered-write behaviour.
         """
         path = self._trace_dir / "agentic_iterations.jsonl"
         with path.open("w") as f:

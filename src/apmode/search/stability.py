@@ -332,9 +332,9 @@ def _within_between_ratio(
     statistic. Returns None when n<2 or pooled magnitude is too small to
     normalize meaningfully.
     """
-    # M10: guard against non-finite ``pooled`` — ``abs(nan) < 1e-10`` is
-    # False, which previously let the function proceed to produce a NaN
-    # result that poisoned downstream stability decisions.
+    # Guard non-finite ``pooled`` — ``abs(nan) < 1e-10`` is False, so
+    # without this check a NaN ``pooled`` would proceed to produce a
+    # NaN result and poison downstream stability decisions.
     import math
 
     if len(values) < 2 or pooled is None or not math.isfinite(pooled) or abs(pooled) < 1e-10:

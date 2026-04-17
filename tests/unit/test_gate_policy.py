@@ -58,9 +58,9 @@ class TestGate1Config:
         g1 = _gate1()
         assert g1.parameter_plausibility_required is True
         assert g1.state_trajectory_validity_required is True
-        # H6 deferral: ``split_integrity_required`` default is False so
-        # benchmark/single-fold policies don't need to opt out; policies
-        # that enforce held-out GOF agreement set it to True explicitly.
+        # ``split_integrity_required`` defaults to False so benchmark /
+        # single-fold policies don't need to opt out; policies that
+        # enforce held-out GOF agreement set it to True explicitly.
         assert g1.split_integrity_required is False
 
 

@@ -117,8 +117,9 @@ def _make_backend_result(
                 n_blq=0,
                 blq_fraction=0.0,
             ),
-            # H6: default split_gof so required-check doesn't auto-fail
-            # non-split-related tests. Individual tests can override.
+            # Default split_gof so the required-check path doesn't
+            # auto-fail non-split-related tests. Individual tests can
+            # override.
             split_gof=SplitGOFMetrics(
                 train_cwres_mean=0.01,
                 train_outlier_fraction=0.02,
@@ -405,17 +406,15 @@ class TestGate1:
         assert "cwres_sd" in str(traj.observed)
 
     def test_split_integrity_no_diagnostics_fails_when_required(self) -> None:
-        """H6: when split_gof is None and split_integrity_required=True,
-        the check fails — missing required evidence must never silently
-        pass (CLAUDE.md disqualifying-funnel invariant).
+        """When split_gof is None and split_integrity_required=True,
+        the check must fail — missing required evidence must never
+        silently pass (disqualifying-funnel invariant).
         """
         result = _make_backend_result()
-        # Explicitly clear the fixture default to exercise the missing-evidence path
+        # Clear the fixture default to exercise the missing-evidence path.
         result.diagnostics.split_gof = None
         policy = _load_policy("submission")
-        # Force the check on (default is now False per H6 deferral; the
-        # invariant being tested is the missing-evidence path when the
-        # policy has opted in).
+        # Default is False; opt in to exercise the missing-evidence path.
         policy.gate1 = policy.gate1.model_copy(update={"split_integrity_required": True})
         g1 = evaluate_gate1(result, policy)
         si = next(c for c in g1.checks if c.check_id == "split_integrity")
@@ -454,8 +453,7 @@ class TestGate1:
             n_test=10,
         )
         policy = _load_policy("submission")
-        # H6 deferral: default is now False; explicitly opt in to exercise
-        # the overfitting-detection path.
+        # Default is False; opt in to exercise the overfitting-detection path.
         policy.gate1 = policy.gate1.model_copy(update={"split_integrity_required": True})
         g1 = evaluate_gate1(result, policy)
         si = next(c for c in g1.checks if c.check_id == "split_integrity")

@@ -23,10 +23,8 @@ if TYPE_CHECKING:
     from apmode.bundle.models import EvidenceManifest, MissingDataDirective
     from apmode.governance.policy import MissingDataPolicy
 
-# M1: Lane was previously duplicated (protocol.py StrEnum, cli.py StrEnum,
-# routing.py Literal). The Literal form is kept here to preserve the
-# string-level contract with policy JSONs, but the canonical runtime
-# enum lives in ``apmode.backends.protocol.Lane``.
+# Literal form preserves the string-level contract with policy JSONs;
+# the canonical runtime enum lives in ``apmode.backends.protocol.Lane``.
 Lane = Literal["submission", "discovery", "optimization"]
 
 # Backends available per lane (Phase 1: only nlmixr2 implemented)

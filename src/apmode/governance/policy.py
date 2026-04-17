@@ -34,12 +34,12 @@ class Gate1Config(BaseModel):
     convergence_required: bool = True
     parameter_plausibility_required: bool = True
     state_trajectory_validity_required: bool = True
-    # H6: when True, a BackendResult missing ``split_gof`` FAILS Gate 1
-    # — never silently passes — preserving the disqualifying-funnel
-    # invariant. Default is False because the benchmark scenarios and
-    # single-fold workflows legitimately run without a split manifest;
-    # policies that must enforce held-out GOF agreement should set this
-    # to True explicitly (see docs/adr/0001-review-deferrals.md).
+    # When True, a ``BackendResult`` missing ``split_gof`` fails Gate 1;
+    # missing required evidence must never silently pass (PRD §4.3.1
+    # disqualifying-funnel invariant). Default is False because
+    # benchmark scenarios and single-fold workflows legitimately run
+    # without a split manifest; policies that require held-out GOF
+    # agreement must set this to True explicitly.
     split_integrity_required: bool = False
     # When False, candidates lacking a VPC pass the vpc_coverage check with
     # observed="vpc_not_configured" instead of failing. Defaults True so

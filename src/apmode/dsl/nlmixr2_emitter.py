@@ -485,9 +485,8 @@ def _emit_dynamics(spec: DSLSpec) -> list[str]:
     return _emit_lincmt_dynamics(spec)
 
 
-# M13: shared helper in apmode.dsl._emitter_utils.needs_ode — kept as a
-# thin module-local alias so both emitters stay in sync with a single
-# definition of the "ODE needed?" decision.
+# Shared helper so both emitters stay in sync on the "does this spec
+# need an ODE?" decision.
 from apmode.dsl._emitter_utils import needs_ode as _needs_ode  # noqa: E402
 
 

@@ -40,8 +40,6 @@ if TYPE_CHECKING:
     from apmode.backends.agentic_runner import AgenticRunner
     from apmode.backends.protocol import BackendRunner
 
-# M1: single source of Lane — re-export from protocol.py so Typer's
-# enum handling still sees a concrete StrEnum at this module level.
 import typer
 from rich.console import Console
 from rich.markup import escape
@@ -71,11 +69,9 @@ def _finite_bic_str(value: object) -> str:
     return str(round(f, 1))
 
 
-# M1: alias the canonical Lane (backends.protocol) under the local name
-# ``Lane`` so existing CLI callsites continue to resolve. The canonical
-# members use UPPER_CASE names; the lowercase aliases below preserve the
-# original CLI-facing access pattern (``Lane.SUBMISSION``) without
-# duplicating the enum.
+# Re-export the canonical ``Lane`` StrEnum from ``backends.protocol``.
+# Members use UPPER_CASE so Typer's enum handling still sees a concrete
+# StrEnum at this module level without duplicating the definition.
 Lane = _BackendLane
 
 
@@ -746,10 +742,6 @@ def run(
 
     # Orchestrator currently types the primary runner as Nlmixr2Runner; the
     # BayesianRunner shares the BackendRunner protocol so the cast is safe.
-    # M2: Orchestrator now accepts the BackendRunner protocol directly
-    # (orchestrator.__init__ widened), removing the prior ``cast`` to a
-    # private Nlmixr2Runner alias. The concrete-type guard for the
-    # agentic stage remains inside ``_run_agentic_stage``.
     orchestrator = Orchestrator(
         runner,
         output,
@@ -3393,7 +3385,7 @@ def policies(
       apmode policies submission
       apmode policies --validate
     """
-    # Locate policies/ via shared helper (H3: single source of truth).
+    # Locate policies/ via the shared helper.
     from apmode.paths import policies_dir as _policies_dir
 
     policies_dir = _policies_dir()

@@ -43,10 +43,10 @@ from apmode.data.types import (
 
 _log = logging.getLogger(__name__)
 
-# M4: wrap policy loading in a typed error so a misplaced ``policies/``
-# directory (e.g. installed source without the policy bundle, or a CI
-# cwd mismatch) surfaces with an actionable message rather than a
-# bare ``FileNotFoundError`` propagated out of an unrelated import.
+# Wrap policy loading in a typed error so a misplaced ``policies/``
+# directory (installed source without the policy bundle, or a CI cwd
+# mismatch) surfaces with an actionable message rather than a bare
+# ``FileNotFoundError`` propagated out of an unrelated import.
 try:
     _POLICY = get_policy()
 except FileNotFoundError as _exc:

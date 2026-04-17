@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Shared helpers used by multiple DSL emitters (nlmixr2, Stan, FREM).
 
-M13: extracted from duplicated ``_needs_ode`` definitions in
-``stan_emitter.py`` and ``nlmixr2_emitter.py`` to prevent drift. Any
-change in the "does this spec need an ODE?" decision must now happen
-in exactly one place.
+Any change in the "does this spec need an ODE?" decision must happen in
+exactly one place: ``needs_ode`` below.
 """
 
 from __future__ import annotations

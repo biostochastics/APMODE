@@ -53,7 +53,7 @@ def _make_minimal_bundle(tmp_path: Path, name: str = "run_min") -> Path:
     _write_json(bundle / "data_manifest.json", {"n_subjects": 10, "n_observations": 100})
     _write_json(bundle / "seed_registry.json", {"root_seed": 753849})
     _write_json(bundle / "backend_versions.json", {"nlmixr2": "3.0.0"})
-    # C2: evidence_manifest and candidate_lineage are now required artifacts.
+    # ``evidence_manifest`` and ``candidate_lineage`` are required artifacts.
     _write_json(
         bundle / "evidence_manifest.json",
         {
@@ -63,7 +63,7 @@ def _make_minimal_bundle(tmp_path: Path, name: str = "run_min") -> Path:
         },
     )
     _write_json(bundle / "candidate_lineage.json", {"nodes": [], "edges": []})
-    # C2: write the _COMPLETE sentinel with a matching digest last.
+    # Write the ``_COMPLETE`` sentinel with a matching digest last.
     _write_json(
         bundle / "_COMPLETE",
         {
