@@ -109,7 +109,14 @@ class DatasetCard(BaseModel):
 
 
 class PerturbationType(StrEnum):
-    """Types of controlled data perturbation for Suite B."""
+    """Types of controlled data perturbation for Suite B/C.
+
+    #26: the extra members below extend Suite C stress coverage to the
+    PRD §10 risk surfaces (BSV scaling, saturation, TMDD, flip-flop).
+    The concrete transforms live in benchmarks.perturbations; each one
+    raises NotImplementedError until the implementation lands so
+    Suite C never silently runs without the requested stressor.
+    """
 
     INJECT_BLQ = "inject_blq"
     REMOVE_ABSORPTION_SAMPLES = "remove_absorption_samples"
@@ -118,6 +125,10 @@ class PerturbationType(StrEnum):
     SPARSIFY = "sparsify"
     ADD_PROTOCOL_POOLING = "add_protocol_pooling"
     ADD_OCCASION_LABELS = "add_occasion_labels"
+    SCALE_BSV_VARIANCES = "scale_bsv_variances"
+    SATURATE_CLEARANCE = "saturate_clearance"
+    TMDD = "tmdd"
+    FLIP_FLOP = "flip_flop"
 
 
 class PerturbationRecipe(BaseModel):
@@ -155,6 +166,17 @@ class PerturbationRecipe(BaseModel):
     vary_sampling: bool = False  # Vary sampling schedules per protocol
     vary_lloq: bool = False  # Vary LLOQ per protocol
 
+    # #26: stress-surface parameters. None when the corresponding
+    # perturbation is not selected; the model_validator below enforces
+    # required combinations.
+    bsv_scale_factor: float | None = Field(default=None, gt=0.0)
+    saturation_km: float | None = Field(default=None, gt=0.0)
+    saturation_vmax: float | None = Field(default=None, gt=0.0)
+    tmdd_kss: float | None = Field(default=None, gt=0.0)
+    tmdd_r0: float | None = Field(default=None, gt=0.0)
+    flip_flop_ka: float | None = Field(default=None, gt=0.0)
+    flip_flop_ke_ratio: float | None = Field(default=None, gt=0.0)
+
     @model_validator(mode="after")
     def _validate_required_fields(self) -> PerturbationRecipe:
         """Ensure perturbation-specific fields are set for the given type."""
@@ -177,6 +199,23 @@ class PerturbationRecipe(BaseModel):
             and not self.null_covariate_names
         ):
             msg = "null_covariate_n or null_covariate_names required"
+            raise ValueError(msg)
+        # #26 stress-surface parameter presence checks
+        if t == PerturbationType.SCALE_BSV_VARIANCES and self.bsv_scale_factor is None:
+            msg = "bsv_scale_factor required for SCALE_BSV_VARIANCES"
+            raise ValueError(msg)
+        if t == PerturbationType.SATURATE_CLEARANCE and (
+            self.saturation_km is None or self.saturation_vmax is None
+        ):
+            msg = "saturation_km and saturation_vmax required for SATURATE_CLEARANCE"
+            raise ValueError(msg)
+        if t == PerturbationType.TMDD and (self.tmdd_kss is None or self.tmdd_r0 is None):
+            msg = "tmdd_kss and tmdd_r0 required for TMDD"
+            raise ValueError(msg)
+        if t == PerturbationType.FLIP_FLOP and (
+            self.flip_flop_ka is None or self.flip_flop_ke_ratio is None
+        ):
+            msg = "flip_flop_ka and flip_flop_ke_ratio required for FLIP_FLOP"
             raise ValueError(msg)
         return self
 

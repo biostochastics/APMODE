@@ -165,8 +165,19 @@ def _emit_structural_ini(
     elif isinstance(abs_mod, MixedFirstZero):
         lines.append(f"lka <- log({ov.get('ka', abs_mod.ka)})")
         lines.append(f"ldur <- log({ov.get('dur', abs_mod.dur)})")
-        frac = ov.get("frac", abs_mod.frac)
-        lines.append(f"logit_frac <- log({frac} / (1 - {frac}))")
+        # #14: frac == 1.0 (perfect bioavailability) produced a
+        # ZeroDivisionError on log(1 / 0) at emit time. Clamp to the
+        # 99.99% ceiling and warn — the user can always drop the
+        # ZeroOrder leg or use FirstOrder if they truly want fraction=1.
+        frac_raw = float(ov.get("frac", abs_mod.frac))
+        _frac_epsilon = 1e-4
+        frac_clamped = min(max(frac_raw, _frac_epsilon), 1.0 - _frac_epsilon)
+        if frac_clamped != frac_raw:
+            lines.append(
+                f"# frac clamped from {frac_raw} to {frac_clamped} "
+                f"to avoid singular logit (APMODE #14)"
+            )
+        lines.append(f"logit_frac <- log({frac_clamped} / (1 - {frac_clamped}))")
 
     # --- Distribution ---
     if isinstance(dist_mod, OneCmt):
@@ -395,17 +406,43 @@ def _emit_backtransform(spec: DSLSpec) -> list[str]:
         """Build logit-domain back-transform with eta and covariate effects.
 
         For parameters constrained to (0, 1) like bioavailability fraction.
+
+        #12: mirror the cov.form routing from :func:`_bt` so that power /
+        exponential / linear / maturation relationships are not silently
+        flattened to linear-additive on the logit scale. The functional
+        forms below all target the *logit* (unbounded) scale so ``exp(expr)``
+        is applied in the back-transform at the end; power uses the same
+        70-kg reference as in ``_bt`` (Anderson & Holford 2008).
         """
         expr = logit_name
         if param in iiv_params:
             expr += f" + eta.{param}"
         if param in iov_params:
             expr += f" + eta.iov.{param}"
-        # Covariate effects on logit scale (additive on logit = multiplicative on odds)
+        # Covariate effects on logit scale. The logit is unbounded so
+        # each cov.form maps naturally from its _bt counterpart:
+        #   - power:      β·log(cov / 70)        (log-linear on odds)
+        #   - exponential: β·cov                   (linear on odds)
+        #   - linear:     log(1 + β·cov)          (matches _bt — non-negative effect)
+        #   - categorical: β·cov                   (indicator on odds)
+        #   - maturation: log(cov^β / (cov^β + TM50^β))
         for cov in cov_links:
             if cov.param == param:
                 coeff = f"beta_{cov.param}_{cov.covariate}"
-                expr += f" + {coeff} * {cov.covariate}"
+                if cov.form == "power":
+                    expr += f" + {coeff} * log({cov.covariate} / 70)"
+                elif cov.form == "exponential":
+                    expr += f" + {coeff} * {cov.covariate}"
+                elif cov.form == "linear":
+                    expr += f" + log(1 + {coeff} * {cov.covariate})"
+                elif cov.form == "categorical":
+                    expr += f" + {coeff} * {cov.covariate}"
+                elif cov.form == "maturation":
+                    tm50 = f"TM50_{cov.param}_{cov.covariate}"
+                    expr += (
+                        f" + log({cov.covariate}^{coeff} / "
+                        f"({cov.covariate}^{coeff} + {tm50}^{coeff}))"
+                    )
         return f"{param} <- 1 / (1 + exp(-({expr})))"
 
     abs_mod = spec.absorption
@@ -521,11 +558,14 @@ def _emit_ode_dynamics(spec: DSLSpec) -> list[str]:
         _abs_influx = "ka * depot"
     elif isinstance(abs_mod, ZeroOrder):
         # Zero-order absorption via rxode2 modeled duration.
-        # dur(centr) sets the infusion duration: dose AMT enters central
-        # compartment at constant rate AMT/dur over dur hours.
-        # No separate depot needed — dosing goes directly into central
-        # with CMT pointing to the central compartment in the data.
-        lines.append("dur(centr) <- dur")
+        # dur(<cmt>) sets the infusion duration: dose AMT enters the
+        # central compartment at constant rate AMT/dur over dur hours.
+        # #13: under TMDDQSS the central compartment is ``Atot`` (total
+        # drug), not ``centr`` — hardcoding ``dur(centr)`` would
+        # fail rxode2 compilation. _central_cmt_name resolves the
+        # correct name from the distribution module.
+        _cmt = _central_cmt_name(dist_mod)
+        lines.append(f"dur({_cmt}) <- dur")
         _abs_influx = ""  # handled by rxode2 infusion mechanism
     elif isinstance(abs_mod, LaggedFirstOrder):
         lines.append("alag(depot) <- tlag")
@@ -590,6 +630,19 @@ def _emit_ode_dynamics(spec: DSLSpec) -> list[str]:
         _emit_tmdd_qss_odes(lines, _abs_influx)
 
     return lines
+
+
+def _central_cmt_name(dist_mod: object) -> str:
+    """Return the central-compartment identifier emitted by this module.
+
+    #13: ZeroOrder absorption uses ``dur(<cmt>)`` to set the modelled
+    infusion duration. Under :class:`TMDDCore` / :class:`TMDDQSS` the
+    total-drug pool is named ``Atot`` by :func:`_emit_tmdd_core_odes` /
+    :func:`_emit_tmdd_qss_odes`; all other distributions use ``centr``.
+    """
+    if isinstance(dist_mod, (TMDDCore, TMDDQSS)):
+        return "Atot"
+    return "centr"
 
 
 def _elimination_rate_expr(elim_mod: object, cmt: str, vol: str) -> str:
@@ -697,4 +750,13 @@ def _emit_observation_model(spec: DSLSpec) -> list[str]:
             return [comment, "cp ~ add(add.sd)"]
         else:  # combined
             return [comment, "cp ~ prop(prop.sd) + add(add.sd)"]
-    return ["cp ~ prop(prop.sd)"]
+    # #28: catching every other ObservationModule with a silent
+    # proportional fallback is how unknown AST nodes reach backends
+    # unnoticed. Raise so unimplemented obs modules are caught at
+    # emit time rather than producing a wrong model.
+    msg = (
+        f"nlmixr2 emitter: unsupported observation module "
+        f"{type(obs).__name__} — implement a new branch instead of "
+        "relying on the proportional default."
+    )
+    raise NotImplementedError(msg)

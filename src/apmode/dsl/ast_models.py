@@ -377,6 +377,12 @@ class BLQM3(BaseModel):
     Composes with an underlying residual error model via error_model.
     Defaults to proportional (prop.sd=0.1) for backward compatibility.
     nlmixr2 censoring uses CENS/LIMIT data columns, not model-block syntax.
+
+    #30: ``sigma_prop`` and ``sigma_add`` are always present on the model
+    regardless of ``error_model`` — that keeps ``==`` comparisons stable
+    and avoids plumbing ``Optional[float]`` through every downstream
+    consumer. Use :meth:`active_sigmas` when counting fitted parameters
+    so vestigial defaults are not double-counted.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -386,6 +392,21 @@ class BLQM3(BaseModel):
     sigma_prop: float = 0.1
     sigma_add: float = 0.5
 
+    def active_sigmas(self) -> list[str]:
+        """Return the subset of sigma fields that enter the likelihood.
+
+        ``proportional`` → ``["sigma_prop"]``; ``additive`` →
+        ``["sigma_add"]``; ``combined`` → both. Parameter-count and
+        prior-coverage helpers should prefer this over inspecting every
+        field so that vestigial defaults do not silently inflate the
+        count (Gate 1 scoring-contract consistency).
+        """
+        if self.error_model == "proportional":
+            return ["sigma_prop"]
+        if self.error_model == "additive":
+            return ["sigma_add"]
+        return ["sigma_prop", "sigma_add"]
+
 
 class BLQM4(BaseModel):
     """BLQ handling via M4 method (censoring with positive constraint).
@@ -393,6 +414,9 @@ class BLQM4(BaseModel):
     Composes with an underlying residual error model via error_model.
     Defaults to proportional (prop.sd=0.1) for backward compatibility.
     nlmixr2 censoring uses CENS/LIMIT data columns, not model-block syntax.
+
+    See :class:`BLQM3` for the rationale behind always-present sigma
+    fields; use :meth:`active_sigmas` when counting parameters.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -401,6 +425,14 @@ class BLQM4(BaseModel):
     error_model: Literal["proportional", "additive", "combined"] = "proportional"
     sigma_prop: float = 0.1
     sigma_add: float = 0.5
+
+    def active_sigmas(self) -> list[str]:
+        """Sigma fields that enter the likelihood. See :meth:`BLQM3.active_sigmas`."""
+        if self.error_model == "proportional":
+            return ["sigma_prop"]
+        if self.error_model == "additive":
+            return ["sigma_add"]
+        return ["sigma_prop", "sigma_add"]
 
 
 ObservationModule = Annotated[
@@ -430,6 +462,13 @@ class DSLSpec(BaseModel):
     variability: list[VariabilityItem]
     observation: ObservationModule
     priors: list[PriorSpec] = Field(default_factory=list)
+    # #17: source_meta is populated by ``parse_dsl_with_source`` as a
+    # sidecar map from AST node kind (``"absorption"`` / ``"distribution"``
+    # / ``"elimination"`` / ``"observation"`` / ``"variability[i]"``) to
+    # a ``(line, column)`` tuple pulled off the Lark parse tree. Empty
+    # when the spec was built programmatically (no parse tree). The
+    # validator uses it to annotate error messages with ``file.pk:L:C``.
+    source_meta: dict[str, tuple[int, int]] = Field(default_factory=dict)
 
     def has_node_modules(self) -> bool:
         """Check if this spec uses any NODE modules."""
@@ -447,7 +486,15 @@ class DSLSpec(BaseModel):
         return max(dims) if dims else 0
 
     def structural_param_names(self) -> list[str]:
-        """Return the names of all structural parameters in the spec."""
+        """Return the names of all structural parameters in the spec.
+
+        #11: NODE modules contribute ``node_abs_w[...]`` /
+        ``node_elim_w[...]`` entries (one per input-layer weight under the
+        Bräm hybrid PRD §4.2.4 layout) so downstream Variability items
+        that target NODE weights pass ``_validate_variability`` instead
+        of being rejected on a ``valid_params`` miss. IVBolus contributes
+        nothing (no absorption parameters — dose enters central directly).
+        """
         names: list[str] = []
         # Absorption params
         abs_mod = self.absorption
@@ -462,6 +509,13 @@ class DSLSpec(BaseModel):
             names.extend(["n", "ktr", "ka"])
         elif isinstance(abs_mod, MixedFirstZero):
             names.extend(["ka", "dur", "frac"])
+        elif isinstance(abs_mod, IVBolus):
+            # IV bolus has no absorption parameters.
+            pass
+        elif isinstance(abs_mod, NODEAbsorption):
+            # Bräm-style hybrid: IIV lives on input-layer weights. Expose
+            # one name per dim so Variability validation accepts them.
+            names.extend(f"node_abs_w{i}" for i in range(abs_mod.dim))
 
         # Distribution params
         dist_mod = self.distribution
@@ -486,5 +540,7 @@ class DSLSpec(BaseModel):
             names.extend(["CL", "Vmax", "Km"])
         elif isinstance(elim_mod, TimeVaryingElim):
             names.extend(["CL", "kdecay"])
+        elif isinstance(elim_mod, NODEElimination):
+            names.extend(f"node_elim_w{i}" for i in range(elim_mod.dim))
 
         return names

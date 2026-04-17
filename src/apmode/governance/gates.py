@@ -96,7 +96,7 @@ def evaluate_gate1(
     checks: list[GateCheckResult] = []
 
     checks.append(_check_convergence(result, g1))
-    checks.append(_check_parameter_plausibility(result))
+    checks.append(_check_parameter_plausibility(result, g1))
     checks.append(_check_state_trajectory(result, g1))
     checks.extend(_check_cwres(result, g1))
     checks.append(_check_pit_calibration(result, g1))
@@ -138,11 +138,13 @@ def _check_convergence(result: BackendResult, g1: Gate1Config) -> GateCheckResul
     )
 
 
-def _check_parameter_plausibility(result: BackendResult) -> GateCheckResult:
+def _check_parameter_plausibility(result: BackendResult, g1: Gate1Config) -> GateCheckResult:
     """Check 2: Are structural parameters plausible?
 
-    Checks: no negative volumes or clearances, no RSE > 200% (when available),
-    no estimates at boundary (0.01 or 10000 — our sanity bounds).
+    Checks: no negative volumes or clearances, RSE below ``g1.param_rse_max``,
+    back-transformed structural estimates within
+    ``(g1.param_value_min, g1.param_value_max)``. All thresholds are
+    sourced from the versioned policy JSON — no magic numbers here.
 
     nlmixr2 (and most popPK backends) parameterise structural thetas in
     log-space (``lCL``, ``lV``, ``lka``, ``lktr``, ``lQ``, ``lVm``, ``lKm``,
@@ -152,8 +154,9 @@ def _check_parameter_plausibility(result: BackendResult) -> GateCheckResult:
     convention and check the back-transformed value against the sanity
     bounds.
     """
-    lower_bound = 1e-4
-    upper_bound = 1e5
+    lower_bound = g1.param_value_min
+    upper_bound = g1.param_value_max
+    rse_max = g1.param_rse_max
 
     issues: list[str] = []
     for name, pe in result.parameter_estimates.items():
@@ -169,8 +172,8 @@ def _check_parameter_plausibility(result: BackendResult) -> GateCheckResult:
             issues.append(f"{label}={value:.4g} (at lower bound)")
         elif value >= upper_bound:
             issues.append(f"{label}={value:.4g} (at upper bound)")
-        if pe.rse is not None and pe.rse > 200:
-            issues.append(f"{name} RSE={pe.rse:.1f}% (>200%)")
+        if pe.rse is not None and pe.rse > rse_max:
+            issues.append(f"{name} RSE={pe.rse:.1f}% (>{rse_max:g}%)")
 
     passed = len(issues) == 0
     return GateCheckResult(
@@ -292,6 +295,19 @@ def _check_pit_calibration(result: BackendResult, g1: Gate1Config) -> GateCheckR
             check_id="pit_calibration",
             passed=False,
             observed="pit_not_available",
+        )
+    # #18 / #33: build_predictive_diagnostics can now emit a
+    # zero-subject PIT summary when the sim matrix is fully degenerate
+    # (e.g. every draw NaN). That is "PIT attempted but produced no
+    # evidence" — distinct from "PIT not configured" and from
+    # "computed and out of tolerance". Surface it as an explicit fail
+    # reason so Gate 1 diagnostics make the missing-evidence case
+    # unambiguous for auditors.
+    if pit.n_subjects == 0 or pit.n_observations == 0:
+        return GateCheckResult(
+            check_id="pit_calibration",
+            passed=False,
+            observed="pit_degenerate_no_finite_sims",
         )
 
     # n-scaled tolerance: tol(p, n) = max(floor, z_alpha · sqrt(p(1-p)/n_subjects))
@@ -451,19 +467,19 @@ def _check_seed_stability(
     # OFV-unit variation in "identical" fits. A CV computed on near-
     # equal OFVs would still exceed tight thresholds and cause spurious
     # instability verdicts. Short-circuit to PASS when the absolute
-    # spread is below 0.1 OFV units — the "scientifically meaningful"
-    # seed-stability threshold (Δ|AIC|<0.2, well below any textbook
-    # model-selection tolerance). Promote to policy if lane-specific
-    # tuning becomes necessary.
+    # spread is below the policy-configured platform-float floor
+    # (default 0.1 OFV units; Δ|AIC|<0.2 — well below any textbook
+    # model-selection tolerance).
     ofv_abs_spread = float(np.ptp(ofv_arr))  # peak-to-peak = max - min
-    if ofv_abs_spread < 0.1:
+    ofv_spread_floor = g1.seed_stability_ofv_abs_spread_floor
+    if ofv_abs_spread < ofv_spread_floor:
         return GateCheckResult(
             check_id="seed_stability",
             passed=True,
             observed=(
                 f"stable_within_numerical_precision (ofv_spread={ofv_abs_spread:.3g}, cv={cv:.4f})"
             ),
-            threshold="|Δofv| < 0.1 OFV units (platform-float floor)",
+            threshold=f"|Δofv| < {ofv_spread_floor:g} OFV units (platform-float floor)",
         )
 
     # CV below policy threshold → stable
@@ -871,7 +887,8 @@ def _gate3_within_paradigm(
     policy: GatePolicy,
 ) -> tuple[GateResult, list[RankedCandidate]]:
     """Within-paradigm ranking by BIC (Phase 1 behavior, preserved)."""
-    sorted_survivors = sorted(survivors, key=_safe_bic)
+    # Secondary key on model_id breaks BIC ties deterministically.
+    sorted_survivors = sorted(survivors, key=lambda r: (_safe_bic(r), r.model_id))
 
     ranked: list[RankedCandidate] = []
     for i, result in enumerate(sorted_survivors):

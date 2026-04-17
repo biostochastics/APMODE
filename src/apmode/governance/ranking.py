@@ -611,7 +611,9 @@ def rank_cross_paradigm(
             strict=True,
         )
     ]
-    metrics.sort(key=lambda m: m.composite_score)
+    # Secondary key on candidate_id prevents float-tie reorderings when
+    # composite_score is a Borda integer-rank sum (frequent in practice).
+    metrics.sort(key=lambda m: (m.composite_score, m.candidate_id))
 
     if qualification_reason is None:
         _, qualification_reason = ranking_requires_simulation_metrics(survivors, gate3=gate3)

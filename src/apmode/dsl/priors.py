@@ -231,9 +231,15 @@ class PriorSpec(BaseModel):
 
 _VALID_FAMILIES: dict[TargetKind, frozenset[str]] = {
     "structural": frozenset({"Normal", "LogNormal", "Mixture", "HistoricalBorrowing"}),
-    "iiv_sd": frozenset({"HalfNormal", "HalfCauchy", "Gamma", "InvGamma"}),
-    "iov_sd": frozenset({"HalfNormal", "HalfCauchy", "Gamma", "InvGamma"}),
-    "residual_sd": frozenset({"HalfNormal", "HalfCauchy", "Gamma", "InvGamma"}),
+    # #29: InvGamma is conventionally a variance prior. Allowing it on
+    # *_sd targets without a matching sqrt transformation in the Stan
+    # emitter would silently constrain the variance while the emitter
+    # draws on the SD scale. Drop InvGamma from these rows; the
+    # Stan-side variance-prior escape hatch is an explicit
+    # ``InvGammaOnSquare`` wrapper we can add later if needed.
+    "iiv_sd": frozenset({"HalfNormal", "HalfCauchy", "Gamma"}),
+    "iov_sd": frozenset({"HalfNormal", "HalfCauchy", "Gamma"}),
+    "residual_sd": frozenset({"HalfNormal", "HalfCauchy", "Gamma"}),
     # LKJ on corr_iiv is accepted by the schema; stan_emitter does not yet
     # declare corr_iiv in the parameters block and will raise NotImplementedError
     # if it sees it. Accepting here so agentic transforms can plan for it.

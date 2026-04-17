@@ -163,6 +163,22 @@ def resolve_directive(
             f"additive error; Wijk 2025)."
         )
 
+    # Adaptive-m escalation is declared on MissingDataPolicy but is NOT
+    # yet implemented downstream — search/stability.run_with_imputations
+    # loops exactly m_imputations times. Refuse policies that set
+    # adaptive_m=True so the phantom feature does not silently degrade
+    # to fixed m without the caller realising. See findings list:
+    # "adaptive_m / m_max dead config chain".
+    if policy.adaptive_m and m_imputations is not None:
+        msg = (
+            "MissingDataPolicy.adaptive_m=True is not yet implemented; "
+            "search/stability.run_with_imputations loops exactly "
+            "m_imputations times with no variance-threshold escalation. "
+            "Set adaptive_m=False (the default) or implement adaptive "
+            "escalation before relying on it."
+        )
+        raise NotImplementedError(msg)
+
     return MissingDataDirective(
         covariate_method=covariate_method,
         m_imputations=m_imputations,

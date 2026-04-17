@@ -80,12 +80,22 @@ class TestSuiteANodeScenarios:
         assert spec.has_node_modules(), f"Scenario {name} should have NODE modules"
 
     def test_reference_params_are_mechanistic_only(self, name: str, factory: object) -> None:
-        """NODE scenario reference params cover only mechanistic (non-NODE) structural params."""
+        """NODE scenario reference params cover only mechanistic (non-NODE) structural params.
+
+        ``structural_param_names()`` now exposes NODE input-layer weights
+        (``node_abs_w*`` / ``node_elim_w*``) so Variability validation can
+        target them (#11). Reference params remain the mechanistic subset
+        — assert that via a subset/disjoint-complement check rather than
+        set equality.
+        """
         spec = factory()  # type: ignore[operator]
         ref = set(REFERENCE_PARAMS[name].keys())
         struct = set(spec.structural_param_names())
-        assert ref == struct, (
-            f"Scenario {name}: reference params {ref} != structural params {struct}"
+        mechanistic = {
+            s for s in struct if not s.startswith("node_abs_w") and not s.startswith("node_elim_w")
+        }
+        assert ref == mechanistic, (
+            f"Scenario {name}: reference params {ref} != mechanistic params {mechanistic}"
         )
 
 

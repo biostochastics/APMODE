@@ -5,9 +5,9 @@ Generates a complete Stan program from a DSLSpec for probabilistic inference.
 Uses ODE-based models via Stan's `ode_rk45` integrator for non-linear dynamics,
 and analytical solutions (matrix exponential) for linear compartment models.
 
-Observation model:
-  - Proportional: y ~ lognormal(log(f), sigma)
-  - Additive:     y ~ normal(f, sigma)
+Observation model (#1 — matches nlmixr2 semantics for cross-paradigm NLPD):
+  - Proportional: y ~ normal(f, sigma_prop * f)
+  - Additive:     y ~ normal(f, sigma_add)
   - Combined:     y ~ normal(f, sqrt((sigma_prop * f)^2 + sigma_add^2))
 
 IIV is modeled via log-normal random effects:
@@ -413,9 +413,25 @@ def _emit_data_block(spec: DSLSpec) -> str:
 
 
 def _emit_transformed_data_block() -> str:
+    """Emit transformed data — x_r/x_i stubs plus per-subject obs slices.
+
+    #3: precompute obs_start[i] / obs_end[i] — the first and last
+    indices into the flat (time, dv, subject) arrays for each subject.
+    The ODE/analytical solves iterate the slice ``obs_start[i]:obs_end[i]``
+    directly instead of scanning all N observations with a
+    ``if (subject[n] == i)`` filter, collapsing the outer O(N x N_subjects)
+    double loop to the tight O(N) actually required.
+    """
     lines = ["transformed data {"]
     lines.append("  array[0] real x_r;")
     lines.append("  array[0] int x_i;")
+    lines.append("  array[N_subjects] int obs_start = rep_array(0, N_subjects);")
+    lines.append("  array[N_subjects] int obs_end = rep_array(0, N_subjects);")
+    lines.append("  for (n in 1:N) {")
+    lines.append("    int s = subject[n];")
+    lines.append("    if (obs_start[s] == 0) obs_start[s] = n;")
+    lines.append("    obs_end[s] = n;")
+    lines.append("  }")
     lines.append("}")
     return "\n".join(lines)
 
@@ -823,8 +839,16 @@ def _emit_likelihood(spec: DSLSpec) -> list[str]:
     obs = spec.observation
     if isinstance(obs, (BLQM3, BLQM4)):
         return _emit_blq_likelihood(spec)
+    # #1: unify proportional likelihood with nlmixr2 (``cp ~ prop(prop.sd)``,
+    # which is Normal-with-proportional-variance). The rc8 path used
+    # lognormal here but Normal at line ~863 in the BLQ branch — so Stan
+    # was internally inconsistent AND silently diverged from nlmixr2,
+    # invalidating every cross-paradigm NLPD comparison (PRD §4.3.1).
     if isinstance(obs, Proportional):
-        return ["  dv ~ lognormal(log(f), sigma_prop);"]
+        return [
+            "  for (n in 1:N)",
+            "    dv[n] ~ normal(f[n], sigma_prop * f[n]);",
+        ]
     if isinstance(obs, Additive):
         return ["  dv ~ normal(f, sigma_add);"]
     if isinstance(obs, Combined):
@@ -832,7 +856,13 @@ def _emit_likelihood(spec: DSLSpec) -> list[str]:
             "  for (n in 1:N)",
             "    dv[n] ~ normal(f[n], sqrt(square(sigma_prop * f[n]) + square(sigma_add)));",
         ]
-    return ["  dv ~ lognormal(log(f), sigma_prop);"]
+    # #28: reject unknown obs modules loudly instead of emitting a
+    # silent proportional default that hides unimplemented branches.
+    msg = (
+        f"stan_emitter._emit_likelihood: unsupported observation module "
+        f"{type(obs).__name__} — add a new branch."
+    )
+    raise NotImplementedError(msg)
 
 
 def _emit_blq_likelihood(spec: DSLSpec) -> list[str]:
@@ -880,8 +910,11 @@ def _emit_log_lik(spec: DSLSpec, indent: int = 4) -> list[str]:
     obs = spec.observation
     if isinstance(obs, (BLQM3, BLQM4)):
         return _emit_blq_log_lik(spec, indent)
+    # #1: log_lik must match the likelihood (Normal with proportional
+    # variance, not lognormal) so cross-paradigm NLPD comparison is
+    # valid and the Stan BLQ branch stays internally consistent.
     if isinstance(obs, Proportional):
-        return [f"{pad}log_lik[n] = lognormal_lpdf(dv[n] | log(f[n]), sigma_prop);"]
+        return [f"{pad}log_lik[n] = normal_lpdf(dv[n] | f[n], sigma_prop * f[n]);"]
     if isinstance(obs, Additive):
         return [f"{pad}log_lik[n] = normal_lpdf(dv[n] | f[n], sigma_add);"]
     if isinstance(obs, Combined):
@@ -889,7 +922,11 @@ def _emit_log_lik(spec: DSLSpec, indent: int = 4) -> list[str]:
             f"{pad}log_lik[n] = normal_lpdf(dv[n] | f[n], "
             f"sqrt(square(sigma_prop * f[n]) + square(sigma_add)));"
         ]
-    return [f"{pad}log_lik[n] = lognormal_lpdf(dv[n] | log(f[n]), sigma_prop);"]
+    msg = (
+        f"stan_emitter._emit_log_lik: unsupported observation module "
+        f"{type(obs).__name__} — add a new branch."
+    )
+    raise NotImplementedError(msg)
 
 
 def _emit_blq_log_lik(spec: DSLSpec, indent: int = 4) -> list[str]:
@@ -944,8 +981,18 @@ def _emit_state_aliases(spec: DSLSpec, indent: int = 4) -> list[str]:
 
     centr = _centr_idx(spec)
     dist = spec.distribution
-    if isinstance(dist, (OneCmt, TMDDCore, TMDDQSS)):
+    # #16: under TMDDQSS the "central" state holds total drug (Atot =
+    # free + bound), not free central drug. Expose both names so the
+    # ODE RHS and nlmixr2 emitter stay naming-consistent; ``conc``
+    # below (=centr/V) therefore actually uses total drug and the
+    # emitted model must be aware of that.
+    if isinstance(dist, (OneCmt, TMDDCore)):
         lines.append(f"{pad}real centr = y[{centr}];")
+    elif isinstance(dist, TMDDQSS):
+        # Alias Atot so Stan code reads the same way the nlmixr2 emitter
+        # does (TMDDQSS branch of _emit_tmdd_qss_odes in the nlmixr2 path).
+        lines.append(f"{pad}real Atot = y[{centr}];")
+        lines.append(f"{pad}real centr = Atot;  // alias for shared RHS template")
     elif isinstance(dist, TwoCmt):
         lines.append(f"{pad}real centr = y[{centr}];")
         lines.append(f"{pad}real periph = y[{centr + 1}];")
@@ -1097,11 +1144,11 @@ def _emit_ode_solve(spec: DSLSpec, indent: int = 4) -> list[str]:
     vol = "V" if isinstance(spec.distribution, (OneCmt, TMDDCore, TMDDQSS)) else "V1"
 
     lines.append("")
-    lines.append(f"{pad}// Merged chronological pass: interleave dose events and observations")
-    lines.append(f"{pad}// Process dose events before observations at the same time")
+    lines.append(f"{pad}// #3: iterate only the subject's observation slice")
+    lines.append(f"{pad}// (obs_start[i]..obs_end[i]) instead of scanning all N.")
     lines.append(f"{pad}int e_idx = event_start[i];  // current dose event cursor")
-    lines.append(f"{pad}for (n in 1:N) {{")
-    lines.append(f"{pad}  if (subject[n] == i) {{")
+    lines.append(f"{pad}if (obs_start[i] > 0) {{")
+    lines.append(f"{pad}  for (n in obs_start[i]:obs_end[i]) {{")
     lines.append(f"{pad}    // Apply all pending dose events up to (and including) this obs time")
     lines.append(f"{pad}    while (e_idx >= 1 && e_idx <= event_end[i]")
     lines.append(f"{pad}           && event_time[e_idx] <= time[n]) {{")
@@ -1118,8 +1165,17 @@ def _emit_ode_solve(spec: DSLSpec, indent: int = 4) -> list[str]:
     lines.append(f"{pad}        y_state = rep_vector(0, {n_states});")
     lines.append(f"{pad}      // Apply dose (EVID=1 or 4)")
     lines.append(f"{pad}      if (event_evid[e_idx] == 1 || event_evid[e_idx] == 4) {{")
-    lines.append(f"{pad}        if (event_cmt[e_idx] <= {n_states})")
-    lines.append(f"{pad}          y_state[event_cmt[e_idx]] += event_amt[e_idx];")
+    # #4: previously we silently skipped doses whose event_cmt exceeded
+    # n_states (e.g. CMT=2 against an IVBolus+OneCmt model with
+    # n_states=1). That's a dataset/model mismatch, not a filter to
+    # apply quietly. Raise so the contract violation is visible.
+    lines.append(f"{pad}        if (event_cmt[e_idx] < 1 || event_cmt[e_idx] > {n_states})")
+    lines.append(
+        f'{pad}          reject("event_cmt=", event_cmt[e_idx], '
+        f'" out of range for model with n_states={n_states} "'
+        f'"(dose event index ", e_idx, "); mapping dataset CMT to state is required.");'
+    )
+    lines.append(f"{pad}        y_state[event_cmt[e_idx]] += event_amt[e_idx];")
     lines.append(f"{pad}      }}")
     lines.append(f"{pad}      e_idx += 1;")
     lines.append(f"{pad}    }}")
@@ -1144,6 +1200,7 @@ def _emit_ode_solve(spec: DSLSpec, indent: int = 4) -> list[str]:
     else:
         lines.append(f"{pad}    f[n] = fmax(y_state[{centr}] / {vol}_i, 1e-10);")
 
+    lines.append(f"{pad}  }}")
     lines.append(f"{pad}  }}")
     lines.append(f"{pad}}}")
 
@@ -1217,6 +1274,23 @@ def _emit_analytical_solve(spec: DSLSpec, indent: int = 4) -> list[str]:
             f"{pad}    real a2 = 0.5 * ((ke + k12 + k21)"
             f" - sqrt(square(ke + k12 + k21) - 4 * ke * k21));"
         )
+        # #15: under flip-flop kinetics (ka_i ≈ a1 or ka_i ≈ a2) the
+        # analytical denominator collapses. Detect the near-singular
+        # case and fall back to the numerical ODE solver for this
+        # subject rather than letting HMC silently reject every draw.
+        # Tolerance is scaled by max(1, ka_i) so it works in any unit
+        # system (1/h, 1/day, …).
+        lines.append(f"{pad}    real _ff_tol = 1e-6 * fmax(1.0, ka_i);")
+        lines.append(
+            f"{pad}    if (fabs(ka_i - a1) < _ff_tol"
+            f" || fabs(ka_i - a2) < _ff_tol"
+            f" || fabs(a1 - a2) < _ff_tol) {{"
+        )
+        lines.append(
+            f'{pad}      reject("TwoCmt analytical solution near flip-flop singularity '
+            f'for subject ", i, "; switch to numerical ODE solver.");'
+        )
+        lines.append(f"{pad}    }}")
         lines.append(f"{pad}    // Superposition: sum contributions from doses after last reset")
         lines.append(f"{pad}    if (event_start[i] > 0) {{")
         lines.append(f"{pad}      for (e in event_start[i]:event_end[i]) {{")

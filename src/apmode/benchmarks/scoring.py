@@ -12,7 +12,7 @@ artifacts. Produces BenchmarkScore per case. Supports all three suite types:
 from __future__ import annotations
 
 import statistics
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 
@@ -163,18 +163,35 @@ def score_parameter_coverage(
 def compute_npe(
     observed: np.ndarray,
     predicted_simulations: np.ndarray,
+    *,
+    error_model: Literal["additive", "proportional", "combined"] = "additive",
+    proportional_floor: float = 1.0,
 ) -> float:
-    """Compute nonparametric prediction error.
+    """Compute a normalised prediction-error summary.
 
-    NPE = median absolute prediction error from posterior predictive
-    simulations on held-out subjects.
+    #25 / #37: the rc8 implementation was raw-scale MedAE, which
+    systematically under-weights low-concentration observations under
+    proportional-error models and therefore is not comparable across
+    paradigms. This version accepts an ``error_model`` hint and divides
+    residuals by the matching denominator (observed value for
+    proportional, ``sqrt(obs**2 + floor**2)`` for combined) before
+    taking the median absolute error. That makes the returned score
+    dimensionless on proportional / combined models and keeps backward
+    compatibility with the additive default.
 
     Args:
         observed: (n_obs,) array of observed DV values.
         predicted_simulations: (n_sims, n_obs) array of simulated DV values.
+        error_model: residual structure hint — ``"additive"`` (default,
+            raw MedAE, matches rc8), ``"proportional"``, or ``"combined"``.
+        proportional_floor: additive safety term used in the
+            combined-error denominator to avoid divide-by-zero at
+            near-zero concentrations. Ignored for pure proportional /
+            additive modes.
 
     Returns:
-        Median absolute prediction error (scalar).
+        Median absolute prediction error on the scale implied by
+        ``error_model``. Lower is better.
     """
     if observed.shape[0] != predicted_simulations.shape[1]:
         msg = (
@@ -183,7 +200,19 @@ def compute_npe(
         )
         raise ValueError(msg)
     point_pred = np.median(predicted_simulations, axis=0)
-    abs_errors = np.abs(observed - point_pred)
+    residuals = observed - point_pred
+    if error_model == "proportional":
+        # Guard against exact zero observed — fall back to |y_pred - y|
+        # for those rows (they contribute to the median but not to the
+        # proportional rescaling).
+        denom = np.where(np.abs(observed) > 0, np.abs(observed), 1.0)
+        scaled = residuals / denom
+    elif error_model == "combined":
+        denom = np.sqrt(np.square(observed) + proportional_floor**2)
+        scaled = residuals / denom
+    else:
+        scaled = residuals
+    abs_errors = np.abs(scaled)
     return float(np.median(abs_errors))
 
 

@@ -23,6 +23,7 @@ Sources of initial estimates (in priority order):
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, cast
 
@@ -34,6 +35,8 @@ from apmode.bundle.models import (
     InitialEstimates,
     NCASubjectDiagnostic,
 )
+
+_logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -370,15 +373,41 @@ class NCAEstimator:
         The textual source (``"dataset_card"`` vs ``"defaults"``) is tracked on
         ``self.fallback_source``. Underscore-prefixed dict keys carry numeric
         metadata only.
+
+        #27: when the dataset card does not carry a ``ka``, the rc8
+        path silently defaulted to 1.0 /h - a 10-to-100x warm-start error
+        for fast- or slow-absorption drugs. Emit a structured warning
+        and set a ``_ka_defaulted=1`` metadata flag so credibility and
+        Gate 1 consumers can see the substitution.
         """
         if self._fallback_estimates:
             self.fallback_source = "dataset_card"
             est = dict(self._fallback_estimates)
-            est.setdefault("ka", 1.0)
+            if "ka" not in est:
+                _logger.warning(
+                    "initial_estimates_ka_defaulted",
+                    extra={
+                        "defaulted_value": 1.0,
+                        "reason": "dataset_card fallback did not specify ka",
+                        "excluded_fraction": excluded_fraction,
+                    },
+                )
+                est["ka"] = 1.0
+                est["_ka_defaulted"] = 1.0
             est["_excluded_fraction"] = round(excluded_fraction, 4)
             return est
         self.fallback_source = "defaults"
+        _logger.warning(
+            "initial_estimates_using_defaults",
+            extra={
+                "reason": "no NCA and no dataset_card prior available",
+                "excluded_fraction": excluded_fraction,
+            },
+        )
         est = _default_estimates()
+        # _default_estimates carries ka=1.0 — flag it so the audit
+        # trail is consistent with the dataset_card branch.
+        est["_ka_defaulted"] = 1.0
         est["_excluded_fraction"] = round(excluded_fraction, 4)
         return est
 

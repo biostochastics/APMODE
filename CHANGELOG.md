@@ -7,6 +7,143 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — Deep-review hardening (41-finding audit)
+
+A comprehensive cross-subsystem review identified 41 correctness, wiring,
+and audit-trail issues across the DSL compiler, backends, governance
+gates, reproducibility bundle, and benchmark suite. All 41 are now
+resolved. Highlights:
+
+- **Stan/nlmixr2 proportional-error likelihood unified** (#1).
+  `stan_emitter` now emits `y ~ normal(f, sigma_prop * f)` to match the
+  nlmixr2 `cp ~ prop(prop.sd)` semantics. Previously Stan used
+  `lognormal(log(f), sigma)` for the non-BLQ path while the BLQ branch
+  used the Normal form — cross-paradigm NLPD (PRD §4.3.1) was
+  invalidated by the inconsistency.
+- **Stan ODE solver O(N × N_subjects) collapse** (#3). The
+  ``transformed data`` block precomputes ``obs_start[i]`` / ``obs_end[i]``
+  per subject; the per-subject loop iterates the slice directly instead
+  of scanning all observations with a subject filter.
+- **Stan dose-event mismatch now raises** (#4). Previously
+  `event_cmt > n_states` silently dropped the dose; emitter now emits
+  a Stan ``reject(...)`` so the dataset/model CMT mismatch is visible.
+- **Bundle seal is atomic** (#32, #34). `_COMPLETE` is written through
+  a tmp + `os.replace` dance so a mid-write crash cannot leave a
+  half-formed sentinel that `initialize()` would accept.
+- **Post-seal bundle mutation refused** (#2). `append_search_trajectory`
+  and `append_failed_candidate` raise `BundleAlreadySealedError` when
+  `_COMPLETE` is present (would otherwise desync the stored digest).
+- **LORO-CV `fixed_parameter` protocol** (#5). `BackendRunner.run` gains
+  an explicit `fixed_parameter: bool = False` kwarg; `evaluate_loro_cv`
+  passes `True`; every runner (`nlmixr2`, `bayesian`, `node`, `agentic`)
+  raises `NotImplementedError` when requested rather than silently
+  re-fitting and leaking train data through warm-start.
+- **Gate 1 thresholds policy-driven** (#6). `Gate1Config` gains
+  `param_value_min` / `param_value_max` / `param_rse_max` /
+  `seed_stability_ofv_abs_spread_floor`. No more hardcoded `1e-4`,
+  `1e5`, `200`, `0.1` in `gates.py`.
+- **`adaptive_m` / `m_max` no longer phantom** (#7). `data/missing_data.py`
+  raises `NotImplementedError` when a policy sets
+  `adaptive_m=True` so the unimplemented escalation cannot silently
+  degrade to fixed m.
+- **Ranking tiebreak deterministic** (#8). `metrics.sort(key=...)`
+  now includes `candidate_id` as tiebreaker so Borda ties resolve the
+  same way across runs with identical bundles.
+- **BLQ sigma validation gap + IVBolus validator branch** (#9, #10).
+  `validator._validate_observation` now enforces sigma positivity on
+  BLQ M3/M4 conditional on `error_model`; `_validate_absorption`
+  gained an explicit no-op branch for IVBolus.
+- **NODE modules contribute to `structural_param_names()`** (#11).
+  Variability items that target NODE input-layer weights
+  (`node_abs_wN` / `node_elim_wN`) now pass validation.
+- **`_bt_logit` honours `cov.form`** (#12). Power / exponential /
+  linear / maturation routing mirrors `_bt`; the rc8 path flattened
+  all forms to linear-additive on the logit scale.
+- **`nlmixr2` ZeroOrder + TMDDQSS routing fix** (#13). Emits
+  `dur(Atot)` under TMDDQSS (central = total drug), `dur(centr)`
+  elsewhere — via a new `_central_cmt_name` helper.
+- **`MixedFirstZero` `frac == 1.0` no longer crashes** (#14). Clamp
+  fraction to `1 - 1e-4` before emitting `log(frac / (1 - frac))`.
+- **Stan TwoCmt flip-flop singularity detected** (#15). Emits a
+  tolerance check; near-singular analytical denominators `reject(...)`
+  so the caller can switch to the numerical ODE solver.
+- **Stan TMDDQSS aliased as `Atot`** (#16). The central state is
+  named both `Atot` (total drug) and `centr` (alias) so the RHS
+  template stays uniform and the naming matches nlmixr2's
+  `_emit_tmdd_qss_odes`.
+- **Source positions flow into `DSLSpec.source_meta`** (#17).
+  `parse_dsl` enables `propagate_positions=True`; `compile_dsl` walks
+  the parse tree once and attaches `(line, column)` for absorption /
+  distribution / elimination / observation / variability[i] so
+  validator errors can point at source.
+- **PIT calibration degenerate-sims safeguard** (#18, #33, #41).
+  `build_predictive_diagnostics` catches the all-NaN `ValueError`
+  from `_compute_pit_calibration` and returns a zero-subject sentinel;
+  Gate 1 surfaces this as `pit_degenerate_no_finite_sims`; the
+  `n_observations` denominator no longer inflates a true 0 to 1.
+- **Credibility report provenance** (#19). `CredibilityReport` gains
+  `source_result_path` + `source_result_sha256` so an auditor can
+  walk back to the `BackendResult` JSON any score was derived from.
+- **`SearchDAG` seals** (#20). `seal()` / `SearchDAGSealedError`; all
+  mutators (`add_root`, `add_child`, `update_score`) refuse after
+  seal so the in-memory DAG cannot desync from
+  `candidate_lineage.json`.
+- **Agentic LLM raw_text sanitized** (#21). Already guarded for
+  `runner_error`; now applied on every `raw_text` append.
+- **Subprocess executable validated up front** (#22).
+  `Nlmixr2Runner` / `BayesianRunner` resolve the executable to an
+  absolute path via `shutil.which` at `__init__`; `FileNotFoundError`
+  surfaces immediately.
+- **NODE runner rejects `timeout_seconds`** (#23). JAX training is
+  non-interruptible; silently accepting a timeout was a lie. Now
+  raises `NotImplementedError` so orchestrators can choose a
+  watchdog-subprocess path.
+- **MI per-imputation error isolation** (#24, #39). One failed
+  imputation no longer discards every previously-completed fit;
+  `m_imputations=0` refused upstream instead of emitted as a
+  degenerate manifest.
+- **`compute_npe` is likelihood-aware** (#25, #37). New
+  `error_model` kwarg rescales residuals on proportional / combined
+  models so cross-paradigm NPE comparison is no longer scale-biased;
+  additive default preserves rc8 behaviour.
+- **PRD §10 stress-surface perturbations declared** (#26).
+  `PerturbationType` gains `SCALE_BSV_VARIANCES`, `SATURATE_CLEARANCE`,
+  `TMDD`, `FLIP_FLOP` with required-parameter validators; dispatchers
+  raise `NotImplementedError` until the transforms land, so Suite C
+  never silently replaces a stress request with a no-op.
+- **`ka` silent fallback surfaced** (#27). `_apply_fallback` logs a
+  structured warning and sets `_ka_defaulted=1.0` metadata when the
+  dataset card or defaults path supplies `ka`.
+- **Silent emitter catch-alls removed** (#28). Unknown observation
+  modules now raise `NotImplementedError` on both nlmixr2 and Stan
+  paths instead of emitting a wrong proportional default.
+- **InvGamma off `*_sd` targets** (#29). `_VALID_FAMILIES` no longer
+  claims InvGamma is a valid SD-scale prior when the emitter draws
+  on the SD scale; use `Gamma` / `HalfNormal` / `HalfCauchy`.
+- **BLQ M3/M4 active-sigma helper** (#30). `active_sigmas()` on
+  `BLQM3` / `BLQM4` returns only the fields the likelihood actually
+  consumes given `error_model` — param-count helpers must call this
+  instead of inspecting every field.
+- **Gate 1 fields carry bounds + units** (#31). Added
+  `description=` + explicit dimensions to the #6-added Gate1Config
+  fields so audit readouts know the unit they're comparing against.
+- **Agentic warm-start guards non-finite estimates** (#35). NaN / Inf
+  parameters are dropped with a structured log entry instead of
+  propagating into the next iteration.
+- **transform_parser allow-list explicit** (#36). Extra LLM-supplied
+  fields are rejected against `module_cls.model_fields` at parse time;
+  Pydantic `extra="forbid"` becomes a redundant second line of
+  defence instead of the only one.
+- **Balanced protocol-pooling allocation** (#38). Replaces
+  `rng.integers(...)` with block randomisation so the docstring's
+  "balanced allocation" claim is now true.
+- **`numpy.trapezoid` auto-select** (#40). Already honoured via
+  `getattr(np, "trapezoid", None) or np.trapz` (NumPy 2.0+ forward,
+  1.x backward).
+
+Test baseline: 1825 passing, 1 skipped. `mypy --strict` clean (105
+files); `ruff check` clean; 22 golden snapshots unchanged.
+
 ### Added — Supply-chain SBOM (CycloneDX)
 
 APMODE now ships a CycloneDX Software Bill of Materials (SBOM) as a

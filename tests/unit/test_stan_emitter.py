@@ -145,9 +145,14 @@ class TestStructuralParams:
 
 class TestObservationModel:
     def test_proportional(self) -> None:
+        # #1: proportional likelihood is now Normal(f, sigma_prop * f) to
+        # match the nlmixr2 ``cp ~ prop(prop.sd)`` emission and stay
+        # internally consistent with the BLQ M3/M4 proportional path.
+        # Lognormal is no longer emitted on this route.
         code = emit_stan(_make_spec(observation=Proportional(sigma_prop=0.15)))
         assert "sigma_prop" in code
-        assert "lognormal" in code
+        assert "lognormal" not in code
+        assert "normal(f[n], sigma_prop * f[n])" in code
 
     def test_additive(self) -> None:
         code = emit_stan(_make_spec(observation=Additive(sigma_add=0.5)))
@@ -337,9 +342,11 @@ class TestBLQEmission:
 
 class TestGeneratedQuantities:
     def test_log_lik_for_loo(self) -> None:
+        # #1: log_lik now uses normal_lpdf with proportional variance so
+        # the LOO/WAIC decomposition matches the sampling statement.
         code = emit_stan(_make_spec())
         assert "log_lik" in code
-        assert "lognormal_lpdf" in code
+        assert "normal_lpdf(dv[n] | f[n], sigma_prop * f[n])" in code
 
 
 # ---------------------------------------------------------------------------

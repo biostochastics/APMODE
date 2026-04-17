@@ -58,6 +58,17 @@ def apply_perturbation(
         PerturbationType.SPARSIFY: _sparsify,
         PerturbationType.ADD_PROTOCOL_POOLING: _add_protocol_pooling,
         PerturbationType.ADD_OCCASION_LABELS: _add_occasion_labels,
+        # #26: the four stress-surface perturbations are declared on
+        # the enum so Suite C recipes can request them today. The
+        # concrete simulators wrap the canonical dataset with new
+        # structural dynamics and therefore require coupling to the
+        # DSL/forward-solve path — tracked in PRD §10 / Suite C.
+        # Until they land the dispatch raises NotImplementedError so a
+        # request to stress-test is never silently replaced by a no-op.
+        PerturbationType.SCALE_BSV_VARIANCES: _scale_bsv_variances,
+        PerturbationType.SATURATE_CLEARANCE: _saturate_clearance,
+        PerturbationType.TMDD: _tmdd_perturbation,
+        PerturbationType.FLIP_FLOP: _flip_flop_perturbation,
     }
 
     fn = dispatch.get(recipe.perturbation_type)
@@ -86,6 +97,62 @@ def apply_perturbations(
 # ---------------------------------------------------------------------------
 # Perturbation implementations
 # ---------------------------------------------------------------------------
+
+
+def _scale_bsv_variances(
+    _df: pd.DataFrame,
+    _recipe: PerturbationRecipe,
+    _rng: np.random.Generator,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """#26 stress surface — inflate/contract subject-level DV variance."""
+    msg = (
+        "scale_bsv_variances is declared on PerturbationType but the "
+        "transform has not been implemented yet (PRD §10, Suite C). "
+        "Refusing to silently run a no-op on a requested stress test."
+    )
+    raise NotImplementedError(msg)
+
+
+def _saturate_clearance(
+    _df: pd.DataFrame,
+    _recipe: PerturbationRecipe,
+    _rng: np.random.Generator,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """#26 stress surface — re-simulate DV with Michaelis-Menten clearance."""
+    msg = (
+        "saturate_clearance is declared on PerturbationType but the "
+        "transform has not been implemented yet (PRD §10, Suite C). "
+        "Refusing to silently run a no-op on a requested stress test."
+    )
+    raise NotImplementedError(msg)
+
+
+def _tmdd_perturbation(
+    _df: pd.DataFrame,
+    _recipe: PerturbationRecipe,
+    _rng: np.random.Generator,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """#26 stress surface — introduce target-mediated disposition dynamics."""
+    msg = (
+        "tmdd perturbation is declared on PerturbationType but the "
+        "transform has not been implemented yet (PRD §10, Suite C). "
+        "Refusing to silently run a no-op on a requested stress test."
+    )
+    raise NotImplementedError(msg)
+
+
+def _flip_flop_perturbation(
+    _df: pd.DataFrame,
+    _recipe: PerturbationRecipe,
+    _rng: np.random.Generator,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """#26 stress surface — swap ka/ke roles to produce flip-flop kinetics."""
+    msg = (
+        "flip_flop perturbation is declared on PerturbationType but the "
+        "transform has not been implemented yet (PRD §10, Suite C). "
+        "Refusing to silently run a no-op on a requested stress test."
+    )
+    raise NotImplementedError(msg)
 
 
 def _inject_blq(
@@ -279,8 +346,17 @@ def _add_protocol_pooling(
     subject_ids = df["NMID"].unique()
     n_subjects = len(subject_ids)
 
-    # Assign subjects to protocols (balanced allocation)
-    protocol_assignments = rng.integers(1, n_protocols + 1, size=n_subjects)
+    # #38: the docstring claims "balanced allocation" but the rc8
+    # implementation used ``rng.integers(...)`` which is uniform-random
+    # — with n_subjects=20, n_protocols=4 you routinely see 3/8/5/4.
+    # Use block randomisation: build a shuffled pool of exactly
+    # ceil(n_subjects / n_protocols) repeats of each label and assign
+    # the first n_subjects entries. This matches the "balanced" claim
+    # and makes Suite C results reproducible across platforms.
+    assignments_per_label = -(-n_subjects // n_protocols)  # ceil div
+    pool = np.tile(np.arange(1, n_protocols + 1), assignments_per_label)[:n_subjects]
+    rng.shuffle(pool)
+    protocol_assignments = pool
     subject_to_protocol: dict[Any, int] = dict(
         zip(subject_ids, protocol_assignments.tolist(), strict=False)
     )

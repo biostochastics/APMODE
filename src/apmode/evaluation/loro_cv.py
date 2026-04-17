@@ -123,6 +123,11 @@ async def evaluate_loro_cv(
                 split_manifest=fold_manifest.model_dump(),
                 gate3_policy=gate3_policy,
                 nca_diagnostics=nca_diagnostics,
+                # Evaluate likelihood at full-data estimates; no refit.
+                # Without this flag the runner could re-fit on the train
+                # fold with warm_estimates as starting values, leaking
+                # test-fold subjects into the final parameter values.
+                fixed_parameter=True,
             )
 
             fold_result = _extract_fold_metrics(

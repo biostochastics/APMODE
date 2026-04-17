@@ -179,6 +179,7 @@ class AgenticRunner:
         split_manifest: dict[str, object] | None = None,
         gate3_policy: Gate3Config | None = None,
         nca_diagnostics: list[NCASubjectDiagnostic] | None = None,
+        fixed_parameter: bool = False,
         stability_manifest: ImputationStabilityManifest | None = None,
         directive: MissingDataDirective | None = None,
     ) -> BackendResult:
@@ -198,7 +199,19 @@ class AgenticRunner:
         the inner runner on every iteration so posterior-predictive
         diagnostics populate on each fit and the LLM sees the same
         cross-paradigm signal Gate 3 will evaluate.
+
+        ``fixed_parameter`` is accepted for BackendRunner-protocol
+        conformance but is incompatible with iterative LLM refinement
+        (the loop inherently re-fits). Raise rather than silently
+        refitting under a flag that promises the opposite.
         """
+        if fixed_parameter:
+            msg = (
+                "AgenticRunner.run cannot honour fixed_parameter=True — the "
+                "agentic loop re-fits on every iteration by design. Use a "
+                "classical runner for LORO-CV fixed-parameter evaluation."
+            )
+            raise NotImplementedError(msg)
         pooled_only = directive is not None and directive.llm_pooled_only
         stability_by_candidate: dict[str, Any] = (
             {e.candidate_id: e for e in stability_manifest.entries}
@@ -302,8 +315,15 @@ class AgenticRunner:
 
                 llm_response = await self._llm.complete(iter_id, messages)
                 self._write_cached_response(iter_id, llm_response)
+                # Sanitize before retaining in history. The current-iteration
+                # parser still consumes the verbatim raw_text; history is used
+                # only as context for subsequent LLM calls, where injected
+                # role markers or code fences could manipulate the model.
                 conversation_history.append(
-                    {"role": "assistant", "content": llm_response.raw_text}
+                    {
+                        "role": "assistant",
+                        "content": _sanitize_for_prompt(llm_response.raw_text, max_len=4000),
+                    }
                 )
 
                 parse_result = parse_llm_response(llm_response.raw_text)
@@ -476,7 +496,15 @@ class AgenticRunner:
 
             # 5a. Write cached response for ReplayClient deterministic replay
             self._write_cached_response(iter_id, llm_response)
-            conversation_history.append({"role": "assistant", "content": llm_response.raw_text})
+            # Sanitize before retaining in history (see duplicate above) —
+            # protects subsequent iterations from injected role markers /
+            # code fences in the current LLM output.
+            conversation_history.append(
+                {
+                    "role": "assistant",
+                    "content": _sanitize_for_prompt(llm_response.raw_text, max_len=4000),
+                }
+            )
 
             # 6. Write trace output + meta
             parse_result = parse_llm_response(llm_response.raw_text)
@@ -634,12 +662,32 @@ class AgenticRunner:
             iteration_records.append(record)
 
             # Use fitted params as warm-start for next iteration
+            # #35: non-finite estimates (NaN / Inf) from a brittle fit
+            # would poison the next iteration's starting values and
+            # cascade into a run of useless candidates. Drop them and
+            # fall back to the incoming defaults for those parameters;
+            # downstream validation will reject the iteration if the
+            # fallback is also inadequate.
             if result.converged:
-                initial_estimates = {
-                    name: pe.estimate
-                    for name, pe in result.parameter_estimates.items()
-                    if pe.category == "structural"
-                }
+                from math import isfinite
+
+                warm: dict[str, float] = {}
+                for name, pe in result.parameter_estimates.items():
+                    if pe.category != "structural":
+                        continue
+                    value = float(pe.estimate)
+                    if isfinite(value):
+                        warm[name] = value
+                    else:
+                        logger.warning(
+                            "agentic_warm_start_skipped_non_finite",
+                            extra={
+                                "iteration": iteration,
+                                "param": name,
+                                "value": repr(pe.estimate),
+                            },
+                        )
+                initial_estimates = warm or initial_estimates
 
             current_spec = new_spec
 

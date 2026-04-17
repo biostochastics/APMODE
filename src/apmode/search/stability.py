@@ -23,12 +23,17 @@ Non-goals:
 
 from __future__ import annotations
 
+import asyncio
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
+import structlog
+
 from apmode.bundle.models import ImputationStabilityEntry
 from apmode.data.missing_data import build_stability_manifest
+
+logger = structlog.get_logger(__name__)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
@@ -414,6 +419,12 @@ async def run_with_imputations(
     if directive.m_imputations is None:
         msg = "directive.m_imputations must be set for MI runs"
         raise ValueError(msg)
+    # #39: m_imputations=0 used to slip through and produce a degenerate
+    # manifest where build_stability_manifest's max(m, 1) floor hid the
+    # zero. Refuse upstream so audit consumers see the actual m.
+    if directive.m_imputations < 1:
+        msg = f"directive.m_imputations must be >= 1 for MI runs, got {directive.m_imputations}"
+        raise ValueError(msg)
 
     m = directive.m_imputations
     imputed_paths = await provider.impute(source_csv, m=m, seed=seed)
@@ -423,7 +434,29 @@ async def run_with_imputations(
 
     all_fits: list[PerImputationFit] = []
     for idx, path in enumerate(imputed_paths):
-        per_imp_fits = await search(path, seed + idx, idx)
+        # #24: isolate per-imputation failures so one crash does not discard
+        # every previously completed fit on an expensive m=20+ run. A failed
+        # imputation is recorded as a non-converged sentinel PerImputationFit
+        # so Rubin pooling sees the gap rather than silently dropping it.
+        try:
+            per_imp_fits = await search(path, seed + idx, idx)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning(
+                "imputation_fit_failed",
+                imputation_idx=idx,
+                source_csv=str(source_csv),
+                exc_info=True,
+            )
+            all_fits.append(
+                PerImputationFit(
+                    imputation_idx=idx,
+                    candidate_id="__imputation_failed__",
+                    converged=False,
+                )
+            )
+            continue
         # Callable is now responsible for setting imputation_idx. Defensive
         # assert keeps the contract explicit.
         for f in per_imp_fits:

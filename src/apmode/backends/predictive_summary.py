@@ -410,8 +410,9 @@ def _compute_pit_calibration(
         # Denominator of the outer mean is ``n_subjects_used`` (subjects
         # that contributed at least one finite obs/sim pair), not
         # ``len(per_subject_sims)`` — the audit field mirrors the
-        # actual averaging denominator.
-        n_observations=max(n_observations_used, 1),
+        # actual averaging denominator. #41: preserve the true count
+        # (including zero) rather than silently inflating to 1.
+        n_observations=n_observations_used,
         n_subjects=n_subjects_used,
         aggregation="subject_robust",
     )
@@ -540,10 +541,31 @@ def build_predictive_diagnostics(
     # but expressed as (0, 1) CDF levels instead of 0-100 percentiles.
     # Fixed vocabulary for now — extending to custom levels would need a
     # matching ``Gate1Config.pit_probability_levels`` knob.
-    pit_calibration = _compute_pit_calibration(
-        per_subject_sims,
-        probability_levels=tuple(p / 100.0 for p in vpc_percentiles),
-    )
+    #
+    # #18: _compute_pit_calibration raises ValueError when every subject
+    # has fully-NaN obs/sims — a degenerate backend result, not a bug in
+    # this helper. Return a zero-hit sentinel summary so Gate 1 sees the
+    # PIT as present-but-empty and rejects the candidate through the
+    # normal path instead of crashing the whole orchestrator.
+    _pit_levels = tuple(p / 100.0 for p in vpc_percentiles)
+    try:
+        pit_calibration = _compute_pit_calibration(
+            per_subject_sims,
+            probability_levels=_pit_levels,
+        )
+    except ValueError:
+        logger.warning(
+            "pit_calibration_degenerate",
+            extra={"n_subjects": len(per_subject_sims)},
+            exc_info=True,
+        )
+        pit_calibration = PITCalibrationSummary(
+            probability_levels=list(_pit_levels),
+            calibration={_pit_key(p): 0.0 for p in _pit_levels},
+            n_observations=0,
+            n_subjects=0,
+            aggregation="subject_robust",
+        )
 
     # AUC/Cmax BE — per-subject, aggregation controlled by policy.
     n_total = len(per_subject_sims)

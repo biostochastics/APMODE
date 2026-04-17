@@ -209,9 +209,26 @@ def _parse_swap_module(raw: dict[str, Any]) -> FormularTransform:
         msg = f"Unknown module type '{module_type}' in swap_module"
         raise ValueError(msg)
     module_cls = _MODULE_REGISTRY[module_type]
-    # Merge: LLM-provided fields override defaults; drop the "type" key.
+    # #36: previously we relied on Pydantic ``extra="forbid"`` on each
+    # module to reject unknown keys. That check lives on the model and
+    # is invisible at the call site, so a schema drift (one module
+    # accepting extra kwargs) would silently let LLM-supplied fields
+    # through. Intersect against the module's declared fields here so
+    # the allow-list is explicit at the entry point and the Pydantic
+    # validator is a redundant second line of defence, not the sole
+    # one.
+    allowed = set(module_cls.model_fields.keys()) - {"type"}
     kwargs = dict(_MODULE_DEFAULTS.get(module_type, {}))
-    kwargs.update({k: v for k, v in new_module_raw.items() if k != "type"})
+    for k, v in new_module_raw.items():
+        if k == "type":
+            continue
+        if k not in allowed:
+            msg = (
+                f"swap_module: field {k!r} is not allowed on {module_type}; "
+                f"allowed fields are {sorted(allowed)}"
+            )
+            raise ValueError(msg)
+        kwargs[k] = v
     new_module = module_cls(**kwargs)
     return SwapModule(position=raw["position"], new_module=new_module)
 

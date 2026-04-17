@@ -110,6 +110,42 @@ class Gate1Config(BaseModel):
     split_cwres_drift_max: float = Field(default=0.5, gt=0.0)
     split_outlier_ratio_slope: float = Field(default=2.0, gt=0.0)
     split_outlier_ratio_intercept: float = Field(default=0.05, ge=0.0, le=1.0)
+    # Parameter-plausibility sanity bounds (previously hard-coded in
+    # gates.py::_check_parameter_plausibility). The back-transformed
+    # structural estimate (or the raw estimate for non-log-space params)
+    # must lie in (param_value_min, param_value_max). An RSE above
+    # ``param_rse_max`` flags the estimate as under-identified.
+    param_value_min: float = Field(
+        default=1e-4,
+        gt=0.0,
+        description=(
+            "Lower bound (exclusive) on structural parameter estimates. "
+            "Units follow the parameter: rates in 1/time, volumes in L, "
+            "clearances in L/time. #31 audit metadata."
+        ),
+    )
+    param_value_max: float = Field(
+        default=1e5,
+        gt=0.0,
+        description=(
+            "Upper bound (exclusive) on structural parameter estimates. "
+            "Same units as :attr:`param_value_min`."
+        ),
+    )
+    param_rse_max: float = Field(
+        default=200.0,
+        gt=0.0,
+        description=(
+            "Maximum allowed relative standard error (percent). "
+            "Estimates with RSE above this flag under-identification."
+        ),
+    )
+    # Seed-stability short-circuit: platform/BLAS float-accumulation can
+    # move OFV by ~1e-3 OFV units between "identical" fits. When the
+    # absolute peak-to-peak OFV spread is below this floor, the CV check
+    # is skipped (it would still report instability even though the
+    # spread is below any scientifically meaningful ΔAIC threshold).
+    seed_stability_ofv_abs_spread_floor: float = Field(default=0.1, gt=0.0)
     # Bayesian-only thresholds (applied when backend == "bayesian_stan")
     bayesian: BayesianThresholds = Field(default_factory=BayesianThresholds)
 

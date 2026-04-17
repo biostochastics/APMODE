@@ -6,13 +6,28 @@ Generates per-candidate CredibilityReport JSON for recommended models.
 
 from __future__ import annotations
 
+import hashlib
 from typing import TYPE_CHECKING
 
 from apmode.bundle.models import CredibilityReport
 from apmode.data.missing_data import OMEGA_POOLING_CAVEATS
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from apmode.bundle.models import BackendResult, MissingDataDirective
+
+
+def _compute_result_sha256(result: BackendResult) -> str:
+    """Deterministic SHA-256 of the JSON-serialised BackendResult.
+
+    #19: matches the hash we would compute by reading
+    ``results/{id}_result.json`` off disk and hashing the bytes — Pydantic
+    ``model_dump_json`` with stable field order (ConfigDict on the models)
+    guarantees the serialisation is reproducible.
+    """
+    payload = result.model_dump_json().encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def generate_credibility_report(
@@ -20,6 +35,8 @@ def generate_credibility_report(
     lane: str,
     n_observations: int,
     directive: MissingDataDirective | None = None,
+    *,
+    source_result_path: Path | str | None = None,
 ) -> CredibilityReport:
     """Generate a credibility report for a recommended candidate.
 
@@ -30,6 +47,12 @@ def generate_credibility_report(
         directive: Optional missing-data directive. When the run used MI
             for covariates, Ω-pooling caveats are appended to limitations
             per Gate 2.5 credibility requirements.
+        source_result_path: Optional bundle-relative path of the
+            BackendResult JSON this report was derived from. When
+            supplied, the path is recorded on the report so an auditor
+            can walk back to the canonical artifact (#19). Hash of the
+            serialised result is computed here regardless so the
+            provenance is verifiable.
 
     Returns:
         CredibilityReport with ICH M15-aligned fields.
@@ -49,6 +72,7 @@ def generate_credibility_report(
     if directive is not None and directive.covariate_method.startswith("MI-"):
         limitations.extend(OMEGA_POOLING_CAVEATS)
 
+    source_path_str = str(source_result_path) if source_result_path is not None else None
     return CredibilityReport(
         candidate_id=result.model_id,
         context_of_use=f"{lane} lane: population PK model for dose optimization",
@@ -74,4 +98,9 @@ def generate_credibility_report(
             if is_ml
             else None
         ),
+        # #19: record the bundle-relative source path (if known) plus a
+        # content hash of the BackendResult so auditors can verify the
+        # report was derived from a specific artifact and has not drifted.
+        source_result_path=source_path_str,
+        source_result_sha256=_compute_result_sha256(result),
     )

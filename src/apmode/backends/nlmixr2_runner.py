@@ -17,6 +17,7 @@ import contextlib
 import json
 import logging
 import os
+import shutil
 import signal
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -62,8 +63,26 @@ class Nlmixr2Runner:
         estimation: list[str] | None = None,
     ) -> None:
         self.work_dir = work_dir
-        self.r_executable = r_executable
-        self.harness_path = harness_path or _DEFAULT_HARNESS
+        # #22: resolve the R executable to an absolute path via shutil.which
+        # up front rather than letting asyncio.create_subprocess_exec do a
+        # PATH lookup at spawn time. Defence-in-depth — a compromised PATH
+        # or an unexpected shadowing binary is caught immediately instead
+        # of silently executing untrusted content on first run().
+        resolved = (
+            shutil.which(r_executable) if not Path(r_executable).is_absolute() else r_executable
+        )
+        if resolved is None or not Path(resolved).exists():
+            msg = (
+                f"R executable {r_executable!r} not found on PATH or at that "
+                f"absolute path — cannot initialise Nlmixr2Runner"
+            )
+            raise FileNotFoundError(msg)
+        self.r_executable = resolved
+        harness = harness_path or _DEFAULT_HARNESS
+        if not harness.exists():
+            msg = f"R harness script not found at {harness}"
+            raise FileNotFoundError(msg)
+        self.harness_path = harness
         self.estimation = estimation or ["saem", "focei"]
 
     async def run(
@@ -79,6 +98,7 @@ class Nlmixr2Runner:
         compiled_code_override: str | None = None,
         gate3_policy: Gate3Config | None = None,
         nca_diagnostics: list[NCASubjectDiagnostic] | None = None,
+        fixed_parameter: bool = False,
     ) -> BackendResult:
         """Run nlmixr2 estimation via R subprocess.
 
@@ -117,6 +137,18 @@ class Nlmixr2Runner:
         if data_path is None:
             msg = "data_path is required for Nlmixr2Runner"
             raise ValueError(msg)
+
+        # fixed_parameter is a governance-critical flag for LORO-CV
+        # (no-refit evaluation). The R harness does not yet honour it —
+        # this runner raises until the harness contract is extended
+        # rather than silently leaking training data into held-out folds.
+        if fixed_parameter:
+            msg = (
+                "fixed_parameter=True not yet honoured by Nlmixr2Runner "
+                "(R harness extension required — see PRD \u00a78 Phase 3 / loro_cv.py). "
+                "Refusing to evaluate to avoid silent train/test leakage."
+            )
+            raise NotImplementedError(msg)
 
         request_id = generate_run_id()
         run_dir = self.work_dir / request_id

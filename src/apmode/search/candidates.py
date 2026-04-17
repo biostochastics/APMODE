@@ -417,18 +417,53 @@ class SearchNode:
     converged: bool | None = None
 
 
+class SearchDAGSealedError(RuntimeError):
+    """Raised when attempting to mutate a sealed SearchDAG.
+
+    #20: the DAG is the canonical lineage artifact written into the
+    reproducibility bundle (candidate_lineage.json). Post-seal mutation
+    would silently diverge the in-memory state from the file on disk and
+    break the _COMPLETE digest invariant.
+    """
+
+
 class SearchDAG:
     """Tracks the search DAG for candidate lineage (PRD §4.3.2).
 
     Each candidate is a node. Edges represent parent→child derivation
     via transforms (structural change, covariate addition, etc.).
+
+    A DAG moves through exactly two states: mutable (accepts add_root /
+    add_child / update_score) and sealed (all mutators raise
+    :class:`SearchDAGSealedError`). Call :meth:`seal` at the end of the
+    search run, immediately before writing
+    ``candidate_lineage.json``. Re-sealing is idempotent.
     """
 
     def __init__(self) -> None:
         self._nodes: dict[str, SearchNode] = {}
+        self._sealed: bool = False
+
+    def _require_mutable(self, op: str) -> None:
+        if self._sealed:
+            msg = (
+                f"SearchDAG is sealed; cannot {op}. Post-seal mutation "
+                "would desync the in-memory DAG from candidate_lineage.json "
+                "and break bundle digest integrity."
+            )
+            raise SearchDAGSealedError(msg)
+
+    def seal(self) -> None:
+        """Seal the DAG against further mutation. Idempotent."""
+        self._sealed = True
+
+    @property
+    def sealed(self) -> bool:
+        return self._sealed
 
     def add_root(self, spec: DSLSpec) -> SearchNode:
         """Add a root candidate (NCA-derived, no parent)."""
+        self._require_mutable("add_root")
         node = SearchNode(
             candidate_id=spec.model_id,
             parent_id=None,
@@ -444,6 +479,7 @@ class SearchDAG:
         transform: str,
     ) -> SearchNode:
         """Add a child candidate derived from a parent via transform."""
+        self._require_mutable("add_child")
         node = SearchNode(
             candidate_id=spec.model_id,
             parent_id=parent_id,
@@ -455,6 +491,7 @@ class SearchDAG:
 
     def update_score(self, candidate_id: str, score: float, converged: bool) -> None:
         """Update a node with estimation results."""
+        self._require_mutable("update_score")
         if candidate_id in self._nodes:
             self._nodes[candidate_id].score = score
             self._nodes[candidate_id].converged = converged

@@ -14,6 +14,7 @@ import asyncio
 import contextlib
 import json
 import os
+import shutil
 import signal
 import sys
 from pathlib import Path
@@ -75,8 +76,28 @@ class BayesianRunner:
         default_sampler_config: SamplerConfig | None = None,
     ) -> None:
         self.work_dir = work_dir
-        self.python_executable = python_executable or sys.executable
-        self.harness_path = harness_path or _DEFAULT_HARNESS
+        # #22: resolve the Python interpreter and harness script to
+        # absolute paths up front. sys.executable is already absolute;
+        # only validate a caller-supplied override.
+        py_candidate = python_executable or sys.executable
+        if not Path(py_candidate).is_absolute():
+            resolved_py = shutil.which(py_candidate)
+            if resolved_py is None:
+                msg = (
+                    f"Python executable {py_candidate!r} not found on PATH; "
+                    "cannot initialise BayesianRunner"
+                )
+                raise FileNotFoundError(msg)
+            py_candidate = resolved_py
+        if not Path(py_candidate).exists():
+            msg = f"Python executable not found at {py_candidate}"
+            raise FileNotFoundError(msg)
+        self.python_executable = py_candidate
+        harness = harness_path or _DEFAULT_HARNESS
+        if not harness.exists():
+            msg = f"Bayesian harness script not found at {harness}"
+            raise FileNotFoundError(msg)
+        self.harness_path = harness
         self.cmdstan_path = cmdstan_path
         self.torsten_path = torsten_path
         self.sampler_config = default_sampler_config or SamplerConfig()
@@ -93,6 +114,7 @@ class BayesianRunner:
         split_manifest: dict[str, object] | None = None,
         gate3_policy: Gate3Config | None = None,
         nca_diagnostics: list[NCASubjectDiagnostic] | None = None,
+        fixed_parameter: bool = False,
     ) -> BackendResult:
         """Run Stan sampling via Python subprocess.
 
@@ -108,6 +130,14 @@ class BayesianRunner:
         Until that lands the kwargs are recorded and ignored.
         """
         _ = gate3_policy, nca_diagnostics  # Scope 2: Stan y_pred wiring
+        if fixed_parameter:
+            msg = (
+                "fixed_parameter=True not yet honoured by BayesianRunner "
+                "(requires Stan `generate_quantities` fix-param stage — see "
+                "PRD \u00a78 Phase 3 / loro_cv.py). Refusing to evaluate to avoid "
+                "silent train/test leakage."
+            )
+            raise NotImplementedError(msg)
         if data_path is None:
             raise ValueError("data_path is required for BayesianRunner")
 

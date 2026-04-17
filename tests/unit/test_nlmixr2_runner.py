@@ -46,12 +46,22 @@ def _test_manifest() -> DataManifest:
 
 class TestNlmixr2RunnerInit:
     def test_default_r_executable(self) -> None:
+        # #22: __init__ now resolves the executable to an absolute path
+        # via shutil.which so subprocess spawning never performs a
+        # runtime PATH lookup. The resolved path ends with "Rscript".
         runner = Nlmixr2Runner(work_dir=Path("/tmp/apmode"))
-        assert runner.r_executable == "Rscript"
+        assert Path(runner.r_executable).name == "Rscript"
+        assert Path(runner.r_executable).is_absolute()
 
     def test_custom_r_executable(self) -> None:
-        runner = Nlmixr2Runner(work_dir=Path("/tmp/apmode"), r_executable="/usr/local/bin/Rscript")
-        assert runner.r_executable == "/usr/local/bin/Rscript"
+        # An absolute path must be accepted as-is (after an existence check).
+        # Use sys.executable as a stable absolute-file fixture that exists
+        # on any developer machine; we only care that the runner preserves
+        # the path, not that it points at a real Rscript binary.
+        import sys
+
+        runner = Nlmixr2Runner(work_dir=Path("/tmp/apmode"), r_executable=sys.executable)
+        assert runner.r_executable == sys.executable
 
     def test_default_harness_path(self) -> None:
         runner = Nlmixr2Runner(work_dir=Path("/tmp/apmode"))

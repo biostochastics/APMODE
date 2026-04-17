@@ -28,6 +28,7 @@ from apmode.dsl.ast_models import (
     CovariateLink,
     DSLSpec,
     FirstOrder,
+    IVBolus,
     LaggedFirstOrder,
     LinearElim,
     MichaelisMenten,
@@ -166,6 +167,11 @@ def _validate_absorption(spec: DSLSpec, errors: list[ValidationError]) -> None:
         _unit_interval(mod, "frac", m.frac, errors)
     elif isinstance(m, NODEAbsorption):
         _positive_int(mod, "dim", m.dim, errors)
+    elif isinstance(m, IVBolus):
+        # No tunable structural parameters; nothing to validate.
+        # An explicit branch keeps the audit trail complete and prevents
+        # silent fall-through if new IVBolus fields are added later.
+        pass
 
 
 def _validate_distribution(spec: DSLSpec, errors: list[ValidationError]) -> None:
@@ -250,6 +256,15 @@ def _validate_observation(spec: DSLSpec, errors: list[ValidationError]) -> None:
         _positive(mod, "sigma_add", m.sigma_add, errors)
     elif isinstance(m, (BLQM3, BLQM4)):
         _positive(mod, "loq_value", m.loq_value, errors)
+        # error_model selects which residual SD is live. Validate the
+        # corresponding sigma(s); a zero or negative SD silently produces
+        # degenerate likelihoods in the emitters, so catch it at the DSL
+        # boundary. See _research/ROCRATE_INTEGRATION_PLAN.md and
+        # dsl/ast_models.py:BLQM3/BLQM4 for the error_model contract.
+        if m.error_model in {"proportional", "combined"}:
+            _positive(mod, "sigma_prop", m.sigma_prop, errors)
+        if m.error_model in {"additive", "combined"}:
+            _positive(mod, "sigma_add", m.sigma_add, errors)
 
 
 _NO_VARIABILITY_PARAMS: frozenset[str] = frozenset({"n"})

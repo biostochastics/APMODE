@@ -178,8 +178,12 @@ class PITCalibrationSummary(BaseModel):
         description="Empirical CDF hit-rate at each probability level. "
         "Keys ``pNN`` where ``NN = int(100 * p)``. Values in ``[0, 1]``.",
     )
-    n_observations: int = Field(gt=0)
-    n_subjects: int = Field(gt=0)
+    # ``n_observations`` / ``n_subjects`` report the actual counts that
+    # contributed to calibration — including zero when the PIT path ran
+    # but no subject produced a finite (obs, sim) pair. Use ge=0 so the
+    # audit record preserves that signal instead of forcing a phantom 1.
+    n_observations: int = Field(ge=0)
+    n_subjects: int = Field(ge=0)
     aggregation: Literal["subject_robust", "pooled"] = "subject_robust"
 
     @model_validator(mode="after")
@@ -1203,6 +1207,13 @@ class CredibilityReport(BaseModel):
     ml_transparency: str | None = None
     sensitivity_results: dict[str, str | float] = Field(default_factory=dict)
     evidence_refs: dict[str, str] = Field(default_factory=dict)
+    # #19: direct pointer back to the BackendResult this credibility
+    # report was synthesised from. Populated by the report generator so
+    # an auditor can re-derive every field from the original bundle
+    # entry. Both fields are optional for legacy bundles emitted before
+    # the field existed; new code MUST populate them.
+    source_result_path: str | None = None
+    source_result_sha256: str | None = None
 
 
 class AgenticTraceInput(BaseModel):

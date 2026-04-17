@@ -177,6 +177,7 @@ class NodeBackendRunner:
         split_manifest: dict[str, object] | None = None,
         gate3_policy: Gate3Config | None = None,
         nca_diagnostics: list[NCASubjectDiagnostic] | None = None,
+        fixed_parameter: bool = False,
     ) -> BackendResult:
         """Run NODE estimation.
 
@@ -202,6 +203,28 @@ class NodeBackendRunner:
             InvalidSpecError: If spec has no NODE modules.
         """
         _ = gate3_policy, nca_diagnostics  # reserved for Phase 3 posterior-predictive path
+        if fixed_parameter:
+            msg = (
+                "fixed_parameter=True not yet honoured by NODE runner "
+                "(requires a no-refit evaluate() path in node_trainer — see "
+                "PRD \u00a78 Phase 3 / loro_cv.py). Refusing to evaluate to "
+                "avoid silent train/test leakage."
+            )
+            raise NotImplementedError(msg)
+        # #23: the BackendRunner protocol promises timeout enforcement.
+        # JAX training runs in-process and cannot be interrupted from
+        # another task, so silently accepting timeout_seconds would be
+        # a lie. Surface it explicitly — orchestrators that need a hard
+        # wall-clock bound on NODE fits must spawn a subprocess
+        # watchdog (tracked in PRD §8 Phase 3 / loro_cv.py).
+        if timeout_seconds is not None:
+            msg = (
+                f"NodeBackendRunner cannot enforce timeout_seconds={timeout_seconds}: "
+                "JAX training is non-interruptible from the calling asyncio "
+                "task. Pass timeout_seconds=None or run the NODE backend in "
+                "a watchdog subprocess."
+            )
+            raise NotImplementedError(msg)
         from apmode.bundle.models import (
             BackendResult,
             BLQHandling,

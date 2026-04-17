@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from pathlib import Path  # noqa: TC003 — used at runtime in __init__
 
@@ -158,7 +159,16 @@ class BundleEmitter:
             "run_id": self.run_id,
             "sha256": _compute_bundle_digest(self.run_dir),
         }
-        sentinel_path.write_text(json.dumps(sentinel, indent=2) + "\n")
+        # #32 / #34: write the sentinel through a tmp + os.replace dance
+        # so a mid-write crash (SIGKILL, OOM) cannot leave a partially
+        # written _COMPLETE that a subsequent ``initialize()`` would
+        # treat as a valid seal. ``os.replace`` is atomic on the same
+        # filesystem on both POSIX and Windows; the tmp file is cleaned
+        # up before the rename so there is no orphan file after a
+        # successful call.
+        tmp_path = sentinel_path.with_suffix(".tmp")
+        tmp_path.write_text(json.dumps(sentinel, indent=2) + "\n")
+        os.replace(tmp_path, sentinel_path)
         return self.run_dir
 
     def is_sealed(self) -> bool:
@@ -318,6 +328,14 @@ class BundleEmitter:
 
     def append_search_trajectory(self, entry: SearchTrajectoryEntry) -> Path:
         """Append one line to search_trajectory.jsonl."""
+        # Post-seal appends would silently desync the bundle from the
+        # _COMPLETE digest. Refuse so the footgun becomes a loud error.
+        if self.is_sealed():
+            msg = (
+                f"cannot append to search_trajectory.jsonl: bundle {self.run_dir} "
+                "is sealed (would invalidate _COMPLETE digest)"
+            )
+            raise BundleAlreadySealedError(msg)
         path = self.run_dir / "search_trajectory.jsonl"
         with path.open("a") as f:
             f.write(entry.model_dump_json() + "\n")
@@ -325,6 +343,12 @@ class BundleEmitter:
 
     def append_failed_candidate(self, entry: FailedCandidate) -> Path:
         """Append one line to failed_candidates.jsonl."""
+        if self.is_sealed():
+            msg = (
+                f"cannot append to failed_candidates.jsonl: bundle {self.run_dir} "
+                "is sealed (would invalidate _COMPLETE digest)"
+            )
+            raise BundleAlreadySealedError(msg)
         path = self.run_dir / "failed_candidates.jsonl"
         with path.open("a") as f:
             f.write(entry.model_dump_json() + "\n")
