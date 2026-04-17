@@ -31,6 +31,7 @@ from apmode.bundle.models import (
     GOFMetrics,
     IdentifiabilityFlags,
     ParameterEstimate,
+    ScoringContract,
     VPCSummary,
 )
 from apmode.dsl.ast_models import (
@@ -44,6 +45,28 @@ from apmode.dsl.ast_models import (
     Proportional,
     TwoCmt,
 )
+
+
+def _contract_for_backend(backend: str) -> ScoringContract:
+    """Per-backend default contract for suite-B mock BackendResults."""
+    if backend == "jax_node":
+        return ScoringContract(
+            nlpd_kind="conditional",
+            re_treatment="pooled",
+            nlpd_integrator="none",
+            blq_method="none",
+            observation_model="combined",
+            float_precision="float32",
+        )
+    return ScoringContract(
+        nlpd_kind="marginal",
+        re_treatment="integrated",
+        nlpd_integrator="nlmixr2_focei",
+        blq_method="none",
+        observation_model="combined",
+        float_precision="float64",
+    )
+
 
 # ---------------------------------------------------------------------------
 # B1: NODE absorption recovery spec
@@ -206,6 +229,7 @@ def make_b3_result(
                 ill_conditioned=False,
             ),
             blq=BLQHandling(method="none", n_blq=0, blq_fraction=0.0),
+            scoring_contract=_contract_for_backend(backend),
         ),
         wall_time_seconds=60.0,
         backend_versions=(

@@ -16,6 +16,7 @@ from apmode.bundle.models import (
     GOFMetrics,
     IdentifiabilityFlags,
     ParameterEstimate,
+    ScoringContract,
     VPCSummary,
 )
 from apmode.governance.gates import evaluate_gate3
@@ -34,6 +35,39 @@ _DEFAULT_GATE3 = Gate3Config()
 _DEFAULT_VPC_TARGET = 0.90
 
 POLICY_DIR = Path(__file__).parent.parent.parent / "policies"
+
+
+def _scoring_contract_for_backend(backend: str, blq_method: str) -> ScoringContract:
+    """Per-backend default contract so test bundles pass
+    :meth:`BackendResult.validate_backend_scoring_contract_consistency`.
+    """
+    if backend == "bayesian_stan":
+        return ScoringContract(
+            nlpd_kind="marginal",
+            re_treatment="integrated",
+            nlpd_integrator="hmc_nuts",
+            blq_method=blq_method,  # type: ignore[arg-type]
+            observation_model="combined",
+            float_precision="float64",
+        )
+    if backend == "jax_node":
+        return ScoringContract(
+            nlpd_kind="conditional",
+            re_treatment="pooled",
+            nlpd_integrator="none",
+            blq_method=blq_method,  # type: ignore[arg-type]
+            observation_model="combined",
+            float_precision="float32",
+        )
+    # nlmixr2 and agentic_llm both default to the classical FOCEI contract.
+    return ScoringContract(
+        nlpd_kind="marginal",
+        re_treatment="integrated",
+        nlpd_integrator="nlmixr2_focei",
+        blq_method=blq_method,  # type: ignore[arg-type]
+        observation_model="combined",
+        float_precision="float64",
+    )
 
 
 def _make_result(
@@ -83,6 +117,7 @@ def _make_result(
                 ill_conditioned=False,
             ),
             blq=BLQHandling(method=blq_method, n_blq=0, blq_fraction=0.0),  # type: ignore[arg-type]
+            scoring_contract=_scoring_contract_for_backend(backend, blq_method),
         ),
         wall_time_seconds=45.0,
         backend_versions={"nlmixr2": "2.1.2"},

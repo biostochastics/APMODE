@@ -218,8 +218,8 @@ def _validate_elimination(spec: DSLSpec, errors: list[ValidationError]) -> None:
         #   half_life:    CL(t) = CL / (1 + kdecay * t)       (kdecay = ln(2)/t_half)
         #   linear:       CL(t) = max(CL * (1 - kdecay * t), 0)  [floored at 0]
         #
-        # Linear-decay caveat (consensus review 2026-04-17): the max/fmax
-        # floor at t = 1/kdecay produces a C0 kink. rxode2 LSODA with
+        # Linear-decay caveat: the max/fmax floor at t = 1/kdecay produces
+        # a C0 kink. rxode2 LSODA with
         # FOCEI forward sensitivities handles the step-size reduction
         # natively; Stan's ode_rk45 error estimator assumes C1 smoothness
         # and may over-refine near the zero-crossing, producing HMC

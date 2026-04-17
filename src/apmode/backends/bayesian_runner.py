@@ -144,10 +144,7 @@ class BayesianRunner:
 
         response_path = run_dir / "response.json"
         exit_code = await self._spawn_harness(request_path, response_path, timeout_seconds)
-        result = self._parse_response(response_path, exit_code, spec.model_id)
-        from apmode.bundle.scoring_contract import attach_scoring_contract
-
-        return attach_scoring_contract(result, spec)
+        return self._parse_response(response_path, exit_code, spec)
 
     async def _spawn_harness(
         self,
@@ -198,10 +195,18 @@ class BayesianRunner:
         self,
         response_path: Path,
         exit_code: int,
-        model_id: str,
+        spec: DSLSpec,
     ) -> BackendResult:
-        """Parse response.json and build BackendResult, or raise a classified error."""
+        """Parse response.json and build BackendResult, or raise a classified error.
+
+        The returned :class:`BackendResult` carries the Stan-specific
+        :class:`~apmode.bundle.models.ScoringContract`
+        (``nlpd_integrator="hmc_nuts"``) so
+        :meth:`BackendResult.validate_backend_scoring_contract_consistency`
+        accepts it and Gate 3 groups it correctly.
+        """
         from apmode.bundle.models import BackendResult
+        from apmode.bundle.scoring_contract import attach_scoring_contract
 
         if not response_path.exists():
             raise CrashError(
@@ -215,11 +220,11 @@ class BayesianRunner:
         if response.status == "error":
             if response.error_type == "convergence":
                 raise ConvergenceError(
-                    f"Stan convergence failure for {model_id}: {response.error_detail}",
+                    f"Stan convergence failure for {spec.model_id}: {response.error_detail}",
                     method="nuts",
                 )
             raise CrashError(
-                f"Bayesian backend error ({response.error_type}) for {model_id}: "
+                f"Bayesian backend error ({response.error_type}) for {spec.model_id}: "
                 f"{response.error_detail}",
                 exit_code=exit_code,
             )
@@ -230,7 +235,40 @@ class BayesianRunner:
                 exit_code=exit_code,
             )
 
-        return BackendResult.model_validate(response.result)
+        # Inject the Stan scoring contract BEFORE model_validate so the
+        # backend_scoring_contract_consistency validator passes. The raw
+        # response carries a DiagnosticBundle with a default (classical
+        # FOCEI) contract; we overwrite it inline.
+        from apmode.bundle.scoring_contract import (
+            _contract_for_backend,
+            _obs_from_spec,
+        )
+
+        raw_result = (
+            dict(response.result) if isinstance(response.result, dict) else response.result
+        )
+        if isinstance(raw_result, dict) and "diagnostics" in raw_result:
+            _nlpd_kind, _re_treatment, _integrator, _precision = _contract_for_backend(
+                "bayesian_stan"
+            )
+            diagnostics_dict = dict(raw_result["diagnostics"])
+            blq = diagnostics_dict.get("blq") or {}
+            blq_method = (
+                blq.get("method") if isinstance(blq, dict) else getattr(blq, "method", "none")
+            ) or "none"
+            diagnostics_dict["scoring_contract"] = {
+                "contract_version": 1,
+                "nlpd_kind": _nlpd_kind,
+                "re_treatment": _re_treatment,
+                "nlpd_integrator": _integrator,
+                "blq_method": blq_method,
+                "observation_model": _obs_from_spec(spec),
+                "float_precision": _precision,
+            }
+            raw_result["diagnostics"] = diagnostics_dict
+
+        result = BackendResult.model_validate(raw_result)
+        return attach_scoring_contract(result, spec)
 
 
 # Harness contract (implemented in src/apmode/bayes/harness.py):

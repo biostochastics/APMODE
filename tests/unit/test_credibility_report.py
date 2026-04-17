@@ -14,9 +14,39 @@ from apmode.bundle.models import (
     GOFMetrics,
     IdentifiabilityFlags,
     ParameterEstimate,
+    ScoringContract,
     VPCSummary,
 )
 from apmode.report.credibility import generate_credibility_report
+
+
+def _contract_for(backend: str) -> ScoringContract:
+    if backend == "jax_node":
+        return ScoringContract(
+            nlpd_kind="conditional",
+            re_treatment="pooled",
+            nlpd_integrator="none",
+            blq_method="none",
+            observation_model="combined",
+            float_precision="float32",
+        )
+    if backend == "bayesian_stan":
+        return ScoringContract(
+            nlpd_kind="marginal",
+            re_treatment="integrated",
+            nlpd_integrator="hmc_nuts",
+            blq_method="none",
+            observation_model="combined",
+            float_precision="float64",
+        )
+    return ScoringContract(
+        nlpd_kind="marginal",
+        re_treatment="integrated",
+        nlpd_integrator="nlmixr2_focei",
+        blq_method="none",
+        observation_model="combined",
+        float_precision="float64",
+    )
 
 
 def _make_result(backend: str = "nlmixr2") -> BackendResult:
@@ -53,6 +83,7 @@ def _make_result(backend: str = "nlmixr2") -> BackendResult:
                 ill_conditioned=False,
             ),
             blq=BLQHandling(method="none", n_blq=0, blq_fraction=0.0),
+            scoring_contract=_contract_for(backend),
         ),
         wall_time_seconds=45.0,
         backend_versions={"nlmixr2": "2.1.2"},

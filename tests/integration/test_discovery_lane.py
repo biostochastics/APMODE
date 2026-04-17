@@ -30,6 +30,7 @@ from apmode.bundle.models import (
     IdentifiabilityFlags,
     ParameterEstimate,
     PITCalibrationSummary,
+    ScoringContract,
     VPCSummary,
 )
 from apmode.dsl.ast_models import (
@@ -46,6 +47,26 @@ from apmode.governance.policy import GatePolicy
 from apmode.search.engine import SearchEngine
 
 POLICY_DIR = Path(__file__).parent.parent.parent / "policies"
+
+
+def _contract_for(backend: str) -> ScoringContract:
+    if backend == "jax_node":
+        return ScoringContract(
+            nlpd_kind="conditional",
+            re_treatment="pooled",
+            nlpd_integrator="none",
+            blq_method="none",
+            observation_model="combined",
+            float_precision="float32",
+        )
+    return ScoringContract(
+        nlpd_kind="marginal",
+        re_treatment="integrated",
+        nlpd_integrator="nlmixr2_focei",
+        blq_method="none",
+        observation_model="combined",
+        float_precision="float64",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +152,7 @@ def _make_mock_result(
                 ill_conditioned=False,
             ),
             blq=BLQHandling(method="none", n_blq=0, blq_fraction=0.0),
+            scoring_contract=_contract_for(backend),
         ),
         wall_time_seconds=60.0,
         backend_versions=(

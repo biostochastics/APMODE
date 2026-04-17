@@ -491,6 +491,35 @@ class TestRankerIntegration:
         backend: str,
         bundle: PredictiveSummaryBundle,
     ) -> BR:
+        from apmode.bundle.models import ScoringContract
+
+        if backend == "jax_node":
+            contract = ScoringContract(
+                nlpd_kind="conditional",
+                re_treatment="pooled",
+                nlpd_integrator="none",
+                blq_method="none",
+                observation_model="combined",
+                float_precision="float32",
+            )
+        elif backend == "bayesian_stan":
+            contract = ScoringContract(
+                nlpd_kind="marginal",
+                re_treatment="integrated",
+                nlpd_integrator="hmc_nuts",
+                blq_method="none",
+                observation_model="combined",
+                float_precision="float64",
+            )
+        else:
+            contract = ScoringContract(
+                nlpd_kind="marginal",
+                re_treatment="integrated",
+                nlpd_integrator="nlmixr2_focei",
+                blq_method="none",
+                observation_model="combined",
+                float_precision="float64",
+            )
         diagnostics = DiagnosticBundle(
             gof=GOFMetrics(cwres_mean=0.05, cwres_sd=1.0, outlier_fraction=0.02),
             vpc=bundle.vpc,
@@ -503,6 +532,7 @@ class TestRankerIntegration:
             npe_score=bundle.npe_score,
             auc_cmax_be_score=bundle.auc_cmax_be_score,
             auc_cmax_source=bundle.auc_cmax_source,
+            scoring_contract=contract,
         )
         return BR(
             model_id=model_id,

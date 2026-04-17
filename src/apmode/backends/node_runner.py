@@ -26,7 +26,12 @@ from apmode.bundle.models import ParameterEstimate
 from apmode.errors import InvalidSpecError
 
 if TYPE_CHECKING:
-    from apmode.bundle.models import BackendResult, DataManifest, NCASubjectDiagnostic
+    from apmode.bundle.models import (
+        BackendResult,
+        DataManifest,
+        NCASubjectDiagnostic,
+        ScoringContract,
+    )
     from apmode.dsl.ast_models import DSLSpec
     from apmode.governance.policy import Gate3Config
 
@@ -70,6 +75,31 @@ def configure_jax_platform(platform: Literal["cpu", "gpu"]) -> None:
         return
     jax.config.update("jax_platform_name", platform)  # type: ignore[no-untyped-call]
     _JAX_PLATFORM_LOCKED = platform
+
+
+def _node_pooled_contract(spec: DSLSpec) -> ScoringContract:
+    """Build the v0.5.0 pooled-NODE scoring contract from a DSLSpec.
+
+    v0.5.0 NODE runs with pooled NLL (no per-subject random effects).
+    M3 will add Laplace-approximated RE and flip ``re_treatment`` to
+    ``"conditional_ebe"`` with ``nlpd_integrator`` in
+    {``"laplace_diag"``, ``"laplace_blockdiag"``}. Until then the
+    contract is fixed to the pooled form below.
+
+    Float precision is locked to ``float32`` — JAX defaults to float32
+    on TPU/GPU and APMODE does not enable x64 on NODE runs.
+    """
+    from apmode.bundle.models import ScoringContract
+    from apmode.bundle.scoring_contract import _obs_from_spec
+
+    return ScoringContract(
+        nlpd_kind="conditional",
+        re_treatment="pooled",
+        nlpd_integrator="none",
+        blq_method="none",
+        observation_model=_obs_from_spec(spec),
+        float_precision="float32",
+    )
 
 
 class NodeBackendRunner:
@@ -180,7 +210,6 @@ class NodeBackendRunner:
             GOFMetrics,
             IdentifiabilityFlags,
         )
-        from apmode.bundle.scoring_contract import derive_scoring_contract
 
         if not spec.has_node_modules():
             raise InvalidSpecError(
@@ -285,6 +314,10 @@ class NodeBackendRunner:
                     n_blq=0,
                     blq_fraction=0.0,
                 ),
+                # v0.5.0 NODE runs pooled (no RE). M3 flips
+                # re_treatment→"conditional_ebe" and nlpd_integrator
+                # →"laplace_diag"/"laplace_blockdiag". Plan §8.
+                scoring_contract=_node_pooled_contract(spec),
             ),
             wall_time_seconds=wall_time,
             backend_versions={
@@ -293,10 +326,6 @@ class NodeBackendRunner:
             },
             initial_estimate_source=init_source,
         )
-        # v0.5.0: NODE runs pooled (no RE). M3 will flip the overrides to
-        # ``re_treatment="conditional_ebe"`` + ``nlpd_integrator="laplace_*"``
-        # once Laplace wiring lands. See plan §8.
-        backend_result.diagnostics.scoring_contract = derive_scoring_contract(backend_result, spec)
         return backend_result
 
     def _build_ode_config(

@@ -31,6 +31,7 @@ from apmode.bundle.models import (
     IdentifiabilityFlags,
     ParameterEstimate,
     PITCalibrationSummary,
+    ScoringContract,
     VPCSummary,
 )
 from apmode.governance.gates import evaluate_gate1, evaluate_gate2, evaluate_gate3
@@ -38,6 +39,15 @@ from apmode.governance.policy import GatePolicy
 from apmode.routing import route
 
 POLICY_DIR = Path(__file__).parent.parent.parent / "policies"
+
+_NODE_POOLED_CONTRACT = ScoringContract(
+    nlpd_kind="conditional",
+    re_treatment="pooled",
+    nlpd_integrator="none",
+    blq_method="none",
+    observation_model="combined",
+    float_precision="float32",
+)
 
 
 def _load_policy(lane: str) -> GatePolicy:
@@ -326,6 +336,7 @@ def _make_node_fit(
                 ill_conditioned=False,
             ),
             blq=BLQHandling(method="none", n_blq=0, blq_fraction=0.0),
+            scoring_contract=_NODE_POOLED_CONTRACT,
         ),
         wall_time_seconds=45.0,
         backend_versions={"jax": "0.9.2", "python": "3.12.0"},

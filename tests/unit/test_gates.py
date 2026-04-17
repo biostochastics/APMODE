@@ -21,6 +21,7 @@ from apmode.bundle.models import (
     IdentifiabilityFlags,
     ParameterEstimate,
     PITCalibrationSummary,
+    ScoringContract,
     SplitGOFMetrics,
     VPCSummary,
 )
@@ -33,6 +34,37 @@ from apmode.governance.gates import (
 from apmode.governance.policy import GatePolicy
 
 POLICY_DIR = Path(__file__).parent.parent.parent / "policies"
+
+
+def _scoring_contract_for_backend(backend: str) -> ScoringContract:
+    """Per-backend classical default for test fixtures (see
+    :meth:`BackendResult.validate_backend_scoring_contract_consistency`)."""
+    if backend == "bayesian_stan":
+        return ScoringContract(
+            nlpd_kind="marginal",
+            re_treatment="integrated",
+            nlpd_integrator="hmc_nuts",
+            blq_method="none",
+            observation_model="combined",
+            float_precision="float64",
+        )
+    if backend == "jax_node":
+        return ScoringContract(
+            nlpd_kind="conditional",
+            re_treatment="pooled",
+            nlpd_integrator="none",
+            blq_method="none",
+            observation_model="combined",
+            float_precision="float32",
+        )
+    return ScoringContract(
+        nlpd_kind="marginal",
+        re_treatment="integrated",
+        nlpd_integrator="nlmixr2_focei",
+        blq_method="none",
+        observation_model="combined",
+        float_precision="float64",
+    )
 
 
 def _make_backend_result(
@@ -117,6 +149,7 @@ def _make_backend_result(
                 n_blq=0,
                 blq_fraction=0.0,
             ),
+            scoring_contract=_scoring_contract_for_backend(backend),
             # Default split_gof so the required-check path doesn't
             # auto-fail non-split-related tests. Individual tests can
             # override.

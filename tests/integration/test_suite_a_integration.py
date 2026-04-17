@@ -38,6 +38,7 @@ from apmode.bundle.models import (
     IdentifiabilityFlags,
     ParameterEstimate,
     PITCalibrationSummary,
+    ScoringContract,
     VPCSummary,
 )
 from apmode.data.ingest import ingest_nonmem_csv
@@ -48,6 +49,36 @@ from apmode.search.candidates import SearchSpace, generate_root_candidates
 
 if TYPE_CHECKING:
     from apmode.dsl.ast_models import DSLSpec
+
+
+def _contract_for(backend: str) -> ScoringContract:
+    if backend == "jax_node":
+        return ScoringContract(
+            nlpd_kind="conditional",
+            re_treatment="pooled",
+            nlpd_integrator="none",
+            blq_method="none",
+            observation_model="combined",
+            float_precision="float32",
+        )
+    if backend == "bayesian_stan":
+        return ScoringContract(
+            nlpd_kind="marginal",
+            re_treatment="integrated",
+            nlpd_integrator="hmc_nuts",
+            blq_method="none",
+            observation_model="combined",
+            float_precision="float64",
+        )
+    return ScoringContract(
+        nlpd_kind="marginal",
+        re_treatment="integrated",
+        nlpd_integrator="nlmixr2_focei",
+        blq_method="none",
+        observation_model="combined",
+        float_precision="float64",
+    )
+
 
 # ---------------------------------------------------------------------------
 # Paths and fixtures
@@ -140,6 +171,7 @@ def _make_mock_fit(
                 ill_conditioned=False,
             ),
             blq=BLQHandling(method="none", n_blq=0, blq_fraction=0.0),
+            scoring_contract=_contract_for(backend),
         ),
         wall_time_seconds=60.0,
         backend_versions=(

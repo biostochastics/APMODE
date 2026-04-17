@@ -181,7 +181,7 @@ class TestParseResponseErrorPaths:
     def test_missing_response_file_is_crash(self, tmp_path: Path) -> None:
         runner = BayesianRunner(work_dir=tmp_path)
         with pytest.raises(CrashError):
-            runner._parse_response(tmp_path / "nope.json", 137, "m1")
+            runner._parse_response(tmp_path / "nope.json", 137, _classical_spec())
 
     def test_error_response_maps_to_convergence(self, tmp_path: Path) -> None:
         response = {
@@ -195,7 +195,7 @@ class TestParseResponseErrorPaths:
         path.write_text(json.dumps(response))
         runner = BayesianRunner(work_dir=tmp_path)
         with pytest.raises(ConvergenceError):
-            runner._parse_response(path, 0, "m1")
+            runner._parse_response(path, 0, _classical_spec())
 
     def test_error_response_maps_to_crash(self, tmp_path: Path) -> None:
         response = {
@@ -209,7 +209,7 @@ class TestParseResponseErrorPaths:
         path.write_text(json.dumps(response))
         runner = BayesianRunner(work_dir=tmp_path)
         with pytest.raises(CrashError):
-            runner._parse_response(path, 0, "m1")
+            runner._parse_response(path, 0, _classical_spec())
 
     def test_success_response_builds_backend_result(self, tmp_path: Path) -> None:
         response = {
@@ -221,7 +221,7 @@ class TestParseResponseErrorPaths:
         path = tmp_path / "response.json"
         path.write_text(json.dumps(response))
         runner = BayesianRunner(work_dir=tmp_path)
-        result = runner._parse_response(path, 0, "m1")
+        result = runner._parse_response(path, 0, _classical_spec())
         assert result.backend == "bayesian_stan"
         assert result.converged is True
 
@@ -235,7 +235,7 @@ class TestParseResponseErrorPaths:
         path.write_text(json.dumps(response))
         runner = BayesianRunner(work_dir=tmp_path)
         with pytest.raises(CrashError):
-            runner._parse_response(path, 0, "m1")
+            runner._parse_response(path, 0, _classical_spec())
 
 
 class TestSubprocessTimeoutPath:

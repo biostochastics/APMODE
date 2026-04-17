@@ -699,12 +699,12 @@ def _apply_submission_dominance_rule(
     warning so reports disclose the gap explicitly — never silently fall
     back to a non-eligible candidate.
 
-    Tiebreaker (consensus review 2026-04-17): when *multiple* eligible
-    groups exist (e.g. nlmixr2-FOCEI *and* Stan-HMC-NUTS both qualify),
-    the winner is the group whose top candidate has the **lowest
-    per-group composite_score** — this is the within-contract ranking
-    metric and is already computed. Insertion-order is not a principled
-    choice and would tie the regulatory recommendation to scheduling.
+    Tiebreaker: when *multiple* eligible groups exist (e.g. nlmixr2-FOCEI
+    *and* Stan-HMC-NUTS both qualify), the winner is the group whose top
+    candidate has the **lowest per-group composite_score** — this is the
+    within-contract ranking metric and is already computed. Insertion-order
+    is not a principled choice and would tie the regulatory recommendation
+    to scheduling.
     A warning still fires when multiple groups are eligible so reviewers
     see that a cross-contract judgement call was made.
     """

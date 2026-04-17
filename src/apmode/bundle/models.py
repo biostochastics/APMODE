@@ -461,9 +461,9 @@ class BackendResult(BaseModel):
         real field here, the out-of-band pattern would silently route
         sims into a Pydantic-owned slot instead of the helper path.
 
-        Multi-model review consensus (rc8): raise loudly here so that
-        drift is a loud test failure rather than a silent audit-trail
-        inconsistency. No-op for every well-formed payload today.
+        Raise loudly here so that drift is a loud test failure rather
+        than a silent audit-trail inconsistency. No-op for every
+        well-formed payload today.
         """
         if isinstance(data, dict) and "predicted_simulations" in data:
             msg = (
@@ -479,8 +479,7 @@ class BackendResult(BaseModel):
     def validate_backend_scoring_contract_consistency(self) -> BackendResult:
         """Enforce backend ↔ scoring_contract.nlpd_integrator consistency.
 
-        Consensus review (2026-04-17, mimo/gemini3/kimi-k2.5/glm-5.1): the
-        default_factory on :class:`DiagnosticBundle.scoring_contract`
+        The default_factory on :class:`DiagnosticBundle.scoring_contract`
         emits the nlmixr2-FOCEI contract. If a Stan or NODE runner forgets
         to call ``attach_scoring_contract``, the bundle silently carries
         the wrong contract and Gate 3 groups it with classical candidates.
