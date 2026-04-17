@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 from pydantic import BaseModel, ConfigDict
 
 from apmode.dsl.ast_models import (
@@ -32,6 +35,8 @@ from apmode.dsl.ast_models import (
     ZeroOrder,
 )
 from apmode.dsl.normalize import normalize_param_name
+from apmode.dsl.prior_transforms import SetPrior
+from apmode.dsl.priors import PriorFamily
 from apmode.dsl.transforms import (
     AddCovariateLink,
     AdjustVariability,
@@ -193,47 +198,97 @@ def _extract_json(text: str) -> str | None:
     return None
 
 
+def _parse_swap_module(raw: dict[str, Any]) -> FormularTransform:
+    new_module_raw = raw.get("new_module", {})
+    # Accept both short form ("new_module": "Linear") and long form
+    # ("new_module": {"type": "Linear", ...}) for LLM robustness.
+    if isinstance(new_module_raw, str):
+        new_module_raw = {"type": new_module_raw}
+    module_type = new_module_raw.get("type")
+    if module_type not in _MODULE_REGISTRY:
+        msg = f"Unknown module type '{module_type}' in swap_module"
+        raise ValueError(msg)
+    module_cls = _MODULE_REGISTRY[module_type]
+    # Merge: LLM-provided fields override defaults; drop the "type" key.
+    kwargs = dict(_MODULE_DEFAULTS.get(module_type, {}))
+    kwargs.update({k: v for k, v in new_module_raw.items() if k != "type"})
+    new_module = module_cls(**kwargs)
+    return SwapModule(position=raw["position"], new_module=new_module)
+
+
+def _parse_add_covariate_link(raw: dict[str, Any]) -> FormularTransform:
+    return AddCovariateLink(
+        param=normalize_param_name(raw["param"]),
+        covariate=raw["covariate"],
+        form=raw["form"],
+    )
+
+
+def _parse_adjust_variability(raw: dict[str, Any]) -> FormularTransform:
+    return AdjustVariability(param=normalize_param_name(raw["param"]), action=raw["action"])
+
+
+def _parse_set_transit_n(raw: dict[str, Any]) -> FormularTransform:
+    return SetTransitN(n=raw["n"])
+
+
+def _parse_toggle_lag(raw: dict[str, Any]) -> FormularTransform:
+    return ToggleLag(on=raw["on"])
+
+
+def _parse_replace_with_node(raw: dict[str, Any]) -> FormularTransform:
+    return ReplaceWithNODE(
+        position=raw["position"],
+        constraint_template=raw["constraint_template"],
+        dim=raw["dim"],
+    )
+
+
+def _parse_set_prior(raw: dict[str, Any]) -> FormularTransform:
+    """Parse a ``set_prior`` transform — previously missing (H7).
+
+    The ``family`` field is the discriminated-union ``PriorFamily``;
+    we use Pydantic's TypeAdapter to deserialize without hard-coding
+    every family variant here.
+    """
+    from pydantic import TypeAdapter
+
+    family_raw = raw.get("family")
+    if not isinstance(family_raw, dict):
+        msg = "set_prior: 'family' must be an object with a discriminator field"
+        raise ValueError(msg)
+    family: PriorFamily = TypeAdapter(PriorFamily).validate_python(family_raw)
+    return SetPrior(
+        target=raw["target"],
+        family=family,
+        source=raw.get("source", "weakly_informative"),
+        justification=raw.get("justification", ""),
+        historical_refs=list(raw.get("historical_refs", [])),
+    )
+
+
+# Registration-map approach (H7): adding a new transform type requires a
+# new entry here and a new test in ``tests/unit/test_transform_parser.py``
+# (``test_parser_covers_all_transforms``) catches drift at test-collection
+# time rather than at runtime.
+_TRANSFORM_PARSERS: dict[str, Callable[[dict[str, Any]], FormularTransform]] = {
+    "swap_module": _parse_swap_module,
+    "add_covariate_link": _parse_add_covariate_link,
+    "adjust_variability": _parse_adjust_variability,
+    "set_transit_n": _parse_set_transit_n,
+    "toggle_lag": _parse_toggle_lag,
+    "replace_with_node": _parse_replace_with_node,
+    "set_prior": _parse_set_prior,
+}
+
+
 def _parse_single_transform(raw: dict[str, Any], t_type: str | None) -> FormularTransform:
     """Parse a single transform dict into a typed FormularTransform."""
-    if t_type == "swap_module":
-        new_module_raw = raw.get("new_module", {})
-        # Accept both short form ("new_module": "Linear") and long form
-        # ("new_module": {"type": "Linear", ...}) for LLM robustness.
-        if isinstance(new_module_raw, str):
-            new_module_raw = {"type": new_module_raw}
-        module_type = new_module_raw.get("type")
-        if module_type not in _MODULE_REGISTRY:
-            msg = f"Unknown module type '{module_type}' in swap_module"
-            raise ValueError(msg)
-        module_cls = _MODULE_REGISTRY[module_type]
-        # Merge: LLM-provided fields override defaults; drop the "type" key.
-        kwargs = dict(_MODULE_DEFAULTS.get(module_type, {}))
-        kwargs.update({k: v for k, v in new_module_raw.items() if k != "type"})
-        new_module = module_cls(**kwargs)
-        return SwapModule(position=raw["position"], new_module=new_module)
-
-    if t_type == "add_covariate_link":
-        return AddCovariateLink(
-            param=normalize_param_name(raw["param"]),
-            covariate=raw["covariate"],
-            form=raw["form"],
-        )
-
-    if t_type == "adjust_variability":
-        return AdjustVariability(param=normalize_param_name(raw["param"]), action=raw["action"])
-
-    if t_type == "set_transit_n":
-        return SetTransitN(n=raw["n"])
-
-    if t_type == "toggle_lag":
-        return ToggleLag(on=raw["on"])
-
-    if t_type == "replace_with_node":
-        return ReplaceWithNODE(
-            position=raw["position"],
-            constraint_template=raw["constraint_template"],
-            dim=raw["dim"],
-        )
-
-    msg = f"Unknown transform type: '{t_type}'"
-    raise ValueError(msg)
+    if t_type is None:
+        msg = "Transform missing 'type' field"
+        raise ValueError(msg)
+    parser = _TRANSFORM_PARSERS.get(t_type)
+    if parser is None:
+        msg = f"Unknown transform type: {t_type!r}"
+        raise ValueError(msg)
+    return parser(raw)

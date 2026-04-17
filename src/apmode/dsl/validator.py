@@ -369,6 +369,20 @@ def _validate_variability(spec: DSLSpec, errors: list[ValidationError]) -> None:
                             ),
                         )
                     )
+                elif np in _NO_VARIABILITY_PARAMS:
+                    # M12: mirror the IIV check — the nlmixr2/Stan
+                    # emitters do not apply IOV eta to Transit 'n' either.
+                    errors.append(
+                        ValidationError(
+                            module=mod,
+                            param=f"variability[{i}].params",
+                            constraint="no_variability_on_param",
+                            message=(
+                                f"Parameter '{p}' cannot have IOV; "
+                                f"emitter does not apply eta to its back-transform"
+                            ),
+                        )
+                    )
         elif isinstance(item, CovariateLink):
             # Covariate column name is checked at data-binding time, but
             # param name must reference a structural parameter in the spec

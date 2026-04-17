@@ -8,18 +8,44 @@ from cached outputs.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import time
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable
     from pathlib import Path
 
 import structlog
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 logger = structlog.get_logger(__name__)
+
+
+class LLMTimeoutError(TimeoutError):
+    """Raised when an LLM provider call exceeds ``LLMConfig.timeout_seconds``.
+
+    Subclasses the built-in ``TimeoutError`` so existing ``asyncio.wait_for``
+    handlers catch it naturally.
+    """
+
+
+async def _await_llm[T](awaitable: Awaitable[T], timeout: float) -> T:
+    """Wrap an LLM provider coroutine with an outer ``asyncio.wait_for`` cap.
+
+    The native SDK timeout (where supported) closes the underlying HTTP
+    socket cleanly; this outer wrapper additionally guarantees the
+    coroutine itself cannot block the agentic loop past the policy limit,
+    even if the SDK retries internally (litellm, openai) or ignores its
+    own kwarg (older ollama builds).
+    """
+    try:
+        return await asyncio.wait_for(awaitable, timeout=timeout)
+    except TimeoutError as exc:
+        msg = f"LLM request timed out after {timeout}s"
+        raise LLMTimeoutError(msg) from exc
 
 
 class LLMConfig(BaseModel):
@@ -35,6 +61,11 @@ class LLMConfig(BaseModel):
     temperature: float = 0.0
     max_tokens: int = 4096
     api_base: str | None = None
+    # H4: Hard ceiling on a single LLM API call so a hung provider
+    # cannot block the agentic loop indefinitely. Wraps both the native
+    # SDK timeout (where supported) and an outer ``asyncio.wait_for``
+    # to cover SDKs whose retry/backoff paths ignore the kwarg.
+    timeout_seconds: float = Field(default=120.0, gt=0.0)
 
     @model_validator(mode="after")
     def enforce_temperature_zero(self) -> LLMConfig:
@@ -79,19 +110,27 @@ class LLMClient:
         """Send a completion request and return a traced response."""
         import litellm
 
-        payload = {
+        payload: dict[str, Any] = {
             "model": self._config.model,
             "messages": messages,
             "temperature": self._config.temperature,
             "max_tokens": self._config.max_tokens,
+            "timeout": self._config.timeout_seconds,
         }
         if self._config.api_base:
             payload["api_base"] = self._config.api_base
 
-        payload_hash = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+        payload_hash = hashlib.sha256(
+            json.dumps(
+                {k: v for k, v in payload.items() if k != "timeout"}, sort_keys=True
+            ).encode()
+        ).hexdigest()
 
         start = time.monotonic()
-        response = await litellm.acompletion(**payload)
+        response = await _await_llm(
+            litellm.acompletion(**payload),
+            timeout=self._config.timeout_seconds,
+        )
         elapsed = time.monotonic() - start
 
         raw_text = response.choices[0].message.content or ""

@@ -16,11 +16,13 @@ APMODE (Adaptive Pharmacokinetic Model Discovery Engine) composes **five** popPK
 1. **`apmode run`** produces a bundle directory under `./runs/` (or `--output-dir`).
 2. Every other command consumes one or two bundle directories. You never re-run to "see" results — query the bundle.
 3. **Lane is load-bearing**, not a dial. Pick deliberately:
-   - `submission` — regulatory-grade. Classical NLME (and Bayesian with prior justification) is eligible for "recommended". NODE/agentic cannot win a submission run — this is a hard PRD rule, not a weight.
+   - `submission` — regulatory-grade and the **CLI default** (because it is the most conservative lane). Classical NLME (and Bayesian with prior justification) is eligible for "recommended". NODE/agentic cannot win a submission run — this is a hard PRD rule, not a weight. Choosing `discovery` or `optimization` relaxes that and should be an explicit, asked-for decision.
    - `discovery` — exploratory. All backends eligible for ranking.
    - `optimization` — translational; requires LORO-CV in Gate 2; NODE dim ≤ 4.
-4. **Agentic backend is opt-in** (`--agentic`) and only meaningful on `discovery` / `optimization`. Aggregated diagnostics (never per-subject data) ship to a third-party LLM — surface this when a user first enables it.
+4. **Agentic backend is opt-in** (`--agentic`, `discovery` / `optimization` only). Ships aggregated diagnostics to a third-party LLM — full data-exposure caveat in Gotchas; surface it the first time a user enables the flag.
 5. **Bayesian backend is opt-in** via `--backend bayesian_stan` (requires `uv sync --extra bayesian` + `cmdstanpy.install_cmdstan()`). Adds R̂/ESS/divergences/E-BFMI/Pareto-k to Gate 1.
+
+**First-response reflexes.** On environment trouble → `apmode doctor`. On an unfamiliar bundle → `apmode inspect BUNDLE`. On a mysterious rejection → `apmode log BUNDLE --failed` then `apmode lineage BUNDLE <id>`.
 
 ## Commands (14 total)
 

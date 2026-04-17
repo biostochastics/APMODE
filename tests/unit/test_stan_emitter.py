@@ -16,6 +16,7 @@ from apmode.dsl.ast_models import (
     CovariateLink,
     DSLSpec,
     FirstOrder,
+    IVBolus,
     LaggedFirstOrder,
     LinearElim,
     MichaelisMenten,
@@ -408,4 +409,155 @@ class TestStanUnsupportedAbsorption:
     def test_mixed_first_zero_raises(self) -> None:
         spec = _make_spec(absorption=MixedFirstZero(ka=1.0, dur=0.5, frac=0.6))
         with pytest.raises(NotImplementedError, match="MixedFirstZero"):
+            emit_stan(spec)
+
+
+# ---------------------------------------------------------------------------
+# IVBolus — no depot compartment (W0 baseline for C1)
+# ---------------------------------------------------------------------------
+
+
+class TestIVBolusODE:
+    """IVBolus dosing must not emit a depot compartment.
+
+    With IV bolus, dose enters the central compartment directly. The Stan
+    emitter must:
+
+    1. Not alias ``y[1]`` as ``depot``.
+    2. Not emit absorption-rate ODE terms (``dydt[1] = -ka * depot``).
+    3. Not reference ``ka`` anywhere (IVBolus has no ``ka`` field and
+       ``structural_param_names()`` does not include ``ka`` for IVBolus).
+    4. Declare one fewer ODE state than the oral equivalent.
+    """
+
+    def test_ivbolus_onecmt_mm_has_no_depot_alias(self) -> None:
+        """IVBolus + OneCmt + MM: central is y[1], no depot alias."""
+        spec = _make_spec(
+            absorption=IVBolus(),
+            distribution=OneCmt(V=70),
+            elimination=MichaelisMenten(Vmax=100, Km=10),
+        )
+        code = emit_stan(spec)
+        assert "real depot = y[1];" not in code, (
+            "IVBolus must not alias y[1] as depot — dose enters central directly"
+        )
+
+    def test_ivbolus_onecmt_mm_has_no_absorption_term(self) -> None:
+        """IVBolus + OneCmt + MM: no -ka*depot term in ODE."""
+        spec = _make_spec(
+            absorption=IVBolus(),
+            distribution=OneCmt(V=70),
+            elimination=MichaelisMenten(Vmax=100, Km=10),
+        )
+        code = emit_stan(spec)
+        assert "ka * depot" not in code, "IVBolus has no absorption phase"
+        assert "-ka * depot" not in code, "IVBolus has no absorption phase"
+
+    def test_ivbolus_onecmt_mm_does_not_reference_undefined_ka(self) -> None:
+        """IVBolus has no ka parameter; emitted code must not reference ka tokens.
+
+        ``structural_param_names()`` returns no ``ka`` for IVBolus, so any ``ka``
+        reference in the ODE body is an undefined-variable error in Stan.
+        """
+        spec = _make_spec(
+            absorption=IVBolus(),
+            distribution=OneCmt(V=70),
+            elimination=MichaelisMenten(Vmax=100, Km=10),
+        )
+        code = emit_stan(spec)
+        # Structural params should not include ka
+        assert "log_ka" not in code, "IVBolus has no ka parameter"
+        # The ODE body should not have bare `ka` as a standalone identifier
+        assert not re.search(r"\bka\b", code), "IVBolus must not reference ka"
+
+    def test_ivbolus_twocmt_mm_state_count(self) -> None:
+        """IVBolus + TwoCmt + MM: 2 states (central, peripheral) not 3."""
+        spec = _make_spec(
+            absorption=IVBolus(),
+            distribution=TwoCmt(V1=50, V2=80, Q=10),
+            elimination=MichaelisMenten(Vmax=100, Km=10),
+        )
+        code = emit_stan(spec)
+        # No phantom depot alias
+        assert "real depot = y[1];" not in code
+        # Central is y[1], peripheral is y[2]
+        assert "real centr = y[1];" in code
+        assert "real periph = y[2];" in code
+
+    def test_ivbolus_onecmt_linear_has_no_depot_alias(self) -> None:
+        """IVBolus + OneCmt + Linear: analytical path may skip ODE entirely,
+        but if an ODE is emitted (e.g. in a future refactor), it must
+        still respect the no-depot invariant.
+        """
+        spec = _make_spec(
+            absorption=IVBolus(),
+            distribution=OneCmt(V=70),
+            elimination=LinearElim(CL=5),
+        )
+        code = emit_stan(spec)
+        assert "real depot = y[1];" not in code
+        assert not re.search(r"\bka\b", code), "IVBolus + Linear must not reference ka anywhere"
+
+    def test_ivbolus_parallel_mm_has_no_absorption(self) -> None:
+        """IVBolus + ParallelLinearMM: still no depot, no ka."""
+        spec = _make_spec(
+            absorption=IVBolus(),
+            distribution=OneCmt(V=70),
+            elimination=ParallelLinearMM(CL=3, Vmax=100, Km=10),
+        )
+        code = emit_stan(spec)
+        assert "real depot = y[1];" not in code
+        assert not re.search(r"\bka\b", code)
+
+    def test_oral_firstorder_still_has_depot(self) -> None:
+        """Control: oral FirstOrder absorption still emits a depot compartment."""
+        spec = _make_spec(
+            absorption=FirstOrder(ka=1.5),
+            distribution=OneCmt(V=70),
+            elimination=MichaelisMenten(Vmax=100, Km=10),
+        )
+        code = emit_stan(spec)
+        assert "real depot = y[1];" in code
+        assert "ka * depot" in code
+
+
+# ---------------------------------------------------------------------------
+# H1 — Stan identifier sanitization
+# ---------------------------------------------------------------------------
+
+
+class TestStanIdentifierSanitization:
+    """Covariate/parameter names must pass Stan identifier rules.
+
+    Pydantic catches most syntactic violations at AST construction time;
+    the emitter's ``_sanitize_stan_name`` catches reserved-word collisions
+    and double-underscore suffixes.
+    """
+
+    def test_rejects_dotted_covariate_name_at_ast(self) -> None:
+        """R-style ``WT.baseline`` is rejected at Pydantic construction."""
+        import pydantic
+
+        with pytest.raises(pydantic.ValidationError, match="pattern"):
+            CovariateLink(param="CL", covariate="WT.baseline", form="power")
+
+    def test_rejects_leading_digit_covariate_at_ast(self) -> None:
+        import pydantic
+
+        with pytest.raises(pydantic.ValidationError, match="pattern"):
+            CovariateLink(param="CL", covariate="1WT", form="power")
+
+    def test_rejects_stan_reserved_keyword_at_emit(self) -> None:
+        """Keywords pass Pydantic's regex but are rejected at emission."""
+        spec = _make_spec(
+            variability=[CovariateLink(param="CL", covariate="data", form="power")]  # type: ignore[list-item]
+        )
+        with pytest.raises(ValueError, match="reserved"):
+            emit_stan(spec)
+
+    def test_rejects_double_underscore_suffix_at_emit(self) -> None:
+        spec = _make_spec(
+            variability=[IIV(params=["CL__"], structure="diagonal")]  # type: ignore[list-item]
+        )
+        with pytest.raises(ValueError, match="double underscore"):
             emit_stan(spec)

@@ -30,6 +30,7 @@ from apmode.bundle.models import (
     BackendVersions,
     CandidateLineage,
     CandidateLineageEntry,
+    CredibilityContext,
     FailedCandidate,
     LOROCVResult,
     LOROMetrics,
@@ -119,6 +120,14 @@ class RunOutcome:
     ranked: list[str] = field(default_factory=list)
 
 
+# L7: seed offset for the independent-start agentic mode. Large enough
+# that no sensible user seed (which is held constant across a run) can
+# collide with the derived seed, and small enough to be visible in
+# logs. Kept as a module-level named constant rather than a ``+1000``
+# magic number so the provenance is traceable.
+_INDEPENDENT_MODE_SEED_OFFSET = 1000
+
+
 class Orchestrator:
     """Central pipeline controller.
 
@@ -128,7 +137,7 @@ class Orchestrator:
 
     def __init__(
         self,
-        runner: Nlmixr2Runner,
+        runner: BackendRunner,
         bundle_base_dir: Path,
         config: RunConfig | None = None,
         node_runner: BackendRunner | None = None,
@@ -246,7 +255,28 @@ class Orchestrator:
         # --- Stage 1b: Load Policy (before routing so the missing-data
         # directive can be resolved and attached to DispatchDecision) ---
         policy = self._load_policy()
-        if policy:
+        if policy is None:
+            # M5: a missing policy means gates + ranking are skipped below,
+            # which is NEVER valid for submission lane (CLAUDE.md: the
+            # disqualifying funnel is load-bearing for regulatory
+            # defensibility). Fail loudly for submission; warn for
+            # discovery/optimization where it is a recoverable
+            # configuration.
+            if self._config.lane == "submission":
+                from apmode.errors import APMODEConfigError
+
+                msg = (
+                    "submission lane requires a gate policy but none was "
+                    "loaded. Set --policy or ensure policies/submission.json "
+                    "is present."
+                )
+                raise APMODEConfigError(msg)
+            logger.warning(
+                "no gate policy loaded; governance gates will be SKIPPED "
+                "for lane=%s. This is only valid for exploratory runs.",
+                self._config.lane,
+            )
+        else:
             emitter.write_policy_file(policy.model_dump())
 
         # --- Stage 1c: Lane Router Dispatch ---
@@ -673,8 +703,10 @@ class Orchestrator:
                     )
                     continue
 
+                # L8: CredibilityContext import moved to module top
+                # to avoid repeated import-lookup overhead inside the
+                # per-candidate loop.
                 # Gate 2.5: Credibility Qualification
-                from apmode.bundle.models import CredibilityContext
 
                 cred_ctx = CredibilityContext(
                     context_of_use=f"{self._config.lane} lane analysis",
@@ -792,6 +824,12 @@ class Orchestrator:
             )
         )
 
+        # Seal the bundle LAST — this writes the _COMPLETE sentinel with a
+        # SHA-256 digest over all artifacts, making the bundle
+        # distinguishable from a partial/crashed run. Only successful
+        # completion paths reach this point.
+        emitter.seal()
+
         logger.info(
             "Run %s complete: %d candidates, %d recommended, %d ranked",
             emitter.run_id,
@@ -823,22 +861,20 @@ class Orchestrator:
 
         Returns new SearchResult entries to merge into search_outcome.
         """
-        assert self._agentic_runner is not None
-
         from apmode.backends.agentic_runner import AgenticRunner
         from apmode.search.engine import SearchResult as SR
 
-        # Concrete-type check — orchestrator stores as BackendRunner protocol
-        # but needs AgenticRunner-specific trace-dir scoping here. Using an
-        # explicit TypeError (not `assert`) keeps the guard effective under
-        # ``python -O``, where assertions are stripped.
-        if not isinstance(self._agentic_runner, AgenticRunner):
-            msg = (
-                f"_run_agentic_stage requires AgenticRunner, got "
-                f"{type(self._agentic_runner).__name__}"
-            )
+        # H8: Runtime guards, not ``assert`` — assertions are stripped under
+        # ``python -O``. Both the None-check and the concrete-type check
+        # must remain effective in optimized builds.
+        runner = self._agentic_runner
+        if runner is None:
+            msg = "_run_agentic_stage called but agentic_runner is not configured"
+            raise RuntimeError(msg)
+        if not isinstance(runner, AgenticRunner):
+            msg = f"_run_agentic_stage requires AgenticRunner, got {type(runner).__name__}"
             raise TypeError(msg)
-        agentic = self._agentic_runner
+        agentic = runner
         base_trace_dir = agentic.trace_dir
 
         results: list[SR] = []
@@ -859,10 +895,19 @@ class Orchestrator:
         )
         if converged_srs:
             best_sr = converged_srs[0]
-            assert best_sr.result is not None
+            # H8: the sort filter above already excludes None results, but
+            # use explicit narrowing rather than ``assert`` so the invariant
+            # survives ``python -O``.
+            best_result = best_sr.result
+            if best_result is None:
+                msg = (
+                    "Invariant violation: converged_srs sort filter kept a "
+                    "SearchResult whose .result is None"
+                )
+                raise RuntimeError(msg)
             best_estimates = {
                 name: pe.estimate
-                for name, pe in best_sr.result.parameter_estimates.items()
+                for name, pe in best_result.parameter_estimates.items()
                 if pe.category == "structural"
             }
             logger.info(
@@ -938,7 +983,7 @@ class Orchestrator:
                     spec=base_spec,
                     data_manifest=manifest,
                     initial_estimates=base_estimates,
-                    seed=self._config.seed + 1000,
+                    seed=self._config.seed + _INDEPENDENT_MODE_SEED_OFFSET,
                     timeout_seconds=self._config.timeout_seconds,
                     data_path=data_path,
                     split_manifest=split_manifest_dict,

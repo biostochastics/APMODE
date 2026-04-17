@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 import structlog
 
-from apmode.backends.llm_client import LLMConfig, LLMResponse
+from apmode.backends.llm_client import LLMConfig, LLMResponse, _await_llm
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -112,13 +112,18 @@ class AnthropicClient:
     ) -> LLMResponse:
         import anthropic
 
+        # H4: native SDK timeout closes the socket cleanly; _await_llm
+        # wraps the coroutine with an outer wait_for to bound total time.
+        timeout_s = self._config.timeout_seconds
         client = anthropic.AsyncAnthropic(
             api_key=None,  # reads ANTHROPIC_API_KEY from env
+            timeout=timeout_s,
         )
         if self._config.api_base:
             client = anthropic.AsyncAnthropic(
                 api_key=None,
                 base_url=self._config.api_base,
+                timeout=timeout_s,
             )
 
         # Anthropic uses separate system param, not a system message
@@ -140,15 +145,32 @@ class AnthropicClient:
         payload_hash = _compute_payload_hash(payload)
 
         start = time.monotonic()
-        response = await client.messages.create(**payload)
+        response = await _await_llm(client.messages.create(**payload), timeout=timeout_s)
         elapsed = time.monotonic() - start
 
         raw_text = response.content[0].text if response.content else ""
 
+        # H3: Anthropic's Messages API does not expose a deterministic
+        # ``system_fingerprint``. Using ``response.model`` (equal to
+        # ``model_id``) silently masked this gap and tagged every run
+        # ``agentic_reproducibility="best-effort"``. Prefer the response's
+        # request ID (a unique server-side identifier of THIS call) so the
+        # escrow at least captures WHICH server-side invocation produced
+        # the text — ICH M15 reproducibility requires a fingerprint the
+        # sponsor can re-reference.
+        request_id = getattr(response, "_request_id", None) or getattr(response, "id", None)
+        model_version = f"{response.model}@{request_id}" if request_id else response.model
+        if not request_id:
+            logger.warning(
+                "anthropic.model_version.best_effort",
+                reason="response has no request_id or id field",
+                model_id=response.model,
+            )
+
         return LLMResponse(
             raw_text=raw_text,
             model_id=response.model,
-            model_version=response.model,
+            model_version=model_version,
             input_tokens=response.usage.input_tokens,
             output_tokens=response.usage.output_tokens,
             cost_usd=_estimate_anthropic_cost(
@@ -188,7 +210,8 @@ class OpenAIClient:
     ) -> LLMResponse:
         import openai
 
-        kwargs: dict[str, Any] = {}
+        timeout_s = self._config.timeout_seconds
+        kwargs: dict[str, Any] = {"timeout": timeout_s}
         if self._config.api_base:
             kwargs["base_url"] = self._config.api_base
 
@@ -203,7 +226,7 @@ class OpenAIClient:
         payload_hash = _compute_payload_hash(payload)
 
         start = time.monotonic()
-        response = await client.chat.completions.create(**payload)
+        response = await _await_llm(client.chat.completions.create(**payload), timeout=timeout_s)
         elapsed = time.monotonic() - start
 
         raw_text = response.choices[0].message.content or "" if response.choices else ""
@@ -256,7 +279,8 @@ class OpenRouterClient(OpenAIClient):
     ) -> LLMResponse:
         import openai
 
-        kwargs: dict[str, Any] = {"base_url": self._config.api_base}
+        timeout_s = self._config.timeout_seconds
+        kwargs: dict[str, Any] = {"base_url": self._config.api_base, "timeout": timeout_s}
         if self._api_key:
             kwargs["api_key"] = self._api_key
 
@@ -271,7 +295,7 @@ class OpenRouterClient(OpenAIClient):
         payload_hash = _compute_payload_hash(payload)
 
         start = time.monotonic()
-        response = await client.chat.completions.create(**payload)
+        response = await _await_llm(client.chat.completions.create(**payload), timeout=timeout_s)
         elapsed = time.monotonic() - start
 
         raw_text = response.choices[0].message.content or "" if response.choices else ""
@@ -357,10 +381,13 @@ class GeminiClient:
         payload_hash = _compute_payload_hash(payload)
 
         start = time.monotonic()
-        response = await client.aio.models.generate_content(
-            model=self._config.model,
-            contents=contents,
-            config=config,
+        response = await _await_llm(
+            client.aio.models.generate_content(
+                model=self._config.model,
+                contents=contents,
+                config=config,
+            ),
+            timeout=self._config.timeout_seconds,
         )
         elapsed = time.monotonic() - start
 
@@ -422,18 +449,28 @@ class OllamaClient:
         payload_hash = _compute_payload_hash(payload)
 
         start = time.monotonic()
-        response = await client.chat(
-            model=self._config.model,
-            messages=messages,
-            options=options,
+        response = await _await_llm(
+            client.chat(
+                model=self._config.model,
+                messages=messages,
+                options=options,
+            ),
+            timeout=self._config.timeout_seconds,
         )
         elapsed = time.monotonic() - start
 
-        raw_text: str = response["message"]["content"]
-
-        # Ollama provides eval_count and prompt_eval_count
-        input_tokens = response.get("prompt_eval_count", 0)
-        output_tokens = response.get("eval_count", 0)
+        # M14: newer ollama SDK (>=0.4) returns a Pydantic ChatResponse;
+        # older versions returned a raw dict. Prefer attribute access,
+        # fall back to dict-subscript for legacy installs.
+        message = getattr(response, "message", None)
+        if message is not None:
+            raw_text = str(getattr(message, "content", "") or "")
+            input_tokens = int(getattr(response, "prompt_eval_count", 0) or 0)
+            output_tokens = int(getattr(response, "eval_count", 0) or 0)
+        else:
+            raw_text = response["message"]["content"]
+            input_tokens = response.get("prompt_eval_count", 0)
+            output_tokens = response.get("eval_count", 0)
 
         return LLMResponse(
             raw_text=raw_text,

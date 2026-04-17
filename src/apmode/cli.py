@@ -40,11 +40,15 @@ if TYPE_CHECKING:
     from apmode.backends.agentic_runner import AgenticRunner
     from apmode.backends.protocol import BackendRunner
 
+# M1: single source of Lane — re-export from protocol.py so Typer's
+# enum handling still sees a concrete StrEnum at this module level.
 import typer
 from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
+
+from apmode.backends.protocol import Lane as _BackendLane
 
 console = Console()
 err_console = Console(stderr=True)
@@ -67,12 +71,12 @@ def _finite_bic_str(value: object) -> str:
     return str(round(f, 1))
 
 
-class Lane(enum.StrEnum):
-    """Operating lanes per PRD §3."""
-
-    submission = "submission"
-    discovery = "discovery"
-    optimization = "optimization"
+# M1: alias the canonical Lane (backends.protocol) under the local name
+# ``Lane`` so existing CLI callsites continue to resolve. The canonical
+# members use UPPER_CASE names; the lowercase aliases below preserve the
+# original CLI-facing access pattern (``Lane.SUBMISSION``) without
+# duplicating the enum.
+Lane = _BackendLane
 
 
 class LsSort(enum.StrEnum):
@@ -264,7 +268,7 @@ def run(
                 "[dim]optimization[/dim]=LORO-CV."
             ),
         ),
-    ] = Lane.submission,
+    ] = Lane.SUBMISSION,
     seed: Annotated[
         int,
         typer.Option(help="Root random seed for reproducibility."),
@@ -705,7 +709,7 @@ def run(
     # --- Agentic LLM backend (Phase 3) ---
     agentic_runner_instance = None
     _agentic_enabled = agentic and lane.value in ("discovery", "optimization")
-    if agentic and lane == Lane.submission and not quiet:
+    if agentic and lane == Lane.SUBMISSION and not quiet:
         err_console.print(
             "[yellow]Note:[/] --agentic is not permitted in the submission lane "
             "(PRD §3) — agentic backend disabled."
@@ -742,12 +746,12 @@ def run(
 
     # Orchestrator currently types the primary runner as Nlmixr2Runner; the
     # BayesianRunner shares the BackendRunner protocol so the cast is safe.
-    from typing import cast as _cast
-
-    from apmode.backends.nlmixr2_runner import Nlmixr2Runner as _Nlmixr2Runner
-
+    # M2: Orchestrator now accepts the BackendRunner protocol directly
+    # (orchestrator.__init__ widened), removing the prior ``cast`` to a
+    # private Nlmixr2Runner alias. The concrete-type guard for the
+    # agentic stage remains inside ``_run_agentic_stage``.
     orchestrator = Orchestrator(
-        _cast("_Nlmixr2Runner", runner),
+        runner,
         output,
         config,
         agentic_runner=agentic_runner_instance,
@@ -822,7 +826,7 @@ def run(
     console.print(Panel(results_table, title="[bold]Results[/]", border_style="green"))
 
     # --- Submission-lane NODE/agentic exclusion hint ---
-    if lane == Lane.submission:
+    if lane == Lane.SUBMISSION:
         _g2_pass_count = sum(1 for _, p in result.gate2_results if p)
         _n_recommended = len(result.recommended)
         _n_excluded = _g2_pass_count - _n_recommended
@@ -994,6 +998,30 @@ def _validate_file(path: Path, filename: str) -> tuple[str, str]:
     return "[green]✓ OK[/]", ""
 
 
+def _validate_sentinel(bundle_dir: Path) -> tuple[str, str]:
+    """Verify the ``_COMPLETE`` sentinel's SHA-256 digest matches bundle contents.
+
+    Returns (status_markup, note). A mismatch means the bundle was modified
+    after sealing; a missing sha256 field means an older schema.
+    """
+    from apmode.bundle.emitter import _compute_bundle_digest
+
+    sentinel_path = bundle_dir / "_COMPLETE"
+    try:
+        raw = json.loads(sentinel_path.read_text())
+    except (OSError, json.JSONDecodeError) as e:
+        return "[bold red]✗ BAD[/]", f"sentinel unreadable: {e}"
+    if not isinstance(raw, dict):
+        return "[bold red]✗ BAD[/]", "sentinel is not a JSON object"
+    expected = raw.get("sha256")
+    if not isinstance(expected, str):
+        return "[yellow]⚠ OLD[/]", "sentinel lacks sha256 (legacy schema)"
+    actual = _compute_bundle_digest(bundle_dir)
+    if actual != expected:
+        return "[bold red]✗ BAD[/]", "digest mismatch — bundle modified after seal"
+    return "[green]✓ OK[/]", "digest verified"
+
+
 # ---------------------------------------------------------------------------
 # validate command
 # ---------------------------------------------------------------------------
@@ -1015,19 +1043,26 @@ def validate(
         err_console.print(f"[red bold]Error:[/] {kind}: {escape(str(bundle_dir))}")
         raise typer.Exit(code=1)
 
+    # Bundle completeness contract (PRD §4.3.2): every successful run emits
+    # a _COMPLETE sentinel with a SHA-256 digest; a bundle without the
+    # sentinel is partial/crashed and must not pass validation.
+    # evidence_manifest/candidate_lineage are promoted to required because
+    # they constrain dispatch and record search provenance respectively.
     required_files = [
+        "_COMPLETE",
         "data_manifest.json",
         "seed_registry.json",
         "backend_versions.json",
+        "evidence_manifest.json",
+        "candidate_lineage.json",
     ]
     optional_files = [
-        "evidence_manifest.json",
         "initial_estimates.json",
         "split_manifest.json",
         "policy_file.json",
         "search_trajectory.jsonl",
         "failed_candidates.jsonl",
-        "candidate_lineage.json",
+        "ranking.json",
     ]
 
     table = Table(title="Bundle Validation", box=None, padding=(0, 1))
@@ -1042,6 +1077,11 @@ def validate(
         if not p.exists():
             errors.append(f)
             table.add_row("[bold red]✗ MISS[/]", f, "required")
+        elif f == "_COMPLETE":
+            status, note = _validate_sentinel(bundle_dir)
+            if "BAD" in status:
+                errors.append(f)
+            table.add_row(status, f, note or "required")
         else:
             status, note = _validate_file(p, f)
             if "BAD" in status:
@@ -1568,7 +1608,7 @@ def explore(
     lane: Annotated[
         Lane,
         typer.Option(help="Operating lane for search space preview."),
-    ] = Lane.discovery,
+    ] = Lane.DISCOVERY,
     non_interactive: Annotated[
         bool,
         typer.Option("--non-interactive", "-y", help="Skip prompts, run full pipeline."),

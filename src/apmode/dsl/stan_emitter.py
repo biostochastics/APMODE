@@ -19,6 +19,8 @@ BLQ M3/M4 and IOV are not yet implemented (marked as Phase 3).
 
 from __future__ import annotations
 
+import re
+
 from apmode.dsl.ast_models import (
     BLQM3,
     BLQM4,
@@ -30,6 +32,7 @@ from apmode.dsl.ast_models import (
     CovariateLink,
     DSLSpec,
     FirstOrder,
+    IVBolus,
     LaggedFirstOrder,
     LinearElim,
     MichaelisMenten,
@@ -318,14 +321,9 @@ def _emit_historical_borrowing_prior(
 # ---------------------------------------------------------------------------
 
 
-def _needs_ode(spec: DSLSpec) -> bool:
-    """Determine if ODE form is needed (same logic as nlmixr2 emitter)."""
-    if isinstance(spec.elimination, (MichaelisMenten, ParallelLinearMM, TimeVaryingElim)):
-        return True
-    if isinstance(spec.distribution, (TMDDCore, TMDDQSS)):
-        return True
-    return isinstance(spec.absorption, (Transit, MixedFirstZero, ZeroOrder))
-
+# M13: shared helper in apmode.dsl._emitter_utils.needs_ode — kept as
+# a thin module-local alias for readability at call sites.
+from apmode.dsl._emitter_utils import needs_ode as _needs_ode  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # functions {} block — ODE system definition
@@ -401,7 +399,7 @@ def _emit_data_block(spec: DSLSpec) -> str:
 
     # Covariates
     cov_links = [v for v in spec.variability if isinstance(v, CovariateLink)]
-    cov_names = sorted({c.covariate for c in cov_links})
+    cov_names = sorted({_sanitize_stan_name(c.covariate, context="covariate") for c in cov_links})
     for cov in cov_names:
         lines.append(f"  vector[N_subjects] {cov};")
 
@@ -456,7 +454,9 @@ def _emit_parameters_block(spec: DSLSpec) -> str:
     # Covariate coefficients
     cov_links = [v for v in spec.variability if isinstance(v, CovariateLink)]
     for cov in cov_links:
-        lines.append(f"  real beta_{cov.param}_{cov.covariate};")
+        p = _sanitize_stan_name(cov.param, context="covariate-target parameter")
+        c = _sanitize_stan_name(cov.covariate, context="covariate")
+        lines.append(f"  real beta_{p}_{c};")
 
     lines.append("}")
     return "\n".join(lines)
@@ -555,7 +555,9 @@ def _emit_model_block(
     # Priors on covariate coefficients
     cov_links = [v for v in spec.variability if isinstance(v, CovariateLink)]
     for cov in cov_links:
-        cov_target = f"beta_{cov.param}_{cov.covariate}"
+        p = _sanitize_stan_name(cov.param, context="covariate-target parameter")
+        c = _sanitize_stan_name(cov.covariate, context="covariate")
+        cov_target = f"beta_{p}_{c}"
         user_prior = _find_prior(spec.priors, cov_target)
         if user_prior is not None:
             lines.extend(_emit_user_prior(cov_target, user_prior.family, on_log_scale=False))
@@ -600,9 +602,93 @@ def _emit_generated_quantities_block(spec: DSLSpec) -> str:
 # ---------------------------------------------------------------------------
 
 
+_STAN_IDENT_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
+
+# Stan language keywords and reserved names. Using any of these as a
+# user-supplied parameter/covariate would produce uncompilable Stan code
+# and must be rejected at emission time. Not exhaustive, but covers the
+# common pitfalls; Pydantic's StanIdentifier regex catches syntax
+# violations separately.
+_STAN_RESERVED: frozenset[str] = frozenset(
+    {
+        "data",
+        "parameters",
+        "model",
+        "functions",
+        "transformed",
+        "generated",
+        "quantities",
+        "return",
+        "if",
+        "else",
+        "for",
+        "while",
+        "in",
+        "break",
+        "continue",
+        "true",
+        "false",
+        "real",
+        "int",
+        "vector",
+        "row_vector",
+        "matrix",
+        "array",
+        "tuple",
+        "complex",
+        "target",
+        "print",
+        "reject",
+        "lower",
+        "upper",
+    }
+)
+
+
+def _sanitize_stan_name(name: str, *, context: str = "identifier") -> str:
+    """Validate a name against Stan's identifier rules + reserved-word list.
+
+    Returns the name unchanged when valid; raises ``ValueError`` otherwise.
+    Called at every f-string interpolation site in the Stan emitter to
+    provide defense in depth against identifier injection — the AST's
+    ``StanIdentifier`` type catches most violations at construction, but
+    keyword collisions (``data``, ``model``) need this runtime check, and
+    specs built without Pydantic validation still flow through here.
+    """
+    if not _STAN_IDENT_RE.fullmatch(name):
+        msg = f"invalid Stan {context}: {name!r}"
+        raise ValueError(msg)
+    if name in _STAN_RESERVED:
+        msg = f"Stan reserved keyword used as {context}: {name!r}"
+        raise ValueError(msg)
+    if name.endswith("__"):
+        msg = f"Stan {context} must not end with double underscore: {name!r}"
+        raise ValueError(msg)
+    return name
+
+
+def _needs_depot(spec: DSLSpec) -> bool:
+    """Whether the spec emits a depot compartment.
+
+    IV bolus delivers dose directly into the central compartment; no depot
+    state exists. All other absorption types (first-order, transit, etc.)
+    require a depot state.
+    """
+    return not isinstance(spec.absorption, IVBolus)
+
+
+def _centr_idx(spec: DSLSpec) -> int:
+    """Stan-array index of the central compartment in ``y[]``.
+
+    Depot is always ``y[1]`` when present, pushing central to ``y[2]``.
+    Under IVBolus there is no depot, so central is ``y[1]``.
+    """
+    return 2 if _needs_depot(spec) else 1
+
+
 def _n_states(spec: DSLSpec) -> int:
     """Number of ODE states."""
-    base = 1  # depot
+    base = 1 if _needs_depot(spec) else 0  # depot only when absorption requires it
     dist = spec.distribution
     if isinstance(dist, OneCmt):
         return base + 1
@@ -618,24 +704,26 @@ def _n_states(spec: DSLSpec) -> int:
 
 
 def _iiv_params(spec: DSLSpec) -> list[str]:
-    """Collect IIV parameter names in order."""
+    """Collect IIV parameter names in order, sanitized for Stan emission."""
     params: list[str] = []
     for v in spec.variability:
         if isinstance(v, IIV):
             for p in v.params:
-                if p not in params:
-                    params.append(p)
+                safe = _sanitize_stan_name(p, context="IIV parameter")
+                if safe not in params:
+                    params.append(safe)
     return params
 
 
 def _iov_params(spec: DSLSpec) -> list[str]:
-    """Collect IOV parameter names in order."""
+    """Collect IOV parameter names in order, sanitized for Stan emission."""
     params: list[str] = []
     for v in spec.variability:
         if isinstance(v, IOV):
             for p in v.params:
-                if p not in params:
-                    params.append(p)
+                safe = _sanitize_stan_name(p, context="IOV parameter")
+                if safe not in params:
+                    params.append(safe)
     return params
 
 
@@ -666,17 +754,19 @@ def _covariate_expr(spec: DSLSpec, param: str, idx_var: str) -> str:
     parts: list[str] = []
     for v in spec.variability:
         if isinstance(v, CovariateLink) and v.param == param:
-            coeff = f"beta_{v.param}_{v.covariate}"
+            p = _sanitize_stan_name(v.param, context="covariate-target parameter")
+            c = _sanitize_stan_name(v.covariate, context="covariate")
+            coeff = f"beta_{p}_{c}"
             if v.form == "power":
-                parts.append(f" + {coeff} * log({v.covariate}[{idx_var}] / 70)")
+                parts.append(f" + {coeff} * log({c}[{idx_var}] / 70)")
             elif v.form in ("exponential", "categorical"):
-                parts.append(f" + {coeff} * {v.covariate}[{idx_var}]")
+                parts.append(f" + {coeff} * {c}[{idx_var}]")
             elif v.form == "linear":
-                parts.append(f" + log(1 + {coeff} * {v.covariate}[{idx_var}])")
+                parts.append(f" + log(1 + {coeff} * {c}[{idx_var}])")
             elif v.form == "maturation":
                 raise NotImplementedError(
                     f"Maturation covariate form not yet supported in Stan codegen "
-                    f"(param={v.param}, covariate={v.covariate})."
+                    f"(param={p}, covariate={c})."
                 )
     return "".join(parts)
 
@@ -843,33 +933,43 @@ def _emit_theta_unpack(spec: DSLSpec, indent: int = 4) -> list[str]:
 
 
 def _emit_state_aliases(spec: DSLSpec, indent: int = 4) -> list[str]:
-    """Emit state variable aliases."""
+    """Emit state variable aliases.
+
+    Indices shift down by 1 when there is no depot compartment (IVBolus).
+    """
     pad = " " * indent
     lines: list[str] = []
-    lines.append(f"{pad}real depot = y[1];")
+    if _needs_depot(spec):
+        lines.append(f"{pad}real depot = y[1];")
 
+    centr = _centr_idx(spec)
     dist = spec.distribution
     if isinstance(dist, (OneCmt, TMDDCore, TMDDQSS)):
-        lines.append(f"{pad}real centr = y[2];")
+        lines.append(f"{pad}real centr = y[{centr}];")
     elif isinstance(dist, TwoCmt):
-        lines.append(f"{pad}real centr = y[2];")
-        lines.append(f"{pad}real periph = y[3];")
+        lines.append(f"{pad}real centr = y[{centr}];")
+        lines.append(f"{pad}real periph = y[{centr + 1}];")
     elif isinstance(dist, ThreeCmt):
-        lines.append(f"{pad}real centr = y[2];")
-        lines.append(f"{pad}real periph1 = y[3];")
-        lines.append(f"{pad}real periph2 = y[4];")
+        lines.append(f"{pad}real centr = y[{centr}];")
+        lines.append(f"{pad}real periph1 = y[{centr + 1}];")
+        lines.append(f"{pad}real periph2 = y[{centr + 2}];")
 
     if isinstance(dist, TMDDCore):
-        lines.append(f"{pad}real R = y[3];")
-        lines.append(f"{pad}real RC = y[4];")
+        lines.append(f"{pad}real R = y[{centr + 1}];")
+        lines.append(f"{pad}real RC = y[{centr + 2}];")
     elif isinstance(dist, TMDDQSS):
-        lines.append(f"{pad}real Rtot = y[3];")
+        lines.append(f"{pad}real Rtot = y[{centr + 1}];")
 
     return lines
 
 
 def _emit_ode_dynamics(spec: DSLSpec, indent: int = 4) -> list[str]:
-    """Emit ODE RHS in the functions block."""
+    """Emit ODE RHS in the functions block.
+
+    For IVBolus absorption there is no depot compartment; dose is routed
+    directly to central at event time, and no ``ka * depot`` term appears
+    in the continuous dynamics. State indices shift accordingly.
+    """
     pad = " " * indent
     lines: list[str] = []
 
@@ -883,8 +983,12 @@ def _emit_ode_dynamics(spec: DSLSpec, indent: int = 4) -> list[str]:
     # Concentration
     lines.append(f"{pad}real conc = centr / {vol};")
 
-    # Absorption rate
-    if isinstance(abs_mod, FirstOrder):
+    centr = _centr_idx(spec)
+
+    # Absorption rate — IVBolus has no depot, no absorption phase
+    if isinstance(abs_mod, IVBolus):
+        abs_influx = "0"
+    elif isinstance(abs_mod, FirstOrder):
         lines.append(f"{pad}dydt[1] = -ka * depot;")
         abs_influx = "ka * depot"
     elif isinstance(abs_mod, Transit):
@@ -894,38 +998,39 @@ def _emit_ode_dynamics(spec: DSLSpec, indent: int = 4) -> list[str]:
         lines.append(f"{pad}dydt[1] = ktr_eff * depot * exp(-ktr_eff * t) - ka * depot;")
         abs_influx = "ka * depot"
     else:
+        # LaggedFirstOrder and any future first-order-like case
         lines.append(f"{pad}dydt[1] = -ka * depot;")
         abs_influx = "ka * depot"
 
     # Elimination expression
     elim_expr = _stan_elim_expr(elim_mod, "centr", vol)
 
-    # Central compartment
+    # Central compartment — index depends on whether a depot was emitted
     if isinstance(dist_mod, OneCmt):
-        lines.append(f"{pad}dydt[2] = {abs_influx} - {elim_expr};")
+        lines.append(f"{pad}dydt[{centr}] = {abs_influx} - {elim_expr};")
     elif isinstance(dist_mod, TwoCmt):
         lines.append(
-            f"{pad}dydt[2] = {abs_influx} - {elim_expr} - Q / V1 * centr + Q / V2 * periph;"
+            f"{pad}dydt[{centr}] = {abs_influx} - {elim_expr} - Q / V1 * centr + Q / V2 * periph;"
         )
-        lines.append(f"{pad}dydt[3] = Q / V1 * centr - Q / V2 * periph;")
+        lines.append(f"{pad}dydt[{centr + 1}] = Q / V1 * centr - Q / V2 * periph;")
     elif isinstance(dist_mod, ThreeCmt):
         lines.append(
-            f"{pad}dydt[2] = {abs_influx} - {elim_expr}"
+            f"{pad}dydt[{centr}] = {abs_influx} - {elim_expr}"
             f" - Q2 / V1 * centr + Q2 / V2 * periph1"
             f" - Q3 / V1 * centr + Q3 / V3 * periph2;"
         )
-        lines.append(f"{pad}dydt[3] = Q2 / V1 * centr - Q2 / V2 * periph1;")
-        lines.append(f"{pad}dydt[4] = Q3 / V1 * centr - Q3 / V3 * periph2;")
+        lines.append(f"{pad}dydt[{centr + 1}] = Q2 / V1 * centr - Q2 / V2 * periph1;")
+        lines.append(f"{pad}dydt[{centr + 2}] = Q3 / V1 * centr - Q3 / V3 * periph2;")
     elif isinstance(dist_mod, TMDDCore):
         lines.append(f"{pad}real kel = CL / {vol};")
         lines.append(f"{pad}real kdeg = koff;  // receptor degradation ~ koff")
         lines.append(f"{pad}real ksyn = kdeg * R0;  // receptor synthesis at steady state")
         lines.append(
-            f"{pad}dydt[2] = {abs_influx} - kel * centr"
+            f"{pad}dydt[{centr}] = {abs_influx} - kel * centr"
             f" - kon * conc * R * {vol} + koff * RC * {vol};"
         )
-        lines.append(f"{pad}dydt[3] = ksyn - kdeg * R - kon * conc * R + koff * RC;")
-        lines.append(f"{pad}dydt[4] = kon * conc * R - koff * RC - kint * RC;")
+        lines.append(f"{pad}dydt[{centr + 1}] = ksyn - kdeg * R - kon * conc * R + koff * RC;")
+        lines.append(f"{pad}dydt[{centr + 2}] = kon * conc * R - koff * RC - kint * RC;")
     elif isinstance(dist_mod, TMDDQSS):
         lines.append(f"{pad}real kel = CL / {vol};")
         lines.append(f"{pad}real kdeg = kint;  // receptor degradation initial estimate")
@@ -937,9 +1042,9 @@ def _emit_ode_dynamics(spec: DSLSpec, indent: int = 4) -> list[str]:
         lines.append(f"{pad}real Rfree = Rtot * KD / (KD + Cfree);")
         lines.append(f"{pad}real RC_conc = conc - Cfree;")
         lines.append(
-            f"{pad}dydt[2] = {abs_influx} - kel * Cfree * {vol} - kint * RC_conc * {vol};"
+            f"{pad}dydt[{centr}] = {abs_influx} - kel * Cfree * {vol} - kint * RC_conc * {vol};"
         )
-        lines.append(f"{pad}dydt[3] = ksyn - kdeg * Rfree - kint * RC_conc;")
+        lines.append(f"{pad}dydt[{centr + 1}] = ksyn - kdeg * Rfree - kint * RC_conc;")
 
     return lines
 
@@ -1019,16 +1124,17 @@ def _emit_ode_solve(spec: DSLSpec, indent: int = 4) -> list[str]:
     lines.append(f"{pad}      t_prev = time[n];")
     lines.append(f"{pad}    }}")
 
+    centr = _centr_idx(spec)
     if isinstance(spec.distribution, TMDDQSS):
-        lines.append(f"{pad}    real Ctot_n = y_state[2] / {vol}_i;")
-        lines.append(f"{pad}    real Rtot_n = y_state[3];")
+        lines.append(f"{pad}    real Ctot_n = y_state[{centr}] / {vol}_i;")
+        lines.append(f"{pad}    real Rtot_n = y_state[{centr + 1}];")
         lines.append(
             f"{pad}    f[n] = fmax(0.5 * ((Ctot_n - Rtot_n - KD_i)"
             f" + sqrt(square(Ctot_n - Rtot_n - KD_i)"
             f" + 4 * KD_i * Ctot_n)), 1e-10);"
         )
     else:
-        lines.append(f"{pad}    f[n] = fmax(y_state[2] / {vol}_i, 1e-10);")
+        lines.append(f"{pad}    f[n] = fmax(y_state[{centr}] / {vol}_i, 1e-10);")
 
     lines.append(f"{pad}  }}")
     lines.append(f"{pad}}}")

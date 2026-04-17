@@ -58,7 +58,10 @@ class TestGate1Config:
         g1 = _gate1()
         assert g1.parameter_plausibility_required is True
         assert g1.state_trajectory_validity_required is True
-        assert g1.split_integrity_required is True
+        # H6 deferral: ``split_integrity_required`` default is False so
+        # benchmark/single-fold policies don't need to opt out; policies
+        # that enforce held-out GOF agreement set it to True explicitly.
+        assert g1.split_integrity_required is False
 
 
 class TestGate2Config:
@@ -213,7 +216,7 @@ class TestLanePoliciesGate3Contract:
         # gaps. See CHANGELOG rc9 follow-up "PIT/NPDE-lite Gate 1
         # calibration".
         for lane in ("submission", "discovery", "optimization"):
-            assert self._load(lane).policy_version == "0.4.2"
+            assert self._load(lane).policy_version == "0.4.3"
 
     def test_all_lanes_pit_tolerance_calibration(self) -> None:
         """0.4.2: PIT calibration replaces VPC coverage as the Gate 1 gate.

@@ -42,7 +42,21 @@ from apmode.data.types import (
 )
 
 _log = logging.getLogger(__name__)
-_POLICY = get_policy()
+
+# M4: wrap policy loading in a typed error so a misplaced ``policies/``
+# directory (e.g. installed source without the policy bundle, or a CI
+# cwd mismatch) surfaces with an actionable message rather than a
+# bare ``FileNotFoundError`` propagated out of an unrelated import.
+try:
+    _POLICY = get_policy()
+except FileNotFoundError as _exc:
+    from apmode.errors import APMODEConfigError as _APMODEConfigError
+
+    _msg = (
+        f"failed to load profiler policy: {_exc}. "
+        "Ensure policies/profiler.json is present in the working tree."
+    )
+    raise _APMODEConfigError(_msg, resolved_path=str(_exc.filename)) from _exc
 
 # Thresholds below are sourced from `policies/profiler.json` (v2.1.0+) via
 # the loader in `apmode/data/policy.py`. The JSON is the source of truth;
@@ -880,7 +894,7 @@ def _average_rank(arr: np.ndarray) -> np.ndarray:
 
 def _assess_route_certainty(
     doses: pd.DataFrame,
-) -> str:
+) -> Literal["confirmed", "inferred", "ambiguous"]:
     """Determine route certainty from dosing records.
 
     confirmed: all doses have consistent CMT and RATE/DUR patterns
@@ -1756,7 +1770,9 @@ def _extract_lloq_value(df: pd.DataFrame) -> float | None:
     return None
 
 
-def _assess_protocol_heterogeneity(df: pd.DataFrame) -> str:
+def _assess_protocol_heterogeneity(
+    df: pd.DataFrame,
+) -> Literal["single-study", "pooled-similar", "pooled-heterogeneous"]:
     """Assess protocol heterogeneity.
 
     single-study: one study or no STUDY_ID column
@@ -1787,7 +1803,7 @@ def _assess_protocol_heterogeneity(df: pd.DataFrame) -> str:
     return "pooled-similar"
 
 
-def _assess_absorption_coverage(obs: pd.DataFrame) -> str:
+def _assess_absorption_coverage(obs: pd.DataFrame) -> Literal["adequate", "inadequate"]:
     """Assess whether absorption phase is adequately sampled.
 
     adequate:   avg pre-Tmax obs/subject ≥ ``_ABSORPTION_COVERAGE_MIN_PRE_TMAX``
@@ -1821,7 +1837,7 @@ def _assess_absorption_coverage(obs: pd.DataFrame) -> str:
     return "adequate" if avg_pre_tmax >= _ABSORPTION_COVERAGE_MIN_PRE_TMAX else "inadequate"
 
 
-def _assess_elimination_coverage(obs: pd.DataFrame) -> str:
+def _assess_elimination_coverage(obs: pd.DataFrame) -> Literal["adequate", "inadequate"]:
     """Assess whether elimination phase is adequately sampled.
 
     adequate:   avg post-Tmax obs/subject ≥ ``_ELIMINATION_COVERAGE_MIN_POST_TMAX``

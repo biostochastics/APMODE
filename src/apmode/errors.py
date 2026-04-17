@@ -76,6 +76,20 @@ class AgenticExhaustionError(BackendError):
         self.iterations = iterations
 
 
+class APMODEConfigError(Exception):
+    """Configuration loading failed (missing or malformed policy files).
+
+    M4: raised by modules whose import triggers config loading — wrapping
+    ``FileNotFoundError`` / ``ValidationError`` in a typed exception with
+    the resolved path gives end users an actionable message instead of a
+    bare traceback through unrelated internals.
+    """
+
+    def __init__(self, message: str, *, resolved_path: str | None = None) -> None:
+        super().__init__(message)
+        self.resolved_path = resolved_path
+
+
 class InvalidSpecError(BackendError):
     """DSL spec failed validation before backend dispatch."""
 

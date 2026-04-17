@@ -34,7 +34,13 @@ class Gate1Config(BaseModel):
     convergence_required: bool = True
     parameter_plausibility_required: bool = True
     state_trajectory_validity_required: bool = True
-    split_integrity_required: bool = True
+    # H6: when True, a BackendResult missing ``split_gof`` FAILS Gate 1
+    # — never silently passes — preserving the disqualifying-funnel
+    # invariant. Default is False because the benchmark scenarios and
+    # single-fold workflows legitimately run without a split manifest;
+    # policies that must enforce held-out GOF agreement should set this
+    # to True explicitly (see docs/adr/0001-review-deferrals.md).
+    split_integrity_required: bool = False
     # When False, candidates lacking a VPC pass the vpc_coverage check with
     # observed="vpc_not_configured" instead of failing. Defaults True so
     # production policies are conservative; set False in lane policies
@@ -297,6 +303,14 @@ class MissingDataPolicy(BaseModel):
     # Agentic backend protections.
     llm_pooled_only: bool = True
     imputation_stability_penalty: float = Field(default=0.0, ge=0.0)
+
+    # Per-lane floor on the imputation convergence rate. Candidates whose
+    # MI fits converge in fewer than this fraction of imputations are
+    # hard-rejected at Gate 1 regardless of penalty weight. ICH E9(R1)
+    # requires defensible missing-data handling; a low convergence rate
+    # means the candidate's evidence base is unreliable. Policies should
+    # tighten for Submission and Optimization lanes (see policies/*.json).
+    imputation_convergence_rate_min: float = Field(default=0.5, ge=0.0, le=1.0)
 
     @model_validator(mode="after")
     def m_ordering(self) -> Self:

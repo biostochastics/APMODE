@@ -14,6 +14,7 @@ Artifacts:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from pathlib import Path  # noqa: TC003 — used at runtime in __init__
@@ -53,12 +54,40 @@ from apmode.ids import generate_run_id
 
 _SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_\-]+$")
 
+# Sentinel file emitted by :meth:`BundleEmitter.seal` to mark a bundle as
+# complete. Its contents carry a SHA-256 digest of every other file in the
+# bundle, letting downstream tooling detect both incompleteness (absence of
+# the sentinel) and post-hoc tampering (digest mismatch).
+_COMPLETE_SENTINEL = "_COMPLETE"
+_COMPLETE_SCHEMA_VERSION = 1
+
+
+class BundleAlreadySealedError(RuntimeError):
+    """Raised when an attempt is made to modify a sealed bundle."""
+
 
 def _validate_path_component(value: str, label: str) -> None:
     """Reject IDs containing path traversal characters."""
     if not _SAFE_ID_RE.match(value):
         msg = f"{label} contains unsafe characters: {value!r}"
         raise ValueError(msg)
+
+
+def _compute_bundle_digest(run_dir: Path) -> str:
+    """Compute a stable SHA-256 digest over all files in ``run_dir``.
+
+    The sentinel file itself is excluded. Files are hashed in sorted order
+    by POSIX-relative path, with path + null byte + bytes, so the digest is
+    reproducible across filesystems that differ in readdir order.
+    """
+    digest = hashlib.sha256()
+    for p in sorted(run_dir.rglob("*"), key=lambda q: q.relative_to(run_dir).as_posix()):
+        if not p.is_file() or p.name == _COMPLETE_SENTINEL:
+            continue
+        digest.update(p.relative_to(run_dir).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(p.read_bytes())
+    return digest.hexdigest()
 
 
 class BundleEmitter:
@@ -82,12 +111,48 @@ class BundleEmitter:
         self._results_dir = self.run_dir / "results"
 
     def initialize(self) -> Path:
-        """Create the bundle directory structure. Returns the run directory."""
+        """Create the bundle directory structure. Returns the run directory.
+
+        Refuses to modify a bundle that has already been sealed (contains the
+        ``_COMPLETE`` sentinel). Orchestrators must use a fresh run_id to
+        re-run; this protects sealed artifacts from accidental mutation.
+        """
         self.run_dir.mkdir(parents=True, exist_ok=True)
+        if (self.run_dir / _COMPLETE_SENTINEL).exists():
+            msg = f"bundle {self.run_dir} is sealed; refusing to reopen (use a fresh run_id)"
+            raise BundleAlreadySealedError(msg)
         self._compiled_specs_dir.mkdir(exist_ok=True)
         self._gate_decisions_dir.mkdir(exist_ok=True)
         self._results_dir.mkdir(exist_ok=True)
         return self.run_dir
+
+    def seal(self) -> Path:
+        """Atomically seal the bundle by writing the ``_COMPLETE`` sentinel.
+
+        The sentinel is a JSON document carrying a SHA-256 digest of every
+        other file in the bundle, the schema version, and the run_id. It
+        must be written as the LAST step of a successful run; its presence
+        is what ``apmode validate`` uses to distinguish complete from
+        partial bundles (PRD §4.3.2).
+
+        Idempotent: calling on an already-sealed bundle returns the path
+        without rewriting.
+        """
+        sentinel_path = self.run_dir / _COMPLETE_SENTINEL
+        if sentinel_path.exists():
+            return self.run_dir
+
+        sentinel = {
+            "schema_version": _COMPLETE_SCHEMA_VERSION,
+            "run_id": self.run_id,
+            "sha256": _compute_bundle_digest(self.run_dir),
+        }
+        sentinel_path.write_text(json.dumps(sentinel, indent=2) + "\n")
+        return self.run_dir
+
+    def is_sealed(self) -> bool:
+        """Return True when the ``_COMPLETE`` sentinel is present."""
+        return (self.run_dir / _COMPLETE_SENTINEL).exists()
 
     # --- Core manifests ---
 

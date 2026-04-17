@@ -102,7 +102,14 @@ def evaluate_gate1(
     checks.append(_check_pit_calibration(result, g1))
     checks.append(_check_split_integrity(result, g1))
     checks.append(_check_seed_stability(result, seed_results, g1))
-    checks.append(_check_imputation_stability(result, stability, directive))
+    checks.append(
+        _check_imputation_stability(
+            result,
+            stability,
+            directive,
+            convergence_rate_min=policy.missing_data.imputation_convergence_rate_min,
+        )
+    )
 
     passed = all(c.passed for c in checks)
     failed_names = [c.check_id for c in checks if not c.passed]
@@ -344,11 +351,16 @@ def _check_split_integrity(result: BackendResult, g1: Gate1Config) -> GateCheckR
 
     sgof = result.diagnostics.split_gof
     if sgof is None:
-        # No split diagnostics available — cannot evaluate, pass
+        # H6: when a check is required, missing evidence FAILS — matches
+        # the invariant used by _check_pit_calibration (:278) and aligns
+        # with the disqualifying-funnel rule (CLAUDE.md). Passing on
+        # absent evidence was a silent bypass of the required-check
+        # semantics.
         return GateCheckResult(
             check_id="split_integrity",
-            passed=True,
-            observed="no_split_diagnostics",
+            passed=False,
+            observed="no_split_diagnostics_despite_required",
+            threshold="split_gof must be populated when split_integrity_required=true",
         )
 
     issues: list[str] = []
@@ -436,6 +448,26 @@ def _check_seed_stability(
         else 0.0
     )
 
+    # N1: platform/BLAS float-accumulation differences can produce
+    # sub-OFV-unit variation in "identical" fits. A CV computed on
+    # near-equal OFVs would still exceed tight thresholds and cause
+    # spurious instability verdicts. Short-circuit to PASS when the
+    # absolute spread is below an OFV-unit floor — the "scientifically
+    # meaningful" seed stability threshold, not a percentage of a
+    # large OFV. Floor is hard-coded at 0.1 OFV units (Δ|AIC|<0.2,
+    # well below any textbook model-selection tolerance); promote to
+    # policy if lane-specific tuning becomes necessary.
+    ofv_abs_spread = float(np.ptp(ofv_arr))  # peak-to-peak = max - min
+    if ofv_abs_spread < 0.1:
+        return GateCheckResult(
+            check_id="seed_stability",
+            passed=True,
+            observed=(
+                f"stable_within_numerical_precision (ofv_spread={ofv_abs_spread:.3g}, cv={cv:.4f})"
+            ),
+            threshold="|Δofv| < 0.1 OFV units (platform-float floor)",
+        )
+
     # CV below policy threshold → stable
     cv_max = g1.seed_stability_cv_max
     passed = cv < cv_max
@@ -448,16 +480,11 @@ def _check_seed_stability(
     )
 
 
-_IMPUTATION_MIN_CONVERGENCE_RATE: float = 0.5
-"""Candidates converging in <50% of imputations fail Gate 1 regardless of
-penalty weight — this is a hard data-quality floor, not a tunable threshold.
-"""
-
-
 def _check_imputation_stability(
-    result: BackendResult,
+    _result: BackendResult,
     stability: ImputationStabilityEntry | None,
     directive: MissingDataDirective | None,
+    convergence_rate_min: float,
 ) -> GateCheckResult:
     """Check 8: Imputation stability (MI runs only).
 
@@ -466,18 +493,20 @@ def _check_imputation_stability(
 
       pass_threshold = max(0.0, 1.0 - penalty)
 
-    Convergence rate is hard-gated at
-    ``_IMPUTATION_MIN_CONVERGENCE_RATE`` when stability data is present,
-    independent of the penalty weight — candidates that fail to converge on
-    more than half the imputations cannot be trusted regardless of how
-    permissive the rank-stability threshold is.
+    The convergence-rate floor is supplied by
+    ``MissingDataPolicy.imputation_convergence_rate_min`` (H5: externalized
+    to the versioned policy artifact; previously a hard-coded 0.5 constant).
+    Candidates that fail to converge on more than the configured fraction
+    of imputations cannot be trusted regardless of how permissive the
+    rank-stability threshold is.
 
     When MI is not active (directive is None or method is not an MI-*
     variant, or no stability entry is available), the check is marked
     ``not_applicable`` and passes.
     """
-    del result  # candidate is identified via stability.candidate_id
-
+    # L9: ``_result`` prefix signals unused param (candidate is
+    # identified via ``stability.candidate_id``). Previously used
+    # ``del result`` which Ruff's pyupgrade-set flags as unidiomatic.
     if directive is None or stability is None or not directive.covariate_method.startswith("MI-"):
         return GateCheckResult(
             check_id="imputation_stability",
@@ -487,10 +516,9 @@ def _check_imputation_stability(
 
     issues: list[str] = []
 
-    if stability.convergence_rate < _IMPUTATION_MIN_CONVERGENCE_RATE:
+    if stability.convergence_rate < convergence_rate_min:
         issues.append(
-            f"convergence_rate={stability.convergence_rate:.2f} "
-            f"(<{_IMPUTATION_MIN_CONVERGENCE_RATE})"
+            f"convergence_rate={stability.convergence_rate:.2f} (<{convergence_rate_min})"
         )
 
     penalty = directive.imputation_stability_penalty
@@ -505,8 +533,7 @@ def _check_imputation_stability(
         passed=passed,
         observed="; ".join(issues) if issues else "stable",
         threshold=(
-            f"conv_rate≥{_IMPUTATION_MIN_CONVERGENCE_RATE}, "
-            f"rank_stability≥{max(0.0, 1.0 - penalty):.2f}"
+            f"conv_rate≥{convergence_rate_min}, rank_stability≥{max(0.0, 1.0 - penalty):.2f}"
         ),
     )
 

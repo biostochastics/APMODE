@@ -15,6 +15,22 @@ from pydantic import BaseModel, ConfigDict, Field
 from apmode.dsl.priors import PriorSpec  # noqa: TC001 — Pydantic resolves type at runtime
 
 # ---------------------------------------------------------------------------
+# Identifier type alias
+# ---------------------------------------------------------------------------
+
+# StanIdentifier enforces the Stan language's identifier grammar at AST
+# construction time (must start with a letter; subsequent characters are
+# letters, digits, or underscores). This prevents injection via
+# LLM-proposed covariate/parameter names leaking into emitted Stan code
+# (PRD §4.2.5). The nlmixr2 emitter separately accepts this character
+# set; R's broader identifier grammar (e.g. ``WT.baseline``) is
+# disallowed here to keep the AST Stan-safe. If dotted R-style names
+# ever become necessary, they must be translated in the data adapter
+# rather than relaxing this contract.
+StanIdentifier = Annotated[str, Field(pattern=r"^[A-Za-z][A-Za-z0-9_]*$")]
+
+
+# ---------------------------------------------------------------------------
 # Absorption Module variants
 # ---------------------------------------------------------------------------
 
@@ -296,7 +312,7 @@ class IIV(BaseModel):
 
     model_config = ConfigDict(frozen=True)
     type: Literal["IIV"] = "IIV"
-    params: list[str]
+    params: list[StanIdentifier]
     structure: Literal["diagonal", "block"]
 
 
@@ -305,7 +321,7 @@ class IOV(BaseModel):
 
     model_config = ConfigDict(frozen=True)
     type: Literal["IOV"] = "IOV"
-    params: list[str]
+    params: list[StanIdentifier]
     occasions: OccasionSpec
 
 
@@ -314,8 +330,8 @@ class CovariateLink(BaseModel):
 
     model_config = ConfigDict(frozen=True)
     type: Literal["CovariateLink"] = "CovariateLink"
-    param: str
-    covariate: str
+    param: StanIdentifier
+    covariate: StanIdentifier
     form: Literal["power", "exponential", "linear", "categorical", "maturation"]
 
 

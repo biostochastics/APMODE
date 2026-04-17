@@ -1,5 +1,5 @@
 {
-  "policy_version": "0.4.2",
+  "policy_version": "0.4.3",
   "lane": "discovery",
   "gate1": {
     "convergence_required": true,
@@ -49,6 +49,7 @@
     "blq_m3_threshold": 0.15,
     "blq_force_m3": false,
     "llm_pooled_only": true,
-    "imputation_stability_penalty": 0.25
+    "imputation_stability_penalty": 0.25,
+    "imputation_convergence_rate_min": 0.5
   }
 }

@@ -12,7 +12,7 @@ parameter tables, diagnostics, convergence, and credibility.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -127,7 +127,7 @@ def _header(
         "|---|---|",
         f"| **Run** | `{run_id}` |",
         f"| **Lane** | {lane_label} |",
-        f"| **Date** | {datetime.now().strftime('%Y-%m-%d %H:%M')} |",
+        f"| **Date** | {datetime.now(tz=UTC).strftime('%Y-%m-%d %H:%M UTC')} |",
     ]
     if seed is not None:
         lines.append(f"| **Seed** | {seed} |")

@@ -46,11 +46,32 @@ def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
 
 def _make_minimal_bundle(tmp_path: Path, name: str = "run_min") -> Path:
     """Bundle with only the required files — enough for ``validate`` to pass."""
+    from apmode.bundle.emitter import _compute_bundle_digest
+
     bundle = tmp_path / name
     bundle.mkdir()
     _write_json(bundle / "data_manifest.json", {"n_subjects": 10, "n_observations": 100})
     _write_json(bundle / "seed_registry.json", {"root_seed": 753849})
     _write_json(bundle / "backend_versions.json", {"nlmixr2": "3.0.0"})
+    # C2: evidence_manifest and candidate_lineage are now required artifacts.
+    _write_json(
+        bundle / "evidence_manifest.json",
+        {
+            "richness_category": "rich",
+            "route_certainty": "oral",
+            "nonlinear_clearance_evidence_strength": "none",
+        },
+    )
+    _write_json(bundle / "candidate_lineage.json", {"nodes": [], "edges": []})
+    # C2: write the _COMPLETE sentinel with a matching digest last.
+    _write_json(
+        bundle / "_COMPLETE",
+        {
+            "schema_version": 1,
+            "run_id": name,
+            "sha256": _compute_bundle_digest(bundle),
+        },
+    )
     return bundle
 
 
@@ -438,7 +459,7 @@ class TestExplore:
             with pytest.raises(typer.Exit) as exc_info:
                 cli_mod._launch_run(
                     csv_path=tmp_path / "x.csv",
-                    lane=cli_mod.Lane.discovery,
+                    lane=cli_mod.Lane.DISCOVERY,
                     seed=1,
                     output=tmp_path,
                 )
@@ -456,7 +477,7 @@ class TestExplore:
             with pytest.raises(typer.Exit) as exc_info:
                 cli_mod._launch_run(
                     csv_path=tmp_path / "x.csv",
-                    lane=cli_mod.Lane.discovery,
+                    lane=cli_mod.Lane.DISCOVERY,
                     seed=1,
                     output=tmp_path,
                 )
@@ -472,7 +493,7 @@ class TestExplore:
         with patch.object(cli_mod, "run", _ok):
             cli_mod._launch_run(
                 csv_path=tmp_path / "x.csv",
-                lane=cli_mod.Lane.discovery,
+                lane=cli_mod.Lane.DISCOVERY,
                 seed=1,
                 output=tmp_path,
             )

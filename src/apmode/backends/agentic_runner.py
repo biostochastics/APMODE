@@ -701,7 +701,12 @@ class AgenticRunner:
         path.write_text(json.dumps({"entries": entries}, indent=2))
 
     def _write_iteration_records(self, records: list[IterationRecord]) -> None:
-        """Write agentic_iterations.jsonl — complete audit trail of reasoning."""
+        """Write agentic_iterations.jsonl — complete audit trail of reasoning.
+
+        L5: the run-at-end ``"w"`` mode rewrites the whole file every call,
+        so a mid-run crash loses in-flight records. Flush each line as we
+        go and fsync so the audit trail survives abrupt termination.
+        """
         path = self._trace_dir / "agentic_iterations.jsonl"
         with path.open("w") as f:
             for rec in records:
@@ -718,3 +723,7 @@ class AgenticRunner:
                     "validation_feedback": rec.validation_feedback,
                 }
                 f.write(json.dumps(entry) + "\n")
+                f.flush()
+                import os as _os_local
+
+                _os_local.fsync(f.fileno())

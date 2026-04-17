@@ -453,6 +453,59 @@ def _apply_uniform_auc_cmax_drop(
     return effective, dropped_list, reason
 
 
+def _apply_uniform_bic_drop(
+    gate3: Gate3Config,
+    bic_list: list[float | None],
+) -> tuple[Gate3Config, list[float | None], str | None]:
+    """M11: mirror of ``_apply_uniform_auc_cmax_drop`` for BIC.
+
+    When ``bic_weight > 0`` but some candidates lack a finite BIC, the
+    composite produces apples-to-oranges totals (candidates without BIC
+    contribute 0.0 while others contribute ``bic_normalized * weight``).
+    Drop BIC uniformly and renormalize remaining weights, same pattern
+    as the AUC/Cmax drop. Same pathological fallback when BIC was the
+    only positive component.
+    """
+    if gate3.bic_weight <= 0.0:
+        return gate3, bic_list, None
+    if all(b is not None and np.isfinite(b) for b in bic_list):
+        return gate3, bic_list, None
+
+    remaining = gate3.vpc_weight + gate3.npe_weight + gate3.auc_cmax_weight
+    if remaining <= 0.0:
+        effective = gate3.model_copy(
+            update={
+                "vpc_weight": 0.5,
+                "npe_weight": 0.5,
+                "bic_weight": 0.0,
+                "auc_cmax_weight": 0.0,
+            }
+        )
+        reason = (
+            "bic unavailable for at least one survivor and bic was the "
+            "only enabled component; policy is under-specified, falling "
+            "back to vpc=0.5/npe=0.5"
+        )
+    else:
+        scale = 1.0 / remaining
+        effective = gate3.model_copy(
+            update={
+                "vpc_weight": gate3.vpc_weight * scale,
+                "npe_weight": gate3.npe_weight * scale,
+                "bic_weight": 0.0,
+                "auc_cmax_weight": gate3.auc_cmax_weight * scale,
+            }
+        )
+        reason = (
+            "bic unavailable for at least one survivor; component dropped "
+            f"uniformly, remaining weights renormalized "
+            f"(vpc={effective.vpc_weight:.3f}, npe={effective.npe_weight:.3f}, "
+            f"auc_cmax={effective.auc_cmax_weight:.3f})"
+        )
+    dropped_list: list[float | None] = [None] * len(bic_list)
+    return effective, dropped_list, reason
+
+
 def rank_cross_paradigm(
     survivors: list[BackendResult],
     *,
@@ -494,18 +547,26 @@ def rank_cross_paradigm(
     effective_gate3, effective_auc_cmax, drop_reason = _apply_uniform_auc_cmax_drop(
         gate3, auc_cmax_values
     )
+    # M11: apply uniform BIC drop on the already-adjusted gate3 so the
+    # two renormalizations compose correctly when both components have
+    # at least one missing candidate.
+    effective_gate3, effective_bic, bic_drop_reason = _apply_uniform_bic_drop(
+        effective_gate3, bic_list
+    )
+    if bic_drop_reason:
+        drop_reason = f"{drop_reason}; {bic_drop_reason}" if drop_reason else bic_drop_reason
 
     scores: list[float]
     components_list: list[dict[str, float]]
     if effective_gate3.composite_method == "borda":
         scores, components_list = _borda_composite(
-            vpc_list, npe_list, bic_list, effective_auc_cmax, effective_gate3
+            vpc_list, npe_list, effective_bic, effective_auc_cmax, effective_gate3
         )
     else:
         scores = []
         components_list = []
         for vpc, npe, bic, auc_cmax in zip(
-            vpc_list, npe_list, bic_list, effective_auc_cmax, strict=True
+            vpc_list, npe_list, effective_bic, effective_auc_cmax, strict=True
         ):
             score, comp = _weighted_sum_composite(vpc, npe, bic, auc_cmax, effective_gate3)
             scores.append(score)

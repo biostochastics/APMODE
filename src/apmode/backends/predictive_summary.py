@@ -54,6 +54,13 @@ from apmode.benchmarks.scoring import (
 )
 from apmode.bundle.models import PITCalibrationSummary, VPCSummary, _pit_key
 
+# M3: ``np.trapezoid`` is the NumPy 2.0+ spelling; ``np.trapz`` is the
+# legacy name (removed in NumPy 2.0). Project minimum is numpy>=1.25.
+# Prefer ``trapezoid`` when present (modern installs) and fall back to
+# ``trapz`` on older numpy; ``getattr`` short-circuits so we never hit
+# the AttributeError case at import time on a modern numpy.
+_trapz = getattr(np, "trapezoid", None) or np.trapz  # type: ignore[attr-defined]
+
 if TYPE_CHECKING:
     from apmode.bundle.models import NCASubjectDiagnostic
     from apmode.governance.policy import Gate3Config
@@ -428,7 +435,7 @@ def _per_subject_auc_cmax(t_observed: np.ndarray, values: np.ndarray) -> tuple[f
     order = np.argsort(t)
     t_sorted = t[order]
     v_sorted = v[order]
-    auc = float(np.trapezoid(v_sorted, t_sorted))
+    auc = float(_trapz(v_sorted, t_sorted))
     cmax = float(np.max(v_sorted))
     return auc, cmax
 

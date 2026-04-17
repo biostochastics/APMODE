@@ -485,17 +485,10 @@ def _emit_dynamics(spec: DSLSpec) -> list[str]:
     return _emit_lincmt_dynamics(spec)
 
 
-def _needs_ode(spec: DSLSpec) -> bool:
-    """Determine if ODE form is needed (vs linCmt shorthand).
-
-    linCmt() requires all linear dynamics. ODE needed for: non-linear
-    elimination, TMDD, transit, time-varying, mixed/zero-order absorption.
-    """
-    if isinstance(spec.elimination, (MichaelisMenten, ParallelLinearMM, TimeVaryingElim)):
-        return True
-    if isinstance(spec.distribution, (TMDDCore, TMDDQSS)):
-        return True
-    return isinstance(spec.absorption, (Transit, MixedFirstZero, ZeroOrder))
+# M13: shared helper in apmode.dsl._emitter_utils.needs_ode — kept as a
+# thin module-local alias so both emitters stay in sync with a single
+# definition of the "ODE needed?" decision.
+from apmode.dsl._emitter_utils import needs_ode as _needs_ode  # noqa: E402
 
 
 def _emit_lincmt_dynamics(spec: DSLSpec) -> list[str]:

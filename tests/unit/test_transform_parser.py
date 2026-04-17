@@ -100,3 +100,57 @@ def test_parse_json_in_code_fence() -> None:
     result = parse_llm_response(raw)
     assert result.success
     assert len(result.transforms) == 1
+
+
+def test_parse_set_prior_round_trip() -> None:
+    """H7: set_prior was missing — verify the parser now handles it."""
+    raw = json.dumps(
+        {
+            "transforms": [
+                {
+                    "type": "set_prior",
+                    "target": "CL",
+                    "family": {
+                        "type": "Normal",
+                        "mu": 0.0,
+                        "sigma": 1.0,
+                    },
+                    "source": "weakly_informative",
+                    "justification": "",
+                }
+            ],
+            "reasoning": "Regularize CL.",
+        }
+    )
+    result = parse_llm_response(raw)
+    assert result.success, result.errors
+    from apmode.dsl.prior_transforms import SetPrior
+
+    assert isinstance(result.transforms[0], SetPrior)
+    assert result.transforms[0].target == "CL"
+
+
+def test_transform_parser_registry_covers_formular_union() -> None:
+    """H7 registration-map invariant: every FormularTransform variant must
+    have a parser. This catches drift at test-collection time.
+    """
+    import typing
+
+    from apmode.backends.transform_parser import _TRANSFORM_PARSERS
+    from apmode.dsl.transforms import FormularTransform
+
+    # FormularTransform = Annotated[X | Y | ..., Field(discriminator="type")]
+    # typing.get_args yields (union, Field); we want the inner union's args
+    # and pull the Literal value of each variant's ``type`` field.
+    union_variants = typing.get_args(typing.get_args(FormularTransform)[0])
+    expected_types: set[str] = set()
+    for cls in union_variants:
+        type_field = cls.model_fields["type"]
+        # For Literal["x"], the default is the single literal value
+        expected_types.add(type_field.default)
+
+    assert set(_TRANSFORM_PARSERS) == expected_types, (
+        "transform_parser registration is out of sync with FormularTransform union. "
+        f"Missing: {expected_types - set(_TRANSFORM_PARSERS)}. "
+        f"Extra: {set(_TRANSFORM_PARSERS) - expected_types}"
+    )
