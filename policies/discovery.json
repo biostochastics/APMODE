@@ -1,5 +1,5 @@
 {
-  "policy_version": "0.4.3",
+  "policy_version": "0.5.0",
   "lane": "discovery",
   "gate1": {
     "convergence_required": true,

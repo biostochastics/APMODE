@@ -204,7 +204,10 @@ def _emit_structural_ini(
         lines.append(f"lVmax <- log({ov.get('Vmax', elim_mod.Vmax)})")
         lines.append(f"lKm <- log({ov.get('Km', elim_mod.Km)})")
     elif isinstance(elim_mod, TimeVaryingElim):
-        # Only exponential decay is implemented; validator rejects half_life/linear
+        # All three decay forms (exponential | half_life | linear) are
+        # supported as of v0.5.0 — the per-form ODE RHS is emitted by
+        # ``_elim_rate_expr`` (see lines ~610-620). This block only
+        # writes the log-parameter scaffolding shared by all forms.
         lines.append(f"lCL <- log({ov.get('CL', elim_mod.CL)})")
         lines.append(f"lkdecay <- log({ov.get('kdecay', elim_mod.kdecay)})")
 
@@ -603,6 +606,14 @@ def _elimination_rate_expr(elim_mod: object, cmt: str, vol: str) -> str:
     elif isinstance(elim_mod, ParallelLinearMM):
         return f"(CL / {vol} * {cmt} + Vmax * ({cmt}/{vol}) / (Km + {cmt}/{vol}))"
     elif isinstance(elim_mod, TimeVaryingElim):
+        # Plan §4 / #9: three decay forms supported.
+        #   exponential: CL(t) = CL * exp(-kdecay * t)
+        #   half_life:   CL(t) = CL / (1 + kdecay * t)
+        #   linear:      CL(t) = max(CL * (1 - kdecay * t), 0)  (floor at 0 in R)
+        if elim_mod.decay_fn == "half_life":
+            return f"CL / (1 + kdecay * t) / {vol} * {cmt}"
+        if elim_mod.decay_fn == "linear":
+            return f"max(CL * (1 - kdecay * t), 0) / {vol} * {cmt}"
         return f"CL * exp(-kdecay * t) / {vol} * {cmt}"
     return f"CL / {vol} * {cmt}"
 

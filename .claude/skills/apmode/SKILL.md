@@ -185,20 +185,24 @@ apmode diff runs/a/run_<hash> runs/b/run_<hash>
 
 ## Quick reference: bundle contents (from `apmode run`)
 
+- `_COMPLETE` — atomic seal written last; JSON carrying `{schema_version, run_id, file_digests: {path → sha256}}`. `apmode validate` refuses bundles without it.
 - `data_manifest.json`, `split_manifest.json`, `seed_registry.json`, `backend_versions.json` — inputs / provenance
-- `evidence_manifest.json` — profiler output (drives backend dispatch); includes structured `nonlinear_clearance_signals`
+- `evidence_manifest.json` — profiler output (drives backend dispatch); includes structured `nonlinear_clearance_signals` + embedded `policy_sha256`
+- `initial_estimates.json`, `nca_diagnostics.jsonl` — NCA output + per-subject QC (unit-aware CL scale factor recorded in `_unit_scale_applied`)
 - `search_trajectory.jsonl`, `search_graph.json` — candidates explored + DAG edges
 - `failed_candidates.jsonl` — rejections with reasons
-- `candidate_lineage.json` — transform lineage (source for `apmode lineage`)
+- `candidate_lineage.json` + `candidate_lineage.jsonl` — transform lineage (source for `apmode lineage`)
 - `ranking.json` — Gate 3 ranking (source for `apmode log --top`)
 - `imputation_stability.json` — MI / Rubin-pooled diagnostics when missingness triggered MI
 - `missing_data_directive.json` — FREM vs MI-PMM vs MI-missRanger selection
 - `categorical_encoding_provenance.json` — per-column binary-remap audit trail
-- `gate_decisions/` — per-gate JSON (gate1, gate2, gate2_5, gate3)
-- `compiled_specs/` — DSL → backend-specific model code (R / Stan / JAX)
-- `agentic_trace/<mode>/agentic_iterations.jsonl` + `iter_*_{input,output,meta}.json` — only if `--agentic` ran
-- `classical_checkpoint.json` — present if agentic stage ran; read by `--resume-agentic`
-- `report.html`, `report.md` — regulatory report (source for `apmode report`)
+- `gate_decisions/` — per-gate JSON (`gate1_*`, `gate2_*`, `gate2_5_*`, `gate3_*`)
+- `compiled_specs/` — DSL → backend-specific model code (`.json` AST + `.R` lowering)
+- `bayesian/` — only if `--backend bayesian_stan` ran: `prior_manifest.json`, `simulation_protocol.json`, `mcmc_diagnostics.json` (R̂ / ESS / E-BFMI / Pareto-k), `posterior_draws/*.parquet`
+- `loro_cv/` — only on `--lane optimization`
+- `credibility/` — Gate 2.5 per-candidate ICH M15 credibility reports
+- `agentic_trace/` + `classical_checkpoint.json` — only if `--agentic` ran; `classical_checkpoint.json` is read by `--resume-agentic`
+- `report/summary.{json,md,html}` — regulatory report (source for `apmode report`)
 
 Prefer `apmode inspect` / `log` / `lineage` / `graph` / `report` over reading these directly — use direct access only for a field the CLI doesn't surface.
 
@@ -206,5 +210,5 @@ Prefer `apmode inspect` / `log` / `lineage` / `graph` / `report` over reading th
 
 - **Single-subject PK fitting** → use nlmixr2/Pumas/NONMEM directly; APMODE's governance overhead buys nothing.
 - **Pure NCA reporting** → `apmode explore` shows NCA, but a dedicated NCA workflow (PKNCA, Phoenix) is lighter.
-- **Non-PK longitudinal modeling** → out of scope; the DSL is PK-specific (`Absorption × Distribution × Elimination × Variability × Observation × Priors`).
+- **Non-PK longitudinal modeling** → out of scope; the DSL is PK-specific — a 5-block grammar (`Absorption × Distribution × Elimination × Variability × Observation`) plus a sixth semantic axis (`priors`) populated via `SetPrior` rather than grammar text.
 - **Structural-identifiability-only tasks** → use COMBOS/DAISY/GenSSI directly; APMODE folds identifiability into Gate 2 but doesn't expose it as a standalone workflow.

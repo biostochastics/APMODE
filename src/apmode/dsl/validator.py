@@ -213,18 +213,26 @@ def _validate_elimination(spec: DSLSpec, errors: list[ValidationError]) -> None:
     elif isinstance(m, TimeVaryingElim):
         _positive(mod, "CL", m.CL, errors)
         _positive(mod, "kdecay", m.kdecay, errors)
-        if m.decay_fn != "exponential":
-            errors.append(
-                ValidationError(
-                    module=mod,
-                    param=f"{mod}.decay_fn",
-                    constraint="supported_decay_fn",
-                    message=(
-                        f"decay_fn '{m.decay_fn}' is not yet implemented; "
-                        f"only 'exponential' is supported in Phase 1"
-                    ),
-                )
-            )
+        # All three decay forms are supported as of v0.5.0 (plan §4 / #9):
+        #   exponential:  CL(t) = CL * exp(-kdecay * t)
+        #   half_life:    CL(t) = CL / (1 + kdecay * t)       (kdecay = ln(2)/t_half)
+        #   linear:       CL(t) = max(CL * (1 - kdecay * t), 0)  [floored at 0]
+        #
+        # Linear-decay caveat (consensus review 2026-04-17): the max/fmax
+        # floor at t = 1/kdecay produces a C0 kink. rxode2 LSODA with
+        # FOCEI forward sensitivities handles the step-size reduction
+        # natively; Stan's ode_rk45 error estimator assumes C1 smoothness
+        # and may over-refine near the zero-crossing, producing HMC
+        # divergences at large kdecay. When an initial-estimate kdecay
+        # implies the zero-crossing falls within the typical observation
+        # window (1/kdecay < t_obs_max), the emitter still runs — but
+        # operators should expect reduced convergence reliability in the
+        # Stan backend. A t_max-aware Gate 1 warning is tracked as a
+        # follow-on in the plan's Open Questions (M3+ infrastructure
+        # needs the manifest's t_obs_max threaded through to the
+        # validator). The math itself is correct — negative CL would be
+        # worse than a kink — so we accept the adjoint limitation and
+        # document it loudly. See .plans/v0.5.0_limitations_closure.md.
     elif isinstance(m, NODEElimination):
         _positive_int(mod, "dim", m.dim, errors)
 

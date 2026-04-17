@@ -5,6 +5,74 @@ All notable changes to APMODE are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0-rc2] — 2026-04-17
+
+Known-Limitations Closure M0 landed: per-candidate `ScoringContract`
+on every `DiagnosticBundle`, contract-grouped Gate-3 ranking, and the
+Submission-lane dominance rule. Gate policy schema bumped to `0.5.0`;
+bundle sentinel schema bumped to `2`. Plan: `.plans/v0.5.0_limitations_closure.md`.
+
+### Added
+
+- **`ScoringContract` Pydantic model** (`src/apmode/bundle/models.py`).
+  Frozen, 7-field contract: `contract_version`, `nlpd_kind`
+  (conditional / marginal), `re_treatment`
+  (integrated / conditional_ebe / pooled), `nlpd_integrator`
+  (nlmixr2_focei / laplace_blockdiag / laplace_diag / hmc_nuts / none),
+  `blq_method`, `observation_model`, `float_precision`. Attached on
+  `DiagnosticBundle.scoring_contract` (defaults to the classical
+  nlmixr2 contract so existing call sites continue to type-check).
+- **Per-backend contract derivation**
+  (`src/apmode/bundle/scoring_contract.py`). `derive_scoring_contract`
+  maps `BackendResult.backend` + `DSLSpec.observation` + BLQ method
+  to the correct contract. Runners call `attach_scoring_contract` on
+  their returned result: `nlmixr2_runner.run` and `bayesian_runner.run`
+  override after `_parse_response`; `node_runner.run` sets the
+  contract in-place on the constructed `DiagnosticBundle` (pooled
+  path until M3 Laplace lands).
+- **Contract-grouped Gate 3 ranking**
+  (`src/apmode/governance/ranking.py`):
+  - `group_by_scoring_contract(survivors)` — partitions survivors
+    into same-contract buckets preserving order.
+  - `ContractGroupedRanking` dataclass — one `CrossParadigmRankingResult`
+    per contract, plus optional `recommended_candidate_id`.
+  - `rank_by_scoring_contract(..., lane=...)` — groups, ranks each
+    group via the existing `rank_cross_paradigm` primitive, applies
+    Submission-lane dominance rule when `lane == "submission"`.
+- **Submission-lane dominance rule.** Only candidates whose contract
+  has `re_treatment == "integrated"` AND `nlpd_kind == "marginal"`
+  are eligible for `recommended_candidate_id`. Otherwise the ranking
+  returns `recommended_candidate_id = None` and a verbatim
+  disclosure warning. Discovery and Optimization lanes leave the
+  field `None` by design (separate leaderboards are the intended
+  output).
+- **Tests**: `tests/unit/test_scoring_contract.py` (10 tests) and
+  `tests/integration/test_gate3_contract_enforcement.py` (8 tests).
+- **`.plans/v0.5.0_limitations_closure.md`** — consolidated 10-item
+  closure plan. Final DAG, M3 reduced-scope decision (Laplace-only,
+  ≤16×16 block, L-BFGS + single ridge fallback), M1.5 MM-default
+  gating, A1–A7 regression merge-gate mandate, six PR checkpoints.
+
+### Changed
+
+- **Bundle schema version** (`_COMPLETE_SCHEMA_VERSION`) bumped from
+  1 → 2. Bundles produced before this version do not carry
+  `scoring_contract`; at read time the field defaults to the
+  classical nlmixr2 contract (no migration script required — Pydantic
+  resolves it via the `default_factory`).
+- **Gate policy schema version** bumped from `0.4.3` → `0.5.0`
+  across all three lane JSONs. CLAUDE.md `apmode:AUTO:policy_gate`
+  marker auto-synced.
+
+### Deferred (explicitly surfaced, ADR-gated)
+
+- **#2 NODE infusions (RATE>0)** — ADR: `docs/adr/0004-node-infusions.md`
+  (pending); loud-reject landing in M2a.
+- **Stan steady-state (SS!=0)** — ADR: `docs/adr/0003-stan-ss-scope.md`
+  (pending); Stan and NODE backends hard-reject `SS!=0` at Gate 1
+  (landing in M2a). README wording update pending:
+  *"SS supported in nlmixr2 lane only; NODE is oral-only in v0.5.0."*
+
 ## [0.5.0-rc1] — 2026-04-17
 
 First release candidate for 0.5. Gate policy schema `0.4.3`; profiler

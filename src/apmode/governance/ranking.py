@@ -629,3 +629,177 @@ def rank_cross_paradigm(
         qualified_comparison=True,
         qualification_reason=qualification_reason,
     )
+
+
+# --- v0.5.0 M0: ScoringContract-grouped ranking (plan §3) ---
+
+
+@dataclass
+class ContractGroupedRanking:
+    """Gate-3 ranking split by :class:`~apmode.bundle.models.ScoringContract`.
+
+    Plan §3 mandates hard-separate leaderboards whenever survivors carry
+    different contracts (conditional vs marginal NLPD, integrated vs
+    pooled RE, HMC-NUTS vs FOCEI integrator, float32 vs float64 accumulation).
+    This type is what Gate 3 produces in the contract-split world.
+
+    ``groups`` lists one ranking per distinct contract, preserving the
+    insertion order of ``group_by_scoring_contract`` (which in turn is
+    the order survivors arrive from upstream — typically a stable sort
+    over backend, then model_id).
+
+    ``recommended_candidate_id`` is populated only in the Submission
+    lane when the dominance rule (``re_treatment='integrated'`` AND
+    ``nlpd_kind='marginal'``) selects a unique top candidate from the
+    dominating group. Discovery and Optimization lanes leave it None
+    by design — separate leaderboards are the intended output.
+
+    ``recommended_warning`` is a non-empty string when the lane expected
+    a recommended candidate but none was eligible. Reports surface this
+    verbatim so reviewers see the disclosure.
+    """
+
+    groups: list[CrossParadigmRankingResult]
+    contracts: list[object]  # typed ScoringContract; avoids forward-ref gymnastics
+    recommended_candidate_id: str | None = None
+    recommended_contract_index: int | None = None
+    recommended_warning: str | None = None
+
+
+def group_by_scoring_contract(
+    survivors: list[BackendResult],
+) -> list[tuple[object, list[BackendResult]]]:
+    """Partition survivors into same-contract buckets, preserving order.
+
+    Exact equality on :class:`ScoringContract` — the model is frozen so
+    Python's value-equality is well-defined. Returns a list of
+    ``(contract, [results])`` tuples in the order the contracts first
+    appear in ``survivors``.
+    """
+    buckets: list[tuple[object, list[BackendResult]]] = []
+    for result in survivors:
+        contract = result.diagnostics.scoring_contract
+        for bucket_contract, bucket_results in buckets:
+            if bucket_contract == contract:
+                bucket_results.append(result)
+                break
+        else:
+            buckets.append((contract, [result]))
+    return buckets
+
+
+def _apply_submission_dominance_rule(
+    grouped: list[tuple[object, CrossParadigmRankingResult]],
+) -> tuple[str | None, int | None, str | None]:
+    """Return (recommended_candidate_id, contract_index, warning).
+
+    Per plan §3 (Submission-lane dominance rule), only candidates whose
+    contract has ``re_treatment='integrated'`` AND ``nlpd_kind='marginal'``
+    are eligible for ``recommended``. When no group qualifies, emit a
+    warning so reports disclose the gap explicitly — never silently fall
+    back to a non-eligible candidate.
+
+    Tiebreaker (consensus review 2026-04-17): when *multiple* eligible
+    groups exist (e.g. nlmixr2-FOCEI *and* Stan-HMC-NUTS both qualify),
+    the winner is the group whose top candidate has the **lowest
+    per-group composite_score** — this is the within-contract ranking
+    metric and is already computed. Insertion-order is not a principled
+    choice and would tie the regulatory recommendation to scheduling.
+    A warning still fires when multiple groups are eligible so reviewers
+    see that a cross-contract judgement call was made.
+    """
+    eligible: list[tuple[int, object, CrossParadigmRankingResult]] = []
+    for idx, (contract, ranking) in enumerate(grouped):
+        if (
+            getattr(contract, "re_treatment", None) == "integrated"
+            and getattr(contract, "nlpd_kind", None) == "marginal"
+            and ranking.ranked_candidates
+        ):
+            eligible.append((idx, contract, ranking))
+
+    if not eligible:
+        return (
+            None,
+            None,
+            "No integrated+marginal contract group; no candidate is eligible as "
+            "'recommended' in the Submission lane. See separate leaderboards.",
+        )
+
+    # Deterministic tiebreak: composite_score ascending (lower is better
+    # for both weighted-sum and Borda aggregations — see plan §3).
+    # Secondary key is the top candidate_id (lexicographic) — this is
+    # stable across runs *regardless* of survivor insertion order, which
+    # the previous insertion-index approach was not. The nlpd_integrator
+    # is the tertiary key so that identical candidate ids across
+    # contracts still resolve deterministically.
+    eligible.sort(
+        key=lambda e: (
+            e[2].ranked_candidates[0].composite_score,
+            e[2].ranked_candidates[0].candidate_id,
+            str(getattr(e[1], "nlpd_integrator", "")),
+        )
+    )
+    best_idx, best_contract, best_ranking = eligible[0]
+    warning: str | None = None
+    if len(eligible) > 1:
+        others = [
+            f"{getattr(c, 'nlpd_integrator', 'unknown')}"
+            f"(top_composite={r.ranked_candidates[0].composite_score:.4f})"
+            for _, c, r in eligible[1:]
+        ]
+        warning = (
+            f"Multiple integrated+marginal contract groups were eligible for "
+            f"the Submission 'recommended' slot — chose "
+            f"{getattr(best_contract, 'nlpd_integrator', 'unknown')} by lowest "
+            f"per-group composite_score; other eligible groups: {', '.join(others)}. "
+            f"Review the separate leaderboards before accepting the recommendation."
+        )
+    return (best_ranking.ranked_candidates[0].candidate_id, best_idx, warning)
+
+
+def rank_by_scoring_contract(
+    survivors: list[BackendResult],
+    *,
+    gate3: Gate3Config,
+    vpc_concordance_target: float,
+    lane: str = "discovery",
+    qualification_reason: str | None = None,
+) -> ContractGroupedRanking:
+    """Group survivors by ScoringContract and rank within each group.
+
+    Cross-contract composites are never produced (plan §3). The Submission
+    lane additionally receives a ``recommended_candidate_id`` from the
+    integrated+marginal group; other lanes get None by design.
+
+    Per-group ranking reuses :func:`rank_cross_paradigm` — within a single
+    contract class the survivors are commensurable, so the existing
+    simulation-based composite (or within-paradigm BIC if upstream routes
+    there) applies.
+    """
+    buckets = group_by_scoring_contract(survivors)
+    rankings: list[CrossParadigmRankingResult] = [
+        rank_cross_paradigm(
+            results,
+            gate3=gate3,
+            vpc_concordance_target=vpc_concordance_target,
+            qualification_reason=qualification_reason,
+        )
+        for _, results in buckets
+    ]
+    recommended_id: str | None = None
+    recommended_idx: int | None = None
+    warning: str | None = None
+    if lane == "submission":
+        grouped_for_rule: list[tuple[object, CrossParadigmRankingResult]] = list(
+            zip([c for c, _ in buckets], rankings, strict=True)
+        )
+        recommended_id, recommended_idx, warning = _apply_submission_dominance_rule(
+            grouped_for_rule
+        )
+    return ContractGroupedRanking(
+        groups=rankings,
+        contracts=[c for c, _ in buckets],
+        recommended_candidate_id=recommended_id,
+        recommended_contract_index=recommended_idx,
+        recommended_warning=warning,
+    )

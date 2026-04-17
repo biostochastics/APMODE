@@ -180,6 +180,7 @@ class NodeBackendRunner:
             GOFMetrics,
             IdentifiabilityFlags,
         )
+        from apmode.bundle.scoring_contract import derive_scoring_contract
 
         if not spec.has_node_modules():
             raise InvalidSpecError(
@@ -235,7 +236,7 @@ class NodeBackendRunner:
         n_trainable += 1  # log_sigma
         n_obs_total = sum(len(s["observations"]) for s in subjects)
 
-        return BackendResult(
+        backend_result = BackendResult(
             model_id=spec.model_id,
             backend="jax_node",
             converged=result.converged,
@@ -292,6 +293,11 @@ class NodeBackendRunner:
             },
             initial_estimate_source=init_source,
         )
+        # v0.5.0: NODE runs pooled (no RE). M3 will flip the overrides to
+        # ``re_treatment="conditional_ebe"`` + ``nlpd_integrator="laplace_*"``
+        # once Laplace wiring lands. See plan §8.
+        backend_result.diagnostics.scoring_contract = derive_scoring_contract(backend_result, spec)
+        return backend_result
 
     def _build_ode_config(
         self,

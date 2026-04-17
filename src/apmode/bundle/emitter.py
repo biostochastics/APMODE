@@ -59,7 +59,12 @@ _SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_\-]+$")
 # bundle, letting downstream tooling detect both incompleteness (absence of
 # the sentinel) and post-hoc tampering (digest mismatch).
 _COMPLETE_SENTINEL = "_COMPLETE"
-_COMPLETE_SCHEMA_VERSION = 1
+# Schema v2 (v0.5.0): adds per-candidate ``scoring_contract`` on
+# :class:`~apmode.bundle.models.DiagnosticBundle`. Bundles produced before
+# this version do not carry the field; they can be migrated at read time by
+# injecting the nlmixr2-default contract (``re_treatment="integrated"``,
+# ``nlpd_integrator="nlmixr2_focei"``, ``float_precision="float64"``).
+_COMPLETE_SCHEMA_VERSION = 2
 
 
 class BundleAlreadySealedError(RuntimeError):

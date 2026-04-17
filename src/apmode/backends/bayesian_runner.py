@@ -144,7 +144,10 @@ class BayesianRunner:
 
         response_path = run_dir / "response.json"
         exit_code = await self._spawn_harness(request_path, response_path, timeout_seconds)
-        return self._parse_response(response_path, exit_code, spec.model_id)
+        result = self._parse_response(response_path, exit_code, spec.model_id)
+        from apmode.bundle.scoring_contract import attach_scoring_contract
+
+        return attach_scoring_contract(result, spec)
 
     async def _spawn_harness(
         self,

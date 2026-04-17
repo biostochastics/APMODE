@@ -100,6 +100,14 @@ class RunConfig:
     # paths. See ``apmode.data.categorical_encoding.EXPECTED_BINARY_FORMAT``
     # for the convention APMODE auto-detects.
     binary_encode_overrides: dict[str, dict[object, int]] | None = None
+    # Gate 2.5 Credibility context-of-use (plan §4 / #10). When provided,
+    # the orchestrator uses this string verbatim in
+    # ``CredibilityContext.context_of_use``; otherwise it auto-generates
+    # ``"<lane> lane analysis"`` as a fallback. Production/regulatory runs
+    # should set this explicitly via CLI (``--context-of-use``) or config
+    # so the Gate 2.5 record carries a reviewer-specified COU rather than
+    # a boilerplate one.
+    context_of_use: str | None = None
 
     def __post_init__(self) -> None:
         self.max_concurrency = max(1, self.max_concurrency)
@@ -704,7 +712,11 @@ class Orchestrator:
                 # Gate 2.5: Credibility Qualification
 
                 cred_ctx = CredibilityContext(
-                    context_of_use=f"{self._config.lane} lane analysis",
+                    context_of_use=(
+                        self._config.context_of_use
+                        if self._config.context_of_use
+                        else f"{self._config.lane} lane analysis"
+                    ),
                     risk_level="medium",
                     n_observations=manifest.n_observations,
                     n_parameters=len(sr_result.parameter_estimates),

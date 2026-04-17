@@ -1057,6 +1057,14 @@ def _stan_elim_expr(elim_mod: object, cmt: str, vol: str) -> str:
     if isinstance(elim_mod, ParallelLinearMM):
         return f"(CL / {vol} * {cmt} + Vmax * ({cmt}/{vol}) / (Km + {cmt}/{vol}))"
     if isinstance(elim_mod, TimeVaryingElim):
+        # Plan §4 / #9: three decay forms supported in Stan ODE RHS.
+        #   exponential: CL(t) = CL * exp(-kdecay * t)
+        #   half_life:   CL(t) = CL / (1 + kdecay * t)
+        #   linear:      CL(t) = fmax(CL * (1 - kdecay * t), 0)
+        if elim_mod.decay_fn == "half_life":
+            return f"CL / (1 + kdecay * t) / {vol} * {cmt}"
+        if elim_mod.decay_fn == "linear":
+            return f"fmax(CL * (1 - kdecay * t), 0.0) / {vol} * {cmt}"
         return f"CL * exp(-kdecay * t) / {vol} * {cmt}"
     return f"CL / {vol} * {cmt}"
 

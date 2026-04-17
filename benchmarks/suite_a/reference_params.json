@@ -1,0 +1,126 @@
+{
+  "A1": {
+    "ka": 1.5,
+    "V": 70,
+    "CL": 5,
+    "omega": {
+      "ka": 0.09,
+      "V": 0.04,
+      "CL": 0.09
+    },
+    "sigma": {
+      "prop": 0.15
+    }
+  },
+  "A2": {
+    "V1": 50,
+    "V2": 80,
+    "Q": 10,
+    "CL": 3,
+    "Vmax": 100,
+    "Km": 10,
+    "omega": {
+      "CL": 0.09,
+      "V1": 0.04,
+      "Vmax": 0.09
+    },
+    "sigma": {
+      "prop": 0.1,
+      "add": 0.5
+    }
+  },
+  "A3": {
+    "n": 3,
+    "ktr": 2,
+    "ka": 1,
+    "V": 60,
+    "CL": 4,
+    "omega": {
+      "CL": 0.09,
+      "V": 0.04,
+      "ktr": 0.09
+    },
+    "sigma": {
+      "prop": 0.12
+    }
+  },
+  "A4": {
+    "ka": 1.2,
+    "V": 65,
+    "Vmax": 80,
+    "Km": 8,
+    "omega": {
+      "Vmax": 0.09,
+      "V": 0.04,
+      "ka": 0.09
+    },
+    "sigma": {
+      "prop": 0.1,
+      "add": 0.3
+    }
+  },
+  "A5": {
+    "ka": 0.02,
+    "V": 3.5,
+    "R0": 10,
+    "KD": 1,
+    "kint": 0.03,
+    "CL": 0.015,
+    "omega": {
+      "ka": 0.04,
+      "V": 0.04,
+      "CL": 0.09
+    },
+    "sigma": {
+      "prop": 0.15
+    }
+  },
+  "A6": {
+    "ka": 1.5,
+    "V": 70,
+    "CL": 5,
+    "covariates": {
+      "WT_on_CL": {
+        "form": "power",
+        "exponent": 0.75,
+        "reference": 70
+      },
+      "WT_on_V": {
+        "form": "power",
+        "exponent": 1,
+        "reference": 70
+      },
+      "RENAL_on_CL": {
+        "form": "categorical",
+        "factor": 0.6
+      }
+    },
+    "omega": {
+      "ka": 0.09,
+      "V": 0.04,
+      "CL": 0.09
+    },
+    "sigma": {
+      "prop": 0.12
+    }
+  },
+  "A7": {
+    "V1": 50,
+    "V2": 80,
+    "Q": 10,
+    "CL": 4,
+    "absorption": {
+      "type": "saturable_mm",
+      "Vmax_abs": 50,
+      "Km_abs": 20
+    },
+    "omega": {
+      "CL": 0.09,
+      "V1": 0.04
+    },
+    "sigma": {
+      "prop": 0.1,
+      "add": 0.3
+    }
+  }
+}

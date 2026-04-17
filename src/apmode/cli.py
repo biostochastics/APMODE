@@ -482,6 +482,20 @@ def run(
             ),
         ),
     ] = None,
+    context_of_use: Annotated[
+        str | None,
+        typer.Option(
+            "--context-of-use",
+            rich_help_panel="Credibility (Gate 2.5)",
+            help=(
+                "User-supplied context of use for Gate 2.5 credibility "
+                "qualification (plan §4 / Known Limitations #10). "
+                "Example: --context-of-use 'pediatric dose selection'. "
+                "When omitted, the orchestrator auto-generates "
+                "'<lane> lane analysis' as a fallback."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Run the full APMODE pipeline on a PK dataset.
 
@@ -671,6 +685,7 @@ def run(
         policy_path=policy,
         max_concurrency=parallel_models,
         binary_encode_overrides=binary_encode_overrides,
+        context_of_use=context_of_use,
     )
 
     # --- Backend selection ---

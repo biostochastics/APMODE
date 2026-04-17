@@ -254,6 +254,55 @@ class SplitGOFMetrics(BaseModel):
     n_test: int = Field(gt=0)
 
 
+class ScoringContract(BaseModel):
+    """Per-candidate NLPD scoring contract (plan §3, PRD §4.3.1, §10 Q2).
+
+    Gate 3 must not compose scores across contracts that are not
+    mathematically comparable (conditional vs marginal NLPD,
+    integrated-Laplace vs HMC, float32 vs float64 accumulation).
+    The contract is emitted into :class:`DiagnosticBundle` by every
+    backend runner; :mod:`apmode.governance.ranking` groups survivors
+    by exact-equality on this object and emits one leaderboard per
+    contract class — never a mixed composite.
+
+    The Submission lane additionally restricts ``recommended``
+    candidates to ``re_treatment == "integrated"`` and
+    ``nlpd_kind == "marginal"`` (see ranking.submission_dominance_rule).
+
+    ``contract_version`` is bumped when fields are added or redefined so
+    that older bundles remain readable through explicit migration.
+
+    Migration path:
+
+    * **v0.5.0 → v0.5.1**: Laplace-based NODE RE lands in M3. If M3
+      introduces *new* ``nlpd_integrator`` values (e.g., ``"laplace_elbo"``
+      from a variational-inference follow-on) or a new ``re_treatment``
+      value, bump ``contract_version`` to 2 and extend the relevant
+      Literals. The DiagnosticBundle default factory stays on contract 1
+      so old bundles continue to deserialize; a `migrate_contract_v1_to_v2`
+      helper in this module is the right place to route such changes.
+    * **Field removal** is a breaking change — never remove a Literal
+      value even if a backend stops using it; mark it deprecated in the
+      docstring and let it live.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    contract_version: Literal[1] = 1
+    nlpd_kind: Literal["conditional", "marginal"]
+    re_treatment: Literal["integrated", "conditional_ebe", "pooled"]
+    nlpd_integrator: Literal[
+        "nlmixr2_focei",
+        "laplace_blockdiag",
+        "laplace_diag",
+        "hmc_nuts",
+        "none",
+    ]
+    blq_method: Literal["none", "m1", "m3", "m4", "m6_plus", "m7_plus"]
+    observation_model: Literal["additive", "proportional", "combined"]
+    float_precision: Literal["float32", "float64"]
+
+
 class DiagnosticBundle(BaseModel):
     """All diagnostic outputs for a candidate model.
 
@@ -306,6 +355,16 @@ class DiagnosticBundle(BaseModel):
     auc_cmax_be_score: float | None = Field(default=None, ge=0.0, le=1.0)
     auc_cmax_source: Literal["observed_trapezoid"] | None = None
     diagnostic_plots: dict[str, str] = Field(default_factory=dict)
+    scoring_contract: ScoringContract = Field(
+        default_factory=lambda: ScoringContract(
+            nlpd_kind="marginal",
+            re_treatment="integrated",
+            nlpd_integrator="nlmixr2_focei",
+            blq_method="none",
+            observation_model="combined",
+            float_precision="float64",
+        )
+    )
 
 
 # --- BackendResult ---
@@ -415,6 +474,55 @@ class BackendResult(BaseModel):
             )
             raise ValueError(msg)
         return data
+
+    @model_validator(mode="after")
+    def validate_backend_scoring_contract_consistency(self) -> BackendResult:
+        """Enforce backend ↔ scoring_contract.nlpd_integrator consistency.
+
+        Consensus review (2026-04-17, mimo/gemini3/kimi-k2.5/glm-5.1): the
+        default_factory on :class:`DiagnosticBundle.scoring_contract`
+        emits the nlmixr2-FOCEI contract. If a Stan or NODE runner forgets
+        to call ``attach_scoring_contract``, the bundle silently carries
+        the wrong contract and Gate 3 groups it with classical candidates.
+
+        This validator rejects contract/backend pairs that can never be
+        correct. Allowed combinations:
+
+        * nlmixr2       → nlpd_integrator == "nlmixr2_focei"
+        * bayesian_stan → nlpd_integrator == "hmc_nuts"
+        * jax_node      → nlpd_integrator in {"none", "laplace_diag",
+          "laplace_blockdiag"}
+        * agentic_llm   → any integrator (inherits from inner runner)
+
+        The nlmixr2-FOCEI default is allowed for ``backend == "nlmixr2"``;
+        for other backends the default is an active error, which is
+        exactly what we want.
+        """
+        integrator = self.diagnostics.scoring_contract.nlpd_integrator
+        allowed: dict[str, set[str]] = {
+            "nlmixr2": {"nlmixr2_focei"},
+            "bayesian_stan": {"hmc_nuts"},
+            "jax_node": {"none", "laplace_diag", "laplace_blockdiag"},
+            "agentic_llm": {
+                "nlmixr2_focei",
+                "hmc_nuts",
+                "none",
+                "laplace_diag",
+                "laplace_blockdiag",
+            },
+        }
+        valid = allowed.get(self.backend, set())
+        if integrator not in valid:
+            msg = (
+                f"ScoringContract.nlpd_integrator={integrator!r} is not valid "
+                f"for backend={self.backend!r}. Allowed: {sorted(valid)}. "
+                f"Runner likely forgot to call "
+                f"apmode.bundle.scoring_contract.attach_scoring_contract "
+                f"before emitting the result. See plan §3 "
+                f"(.plans/v0.5.0_limitations_closure.md)."
+            )
+            raise ValueError(msg)
+        return self
 
 
 # --- Data Manifest ---

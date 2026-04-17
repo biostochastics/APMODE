@@ -394,26 +394,36 @@ class TestNODEConstraints:
 
 
 class TestTimeVaryingElimConstraints:
-    """TimeVaryingElim decay_fn enforcement."""
+    """TimeVaryingElim decay_fn enforcement.
+
+    v0.5.0 plan §4 / #9: all three decay forms are now accepted.
+    Pydantic Literal on ``decay_fn`` is the authoritative whitelist —
+    any value outside {exponential, half_life, linear} fails at the
+    AST-construction boundary.
+    """
 
     def test_exponential_decay_fn_valid(self) -> None:
         spec = _make_spec(elimination=TimeVaryingElim(CL=5.0, decay_fn="exponential"))
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
         assert errors == []
 
-    def test_half_life_decay_fn_rejected(self) -> None:
+    def test_half_life_decay_fn_accepted(self) -> None:
         spec = _make_spec(elimination=TimeVaryingElim(CL=5.0, decay_fn="half_life"))
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
-        assert len(errors) == 1
-        assert errors[0].constraint == "supported_decay_fn"
-        assert "half_life" in errors[0].message
+        assert errors == []
 
-    def test_linear_decay_fn_rejected(self) -> None:
+    def test_linear_decay_fn_accepted(self) -> None:
         spec = _make_spec(elimination=TimeVaryingElim(CL=5.0, decay_fn="linear"))
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
-        assert len(errors) == 1
-        assert errors[0].constraint == "supported_decay_fn"
-        assert "linear" in errors[0].message
+        assert errors == []
+
+    def test_invalid_decay_fn_raises_at_ast_boundary(self) -> None:
+        """Pydantic Literal rejects unknown decay forms at construction."""
+        import pytest
+        from pydantic import ValidationError as PydValError
+
+        with pytest.raises(PydValError):
+            TimeVaryingElim(CL=5.0, decay_fn="weibull")  # type: ignore[arg-type]
 
 
 class TestVariabilityConstraints:

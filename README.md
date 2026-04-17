@@ -6,8 +6,8 @@
 
   **Adaptive Pharmacokinetic Model Discovery Engine**
 
-  [![Version](https://img.shields.io/badge/version-<!-- apmode:AUTO:version_tag -->v0.5.0-rc1<!-- apmode:/AUTO:version_tag -->-blue)]()
-  [![Tests](https://img.shields.io/badge/tests-<!-- apmode:AUTO:tests -->1711<!-- apmode:/AUTO:tests -->%20collected-success)]()
+  [![Version](https://img.shields.io/badge/version-<!-- apmode:AUTO:version_tag -->v0.5.0-rc2<!-- apmode:/AUTO:version_tag -->-blue)]()
+  [![Tests](https://img.shields.io/badge/tests-<!-- apmode:AUTO:tests -->1746<!-- apmode:/AUTO:tests -->%20collected-success)]()
   [![License](https://img.shields.io/badge/license-GPL--2.0--or--later-green)](LICENSE)
   [![Python](https://img.shields.io/badge/python-3.12%E2%80%933.14-yellow)]()
   [![mypy](https://img.shields.io/badge/mypy-strict%20%E2%9C%93-blue)]()
@@ -27,9 +27,9 @@ APMODE is a **governed meta-system** that composes five population PK modeling p
 
 **Reproducibility is the unit of output.** Every run emits a versioned JSON bundle — data manifest, search trajectory, gate decisions, candidate lineage DAG, compiled specs — so any result can be audited or replayed.
 
-**Formular — a typed PK DSL — is the control surface.** Models are specified in [Formular](docs/FORMULAR.md), a structured grammar (`Absorption × Distribution × Elimination × Variability × Observation × Priors`), compiled to a typed AST, validated against pharmacometric constraints, and lowered to backend-specific code (nlmixr2 R, Stan/Torsten, JAX/Diffrax). The agentic LLM backend (Phase 3) operates exclusively through Formular transforms — including the `SetPrior` transform for Bayesian workflows — it cannot emit raw code.
+**Formular — a typed PK DSL — is the control surface.** Models are specified in [Formular](docs/FORMULAR.md), a five-block grammar (`Absorption × Distribution × Elimination × Variability × Observation`) plus a sixth semantic axis — `priors` — populated via the `SetPrior` transform rather than grammar text. Specs compile to a typed AST, are validated against pharmacometric constraints, and lower to backend-specific code (nlmixr2 R, Stan/Torsten, JAX/Diffrax). The agentic LLM backend (Phase 3) operates exclusively through the 7 typed Formular transforms — including `SetPrior` for Bayesian workflows — it cannot emit raw code.
 
-> **Status**: **<!-- apmode:AUTO:version_tag -->v0.5.0-rc1<!-- apmode:/AUTO:version_tag -->** (2026-04-17) — 0.5 release candidate. <!-- apmode:AUTO:tests_nonlive -->1694<!-- apmode:/AUTO:tests_nonlive --> tests passing (`-m "not live"`); `mypy --strict` clean; `ruff` clean. Supports Python 3.12–3.14. Gate policy schema <!-- apmode:AUTO:policy_gate -->0.4.3<!-- apmode:/AUTO:policy_gate -->; profiler policy <!-- apmode:AUTO:policy_profiler -->2.1.0<!-- apmode:/AUTO:policy_profiler --> (manifest_schema_version = <!-- apmode:AUTO:profiler_manifest -->2<!-- apmode:/AUTO:profiler_manifest -->). Reproducibility bundles now carry a `_COMPLETE` sentinel with a SHA-256 digest; `apmode validate` refuses unsealed bundles. Stan emitter handles IV bolus and sanitizes covariate identifiers. LLM providers enforce a 120s default timeout. See [CHANGELOG.md](CHANGELOG.md) for the full 0.5.0-rc1 changes.
+> **Status**: **<!-- apmode:AUTO:version_tag -->v0.5.0-rc2<!-- apmode:/AUTO:version_tag -->** (2026-04-17) — 0.5 release candidate. <!-- apmode:AUTO:tests_nonlive -->1729<!-- apmode:/AUTO:tests_nonlive --> tests passing (`-m "not live"`); `mypy --strict` clean; `ruff` clean. Supports Python 3.12–3.14. Gate policy schema <!-- apmode:AUTO:policy_gate -->0.5.0<!-- apmode:/AUTO:policy_gate -->; profiler policy <!-- apmode:AUTO:policy_profiler -->2.1.0<!-- apmode:/AUTO:policy_profiler --> (manifest_schema_version = <!-- apmode:AUTO:profiler_manifest -->2<!-- apmode:/AUTO:profiler_manifest -->). Reproducibility bundles now carry a `_COMPLETE` sentinel with a SHA-256 digest; `apmode validate` refuses unsealed bundles. Stan emitter handles IV bolus and sanitizes covariate identifiers. LLM providers enforce a 120s default timeout. See [CHANGELOG.md](CHANGELOG.md) for the full 0.5.0 release-candidate changes.
 
 All numeric badges + status counts are rewritten from the source tree by `scripts/sync_readme.py` — see [Keeping the README honest](#keeping-the-readme-honest).
 
@@ -142,8 +142,8 @@ uv run apmode policies --validate       # CI-grade schema + constraint check
 ### Test + typecheck + lint
 
 ```bash
-uv run pytest tests/ -q                         # <!-- apmode:AUTO:tests -->1711<!-- apmode:/AUTO:tests --> collected
-uv run pytest tests/ -q -m "not live"           # <!-- apmode:AUTO:tests_nonlive -->1694<!-- apmode:/AUTO:tests_nonlive --> skip live LLM tests
+uv run pytest tests/ -q                         # <!-- apmode:AUTO:tests -->1746<!-- apmode:/AUTO:tests --> collected
+uv run pytest tests/ -q -m "not live"           # <!-- apmode:AUTO:tests_nonlive -->1729<!-- apmode:/AUTO:tests_nonlive --> skip live LLM tests
 uv run mypy src/apmode/ --strict                # type checking
 uv run ruff check src/apmode/ tests/            # linting
 uv run python scripts/sync_readme.py --check    # README ↔ codebase drift guard
@@ -186,7 +186,7 @@ model {
 | **Elimination** | Linear, MichaelisMenten, ParallelLinearMM, TimeVarying(kdecay, decay_fn), NODE_Elimination |
 | **Variability** | IIV (diagonal/block), IOV (ByStudy/ByVisit/ByDoseEpoch/Custom), CovariateLink (power/exponential/linear/categorical/maturation) |
 | **Observation** | Proportional, Additive, Combined, BLQ_M3, BLQ_M4 (with composable error_model) |
-| **Priors** (Bayesian) | Normal, LogNormal, HalfNormal, HalfCauchy, Gamma, InvGamma, Beta, LKJ, Mixture, HistoricalBorrowing (Schmidli 2014 robust MAP) |
+| **Priors** (semantic axis; set via `SetPrior`, no grammar block) | Normal, LogNormal, HalfNormal, HalfCauchy, Gamma, InvGamma, Beta, LKJ, Mixture, HistoricalBorrowing (Schmidli 2014 robust MAP) |
 
 **NODE constraint templates:** `monotone_increasing`, `monotone_decreasing`, `bounded_positive`, `saturable`, `unconstrained_smooth` — with lane-dependent dim ceilings (≤8 Discovery, ≤4 Optimization, excluded from Submission).
 
@@ -458,7 +458,7 @@ APMODE enforces a **gated funnel** — not a weighted sum. Each gate is disquali
 | **Gate 2.5** | Credibility Qualification | ICH M15 context-of-use, data adequacy, ML transparency, limitation-risk mapping, operational qualification |
 | **Gate 3** | Ranking | Within-paradigm BIC; cross-paradigm VPC concordance + NPE + AUC/Cmax BE composite (Borda or weighted sum) |
 
-Gate thresholds are **versioned policy artifacts** in `policies/*.json` (schema v<!-- apmode:AUTO:policy_gate -->0.4.3<!-- apmode:/AUTO:policy_gate -->) — not hard-coded constants.
+Gate thresholds are **versioned policy artifacts** in `policies/*.json` (schema v<!-- apmode:AUTO:policy_gate -->0.5.0<!-- apmode:/AUTO:policy_gate -->) — not hard-coded constants.
 
 ### Gate 1 PIT calibration (0.4.2)
 
@@ -560,7 +560,7 @@ reason, vote). `apmode inspect <bundle>` renders the per-signal table;
 
 ## Test Suite
 
-**<!-- apmode:AUTO:tests -->1711<!-- apmode:/AUTO:tests --> tests collected** (<!-- apmode:AUTO:tests_nonlive -->1694<!-- apmode:/AUTO:tests_nonlive --> non-live) across multiple strategies — all counts auto-synced by `scripts/sync_readme.py`:
+**<!-- apmode:AUTO:tests -->1746<!-- apmode:/AUTO:tests --> tests collected** (<!-- apmode:AUTO:tests_nonlive -->1729<!-- apmode:/AUTO:tests_nonlive --> non-live) across multiple strategies — all counts auto-synced by `scripts/sync_readme.py`:
 
 ```bash
 uv run pytest tests/unit/ -q               # unit tests
@@ -684,7 +684,7 @@ too poor to support any flip-flop call. The stricter
 
 ### Gate policy parameters (`policies/{submission,discovery,optimization}.json`)
 
-Gate policies are lane-specific, versioned (currently **<!-- apmode:AUTO:policy_gate -->0.4.3<!-- apmode:/AUTO:policy_gate -->**), and discoverable via
+Gate policies are lane-specific, versioned (currently **<!-- apmode:AUTO:policy_gate -->0.5.0<!-- apmode:/AUTO:policy_gate -->**), and discoverable via
 `apmode policies <lane>`. The Pydantic schema lives in
 [`src/apmode/governance/policy.py`](src/apmode/governance/policy.py)
 and is validated by the CI hook
@@ -949,7 +949,7 @@ uv run pytest tests/integration/test_llm_providers_live.py -m live -v
 This README's numeric claims (version, test count, transform count, CLI-command count, dataset count, policy versions, profiler manifest version) are rewritten from the codebase by [`scripts/sync_readme.py`](scripts/sync_readme.py). Each auto-synced value sits between HTML comment markers like:
 
 ```
-<!-- apmode:AUTO:tests -->1711<!-- apmode:/AUTO:tests -->
+<!-- apmode:AUTO:tests -->1746<!-- apmode:/AUTO:tests -->
 ```
 
 Running the script:
@@ -978,17 +978,22 @@ Wire `scripts/sync_readme.py --check` into pre-commit or CI to block PRs that le
 
 ## Known Limitations
 
-- **Multi-dose**: ADDL/II expansion supported across all backends; SS (steady-state) pass-through for nlmixr2 only — Stan/NODE reject SS!=0.
-- **NODE infusions**: NODE backend rejects infusion data (RATE>0); use nlmixr2 or Bayesian backend for infusion dosing.
-- **NODE training**: Pooled population NLL (no per-subject RE); Laplace approximation deferred to Phase 3.
-- **NODE scaling**: Python-list subject loop (not vmap); scales to ~50 subjects, not 500+.
-- **NODE posterior-predictive simulation**: `NodeBackendRunner.sample_posterior_predictive` is a discoverable-but-inert stub (returns `None` with `UserWarning`). Gate 3's uniform-drop rule treats `None` as "backend omitted sims" and removes the AUC/Cmax-BE component when any survivor lacks it — so a mixed nlmixr2 + NODE survivor set in Optimization currently degrades to vpc + npe only. Phase 3 random-effects infrastructure (`node_trainer.py`) is the concrete integration point.
-- **Stan codegen**: Maturation covariate form not yet supported (raises `NotImplementedError`). BLQ M3/M4 and IOV are staged for a follow-on.
-- **TMDD QSS**: Uses KD as approximation for KSS; when `kint ≫ koff`, this can overestimate complex formation.
-- **TimeVaryingElim**: Only `exponential` decay supported; `half_life` and `linear` rejected by validator.
-- **Context of use**: Orchestrator auto-generates COU for Gate 2.5; production use needs user-provided COU via CLI or config.
+v0.5.0 closure plan: [`.plans/v0.5.0_limitations_closure.md`](.plans/v0.5.0_limitations_closure.md).
+M0 landed in rc2; M1+ milestones in progress. Items below are tagged by
+milestone — `[M*]` means "addressed by milestone M*" and `[defer]` means
+"deferred with ADR disclosure".
+
+- **Multi-dose SS [M2a]**: ADDL/II expansion supported across all backends; SS (steady-state) supported in nlmixr2 lane only. Stan and NODE backends hard-reject `SS!=0` at Gate 1 (`docs/adr/0003-stan-ss-scope.md`).
+- **NODE infusions [defer]**: NODE backend is oral-only in v0.5.0 — infusion data (RATE>0) is rejected with `InvalidSpecError`. `docs/adr/0004-node-infusions.md` scopes the piecewise-JAX-solver follow-on.
+- **NODE RE / Laplace [M3]**: Current NODE training is pooled population NLL (no per-subject RE). M3 lands Laplace approximation on a ≤16×16 block of latent/input-layer parameters (block-diagonal Hessian primary, L-BFGS + single ridge fallback). Full-NN-weight RE is deferred to v0.5.1.
+- **NODE scaling [M2b]**: Python-list subject loop scales to ~50 subjects. M2b replaces it with `jax.lax.map` per subject plus a `jax.vmap` fastpath for uniform time grids; memory ceiling on A100-40G is ~2000 subjects for a 4-compartment NODE.
+- **NODE posterior-predictive simulation [M4]**: `sample_posterior_predictive` is an inert stub returning `None` with `UserWarning`. M4 draws RE from the Laplace posterior and routes per-subject simulations through the canonical `build_predictive_diagnostics`.
+- **Stan maturation + IOV / BLQ M3 [M2a]**: `NotImplementedError` on Emax maturation today; BLQ M3 + IOV eta back-transform land together in M2a.
+- **TMDD QSS [M1.5]**: Suite A5 bench currently scores 0/34 Gate 1 passes — TMDD QSS has no search-space entry, and the profiler has no TMDD signal. M1.5 adds the late-slope-steepening (LSS) profiler signal, wires `tmdd_qss` into the enumerator, and defaults to pure-MM (3 params) with parallel-linear+MM only when the profiler detects a linear clearance component. `KSS = KD + kint/kon` canonicalization deferred to v0.5.1.
+- **TimeVaryingElim decay forms**: nlmixr2 emitter supports all three `decay_fn ∈ {exponential, half_life, linear}` as of 0.5.0. Stan-side lowering is exponential-only pending Phase 3 follow-on.
+- **Context of use [M1]**: Orchestrator auto-generates COU for Gate 2.5; M1 adds `--context-of-use "<str>"` CLI override.
 - **Agentic LLM backend**: Requires funded API keys (Anthropic/OpenAI) or local Ollama with a chat-capable model (≥4B params recommended).
-- **Gate 3 composite lane drift**: Optimization's `auc_cmax_weight=0.30` is live, but in a mixed nlmixr2+NODE/Bayesian survivor set the uniform-drop rule reverts to the two-component (vpc + npe) composite until every backend emits posterior-predictive sims (intentional, creates integration pressure; documented in CHANGELOG).
+- **Gate 3 cross-contract ranking [M0 ✅]**: **Landed in rc2.** Every `DiagnosticBundle` carries a `ScoringContract` (nlpd_kind / re_treatment / nlpd_integrator / blq_method / observation_model / float_precision). `rank_by_scoring_contract` groups survivors by exact-equality and emits one leaderboard per contract class — no mixed-contract composites. The **Submission-lane dominance rule** restricts `recommended_candidate_id` to contracts with `re_treatment == "integrated"` AND `nlpd_kind == "marginal"`, otherwise returning `None` with an explicit disclosure warning.
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design rationale.
 
@@ -1005,7 +1010,7 @@ If you use APMODE in your research, please cite:
   year         = {2026},
   url          = {https://github.com/biostochastics/apmode},
   license      = {GPL-2.0-or-later},
-  version      = {<!-- apmode:AUTO:version -->0.5.0-rc1<!-- apmode:/AUTO:version -->}
+  version      = {<!-- apmode:AUTO:version -->0.5.0-rc2<!-- apmode:/AUTO:version -->}
 }
 ```
 

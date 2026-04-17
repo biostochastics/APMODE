@@ -159,13 +159,16 @@ class Nlmixr2Runner:
         exit_code = await self._spawn_r(request_path, response_path, timeout_seconds)
 
         # Parse response + optionally enrich with simulation-based diagnostics
-        return self._parse_response(
+        result = self._parse_response(
             response_path,
             exit_code,
             spec.model_id,
             gate3_policy=gate3_policy,
             nca_diagnostics=nca_diagnostics,
         )
+        from apmode.bundle.scoring_contract import attach_scoring_contract
+
+        return attach_scoring_contract(result, spec)
 
     async def _spawn_r(
         self,
