@@ -58,6 +58,7 @@ PRD_APMODE_*.md
 _smoke_bayes_work/
 docs/plans/
 plans/
+docs/DIAGNOSTICS_REFINEMENT_ROADMAP.md
 
 # hatch-vcs auto-generated version file — regenerated on every build.
 # Shipped version drifts (e.g., __all__ ordering, version tuple) break
