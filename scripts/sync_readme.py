@@ -158,14 +158,25 @@ def build_values() -> dict[str, str]:
     # parser chokes on HTML comments inside an image URL and renders the
     # whole `![Version](...)` as literal text.
     #
+    # The badge markdown must live on its OWN line — not share a line with
+    # the ``<!-- apmode:AUTO:... -->`` markers. CommonMark HTML block rule 2
+    # treats any line beginning (after up to 3 spaces) with ``<!--`` as a raw
+    # HTML block, so ``  <!-- x -->[![Version](...)]()<!-- /x -->`` on one
+    # line renders as literal text. Splitting the marker onto its own line
+    # keeps the badge line starting with ``[!`` so it parses as markdown.
+    #
     # shields.io interprets a single ``-`` as the label/message/color
     # separator in ``/badge/<label>-<message>-<color>``; any literal
     # dash in the value must be doubled. A prerelease like ``v0.5.0-rc2``
     # needs ``v0.5.0--rc2`` to render correctly.
     shields_tag = version_tag.replace("-", "--")
-    badge_version = f"[![Version](https://img.shields.io/badge/version-{shields_tag}-blue)]()"
+    badge_version = (
+        f"\n  [![Version](https://img.shields.io/badge/version-{shields_tag}-blue)]()\n  "
+    )
     badge_tests = (
+        "\n  "
         f"[![Tests](https://img.shields.io/badge/tests-{tests_total}%20collected-success)]()"
+        "\n  "
     )
     return {
         "version": version,
