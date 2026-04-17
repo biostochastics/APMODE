@@ -11,6 +11,10 @@ Commands:
   apmode log <bundle-dir> [--gate] [--failed]
   apmode trace <bundle-dir> [--iteration N] [--cost] [--json]
   apmode lineage <bundle-dir> <candidate-id> [--spec] [--gate]
+  apmode report <bundle-dir> [--format html|md] [--no-browser]
+  apmode doctor
+  apmode ls [runs-dir] [--sort time|lane|candidates|bic] [--limit N] [--format table|path|json]
+  apmode policies [lane] [--validate]
   apmode graph <bundle-dir> [--format tree|dot|mermaid|json] [--converged]
 
 Exit codes:
@@ -51,12 +55,48 @@ def _is_real_number(value: object) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
+def _finite_bic_str(value: object) -> str:
+    """Format BIC as one-decimal string; return ``"—"`` for None/NaN/Inf/non-numeric."""
+    import math
+
+    if not _is_real_number(value):
+        return "—"
+    f = float(value)  # type: ignore[arg-type]
+    if math.isnan(f) or math.isinf(f):
+        return "—"
+    return str(round(f, 1))
+
+
 class Lane(enum.StrEnum):
     """Operating lanes per PRD §3."""
 
     submission = "submission"
     discovery = "discovery"
     optimization = "optimization"
+
+
+class LsSort(enum.StrEnum):
+    """Sort columns for ``apmode ls``."""
+
+    time = "time"
+    lane = "lane"
+    candidates = "candidates"
+    bic = "bic"
+
+
+class LsFormat(enum.StrEnum):
+    """Output formats for ``apmode ls``."""
+
+    table = "table"
+    path = "path"
+    json = "json"
+
+
+class ReportFormat(enum.StrEnum):
+    """Output formats for ``apmode report``."""
+
+    html = "html"
+    md = "md"
 
 
 _COPYRIGHT = "(C) 2026 Biostochastics. For Research Use Only."
@@ -75,7 +115,7 @@ app = typer.Typer(
     help="Adaptive Pharmacokinetic Model Discovery Engine",
     rich_markup_mode="rich",
     no_args_is_help=True,
-    add_completion=False,
+    add_completion=True,
     context_settings={"help_option_names": ["-h", "--help"]},
     epilog=(f"[dim]Version: {_get_version()}[/]\n[dim]{_COPYRIGHT}[/]\n[dim]{_CITATION}[/]"),
 )
@@ -239,6 +279,7 @@ def run(
     timeout: Annotated[
         int,
         typer.Option(
+            rich_help_panel="Execution",
             help=(
                 "Per-candidate backend timeout in seconds. "
                 "SAEM on 50 subjects ~10s, 120 subjects ~60-120s, "
@@ -255,6 +296,7 @@ def run(
         bool,
         typer.Option(
             "--agentic/--no-agentic",
+            rich_help_panel="Agentic LLM (Phase 3)",
             help=(
                 "Enable the agentic LLM backend (Phase 3). "
                 "OFF by default — the agentic loop ships aggregated diagnostics "
@@ -266,6 +308,7 @@ def run(
     provider: Annotated[
         str,
         typer.Option(
+            rich_help_panel="Agentic LLM (Phase 3)",
             help=(
                 "LLM provider for the agentic backend. "
                 "[dim]anthropic[/dim], [dim]openai[/dim], [dim]gemini[/dim], "
@@ -276,6 +319,7 @@ def run(
     model: Annotated[
         str | None,
         typer.Option(
+            rich_help_panel="Agentic LLM (Phase 3)",
             help=(
                 "LLM model name. Defaults per provider: "
                 "anthropic=claude-sonnet-4-20250514, openai=gpt-4o, "
@@ -287,16 +331,31 @@ def run(
         int,
         typer.Option(
             "--max-iterations",
+            rich_help_panel="Agentic LLM (Phase 3)",
             help="Max agentic LLM iterations per run (PRD §4.2.6: cap=25).",
             min=1,
             max=25,
         ),
     ] = 10,
+    resume_agentic: Annotated[
+        bool,
+        typer.Option(
+            "--resume-agentic",
+            rich_help_panel="Agentic LLM (Phase 3)",
+            help=(
+                "Skip classical search (Stage 5) and resume from an existing "
+                "``classical_checkpoint.json`` in the output bundle directory. "
+                "Use after an agentic API failure to restart the LLM loop without "
+                "re-running the full SAEM search."
+            ),
+        ),
+    ] = False,
     parallel_models: Annotated[
         int,
         typer.Option(
             "--parallel-models",
             "-j",
+            rich_help_panel="Execution",
             help="Max concurrent model evaluations (R subprocesses). Default 1 = sequential.",
             min=1,
         ),
@@ -316,7 +375,8 @@ def run(
         int,
         typer.Option(
             "--bayes-chains",
-            help="Number of NUTS chains (Bayesian backend only). Default 4.",
+            rich_help_panel="Bayesian Backend",
+            help="Number of NUTS chains. Default 4.",
             min=1,
         ),
     ] = 4,
@@ -324,7 +384,8 @@ def run(
         int,
         typer.Option(
             "--bayes-warmup",
-            help="Warmup iterations per chain (Bayesian backend only). Default 1000.",
+            rich_help_panel="Bayesian Backend",
+            help="Warmup iterations per chain. Default 1000.",
             min=100,
         ),
     ] = 1000,
@@ -332,7 +393,8 @@ def run(
         int,
         typer.Option(
             "--bayes-sampling",
-            help="Sampling iterations per chain (Bayesian backend only). Default 1000.",
+            rich_help_panel="Bayesian Backend",
+            help="Sampling iterations per chain. Default 1000.",
             min=100,
         ),
     ] = 1000,
@@ -340,10 +402,8 @@ def run(
         float,
         typer.Option(
             "--bayes-adapt-delta",
-            help=(
-                "NUTS target acceptance (Bayesian backend only). "
-                "Default 0.95; raise to 0.99 for funnels."
-            ),
+            rich_help_panel="Bayesian Backend",
+            help="NUTS target acceptance. Default 0.95; raise to 0.99 for funnels.",
             min=0.5,
             max=0.999,
         ),
@@ -352,39 +412,39 @@ def run(
         int,
         typer.Option(
             "--bayes-max-treedepth",
-            help="NUTS max treedepth (Bayesian backend only). Default 12.",
+            rich_help_panel="Bayesian Backend",
+            help="NUTS max treedepth. Default 12.",
             min=4,
             max=20,
         ),
     ] = 12,
     verbose: Annotated[
         bool,
-        typer.Option("--verbose", "-v", help="Show detailed pipeline logs."),
+        typer.Option(
+            "--verbose",
+            "-v",
+            rich_help_panel="Output & Logging",
+            help="Show detailed pipeline logs.",
+        ),
     ] = False,
     quiet: Annotated[
         bool,
-        typer.Option("--quiet", "-q", help="Suppress non-essential output."),
+        typer.Option(
+            "--quiet",
+            "-q",
+            rich_help_panel="Output & Logging",
+            help="Suppress non-essential output.",
+        ),
     ] = False,
     yes: Annotated[
         bool,
         typer.Option(
             "--yes",
             "-y",
+            rich_help_panel="Output & Logging",
             help=(
                 "Skip interactive confirmations "
                 "(e.g. agentic data-sharing prompt for non-local providers)."
-            ),
-        ),
-    ] = False,
-    resume_agentic: Annotated[
-        bool,
-        typer.Option(
-            "--resume-agentic",
-            help=(
-                "Skip classical search (Stage 5) and resume from an existing "
-                "``classical_checkpoint.json`` in the output bundle directory. "
-                "Use after an agentic API failure to restart the LLM loop without "
-                "re-running the full SAEM search."
             ),
         ),
     ] = False,
@@ -392,6 +452,7 @@ def run(
         bool,
         typer.Option(
             "--dry-run",
+            rich_help_panel="Execution",
             help=(
                 "Preview the pipeline without running any R backends. "
                 "Runs ingest → profile → NCA → search-space enumeration and "
@@ -404,6 +465,7 @@ def run(
         list[str] | None,
         typer.Option(
             "--binary-encode",
+            rich_help_panel="Execution",
             help=(
                 "Override the auto-detected remap for a binary categorical "
                 "covariate. Format: ``COL=VAL1:0,VAL2:1`` (repeatable). "
@@ -644,9 +706,9 @@ def run(
     agentic_runner_instance = None
     _agentic_enabled = agentic and lane.value in ("discovery", "optimization")
     if agentic and lane == Lane.submission and not quiet:
-        console.print(
-            "[dim]Note: --agentic is not permitted in the submission lane "
-            "(PRD §3) — agentic backend disabled.[/]"
+        err_console.print(
+            "[yellow]Note:[/] --agentic is not permitted in the submission lane "
+            "(PRD §3) — agentic backend disabled."
         )
     if _agentic_enabled:
         # For non-local providers, confirm that aggregated diagnostics may be
@@ -826,22 +888,28 @@ def _pass_fraction(passed: int, total: int) -> str:
 
 
 def _load_json(path: Path, label: str) -> dict[str, Any] | None:
-    """Load a JSON file, returning None if missing, unreadable, or not a JSON object."""
+    """Load a JSON file, returning None if missing, unreadable, or not a JSON object.
+
+    Warnings go to stderr so they cannot corrupt stdout when the caller is piping
+    machine-readable output (e.g. ``apmode ls --format json | jq``).
+    """
     try:
         raw = json.loads(path.read_text())
     except FileNotFoundError:
         return None
     except (PermissionError, IsADirectoryError, OSError) as e:
         if label:
-            console.print(f"  [yellow]Warning:[/] cannot read {escape(label)}: {escape(str(e))}")
+            err_console.print(
+                f"  [yellow]Warning:[/] cannot read {escape(label)}: {escape(str(e))}"
+            )
         return None
     except json.JSONDecodeError as e:
         if label:
-            console.print(f"  [yellow]Warning:[/] corrupt {escape(label)}: {escape(str(e))}")
+            err_console.print(f"  [yellow]Warning:[/] corrupt {escape(label)}: {escape(str(e))}")
         return None
     if not isinstance(raw, dict):
         if label:
-            console.print(f"  [yellow]Warning:[/] {escape(label)} is not a JSON object")
+            err_console.print(f"  [yellow]Warning:[/] {escape(label)} is not a JSON object")
         return None
     return raw
 
@@ -1513,6 +1581,24 @@ def explore(
         int,
         typer.Option(help="Random seed."),
     ] = 753849,
+    policy: Annotated[
+        Path | None,
+        typer.Option(
+            "--policy",
+            help="Gate policy JSON (forwarded to `run` when launching). "
+            "Falls back to policies/<lane>.json.",
+            show_default="policies/<lane>.json",
+        ),
+    ] = None,
+    parallel_models: Annotated[
+        int,
+        typer.Option(
+            "--parallel-models",
+            "-j",
+            help="Max concurrent model evaluations when launching the pipeline. Default 1.",
+            min=1,
+        ),
+    ] = 1,
 ) -> None:
     """Interactive exploration of a PK dataset.
 
@@ -1524,6 +1610,7 @@ def explore(
       apmode explore theo_sd              # interactive wizard
       apmode explore theo_sd -y           # non-interactive, full run
       apmode explore ./mydata.csv         # local CSV file
+      apmode explore theo_sd -y --policy my_policy.json -j 4
     """
     from apmode.data.datasets import DATASET_REGISTRY, fetch_dataset
     from apmode.data.ingest import ingest_nonmem_csv
@@ -1616,13 +1703,13 @@ def explore(
     # --- Step 6: Prompt for full run ---
     if non_interactive:
         console.print("\n[bold yellow]--non-interactive:[/] launching full pipeline...")
-        _launch_run(csv_path, lane, seed, output)
+        _launch_run(csv_path, lane, seed, output, parallel_models=parallel_models, policy=policy)
         return
 
     console.print()
     proceed = typer.confirm("Launch full pipeline?", default=False)
     if proceed:
-        _launch_run(csv_path, lane, seed, output)
+        _launch_run(csv_path, lane, seed, output, parallel_models=parallel_models, policy=policy)
     else:
         console.print("\n[dim]Done. Run 'apmode run' manually when ready.[/]")
 
@@ -1695,6 +1782,7 @@ def _launch_run(
     output: Path,
     parallel_models: int = 1,
     timeout: int = 900,
+    policy: Path | None = None,
 ) -> None:
     """Delegate to the run command by invoking it directly.
 
@@ -1711,6 +1799,7 @@ def _launch_run(
             output=output,
             timeout=timeout,
             parallel_models=parallel_models,
+            policy=policy,
             verbose=False,
             quiet=False,
         )
@@ -2736,13 +2825,13 @@ def report(
         typer.Argument(help="Path to a run bundle directory."),
     ],
     fmt: Annotated[
-        str,
+        ReportFormat,
         typer.Option(
             "--format",
             "-f",
             help="Output format when artifacts exist: html (opens browser) or md (pager).",
         ),
-    ] = "html",
+    ] = ReportFormat.html,
     no_browser: Annotated[
         bool,
         typer.Option("--no-browser", help="Print path instead of opening browser (HTML)."),
@@ -2768,7 +2857,7 @@ def report(
     md_path = bundle_dir / "report.md"
 
     # If the user asked for markdown or no html, prefer md.
-    prefer_md = fmt.lower() == "md" or (not html_path.exists() and md_path.exists())
+    prefer_md = fmt == ReportFormat.md or (not html_path.exists() and md_path.exists())
 
     if prefer_md and md_path.exists():
         console.print(f"[dim]Viewing [bold]{escape(str(md_path))}[/] — press q to exit.[/]")
@@ -2779,19 +2868,26 @@ def report(
         return
 
     if html_path.exists():
-        console.print()
         if no_browser:
-            console.print(
-                Panel(
-                    f"[bold]{escape(str(html_path))}[/]",
-                    title="[bold]Report Path[/]",
-                    border_style="cyan",
+            # When piped, emit just the raw path so shell idioms like
+            # ``open $(apmode report bundle --no-browser)`` work. In a TTY, keep
+            # the Rich panel for readability.
+            if console.is_terminal:
+                console.print()
+                console.print(
+                    Panel(
+                        f"[bold]{escape(str(html_path))}[/]",
+                        title="[bold]Report Path[/]",
+                        border_style="cyan",
+                    )
                 )
-            )
+            else:
+                typer.echo(str(html_path.resolve()))
         else:
             import webbrowser
 
             webbrowser.open(html_path.as_uri())
+            console.print()
             console.print(f"[dim]Opened [bold]{escape(str(html_path))}[/] in browser.[/]")
         return
 
@@ -2933,37 +3029,48 @@ def doctor() -> None:
             all_ok = False
 
     # ---- LLM providers (API key presence only) ----
+    # Derived from `_PROVIDER_ENV_KEYS` to stay in sync with runtime resolution.
     import os
 
-    provider_checks: list[tuple[str, str]] = [
-        ("Anthropic", "ANTHROPIC_API_KEY"),
-        ("OpenAI", "OPENAI_API_KEY"),
-        ("Google Gemini", "GOOGLE_API_KEY"),
-        ("OpenRouter", "OPENROUTER_API_KEY"),
-    ]
-    for pname, env_key in provider_checks:
-        val = os.environ.get(env_key, "")
-        if val:
+    _provider_labels: dict[str, str] = {
+        "anthropic": "Anthropic",
+        "openai": "OpenAI",
+        "gemini": "Google Gemini",
+        "openrouter": "OpenRouter",
+    }
+    for provider_key, label in _provider_labels.items():
+        env_keys = _PROVIDER_ENV_KEYS.get(provider_key, [])
+        found = next(((k, os.environ[k]) for k in env_keys if os.environ.get(k)), None)
+        if found:
+            hit_key, hit_val = found
             table.add_row(
-                f"LLM: {pname}",
+                f"LLM: {label}",
                 "[green]✓ key set[/]",
-                f"{env_key}=****{val[-4:]}",
+                f"{hit_key}=****{hit_val[-4:]}",
             )
         else:
             table.add_row(
-                f"LLM: {pname}",
+                f"LLM: {label}",
                 "[dim]-- not set[/]",
-                f"{env_key} not in environment",
+                f"{' or '.join(env_keys)} not in environment",
             )
 
-    # Ollama (local)
+    # Ollama (local) — narrow exception to OSError (covers URLError/ConnectionRefused).
+    # 1s timeout; localhost should be near-instant, and a health check shouldn't hang.
     try:
         import urllib.request
 
-        urllib.request.urlopen("http://localhost:11434", timeout=2)
+        urllib.request.urlopen("http://localhost:11434", timeout=1.0)
         table.add_row("LLM: Ollama (local)", "[green]✓ running[/]", "http://localhost:11434")
-    except Exception:
-        table.add_row("LLM: Ollama (local)", "[dim]-- not reachable[/]", "http://localhost:11434")
+    except OSError as exc:
+        # Surface the specific reason (Connection refused, Timed out, …) so users
+        # can tell "not installed" from "installed but not running".
+        reason = str(exc) or type(exc).__name__
+        table.add_row(
+            "LLM: Ollama (local)",
+            "[dim]-- not reachable[/]",
+            f"http://localhost:11434 ({reason[:40]})",
+        )
 
     console.print(table)
     console.print()
@@ -2989,13 +3096,35 @@ def ls_command(
         typer.Argument(help="Directory to search for run bundles. Defaults to ./runs."),
     ] = Path("runs"),
     sort_by: Annotated[
-        str,
-        typer.Option("--sort", help="Sort column: time, lane, status, bic."),
-    ] = "time",
+        LsSort,
+        typer.Option(
+            "--sort",
+            help="Sort column: time (newest first), lane, candidates, or bic.",
+            show_default=True,
+        ),
+    ] = LsSort.time,
     limit: Annotated[
         int,
-        typer.Option("--limit", "-n", help="Maximum runs to show (0 = all)."),
+        typer.Option(
+            "--limit",
+            "-n",
+            help="Maximum runs to show (0 = all).",
+            min=0,
+            show_default=True,
+        ),
     ] = 20,
+    output_format: Annotated[
+        LsFormat,
+        typer.Option(
+            "--format",
+            help=(
+                "Output format: [bold]table[/] (Rich), [bold]path[/] "
+                "(one absolute path per line; shell-friendly), "
+                "or [bold]json[/] (machine-readable array)."
+            ),
+            show_default=True,
+        ),
+    ] = LsFormat.table,
 ) -> None:
     """List APMODE run bundles with a summary table.
 
@@ -3007,6 +3136,8 @@ def ls_command(
       apmode ls
       apmode ls ./my_runs
       apmode ls --sort bic --limit 10
+      BUNDLE=$(apmode ls --sort bic --limit 1 --format path)
+      apmode ls --format json | jq '.[0].path'
     """
     if not runs_dir.is_dir():
         err_console.print(f"[red bold]Error:[/] directory not found: {escape(str(runs_dir))}")
@@ -3022,79 +3153,144 @@ def ls_command(
         if not dm_path.exists():
             continue
 
-        dm = _load_json(dm_path, "") or {}
+        # Skip directories whose data_manifest.json is malformed/unparseable —
+        # ``_load_json`` already emits a stderr warning, so we just filter here.
+        dm = _load_json(dm_path, "")
+        if dm is None:
+            continue
+
         # Lane lives in policy_file.json (not data_manifest)
         pf = _load_json(entry / "policy_file.json", "") or {}
-        lane: str = pf.get("lane") or dm.get("lane") or "?"
+        _lane_raw = pf.get("lane") or dm.get("lane") or "?"
+        lane: str = _lane_raw if isinstance(_lane_raw, str) else "?"
 
         ranking = _load_json(entry / "ranking.json", "") or {}
-        ranked: list[dict[str, Any]] = ranking.get("ranked_candidates", [])
+        # Defensive: only accept dict rows, even if the file is well-formed but
+        # has the wrong shape (e.g. ``"ranked_candidates": [1, 2]``).
+        _ranked_raw = ranking.get("ranked_candidates", [])
+        ranked: list[dict[str, Any]] = (
+            [r for r in _ranked_raw if isinstance(r, dict)]
+            if isinstance(_ranked_raw, list)
+            else []
+        )
         best_bic: str = "—"
         best_id: str = "—"
+        best_bic_num: float | None = None
+
+        # Single pass over search_trajectory.jsonl — feeds both BIC fallback
+        # and candidate count. Non-object rows (arrays, strings, numbers) are
+        # skipped so one malformed row can't crash the whole listing.
+        traj_rows: list[dict[str, Any]] = []
+        traj_path = entry / "search_trajectory.jsonl"
+        if traj_path.exists():
+            try:
+                # Stream line-by-line to avoid loading large trajectories into memory.
+                with traj_path.open(encoding="utf-8") as _fh:
+                    for ln in _fh:
+                        ln = ln.strip()
+                        if not ln:
+                            continue
+                        try:
+                            parsed = json.loads(ln)
+                        except json.JSONDecodeError:
+                            continue
+                        if isinstance(parsed, dict):
+                            traj_rows.append(parsed)
+            except OSError:
+                traj_rows = []
+
         if ranked:
             top = ranked[0]
-            cid = top.get("candidate_id", top.get("model_id", "?"))
-            best_bic = str(round(float(top.get("bic", float("nan"))), 1))
+            cid_raw = top.get("candidate_id", top.get("model_id", "?"))
+            cid = cid_raw if isinstance(cid_raw, str) else "?"
+            best_bic = _finite_bic_str(top.get("bic"))
+            if best_bic != "—":
+                best_bic_num = float(top["bic"])
             best_id = cid[:16] + ("…" if len(cid) > 16 else "")
-        else:
-            # Fall back to search_trajectory.jsonl — pick best converged BIC
-            traj_path = entry / "search_trajectory.jsonl"
-            if traj_path.exists():
-                try:
-                    traj_lines = traj_path.read_text().splitlines()
-                    converged = [
-                        json.loads(ln)
-                        for ln in traj_lines
-                        if ln.strip() and json.loads(ln).get("converged")
-                    ]
-                    if converged:
-                        best_row = min(converged, key=lambda r: float(r.get("bic", float("inf"))))
-                        cid2 = best_row.get("candidate_id", "?")
-                        best_bic = str(round(float(best_row["bic"]), 1))
-                        best_id = cid2[:16] + ("…" if len(cid2) > 16 else "")
-                except Exception:
-                    pass
+        elif traj_rows:
+            converged = [
+                r for r in traj_rows if r.get("converged") and _is_real_number(r.get("bic"))
+            ]
+            if converged:
+                best_row = min(converged, key=lambda r: float(r["bic"]))
+                cid2_raw = best_row.get("candidate_id", "?")
+                cid2 = cid2_raw if isinstance(cid2_raw, str) else "?"
+                best_bic = _finite_bic_str(best_row.get("bic"))
+                if best_bic != "—":
+                    best_bic_num = float(best_row["bic"])
+                best_id = cid2[:16] + ("…" if len(cid2) > 16 else "")
 
-        # Count candidates from trajectory (more reliable than ranking)
-        traj_p = entry / "search_trajectory.jsonl"
-        if traj_p.exists():
-            try:
-                n_candidates = str(sum(1 for ln in traj_p.read_text().splitlines() if ln.strip()))
-            except Exception:
-                n_candidates = str(len(ranked)) if ranked else "?"
-        else:
-            n_candidates = str(len(ranked)) if ranked else "?"
+        n_candidates_int = len(traj_rows) if traj_rows else (len(ranked) if ranked else None)
+        n_candidates = str(n_candidates_int) if n_candidates_int is not None else "?"
         mtime = os.path.getmtime(dm_path)
         bundles.append(
             {
                 "name": entry.name,
                 "lane": lane,
                 "n_candidates": n_candidates,
+                "n_candidates_int": n_candidates_int,
                 "best_bic": best_bic,
+                "best_bic_num": best_bic_num,
                 "best_id": best_id,
                 "mtime": mtime,
-                "path": str(entry),
+                "path": str(entry.resolve()),
             }
         )
 
     if not bundles:
-        console.print(f"[dim]No run bundles found in [bold]{escape(str(runs_dir))}[/].[/]")
+        if output_format == LsFormat.json:
+            # Plain print so stdout is clean JSON for downstream `jq`.
+            print("[]")
+        elif output_format == LsFormat.path:
+            # Silent stdout (preserves $(...) capture semantics), but hint on stderr
+            # so interactive users aren't puzzled by an empty capture.
+            err_console.print(f"[dim]No run bundles found in {escape(str(runs_dir))}.[/]")
+        else:
+            console.print(f"[dim]No run bundles found in [bold]{escape(str(runs_dir))}[/].[/]")
         return
 
     # Sort
-    if sort_by == "bic":
+    if sort_by == LsSort.bic:
         bundles.sort(
-            key=lambda b: float(b["best_bic"]) if b["best_bic"] not in ("?", "—") else float("inf")
+            key=lambda b: b["best_bic_num"] if b["best_bic_num"] is not None else float("inf")
         )
-    elif sort_by == "lane":
+    elif sort_by == LsSort.lane:
         bundles.sort(key=lambda b: b["lane"])
-    elif sort_by == "status":
-        bundles.sort(key=lambda b: b["n_candidates"])
-    else:
+    elif sort_by == LsSort.candidates:
+        bundles.sort(
+            key=lambda b: b["n_candidates_int"] if b["n_candidates_int"] is not None else -1,
+            reverse=True,
+        )
+    else:  # time
         bundles.sort(key=lambda b: b["mtime"], reverse=True)
 
     if limit > 0:
         bundles = bundles[:limit]
+
+    if output_format == LsFormat.path:
+        # Shell-friendly: one absolute path per line on stdout, no Rich markup.
+        # ``typer.echo`` is the Click-native spelling and handles BrokenPipeError
+        # cleanly when piped through ``| head``.
+        for b in bundles:
+            typer.echo(b["path"])
+        return
+
+    if output_format == LsFormat.json:
+        payload = [
+            {
+                "name": b["name"],
+                "path": b["path"],
+                "lane": b["lane"],
+                "n_candidates": b["n_candidates_int"],
+                "best_bic": b["best_bic_num"],
+                "best_id": b["best_id"] if b["best_id"] != "—" else None,
+                "mtime": b["mtime"],
+            }
+            for b in bundles
+        ]
+        # Plain print so pipes/tools receive clean JSON (no Rich wrapping).
+        print(json.dumps(payload, indent=2))
+        return
 
     table = Table(title=f"Runs in {escape(str(runs_dir))}", box=None, padding=(0, 1))
     table.add_column("Bundle", style="bold", no_wrap=True)

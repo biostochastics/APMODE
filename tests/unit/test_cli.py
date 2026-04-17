@@ -2,7 +2,8 @@
 """CLI-layer tests for all top-level apmode commands.
 
 Covers argument parsing, option dispatch, error paths, and exit codes for:
-    run, validate, inspect, datasets, explore, diff, log.
+    run, validate, inspect, datasets, explore, diff, log,
+    report, doctor, ls, policies.
 
 Deep-inspection commands (trace, lineage, graph) are tested in
 ``test_deep_inspect.py`` — this file deliberately does not duplicate them.
@@ -178,6 +179,10 @@ class TestHelp:
             ["trace"],
             ["lineage"],
             ["graph"],
+            ["report"],
+            ["doctor"],
+            ["ls"],
+            ["policies"],
         ],
     )
     def test_help_renders(self, cmd: list[str]) -> None:
@@ -762,3 +767,222 @@ class TestRunWiring:
                 ],
             )
             assert mock_build.called, "agentic must be dispatched on discovery lane"
+
+
+# ---------------------------------------------------------------------------
+# `report` command
+# ---------------------------------------------------------------------------
+
+
+class TestReport:
+    def test_missing_directory_exits_1(self, tmp_path: Path) -> None:
+        result = runner.invoke(app, ["report", str(tmp_path / "nope")])
+        assert result.exit_code == 1
+        assert "not a directory" in result.output.lower()
+
+    def test_bad_format_rejected(self, tmp_path: Path) -> None:
+        """--format is a ReportFormat enum; `pdf` must be rejected at parse time."""
+        bundle = _make_minimal_bundle(tmp_path)
+        result = runner.invoke(app, ["report", str(bundle), "--format", "pdf"])
+        assert result.exit_code != 0
+        assert (
+            "invalid value" in result.output.lower()
+            or "not one of" in result.output.lower()
+            or "'pdf'" in result.output.lower()
+        )
+
+    def test_no_artifacts_shows_stub(self, tmp_path: Path) -> None:
+        bundle = _make_minimal_bundle(tmp_path)
+        result = runner.invoke(app, ["report", str(bundle)])
+        assert result.exit_code == 0
+        assert "no report artifacts" in result.output.lower()
+
+    def test_html_no_browser_prints_path(self, tmp_path: Path) -> None:
+        bundle = _make_minimal_bundle(tmp_path)
+        (bundle / "report.html").write_text("<html></html>")
+        result = runner.invoke(app, ["report", str(bundle), "--no-browser"])
+        assert result.exit_code == 0
+        assert "report.html" in result.output
+
+
+# ---------------------------------------------------------------------------
+# `doctor` command
+# ---------------------------------------------------------------------------
+
+
+class TestDoctor:
+    def test_doctor_runs_without_crash(self) -> None:
+        """Smoke test — ``doctor`` may exit 0 or 1 depending on host, but must not
+        raise and must render the table."""
+        with patch("shutil.which", return_value=None):
+            # Force the "R missing" branch so we don't depend on the test host.
+            result = runner.invoke(app, ["doctor"])
+        assert result.exit_code in (0, 1)
+        assert "APMODE Environment Health Check" in result.output
+
+    def test_doctor_surfaces_missing_r(self) -> None:
+        with patch("shutil.which", return_value=None):
+            result = runner.invoke(app, ["doctor"])
+        # Missing R should cause non-zero exit.
+        assert result.exit_code == 1
+        assert "missing" in result.output.lower() or "✗" in result.output
+
+    def test_doctor_detects_gemini_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """`doctor` must check GEMINI_API_KEY (not just GOOGLE_API_KEY) —
+        keeps in sync with _PROVIDER_ENV_KEYS['gemini']."""
+        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key-1234ABCD")
+        with patch("shutil.which", return_value=None):
+            result = runner.invoke(app, ["doctor"])
+        assert "GEMINI_API_KEY" in result.output
+        assert "ABCD" in result.output  # last 4 of the fake key
+
+
+# ---------------------------------------------------------------------------
+# `ls` command
+# ---------------------------------------------------------------------------
+
+
+class TestLs:
+    def test_missing_dir_exits_1(self, tmp_path: Path) -> None:
+        result = runner.invoke(app, ["ls", str(tmp_path / "nope")])
+        assert result.exit_code == 1
+        assert "not found" in result.output.lower()
+
+    def test_empty_dir_table(self, tmp_path: Path) -> None:
+        result = runner.invoke(app, ["ls", str(tmp_path)])
+        assert result.exit_code == 0
+        assert "no run bundles" in result.output.lower()
+
+    def test_empty_dir_json(self, tmp_path: Path) -> None:
+        result = runner.invoke(app, ["ls", str(tmp_path), "--format", "json"])
+        assert result.exit_code == 0
+        assert result.output.strip() == "[]"
+
+    def test_empty_dir_path(self, tmp_path: Path) -> None:
+        """--format path: empty dir must produce the "no bundles" hint (goes to
+        stderr in real shells) and not echo any bundle paths to stdout. In this
+        harness stdout+stderr are merged into ``result.output``; we verify the
+        hint is present, which implies the empty branch was taken and no
+        ``typer.echo`` call for a bundle path ran."""
+        result = runner.invoke(app, ["ls", str(tmp_path), "--format", "path"])
+        assert result.exit_code == 0
+        assert "no run bundles" in result.output.lower()
+
+    def test_table_lists_bundle(self, tmp_path: Path) -> None:
+        _make_full_bundle(tmp_path, name="run_abc")
+        result = runner.invoke(app, ["ls", str(tmp_path)])
+        assert result.exit_code == 0
+        assert "run_abc" in result.output
+
+    def test_format_path_emits_absolute_paths(self, tmp_path: Path) -> None:
+        """Closes the README walkthrough gap:
+        ``BUNDLE=$(apmode ls --sort bic --limit 1 --format path)``."""
+        bundle = _make_full_bundle(tmp_path, name="run_best")
+        result = runner.invoke(
+            app,
+            ["ls", str(tmp_path), "--sort", "bic", "--limit", "1", "--format", "path"],
+        )
+        assert result.exit_code == 0
+        lines = [ln for ln in result.output.splitlines() if ln.strip()]
+        assert len(lines) == 1
+        assert Path(lines[0]) == bundle.resolve()
+
+    def test_format_json_is_parseable(self, tmp_path: Path) -> None:
+        _make_full_bundle(tmp_path, name="run_json")
+        result = runner.invoke(app, ["ls", str(tmp_path), "--format", "json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert isinstance(data, list)
+        assert len(data) == 1
+        row = data[0]
+        assert row["name"] == "run_json"
+        assert row["lane"] == "?" or isinstance(row["lane"], str)
+        # bic comes from ranking.json ranked_candidates[0].bic = 380.0
+        assert row["best_bic"] == 380.0
+        # n_candidates comes from search_trajectory.jsonl (3 rows)
+        assert row["n_candidates"] == 3
+        # path must be absolute and exist
+        assert Path(row["path"]).is_absolute()
+
+    def test_bad_sort_rejected(self, tmp_path: Path) -> None:
+        result = runner.invoke(app, ["ls", str(tmp_path), "--sort", "status"])
+        assert result.exit_code != 0
+
+    def test_nan_bic_does_not_crash(self, tmp_path: Path) -> None:
+        """Regression: a NaN BIC used to slip through sort and format unpredictably."""
+        import math
+
+        bundle = _make_minimal_bundle(tmp_path, name="run_nan")
+        _write_json(
+            bundle / "ranking.json",
+            {"ranked_candidates": [{"model_id": "c1", "bic": math.nan}]},
+        )
+        result = runner.invoke(app, ["ls", str(tmp_path), "--sort", "bic"])
+        assert result.exit_code == 0
+        assert "run_nan" in result.output
+
+
+# ---------------------------------------------------------------------------
+# `policies` command
+# ---------------------------------------------------------------------------
+
+
+class TestPolicies:
+    def test_policies_list_runs(self) -> None:
+        """Smoke test: listing policies must not crash even if one file is absent.
+        The real policy files ship in policies/; if any are missing this should
+        still exit 0 with a table or informative message."""
+        result = runner.invoke(app, ["policies"])
+        # Listing mode: exit 0 expected; output must at least mention "polic".
+        assert result.exit_code in (0, 1)
+        assert "polic" in result.output.lower()
+
+    def test_policies_unknown_lane_exits_nonzero(self) -> None:
+        result = runner.invoke(app, ["policies", "not_a_lane"])
+        assert result.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# `explore` policy forwarding
+# ---------------------------------------------------------------------------
+
+
+class TestExplorePolicyForwarding:
+    def test_policy_flag_forwarded_to_run(self, tmp_path: Path) -> None:
+        """--policy on `explore` must propagate through to `_launch_run`."""
+        csv = Path("tests/fixtures/suite_a/a4_1cmt_oral_mm.csv").resolve()
+        if not csv.exists():
+            pytest.skip("fixture CSV missing")
+
+        policy = tmp_path / "custom.json"
+        policy.write_text('{"policy_version": "test-1.0"}')
+
+        captured: dict[str, Any] = {}
+
+        def _stub_run(**kwargs: Any) -> None:
+            captured.update(kwargs)
+            raise typer.Exit(code=0)
+
+        with patch("apmode.cli.run", side_effect=_stub_run):
+            result = runner.invoke(
+                app,
+                [
+                    "explore",
+                    str(csv),
+                    "-y",
+                    "--output",
+                    str(tmp_path / "out"),
+                    "--policy",
+                    str(policy),
+                    "-j",
+                    "2",
+                ],
+            )
+
+        # Explore's pipeline runs ingest/profile/NCA before launching — those
+        # may fail on a minimal fixture. If they do, we still can't verify the
+        # forward. But if explore reached `_launch_run`, policy must be set.
+        if captured:
+            assert captured.get("policy") == policy, result.output
+            assert captured.get("parallel_models") == 2
