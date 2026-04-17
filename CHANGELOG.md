@@ -5,6 +5,80 @@ All notable changes to APMODE are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added — RO-Crate v0.6 integration
+
+APMODE reproducibility bundles can now be projected onto a **Workflow Run
+RO-Crate — Provenance Run Crate v0.5** (`https://w3id.org/ro/wfrun/provenance/0.5`)
+for FAIR packaging, WorkflowHub/Zenodo-ready archives, and machine-readable
+regulatory crosswalk (FDA PCCP, EU AI Act Article 12). The Pydantic bundle
+remains producer-side truth; the RO-Crate is a read-only external projection.
+Design: `_research/ROCRATE_INTEGRATION_PLAN.md` §§A–H (accepted).
+
+- **New module `src/apmode/bundle/rocrate/`** — hand-written projector
+  with per-family entity modules (`data`, `policy`, `backend`, `gate`,
+  `lineage`, `credibility`, `bayesian`, `agentic`, `pccp`). Reads a
+  sealed bundle via JSON, emits a deterministic `ro-crate-metadata.json`
+  plus a copy of every bundle artefact as a `File` entity. Never
+  mutates the source bundle.
+- **Two output forms**: directory (`apmode bundle rocrate export …
+  --out /path/to/crate`) and ZIP (`… --out crate.zip`). ZIP entries
+  use a fixed `1980-01-01` timestamp + sorted order for reproducible
+  archives; `json.dumps(sort_keys=True)` gives byte-identical
+  `ro-crate-metadata.json` across runs on the same sealed bundle.
+- **`apmode:` vocabulary** at `https://w3id.org/apmode/terms#` —
+  `lane`, `lanePolicy`, `gate`, `gateRationale`, `candidateLineageEdge`,
+  `searchGraph`, `modificationDescription`, `modificationProtocol`,
+  `impactAssessment`, `traceabilityTable`, `regulatoryContext`,
+  `dslSpec`, `dslTransform`, `llmInvocation`, `credibilityReport`,
+  `loroCV`, `scoringContract`, `nlpdComparabilityProtocol`,
+  `completeSentinel`. Context declares each term with both prefix
+  form and explicit full-prefix mapping to satisfy `roc-validator`'s
+  compaction check.
+- **Action triad per WRROC**: each candidate fit projects as a
+  `CreateAction` instrumenting its `SoftwareApplication`; each gate
+  decision projects as a `ControlAction` with `instrument=HowToStep`,
+  `object=CreateAction`, and `apmode:gateRationale=File`; the lane
+  run is wrapped in an `OrganizeAction` with
+  `startTime=endTime=bundle_seal_ts`.
+- **`_COMPLETE` sentinel** is embedded as a `File` entity with
+  `additionalType="apmode:completeSentinel"`; the SHA-256 digest is
+  surfaced via `schema:identifier="sha256:<hex>"`.
+- **Round-trip import** (`apmode bundle import <crate> --out <bundle>`)
+  extracts a directory- or ZIP-form crate back to a bundle directory
+  and verifies the `_COMPLETE` digest against the extracted tree. ZIP
+  extraction rejects path-traversal entries (ZIP-slip), symlink/hard
+  link/socket entries, absolute paths, and Windows drive prefixes;
+  directory imports reject symlinks inside the crate.
+- **Validator integration**: `apmode validate <bundle> --rocrate`
+  invokes `roc-validator` on the crate at a configurable severity
+  (default REQUIRED) and profile (default `provenance-run-crate-0.5`);
+  `apmode inspect <bundle> --rocrate-view` prints an RO-Crate
+  summary (action-triad counts, lane, `mainEntity`, sentinel
+  presence).
+- **New dep**: `roc-validator>=0.8.1` in the `dev` group; main dep
+  `rocrate>=0.13` for future ro-crate-py interop.
+- **CI gate**: `tests/integration/test_rocrate_export_validate.py`
+  parametrises 5 scenarios (minimal, multi-candidate+lineage,
+  bayesian+credibility, agentic+PCCP, full-mixed) and validates both
+  directory and ZIP forms at REQUIRED severity. REQUIRED failures
+  block merge.
+- **Security tests**: `tests/unit/rocrate/test_importer_security.py`
+  covers ZIP-slip via parent-dir traversal, absolute paths, Windows
+  drives, and symlink file-type mode bits.
+- **Golden snapshot**: `tests/golden/rocrate/__snapshots__/` locks the
+  canonical Submission-lane `ro-crate-metadata.json`.
+- **Publish CLI surface** (`apmode bundle publish --workflowhub` /
+  `--zenodo`) is wired as a CLI stub — sandbox/token handling is
+  validated but the upload itself is deferred to v0.8 per
+  `_research/ROCRATE_INTEGRATION_PLAN.md` §H.
+
+### References
+
+- Leo S. et al. (2024) *Recording provenance of workflow runs with RO-Crate*. PLOS ONE 19(9): e0309210. <https://doi.org/10.1371/journal.pone.0309210>
+- Wilkinson S.R. et al. (2025) *Applying the FAIR Principles to computational workflows*. Scientific Data 12: 328. <https://doi.org/10.1038/s41597-025-04451-9>
+
 ## [0.5.0-rc2] — 2026-04-17
 
 Known-Limitations Closure M0 landed: per-candidate `ScoringContract`

@@ -1,0 +1,568 @@
+# serializer version: 1
+# name: test_canonical_submission_metadata
+  dict({
+    '@context': list([
+      'https://w3id.org/ro/crate/1.1/context',
+      'https://w3id.org/ro/terms/workflow-run/context',
+      dict({
+        'apmode': 'https://w3id.org/apmode/terms#',
+        'apmode:candidateLineageEdge': 'https://w3id.org/apmode/terms#candidateLineageEdge',
+        'apmode:credibilityReport': 'https://w3id.org/apmode/terms#credibilityReport',
+        'apmode:dslSpec': 'https://w3id.org/apmode/terms#dslSpec',
+        'apmode:dslTransform': 'https://w3id.org/apmode/terms#dslTransform',
+        'apmode:gate': 'https://w3id.org/apmode/terms#gate',
+        'apmode:gateRationale': 'https://w3id.org/apmode/terms#gateRationale',
+        'apmode:impactAssessment': 'https://w3id.org/apmode/terms#impactAssessment',
+        'apmode:lane': 'https://w3id.org/apmode/terms#lane',
+        'apmode:lanePolicy': 'https://w3id.org/apmode/terms#lanePolicy',
+        'apmode:llmInvocation': 'https://w3id.org/apmode/terms#llmInvocation',
+        'apmode:loroCV': 'https://w3id.org/apmode/terms#loroCV',
+        'apmode:modificationDescription': 'https://w3id.org/apmode/terms#modificationDescription',
+        'apmode:modificationProtocol': 'https://w3id.org/apmode/terms#modificationProtocol',
+        'apmode:nlpdComparabilityProtocol': 'https://w3id.org/apmode/terms#nlpdComparabilityProtocol',
+        'apmode:regulatoryContext': 'https://w3id.org/apmode/terms#regulatoryContext',
+        'apmode:scoringContract': 'https://w3id.org/apmode/terms#scoringContract',
+        'apmode:searchGraph': 'https://w3id.org/apmode/terms#searchGraph',
+        'apmode:traceabilityTable': 'https://w3id.org/apmode/terms#traceabilityTable',
+        'candidateLineageEdge': 'apmode:candidateLineageEdge',
+        'credibilityReport': 'apmode:credibilityReport',
+        'dslSpec': 'apmode:dslSpec',
+        'dslTransform': 'apmode:dslTransform',
+        'gate': 'apmode:gate',
+        'gateRationale': 'apmode:gateRationale',
+        'impactAssessment': 'apmode:impactAssessment',
+        'lane': 'apmode:lane',
+        'lanePolicy': 'apmode:lanePolicy',
+        'llmInvocation': 'apmode:llmInvocation',
+        'loroCV': 'apmode:loroCV',
+        'modificationDescription': 'apmode:modificationDescription',
+        'modificationProtocol': 'apmode:modificationProtocol',
+        'nlpdComparabilityProtocol': 'apmode:nlpdComparabilityProtocol',
+        'prov': 'http://www.w3.org/ns/prov#',
+        'prov:wasDerivedFrom': 'http://www.w3.org/ns/prov#wasDerivedFrom',
+        'prov:wasInformedBy': 'http://www.w3.org/ns/prov#wasInformedBy',
+        'regulatoryContext': 'apmode:regulatoryContext',
+        'scoringContract': 'apmode:scoringContract',
+        'searchGraph': 'apmode:searchGraph',
+        'traceabilityTable': 'apmode:traceabilityTable',
+      }),
+    ]),
+    '@graph': list([
+      dict({
+        '@id': 'ro-crate-metadata.json',
+        '@type': 'CreativeWork',
+        'about': dict({
+          '@id': './',
+        }),
+        'conformsTo': dict({
+          '@id': 'https://w3id.org/ro/crate/1.1',
+        }),
+      }),
+      dict({
+        '@id': './',
+        '@type': 'Dataset',
+        'apmode:lane': 'Submission',
+        'apmode:lanePolicy': dict({
+          '@id': 'policy_file.json',
+        }),
+        'apmode:regulatoryContext': 'research-only',
+        'apmode:searchGraph': dict({
+          '@id': 'search_graph.json',
+        }),
+        'conformsTo': list([
+          dict({
+            '@id': 'https://w3id.org/ro/crate/1.1',
+          }),
+          dict({
+            '@id': 'https://w3id.org/ro/wfrun/process/0.5',
+          }),
+          dict({
+            '@id': 'https://w3id.org/ro/wfrun/provenance/0.5',
+          }),
+          dict({
+            '@id': 'https://w3id.org/ro/wfrun/workflow/0.5',
+          }),
+        ]),
+        'datePublished': '2026-04-17T10:00:00Z',
+        'description': 'APMODE reproducibility bundle projected as RO-Crate (Workflow Run / Provenance Run Crate v0.5); run_id=golden-submission-run',
+        'hasPart': list([
+          dict({
+            '@id': '_COMPLETE',
+          }),
+          dict({
+            '@id': 'backend_versions.json',
+          }),
+          dict({
+            '@id': 'candidate_lineage.json',
+          }),
+          dict({
+            '@id': 'compiled_specs/c001.R',
+          }),
+          dict({
+            '@id': 'compiled_specs/c001.json',
+          }),
+          dict({
+            '@id': 'data_manifest.json',
+          }),
+          dict({
+            '@id': 'evidence_manifest.json',
+          }),
+          dict({
+            '@id': 'failed_candidates.jsonl',
+          }),
+          dict({
+            '@id': 'gate_decisions/gate1_c001.json',
+          }),
+          dict({
+            '@id': 'gate_decisions/gate3_c001.json',
+          }),
+          dict({
+            '@id': 'initial_estimates.json',
+          }),
+          dict({
+            '@id': 'policy_file.json',
+          }),
+          dict({
+            '@id': 'ranking.json',
+          }),
+          dict({
+            '@id': 'results/c001_result.json',
+          }),
+          dict({
+            '@id': 'search_graph.json',
+          }),
+          dict({
+            '@id': 'search_trajectory.jsonl',
+          }),
+          dict({
+            '@id': 'seed_registry.json',
+          }),
+          dict({
+            '@id': 'split_manifest.json',
+          }),
+          dict({
+            '@id': 'workflows/submission-lane.apmode',
+          }),
+        ]),
+        'license': dict({
+          '@id': 'https://spdx.org/licenses/GPL-2.0-or-later.html',
+        }),
+        'mainEntity': dict({
+          '@id': 'workflows/submission-lane.apmode',
+        }),
+        'name': 'APMODE run golden-submission-run',
+      }),
+      dict({
+        '@id': 'https://w3id.org/ro/crate/1.1',
+        '@type': 'CreativeWork',
+        'name': 'RO-Crate 1.1 Specification',
+        'version': '1.1',
+      }),
+      dict({
+        '@id': 'https://w3id.org/ro/wfrun/process/0.5',
+        '@type': 'CreativeWork',
+        'name': 'Process Run RO-Crate Profile v0.5',
+        'version': '0.5',
+      }),
+      dict({
+        '@id': 'https://w3id.org/ro/wfrun/provenance/0.5',
+        '@type': 'CreativeWork',
+        'name': 'Workflow Run Provenance RO-Crate Profile v0.5',
+        'version': '0.5',
+      }),
+      dict({
+        '@id': 'https://w3id.org/ro/wfrun/workflow/0.5',
+        '@type': 'CreativeWork',
+        'name': 'Workflow Run RO-Crate Profile v0.5',
+        'version': '0.5',
+      }),
+      dict({
+        '@id': 'ranking.json',
+        '@type': list([
+          'File',
+          'CreativeWork',
+        ]),
+        'contentSize': 238,
+        'description': 'Gate 3 ranking (best = c001)',
+        'encodingFormat': 'application/json',
+        'name': 'Gate 3 ranking',
+        'sha256': '62be59e3a3ba31a0867a11ec4dd82556e0bb73e10c85a7a0173115850ef1c44a',
+      }),
+      dict({
+        '@id': '#apmode-dsl',
+        '@type': list([
+          'ComputerLanguage',
+          'SoftwareApplication',
+        ]),
+        'name': 'APMODE PK DSL',
+        'url': dict({
+          '@id': 'https://github.com/biostochastics/APMODE',
+        }),
+        'version': '0.6.0',
+      }),
+      dict({
+        '@id': '#apmode-orchestrator',
+        '@type': 'SoftwareApplication',
+        'name': 'APMODE orchestrator',
+        'version': '0.6.0',
+      }),
+      dict({
+        '@id': '#candidate-c001',
+        '@type': 'SoftwareApplication',
+        'apmode:dslSpec': dict({
+          '@id': 'compiled_specs/c001.json',
+        }),
+        'hasPart': list([
+          dict({
+            '@id': 'compiled_specs/c001.R',
+          }),
+        ]),
+        'name': 'Candidate c001 (FirstOrder)',
+        'version': 'c001',
+      }),
+      dict({
+        '@id': 'workflows/submission-lane.apmode',
+        '@type': list([
+          'File',
+          'SoftwareSourceCode',
+          'ComputationalWorkflow',
+          'HowTo',
+        ]),
+        'contentSize': 239,
+        'description': 'Virtual workflow definition for the APMODE Submission lane — declarative list of gate + backend steps.',
+        'encodingFormat': 'application/json',
+        'hasPart': list([
+          dict({
+            '@id': '#candidate-c001',
+          }),
+        ]),
+        'license': dict({
+          '@id': 'https://spdx.org/licenses/GPL-2.0-or-later.html',
+        }),
+        'name': 'APMODE Submission Lane',
+        'programmingLanguage': dict({
+          '@id': '#apmode-dsl',
+        }),
+        'sha256': '60d7d98ee4476636e9cd54233f09897147248e984e5e6c71c46708449fbca80c',
+        'step': list([
+          dict({
+            '@id': '#step-gate1',
+          }),
+          dict({
+            '@id': '#step-gate3',
+          }),
+        ]),
+        'version': '0.6.0',
+      }),
+      dict({
+        '@id': '#step-gate1',
+        '@type': 'HowToStep',
+        'name': 'Gate 1: Technical Validity',
+        'workExample': dict({
+          '@id': '#apmode-orchestrator',
+        }),
+      }),
+      dict({
+        '@id': '#step-gate3',
+        '@type': 'HowToStep',
+        'name': 'Gate 3: Lane Ranking',
+        'workExample': dict({
+          '@id': '#apmode-orchestrator',
+        }),
+      }),
+      dict({
+        '@id': '#run-organize-action',
+        '@type': 'OrganizeAction',
+        'actionStatus': dict({
+          '@id': 'http://schema.org/CompletedActionStatus',
+        }),
+        'endTime': '2026-04-17T10:00:00Z',
+        'instrument': dict({
+          '@id': '#apmode-orchestrator',
+        }),
+        'name': 'Run of APMODE Submission Lane',
+        'object': list([
+          dict({
+            '@id': '#gate1-control-c001',
+          }),
+          dict({
+            '@id': '#gate3-control-c001',
+          }),
+        ]),
+        'result': dict({
+          '@id': '#run-workflow-action',
+        }),
+        'startTime': '2026-04-17T10:00:00Z',
+      }),
+      dict({
+        '@id': '#gate1-control-c001',
+        '@type': 'ControlAction',
+        'actionStatus': dict({
+          '@id': 'http://schema.org/CompletedActionStatus',
+        }),
+        'apmode:gate': 'gate1',
+        'apmode:gateRationale': dict({
+          '@id': 'gate_decisions/gate1_c001.json',
+        }),
+        'instrument': dict({
+          '@id': '#step-gate1',
+        }),
+        'name': 'Gate 1 for c001',
+        'object': dict({
+          '@id': '#backend-create-c001',
+        }),
+        'result': dict({
+          '@id': 'gate_decisions/gate1_c001.json',
+        }),
+      }),
+      dict({
+        '@id': '#gate3-control-c001',
+        '@type': 'ControlAction',
+        'actionStatus': dict({
+          '@id': 'http://schema.org/CompletedActionStatus',
+        }),
+        'apmode:gate': 'gate3',
+        'apmode:gateRationale': dict({
+          '@id': 'gate_decisions/gate3_c001.json',
+        }),
+        'instrument': dict({
+          '@id': '#step-gate3',
+        }),
+        'name': 'Gate 3 for c001',
+        'object': dict({
+          '@id': '#backend-create-c001',
+        }),
+        'result': dict({
+          '@id': 'gate_decisions/gate3_c001.json',
+        }),
+      }),
+      dict({
+        '@id': '#backend-create-c001',
+        '@type': 'CreateAction',
+        'actionStatus': dict({
+          '@id': 'http://schema.org/CompletedActionStatus',
+        }),
+        'instrument': dict({
+          '@id': '#candidate-c001',
+        }),
+        'name': 'nlmixr2 fit of c001',
+        'object': list([
+          dict({
+            '@id': 'data_manifest.json',
+          }),
+        ]),
+        'result': list([
+          dict({
+            '@id': 'results/c001_result.json',
+          }),
+        ]),
+      }),
+      dict({
+        '@id': '#run-workflow-action',
+        '@type': 'CreateAction',
+        'actionStatus': dict({
+          '@id': 'http://schema.org/CompletedActionStatus',
+        }),
+        'endTime': '2026-04-17T10:00:00Z',
+        'instrument': dict({
+          '@id': 'workflows/submission-lane.apmode',
+        }),
+        'name': 'Submission lane workflow execution',
+        'startTime': '2026-04-17T10:00:00Z',
+      }),
+      dict({
+        '@id': '#search-create',
+        '@type': 'CreateAction',
+        'actionStatus': dict({
+          '@id': 'http://schema.org/CompletedActionStatus',
+        }),
+        'apmode:searchGraph': dict({
+          '@id': 'search_graph.json',
+        }),
+        'instrument': dict({
+          '@id': '#apmode-orchestrator',
+        }),
+        'name': 'APMODE structural search (aggregate)',
+        'result': list([
+          dict({
+            '@id': 'failed_candidates.jsonl',
+          }),
+          dict({
+            '@id': 'search_graph.json',
+          }),
+          dict({
+            '@id': 'search_trajectory.jsonl',
+          }),
+        ]),
+      }),
+      dict({
+        '@id': '_COMPLETE',
+        '@type': 'File',
+        'additionalType': 'apmode:completeSentinel',
+        'contentSize': 143,
+        'description': 'Bundle integrity sentinel (SHA-256 over all bundle files)',
+        'encodingFormat': 'application/json',
+        'identifier': 'sha256:dc549678ef2d2be168bd6a8446721eb1517016461647ffd38540a58241019e44',
+        'name': 'Bundle integrity sentinel',
+        'sha256': 'f697da07dd0dae78981a3c04aed612af55960c0c62882bcbbf22f3742d9af67e',
+      }),
+      dict({
+        '@id': 'backend_versions.json',
+        '@type': 'File',
+        'contentSize': 114,
+        'description': 'Software versions and container digests',
+        'encodingFormat': 'application/json',
+        'name': 'Backend versions',
+        'sha256': 'c9a5f8c4aa6268c2816d1b8c19e156e9b7999cb570584be22ab28eb11cbc1cad',
+      }),
+      dict({
+        '@id': 'candidate_lineage.json',
+        '@type': 'File',
+        'contentSize': 114,
+        'description': 'APMODE candidate derivation DAG',
+        'encodingFormat': 'application/json',
+        'name': 'Candidate lineage (DAG)',
+        'sha256': 'b9c7c2c4d6bfe62b96bc1907e940c26a6e528882c92f4187c91f5640666d472a',
+      }),
+      dict({
+        '@id': 'compiled_specs/c001.R',
+        '@type': list([
+          'File',
+          'SoftwareSourceCode',
+        ]),
+        'contentSize': 35,
+        'description': 'nlmixr2 lowering of the DSL spec',
+        'encodingFormat': 'text/x-r-source',
+        'name': 'Candidate c001 nlmixr2 R code',
+        'programmingLanguage': 'R',
+        'sha256': '33eb693293ad783ab784b4f5c35513a33a251793e2087e4eb4c6ed1319017fc2',
+      }),
+      dict({
+        '@id': 'compiled_specs/c001.json',
+        '@type': list([
+          'File',
+          'SoftwareSourceCode',
+        ]),
+        'contentSize': 213,
+        'description': 'Typed APMODE DSL specification (JSON)',
+        'encodingFormat': 'application/json',
+        'name': 'Candidate c001 DSL spec',
+        'programmingLanguage': dict({
+          '@id': '#apmode-dsl',
+        }),
+        'sha256': 'b5dbd30836bebc2df6f84fe33c9ec9aba69c20fba307c7833e519a3f831c0d97',
+      }),
+      dict({
+        '@id': 'data_manifest.json',
+        '@type': 'File',
+        'contentSize': 310,
+        'description': 'APMODE data manifest; 12 subjects; 120 observations',
+        'encodingFormat': 'application/json',
+        'identifier': 'sha256:0000000000000000000000000000000000000000000000000000000000000000',
+        'name': 'Data manifest (APMODE)',
+        'sha256': 'a1c49e04cc2224060a96b03c6851d2a1a351c056fb01f6e944111021c160b6b0',
+      }),
+      dict({
+        '@id': 'evidence_manifest.json',
+        '@type': 'File',
+        'additionalType': 'apmode:evidenceClass',
+        'contentSize': 473,
+        'description': 'APMODE evidence manifest (richness=moderate)',
+        'encodingFormat': 'application/json',
+        'name': 'Evidence manifest (APMODE profiler)',
+        'sha256': '61efc771414d2bfe987eba0bf19ab7497ffb76d88c4d74f0cc818930a2f21401',
+      }),
+      dict({
+        '@id': 'failed_candidates.jsonl',
+        '@type': 'File',
+        'contentSize': 0,
+        'description': 'APMODE failed candidates artifact',
+        'encodingFormat': 'application/x-ndjson',
+        'name': 'Failed Candidates',
+        'sha256': 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+      }),
+      dict({
+        '@id': 'gate_decisions/gate1_c001.json',
+        '@type': 'File',
+        'contentSize': 231,
+        'description': 'All checks passed',
+        'encodingFormat': 'application/json',
+        'name': 'Gate 1 decision for c001',
+        'sha256': '987032db01fa67bb16eb0388d5b36b0662c83280e2453e26c5e58b7ea962866f',
+      }),
+      dict({
+        '@id': 'gate_decisions/gate3_c001.json',
+        '@type': 'File',
+        'contentSize': 220,
+        'description': 'Ranked',
+        'encodingFormat': 'application/json',
+        'name': 'Gate 3 decision for c001',
+        'sha256': '4202a8e46db6d4febb26ace23a6b54f1d72c2bd8e74f75003f919d34bf26d20d',
+      }),
+      dict({
+        '@id': 'initial_estimates.json',
+        '@type': 'File',
+        'contentSize': 20,
+        'description': 'Per-candidate initial parameter estimates with provenance',
+        'encodingFormat': 'application/json',
+        'name': 'Initial estimates',
+        'sha256': 'af243a5c5bdcea56a714e71daf1a4c85f7188dfda38aaa12359c298b89033bdc',
+      }),
+      dict({
+        '@id': 'policy_file.json',
+        '@type': 'File',
+        'contentSize': 154,
+        'description': 'APMODE gate policy — Submission — v0.5.0',
+        'encodingFormat': 'application/json',
+        'name': 'APMODE gate policy',
+        'sha256': 'd05bf9adaad0de2a05362a81f1bc625cda3b72f22da7435dcd4d4cdd83c8c752',
+      }),
+      dict({
+        '@id': 'results/c001_result.json',
+        '@type': 'File',
+        'contentSize': 176,
+        'description': 'nlmixr2 fit result',
+        'encodingFormat': 'application/json',
+        'name': 'Backend result for c001',
+        'sha256': 'e4b760bd0d1a0e459600d955e1de2b9de20315db285a8e25d34c132c46d006e4',
+      }),
+      dict({
+        '@id': 'search_graph.json',
+        '@type': 'File',
+        'contentSize': 130,
+        'description': 'APMODE search graph artifact',
+        'encodingFormat': 'application/json',
+        'name': 'Search Graph',
+        'sha256': '2b75aa778f9175eef57dc43191fd123ebaf33cd34f692868b3f9ba8b0fae1057',
+      }),
+      dict({
+        '@id': 'search_trajectory.jsonl',
+        '@type': 'File',
+        'contentSize': 136,
+        'description': 'APMODE search trajectory artifact',
+        'encodingFormat': 'application/x-ndjson',
+        'name': 'Search Trajectory',
+        'sha256': 'f21e2aa7e4ba13edab22045c9c390a596cf33e275cd02a237027e5e1edff7b42',
+      }),
+      dict({
+        '@id': 'seed_registry.json',
+        '@type': 'File',
+        'contentSize': 88,
+        'description': 'Random seeds used across backends for reproducibility',
+        'encodingFormat': 'application/json',
+        'name': 'Seed registry',
+        'sha256': 'bfaef8496cfa325795fe1620300c76aeb1d6235a46da382c30f60f5f822e4f07',
+      }),
+      dict({
+        '@id': 'split_manifest.json',
+        '@type': 'File',
+        'additionalType': 'apmode:split',
+        'contentSize': 81,
+        'description': 'APMODE split manifest (subject_level)',
+        'encodingFormat': 'application/json',
+        'name': 'Split manifest (APMODE)',
+        'sha256': '9c9dc32ce9622f0901ad2e2cd4af23a0b3bf5301c6f833575740e3a95ff626f2',
+      }),
+    ]),
+  })
+# ---

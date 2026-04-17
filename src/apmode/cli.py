@@ -120,6 +120,14 @@ app = typer.Typer(
     epilog=(f"[dim]Version: {_get_version()}[/]\n[dim]{_COPYRIGHT}[/]\n[dim]{_CITATION}[/]"),
 )
 
+# RO-Crate subcommand group: registers ``apmode bundle rocrate export`` +
+# ``apmode bundle publish``. Kept as a hook so the CLI wiring is owned
+# by :mod:`apmode.bundle.rocrate.cli_hooks` rather than spread across
+# this already-large module.
+from apmode.bundle.rocrate.cli_hooks import register_rocrate_commands  # noqa: E402
+
+register_rocrate_commands(app)
+
 # Default model per provider for the agentic backend
 _DEFAULT_MODELS: dict[str, str] = {
     "anthropic": "claude-sonnet-4-20250514",
@@ -1060,12 +1068,48 @@ def validate(
             help="Emit machine-readable JSON to stdout and suppress Rich output.",
         ),
     ] = False,
+    rocrate: Annotated[
+        bool,
+        typer.Option(
+            "--rocrate/--no-rocrate",
+            help=(
+                "Also validate the RO-Crate export (if present) with roc-validator "
+                "at the given severity."
+            ),
+        ),
+    ] = False,
+    crate: Annotated[
+        Path | None,
+        typer.Option(
+            "--crate",
+            help=(
+                "Path to an already-exported RO-Crate directory or ZIP "
+                "(defaults to <bundle_dir>/../<bundle_dir>.crate when --rocrate "
+                "is set without --crate)."
+            ),
+        ),
+    ] = None,
+    rocrate_profile: Annotated[
+        str,
+        typer.Option(
+            "--rocrate-profile",
+            help="RO-Crate profile identifier.",
+        ),
+    ] = "provenance-run-crate-0.5",
+    rocrate_severity: Annotated[
+        str,
+        typer.Option(
+            "--rocrate-severity",
+            help="Severity threshold: REQUIRED | RECOMMENDED | OPTIONAL",
+        ),
+    ] = "REQUIRED",
 ) -> None:
     """Validate a reproducibility bundle for completeness.
 
     Checks required/optional JSON files and subdirectory contents.
     With ``--json``, emits a structured result for scripting; exit code is
-    still 0 on success and 1 on failure.
+    still 0 on success and 1 on failure. With ``--rocrate`` also run
+    ``roc-validator`` on the exported crate if one is present.
     """
     if not bundle_dir.is_dir():
         kind = "not found" if not bundle_dir.exists() else "not a directory"
@@ -1152,6 +1196,17 @@ def validate(
             table.add_row("[dim]--[/]", f"{d}/", "[dim]optional[/]")
             json_dirs.append({"dir": d, "present": False, "file_count": 0})
 
+    rocrate_result: dict[str, object] | None = None
+    if rocrate:
+        rocrate_result = _run_rocrate_validation(
+            bundle_dir=bundle_dir,
+            crate=crate,
+            profile_id=rocrate_profile,
+            severity=rocrate_severity,
+        )
+        if rocrate_result.get("ok") is False:
+            errors.append("rocrate")
+
     if output_json:
         payload: dict[str, object] = {
             "ok": not errors,
@@ -1160,6 +1215,8 @@ def validate(
             "files": json_files,
             "dirs": json_dirs,
         }
+        if rocrate_result is not None:
+            payload["rocrate"] = rocrate_result
         print(json.dumps(payload, indent=2))
         if errors:
             raise typer.Exit(code=1)
@@ -1168,6 +1225,8 @@ def validate(
     console.print()
     console.print(table)
     console.print()
+    if rocrate_result is not None:
+        _render_rocrate_result(rocrate_result)
 
     if errors:
         err_console.print(
@@ -1176,6 +1235,187 @@ def validate(
         raise typer.Exit(code=1)
 
     console.print("[green bold]Bundle valid.[/]")
+
+
+def _resolve_crate_path(bundle_dir: Path, crate: Path | None) -> Path | None:
+    """Resolve the crate path for validation.
+
+    Precedence:
+    1. Explicit ``--crate`` wins.
+    2. ``<bundle_dir>.crate`` as a sibling directory.
+    3. ``<bundle_dir>.crate.zip`` as a sibling zip.
+    """
+    if crate is not None:
+        return crate
+    dir_candidate = bundle_dir.with_name(bundle_dir.name + ".crate")
+    if dir_candidate.is_dir():
+        return dir_candidate
+    zip_candidate = bundle_dir.with_name(bundle_dir.name + ".crate.zip")
+    if zip_candidate.is_file():
+        return zip_candidate
+    return None
+
+
+def _run_rocrate_validation(
+    *,
+    bundle_dir: Path,
+    crate: Path | None,
+    profile_id: str,
+    severity: str,
+) -> dict[str, object]:
+    """Invoke roc-validator on the crate. Returns a JSON-safe result dict."""
+    crate_path = _resolve_crate_path(bundle_dir, crate)
+    if crate_path is None:
+        return {
+            "ok": False,
+            "crate": None,
+            "error": (
+                "no crate found — pass --crate or export first via `apmode bundle rocrate export`"
+            ),
+        }
+
+    # Lazy import so the core CLI doesn't depend on the validator
+    # being installed — roc-validator lives in the dev dependency group.
+    try:
+        from rocrate_validator import models as _rcv_models  # type: ignore[import-untyped]
+        from rocrate_validator import services as _rcv_services
+    except ImportError as exc:  # pragma: no cover - optional dep
+        return {
+            "ok": False,
+            "crate": str(crate_path),
+            "error": f"roc-validator is not installed: {exc}",
+        }
+
+    try:
+        sev = _rcv_models.Severity[severity.upper()]
+    except KeyError:
+        return {
+            "ok": False,
+            "crate": str(crate_path),
+            "error": (
+                f"unknown severity {severity!r}; expected REQUIRED | RECOMMENDED | OPTIONAL"
+            ),
+        }
+
+    # Zip form: roc-validator accepts the path directly.
+    settings = _rcv_models.ValidationSettings(
+        rocrate_uri=str(crate_path),
+        profile_identifier=profile_id,
+        requirement_severity=sev,
+    )
+    result = _rcv_services.validate(settings)
+    issues = [
+        {
+            "severity": issue.severity.name,
+            "message": issue.message,
+        }
+        for issue in result.get_issues()
+    ]
+    return {
+        "ok": bool(result.passed()),
+        "crate": str(crate_path),
+        "profile": profile_id,
+        "severity": severity.upper(),
+        "issues": issues,
+    }
+
+
+def _render_rocrate_summary(
+    bundle_dir: Path,
+    crate: Path | None,
+    *,
+    output_json: bool,
+) -> None:
+    """Summarise an exported RO-Crate: mainEntity, action triad, key @ids."""
+    crate_path = _resolve_crate_path(bundle_dir, crate)
+    if crate_path is None:
+        msg = "no crate found — pass --crate or export first via `apmode bundle rocrate export`"
+        if output_json:
+            print(json.dumps({"ok": False, "error": msg}, indent=2))
+        else:
+            err_console.print(f"[red bold]Error:[/] {msg}")
+        raise typer.Exit(code=1)
+
+    meta_path = crate_path / "ro-crate-metadata.json"
+    if crate_path.is_file() and crate_path.suffix.lower() == ".zip":
+        import zipfile
+
+        try:
+            with zipfile.ZipFile(crate_path) as zf, zf.open("ro-crate-metadata.json") as f:
+                meta = json.loads(f.read().decode("utf-8"))
+        except (zipfile.BadZipFile, KeyError) as exc:
+            err_console.print(f"[red bold]Error reading crate zip:[/] {exc}")
+            raise typer.Exit(code=1) from exc
+    else:
+        if not meta_path.is_file():
+            err_console.print(
+                f"[red bold]Error:[/] ro-crate-metadata.json missing at {escape(str(crate_path))}"
+            )
+            raise typer.Exit(code=1)
+        meta = json.loads(meta_path.read_text())
+
+    root: dict[str, Any] = next((e for e in meta.get("@graph", []) if e.get("@id") == "./"), {})
+    summary: dict[str, object] = {
+        "crate": str(crate_path),
+        "name": root.get("name"),
+        "lane": root.get("apmode:lane") or root.get("lane"),
+        "mainEntity": (root.get("mainEntity") or {}).get("@id")
+        if isinstance(root.get("mainEntity"), dict)
+        else None,
+        "n_entities": len(meta.get("@graph", [])),
+        "has_complete_sentinel": any(e.get("@id") == "_COMPLETE" for e in meta.get("@graph", [])),
+    }
+    actions = {"OrganizeAction": 0, "ControlAction": 0, "CreateAction": 0}
+    for entity in meta.get("@graph", []):
+        t = entity.get("@type")
+        types = t if isinstance(t, list) else [t]
+        for action_type in actions:
+            if action_type in types:
+                actions[action_type] += 1
+    summary["action_triad_counts"] = actions
+
+    if output_json:
+        print(json.dumps(summary, indent=2))
+        return
+
+    table = Table(title="RO-Crate summary", box=None, padding=(0, 1))
+    table.add_column("Field", style="bold")
+    table.add_column("Value")
+    for k in ("crate", "name", "lane", "mainEntity", "n_entities", "has_complete_sentinel"):
+        table.add_row(k, escape(str(summary.get(k, "—"))))
+    table.add_row("action_triad", ", ".join(f"{k}={v}" for k, v in actions.items()))
+    console.print()
+    console.print(table)
+    console.print()
+
+
+def _render_rocrate_result(result: dict[str, object]) -> None:
+    """Pretty-print an roc-validator result."""
+    ok = result.get("ok")
+    crate = result.get("crate")
+    if ok is True:
+        console.print(
+            f"[green bold]RO-Crate valid[/] "
+            f"({escape(str(result.get('profile', '')))}): "
+            f"[dim]{escape(str(crate))}[/]"
+        )
+        return
+    err = result.get("error")
+    if err:
+        err_console.print(f"[red bold]RO-Crate validation error:[/] {err}")
+        return
+    raw_issues = result.get("issues") or []
+    issues: list[dict[str, object]] = (
+        [i for i in raw_issues if isinstance(i, dict)] if isinstance(raw_issues, list) else []
+    )
+    err_console.print(
+        f"[red bold]RO-Crate INVALID[/] — {len(issues)} issue(s) at [dim]{escape(str(crate))}[/]"
+    )
+    for issue in issues[:20]:
+        if isinstance(issue, dict):
+            sev = issue.get("severity", "?")
+            msg = str(issue.get("message", ""))[:200]
+            err_console.print(f"  [{sev}] {escape(msg)}")
 
 
 # ---------------------------------------------------------------------------
@@ -1263,6 +1503,26 @@ def inspect(
             help="Emit the bundle summary as JSON to stdout and suppress Rich output.",
         ),
     ] = False,
+    rocrate_view: Annotated[
+        bool,
+        typer.Option(
+            "--rocrate-view",
+            help=(
+                "Also print an RO-Crate summary (mainEntity, top-level "
+                "action triad). Requires a crate to have been exported."
+            ),
+        ),
+    ] = False,
+    crate: Annotated[
+        Path | None,
+        typer.Option(
+            "--crate",
+            help=(
+                "Path to an already-exported RO-Crate directory or ZIP "
+                "(defaults to <bundle_dir>.crate / <bundle_dir>.crate.zip)."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Inspect a reproducibility bundle and print summary.
 
@@ -1282,6 +1542,11 @@ def inspect(
         else:
             err_console.print(f"[red bold]Error:[/] {kind}: {escape(str(bundle_dir))}")
         raise typer.Exit(code=1)
+
+    if rocrate_view:
+        _render_rocrate_summary(bundle_dir, crate, output_json=output_json)
+        if output_json:
+            return
 
     if output_json:
         _inspect_emit_json(bundle_dir)

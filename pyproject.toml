@@ -34,6 +34,7 @@ dependencies = [
     "pandas>=2.0",
     "rich>=13.0",
     "scipy>=1.11",
+    "rocrate>=0.13",
 ]
 
 [project.optional-dependencies]
@@ -145,4 +146,9 @@ markers = [
 ]
 filterwarnings = [
     "ignore:os.fork\\(\\) was called.*JAX is multithreaded:RuntimeWarning",
+]
+
+[dependency-groups]
+dev = [
+    "roc-validator>=0.8.1",
 ]
