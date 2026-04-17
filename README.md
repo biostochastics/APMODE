@@ -6,8 +6,8 @@
 
   **Adaptive Pharmacokinetic Model Discovery Engine**
 
-  <!-- apmode:AUTO:badge_version -->[![Version](https://img.shields.io/badge/version-v0.4.0-blue)]()<!-- apmode:/AUTO:badge_version -->
-  <!-- apmode:AUTO:badge_tests -->[![Tests](https://img.shields.io/badge/tests-1699%20collected-success)]()<!-- apmode:/AUTO:badge_tests -->
+  [![Version](https://img.shields.io/badge/version-<!-- apmode:AUTO:version_tag -->v0.4.0<!-- apmode:/AUTO:version_tag -->-blue)]()
+  [![Tests](https://img.shields.io/badge/tests-<!-- apmode:AUTO:tests -->1698<!-- apmode:/AUTO:tests -->%20collected-success)]()
   [![License](https://img.shields.io/badge/license-GPL--2.0--or--later-green)](LICENSE)
   [![Python](https://img.shields.io/badge/python-3.12%E2%80%933.14-yellow)]()
   [![mypy](https://img.shields.io/badge/mypy-strict%20%E2%9C%93-blue)]()
@@ -29,7 +29,7 @@ APMODE is a **governed meta-system** that composes five population PK modeling p
 
 **Formular — a typed PK DSL — is the control surface.** Models are specified in [Formular](docs/FORMULAR.md), a structured grammar (`Absorption × Distribution × Elimination × Variability × Observation × Priors`), compiled to a typed AST, validated against pharmacometric constraints, and lowered to backend-specific code (nlmixr2 R, Stan/Torsten, JAX/Diffrax). The agentic LLM backend (Phase 3) operates exclusively through Formular transforms — including the `SetPrior` transform for Bayesian workflows — it cannot emit raw code.
 
-> **Status**: **<!-- apmode:AUTO:version_tag -->v0.4.0<!-- apmode:/AUTO:version_tag -->** (2026-04-16) — Phase 3 release. <!-- apmode:AUTO:tests_nonlive -->1682<!-- apmode:/AUTO:tests_nonlive --> tests passing (`-m "not live"`); `mypy --strict` clean; `ruff` clean. Supports Python 3.12–3.14. Gate policy schema <!-- apmode:AUTO:policy_gate -->0.4.1<!-- apmode:/AUTO:policy_gate -->; profiler policy <!-- apmode:AUTO:policy_profiler -->2.1.0<!-- apmode:/AUTO:policy_profiler --> (manifest_schema_version = <!-- apmode:AUTO:profiler_manifest -->2<!-- apmode:/AUTO:profiler_manifest -->). Checkpoint/resume via `--resume-agentic`; predictive-diagnostics helper is canonical; per-subject NCA eligibility floors on `Gate3Config`.
+> **Status**: **<!-- apmode:AUTO:version_tag -->v0.4.0<!-- apmode:/AUTO:version_tag -->** (2026-04-16) — Phase 3 release. <!-- apmode:AUTO:tests_nonlive -->1681<!-- apmode:/AUTO:tests_nonlive --> tests passing (`-m "not live"`); `mypy --strict` clean; `ruff` clean. Supports Python 3.12–3.14. Gate policy schema <!-- apmode:AUTO:policy_gate -->0.4.2<!-- apmode:/AUTO:policy_gate -->; profiler policy <!-- apmode:AUTO:policy_profiler -->2.1.0<!-- apmode:/AUTO:policy_profiler --> (manifest_schema_version = <!-- apmode:AUTO:profiler_manifest -->2<!-- apmode:/AUTO:profiler_manifest -->). Checkpoint/resume via `--resume-agentic`; predictive-diagnostics helper is canonical; per-subject NCA eligibility floors on `Gate3Config`.
 
 All numeric badges + status counts are rewritten from the source tree by `scripts/sync_readme.py` — see [Keeping the README honest](#keeping-the-readme-honest).
 
@@ -142,8 +142,8 @@ uv run apmode policies --validate       # CI-grade schema + constraint check
 ### Test + typecheck + lint
 
 ```bash
-uv run pytest tests/ -q                         # <!-- apmode:AUTO:tests -->1699<!-- apmode:/AUTO:tests --> collected
-uv run pytest tests/ -q -m "not live"           # <!-- apmode:AUTO:tests_nonlive -->1682<!-- apmode:/AUTO:tests_nonlive --> skip live LLM tests
+uv run pytest tests/ -q                         # <!-- apmode:AUTO:tests -->1698<!-- apmode:/AUTO:tests --> collected
+uv run pytest tests/ -q -m "not live"           # <!-- apmode:AUTO:tests_nonlive -->1681<!-- apmode:/AUTO:tests_nonlive --> skip live LLM tests
 uv run mypy src/apmode/ --strict                # type checking
 uv run ruff check src/apmode/ tests/            # linting
 uv run python scripts/sync_readme.py --check    # README ↔ codebase drift guard
@@ -453,12 +453,31 @@ APMODE enforces a **gated funnel** — not a weighted sum. Each gate is disquali
 
 | Gate | Purpose | Checks |
 |------|---------|--------|
-| **Gate 1** | Technical Validity | Convergence, parameter plausibility, CWRES normality, VPC coverage, condition number, seed stability, split integrity; Bayesian: R̂, bulk/tail ESS, divergences, E-BFMI, Pareto-k |
+| **Gate 1** | Technical Validity | Convergence, parameter plausibility, CWRES normality, **PIT calibration** (replaces bin-level VPC in 0.4.2), condition number, seed stability, split integrity; Bayesian: R̂, bulk/tail ESS, divergences, E-BFMI, Pareto-k |
 | **Gate 2** | Lane Admissibility | Interpretability, shrinkage, identifiability (profile-likelihood CI), NODE exclusion (Submission lane), LORO-CV (Optimization lane), prior-justification artifact (Bayesian) |
 | **Gate 2.5** | Credibility Qualification | ICH M15 context-of-use, data adequacy, ML transparency, limitation-risk mapping, operational qualification |
 | **Gate 3** | Ranking | Within-paradigm BIC; cross-paradigm VPC concordance + NPE + AUC/Cmax BE composite (Borda or weighted sum) |
 
-Gate thresholds are **versioned policy artifacts** in `policies/*.json` (schema v<!-- apmode:AUTO:policy_gate -->0.4.1<!-- apmode:/AUTO:policy_gate -->) — not hard-coded constants.
+Gate thresholds are **versioned policy artifacts** in `policies/*.json` (schema v<!-- apmode:AUTO:policy_gate -->0.4.2<!-- apmode:/AUTO:policy_gate -->) — not hard-coded constants.
+
+### Gate 1 PIT calibration (0.4.2)
+
+The Gate 1 calibration check is **PIT / NPDE-lite** on the posterior-predictive simulation matrix, replacing the bin-level VPC coverage check used through 0.4.1. The earlier metric was invariant to fit quality on sparse real data — coverage per percentile band quantized at ``1/n_bins`` (typically 8 bins), so submission-lane tolerances admitted only ``{1.0, 7/8}`` and any band at ``6/8=0.75`` auto-failed (see CHANGELOG rc9 follow-up "PIT/NPDE-lite Gate 1 calibration" for the failure mode that triggered the redesign).
+
+**Methodology.** For each observation ``j`` on subject ``i`` and each probability level ``p ∈ {0.05, 0.50, 0.95}``, compute the simulated predictive ``p``-quantile ``q_p(i,j) = nanpercentile({y_sim[s,i,j]}, 100·p)`` from the ``(n_sims, n_obs_i)`` matrix, form the CDF indicator ``I_p(i,j) = 𝟙[y_obs(i,j) ≤ q_p(i,j)]``, and aggregate subject-robustly as ``c_p = mean_i(mean_j I_p(i,j))``. Under correct predictive calibration ``c_p → p``. The gate fails if
+
+```
+|c_p − p|  >  tol(p, n_subjects)
+tol(p, n)  =  max( floor_{tail|med},  z_alpha · sqrt(p(1−p) / n_subjects) )
+```
+
+The tolerance is **n-scaled** so the SE-coverage stays constant across dataset sizes; the floor prevents large-``n`` vacuous strictness (at ``n_subj ≈ 10 000`` the ``z · SE`` term would otherwise demand a ~0.003 tolerance and false-reject perfectly-calibrated models on sampling noise alone). Effective sample size is ``n_subjects`` (outer-mean denominator under subject-robust aggregation) rather than ``n_observations`` — governance-conservative because within-subject observations are strongly correlated in population-PK, so using ``n_observations`` would understate variance.
+
+Tails (``p ∈ (0, 0.25] ∪ [0.75, 1)``) use a smaller floor because tail miscalibration is the most diagnostic signal of variability-component misspecification (residual-error magnitude, IIV distribution); the ``sqrt(p(1−p))`` factor also gives the tails a tighter natural scale (≈0.22 vs ≈0.50 at the median).
+
+**Lane calibration.** ``z_alpha`` sets the SE multiplier per lane: submission 1.5 (strictest, ~87% per-band CI), optimization 2.0, discovery 2.5 (widest — reflects NODE/agentic variance). Floors track the same ordering: submission ``{0.03, 0.05}``, optimization ``{0.04, 0.07}``, discovery ``{0.05, 0.10}``. ``VPCSummary`` is still written to bundles for reports and within-paradigm concordance ranking, but is descriptive — not a Gate 1 gate.
+
+**Alignment.** This is a trimmed **NPDE** family metric (Brendel 2006; Comets 2008) with subject-robust aggregation, avoiding the decorrelation cost of full NPDE while preserving the pass/fail semantics at three PIT levels.
 
 ---
 
@@ -541,7 +560,7 @@ reason, vote). `apmode inspect <bundle>` renders the per-signal table;
 
 ## Test Suite
 
-**<!-- apmode:AUTO:tests -->1699<!-- apmode:/AUTO:tests --> tests collected** (<!-- apmode:AUTO:tests_nonlive -->1682<!-- apmode:/AUTO:tests_nonlive --> non-live) across multiple strategies — all counts auto-synced by `scripts/sync_readme.py`:
+**<!-- apmode:AUTO:tests -->1698<!-- apmode:/AUTO:tests --> tests collected** (<!-- apmode:AUTO:tests_nonlive -->1681<!-- apmode:/AUTO:tests_nonlive --> non-live) across multiple strategies — all counts auto-synced by `scripts/sync_readme.py`:
 
 ```bash
 uv run pytest tests/unit/ -q               # unit tests
@@ -677,7 +696,7 @@ too poor to support any flip-flop call. The stricter
 
 ### Gate policy parameters (`policies/{submission,discovery,optimization}.json`)
 
-Gate policies are lane-specific, versioned (currently **<!-- apmode:AUTO:policy_gate -->0.4.1<!-- apmode:/AUTO:policy_gate -->**), and discoverable via
+Gate policies are lane-specific, versioned (currently **<!-- apmode:AUTO:policy_gate -->0.4.2<!-- apmode:/AUTO:policy_gate -->**), and discoverable via
 `apmode policies <lane>`. The Pydantic schema lives in
 [`src/apmode/governance/policy.py`](src/apmode/governance/policy.py)
 and is validated by the CI hook
@@ -687,7 +706,9 @@ and is validated by the CI hook
 |---|---|---|---|---|---|
 | **Gate 1 — Technical validity** | `cwres_mean_max` | 0.10 | 0.15 | 0.12 | Max magnitude of population-level CWRES mean |
 | | `outlier_fraction_max` | 0.05 | 0.08 | 0.06 | Max fraction of \|CWRES\| > 4 outliers |
-| | `vpc_coverage_target` / `_tolerance` | 0.90 / 0.10 | 0.90 / 0.15 | 0.90 / 0.12 | Per-band VPC coverage check: `\|coverage - target\| ≤ tolerance` (0.4.1) |
+| | `pit_z_alpha` | 1.5 | 2.5 | 2.0 | SE multiplier for n-scaled PIT tolerance; higher = wider window (more permissive). Submission lane is strictest |
+| | `pit_tol_tail_floor` / `pit_tol_median_floor` | 0.03 / 0.05 | 0.05 / 0.10 | 0.04 / 0.07 | Absolute floor on the n-scaled tolerance: `tol = max(floor, z_α·sqrt(p(1-p)/n_subjects))`. Binds at large n to prevent vacuous strictness (0.4.2 replaces bin-level VPC) |
+| | `vpc_coverage_target` / `_tolerance` | 0.90 / 0.10 | 0.90 / 0.15 | 0.90 / 0.12 | Legacy — retained in policy schema for compatibility; no longer consumed by Gate 1 (0.4.2) |
 | | `seed_stability_n` | 3 | 3 | 3 | Required seed replicates (top-K candidates only) |
 | | `seed_stability_cv_max` | 0.10 | 0.10 | 0.10 | Max CV of OFV across seeds |
 | | `obs_vs_pred_r2_min` | 0.30 | 0.30 | 0.30 | Minimum R² for state-trajectory validity |
@@ -940,7 +961,7 @@ uv run pytest tests/integration/test_llm_providers_live.py -m live -v
 This README's numeric claims (version, test count, transform count, CLI-command count, dataset count, policy versions, profiler manifest version) are rewritten from the codebase by [`scripts/sync_readme.py`](scripts/sync_readme.py). Each auto-synced value sits between HTML comment markers like:
 
 ```
-<!-- apmode:AUTO:tests -->1699<!-- apmode:/AUTO:tests -->
+<!-- apmode:AUTO:tests -->1698<!-- apmode:/AUTO:tests -->
 ```
 
 Running the script:

@@ -20,6 +20,7 @@ from apmode.bundle.models import (
     GOFMetrics,
     IdentifiabilityFlags,
     ParameterEstimate,
+    PITCalibrationSummary,
     VPCSummary,
 )
 from apmode.governance.gates import (
@@ -44,6 +45,7 @@ def _make_backend_result(
     outlier_fraction: float = 0.02,
     r2: float | None = 0.95,
     vpc_coverage: dict[str, float] | None = None,
+    pit_calibration: dict[str, float] | None = None,
     condition_number: float = 15.0,
     ill_conditioned: bool = False,
     profile_ci: dict[str, bool] | None = None,
@@ -93,6 +95,16 @@ def _make_backend_result(
                 coverage=vpc_coverage or {"p5": 0.92, "p50": 0.97, "p95": 0.93},
                 n_bins=10,
                 prediction_corrected=False,
+            ),
+            pit_calibration=PITCalibrationSummary(
+                probability_levels=[0.05, 0.50, 0.95],
+                # Well-calibrated default: c_p ≈ p so |Δ| = 0 on every
+                # band. Tests that exercise PIT failure override via
+                # the ``pit_calibration`` kwarg.
+                calibration=pit_calibration or {"p5": 0.05, "p50": 0.50, "p95": 0.95},
+                n_observations=400,
+                n_subjects=50,
+                aggregation="subject_robust",
             ),
             identifiability=IdentifiabilityFlags(
                 condition_number=condition_number,
@@ -159,15 +171,20 @@ class TestGate1:
         failed_ids = {c.check_id for c in g1.checks if not c.passed}
         assert "cwres_outlier_fraction" in failed_ids
 
-    def test_vpc_coverage_too_low(self) -> None:
-        result = _make_backend_result(
-            vpc_coverage={"p5": 0.70, "p50": 0.95, "p95": 0.90}  # p5 below 0.85
-        )
+    def test_pit_calibration_tail_miscalibrated(self) -> None:
+        """Tail miscalibration > submission tol_tail=0.03 should fail Gate 1.
+
+        c_0.05=0.20 means the model's 5th-percentile predictive quantile
+        is too high (the observed value falls at or below it 20% of the
+        time rather than the expected 5%) — a classic tail-heavy residual
+        misspecification symptom. |0.20 - 0.05| = 0.15 > 0.03.
+        """
+        result = _make_backend_result(pit_calibration={"p5": 0.20, "p50": 0.50, "p95": 0.95})
         policy = _load_policy("submission")
         g1 = evaluate_gate1(result, policy)
         assert g1.passed is False
         failed_ids = {c.check_id for c in g1.checks if not c.passed}
-        assert "vpc_coverage" in failed_ids
+        assert "pit_calibration" in failed_ids
 
     def test_seed_stability_with_consistent_seeds(self) -> None:
         result1 = _make_backend_result(ofv=150.0)
@@ -203,36 +220,35 @@ class TestGate1:
         assert seed_check.passed is True
         assert "not_probed" in str(seed_check.observed)
 
-    def test_vpc_missing_fails_when_required(self) -> None:
-        """Missing VPC should fail when policy requires it."""
-        result = _make_backend_result(vpc_coverage=None)
-        # Override to remove VPC
+    def test_pit_missing_fails_when_required(self) -> None:
+        """Missing PIT calibration should fail when policy requires it."""
         from apmode.bundle.models import BackendResult as BR
 
+        result = _make_backend_result()
         data = result.model_dump()
-        data["diagnostics"]["vpc"] = None
-        result_no_vpc = BR.model_validate(data)
+        data["diagnostics"]["pit_calibration"] = None
+        result_no_pit = BR.model_validate(data)
         policy = _load_policy("submission")
-        policy.gate1.vpc_required = True
-        g1 = evaluate_gate1(result_no_vpc, policy)
-        vpc_check = next(c for c in g1.checks if c.check_id == "vpc_coverage")
-        assert vpc_check.passed is False
-        assert vpc_check.observed == "vpc_not_available"
+        policy.gate1.pit_required = True
+        g1 = evaluate_gate1(result_no_pit, policy)
+        pit_check = next(c for c in g1.checks if c.check_id == "pit_calibration")
+        assert pit_check.passed is False
+        assert pit_check.observed == "pit_not_available"
 
-    def test_vpc_missing_passes_when_not_required(self) -> None:
-        """When vpc_required=False, missing VPC passes with explicit marker."""
-        result = _make_backend_result(vpc_coverage=None)
+    def test_pit_missing_passes_when_not_required(self) -> None:
+        """When pit_required=False, missing PIT passes with explicit marker."""
         from apmode.bundle.models import BackendResult as BR
 
+        result = _make_backend_result()
         data = result.model_dump()
-        data["diagnostics"]["vpc"] = None
-        result_no_vpc = BR.model_validate(data)
+        data["diagnostics"]["pit_calibration"] = None
+        result_no_pit = BR.model_validate(data)
         policy = _load_policy("submission")
-        policy.gate1.vpc_required = False
-        g1 = evaluate_gate1(result_no_vpc, policy)
-        vpc_check = next(c for c in g1.checks if c.check_id == "vpc_coverage")
-        assert vpc_check.passed is True
-        assert vpc_check.observed == "vpc_not_configured"
+        policy.gate1.pit_required = False
+        g1 = evaluate_gate1(result_no_pit, policy)
+        pit_check = next(c for c in g1.checks if c.check_id == "pit_calibration")
+        assert pit_check.passed is True
+        assert pit_check.observed == "pit_not_configured"
 
     def test_discovery_policy_more_lenient(self) -> None:
         # Discovery allows higher CWRES mean (0.15 vs 0.10)
@@ -256,7 +272,7 @@ class TestGate1:
             "state_trajectory_validity",
             "cwres_mean",
             "cwres_outlier_fraction",
-            "vpc_coverage",
+            "pit_calibration",
             "split_integrity",
             "seed_stability",
             "imputation_stability",

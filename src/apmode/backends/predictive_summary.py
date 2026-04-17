@@ -52,7 +52,7 @@ from apmode.benchmarks.scoring import (
     compute_npe,
     is_nca_eligible_per_subject,
 )
-from apmode.bundle.models import VPCSummary
+from apmode.bundle.models import PITCalibrationSummary, VPCSummary, _pit_key
 
 if TYPE_CHECKING:
     from apmode.bundle.models import NCASubjectDiagnostic
@@ -159,6 +159,11 @@ class PredictiveSummaryBundle(BaseModel):
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
     vpc: VPCSummary
+    # PIT/NPDE-lite predictive calibration (policy 0.4.2 Gate 1 metric).
+    # Populated from the same per-subject simulation matrix as ``vpc`` so
+    # the atomic-population invariant still holds: a backend that emits
+    # ``vpc`` must also emit ``pit_calibration``.
+    pit_calibration: PITCalibrationSummary
     npe_score: float = Field(ge=0.0)
     auc_cmax_be_score: float | None = Field(default=None, ge=0.0, le=1.0)
     auc_cmax_source: Literal["observed_trapezoid"] | None = None
@@ -302,6 +307,111 @@ def _compute_vpc_from_sims(
     )
 
 
+def _compute_pit_calibration(
+    per_subject_sims: list[SubjectSimulation],
+    *,
+    probability_levels: tuple[float, ...],
+) -> PITCalibrationSummary:
+    """Subject-robust PIT / NPDE-lite calibration.
+
+    Replaces the bin-level VPC containment metric with a direct
+    predictive-CDF calibration check at each observation. For each
+    probability ``p`` in ``probability_levels`` and each observation
+    ``j`` on subject ``i``, evaluate the indicator
+    ``I_p(i, j) = 1[y_obs[i, j] <= quantile_p({sim[s, j]})]``, average
+    within-subject to ``c_p(i)``, then average across subjects:
+
+        c_p = mean_i( mean_j I_p(i, j) )
+
+    Under a well-calibrated predictive distribution, ``c_p`` converges to
+    ``p`` — so the Gate 1 check asks ``|c_p - p| <= tol``.
+
+    The **subject-robust** aggregation (inner per-subject mean before the
+    outer cross-subject mean) is the recommended form for governance: it
+    downweights subjects with many observations so heavily-sampled
+    individuals don't dominate the calibration signal — relevant for
+    mixed PK designs where dose/richness varies.
+
+    No bin grid, no 1/n_bins quantization: the denominator is effectively
+    the subject count (with observations weighted by inverse per-subject
+    count), making the metric invariant to time-binning choice and robust
+    on sparse real-data designs where the prior VPC metric false-rejected
+    textbook-correct models (see CHANGELOG rc9 follow-up).
+    """
+    if not per_subject_sims:
+        msg = "per_subject_sims must be non-empty to compute PIT calibration"
+        raise ValueError(msg)
+    for p in probability_levels:
+        if not 0.0 < p < 1.0:
+            msg = f"probability_levels must be in (0, 1), got {p}"
+            raise ValueError(msg)
+
+    # Per-subject hit-rate at each probability level. NaN-safe: a failed
+    # ODE solve on one sim draw can leave NaNs in ``sims``; mask per-
+    # observation so a single NaN sim doesn't poison the whole hit-rate
+    # for that subject. ``np.nanpercentile`` returns NaN when *all* sim
+    # draws at a given observation index are NaN — those observations
+    # are then dropped from the indicator mean (not counted as hits OR
+    # misses), not silently treated as a fail.
+    percentile_pcts = tuple(100.0 * p for p in probability_levels)
+    per_subject_rates: dict[float, list[float]] = {p: [] for p in probability_levels}
+    n_observations_used = 0
+    n_subjects_used = 0
+    for s in per_subject_sims:
+        obs = s.observed_dv
+        sims = s.sims_at_observed  # (n_sims, n_obs_i)
+        n_obs_i = obs.shape[0]
+        if n_obs_i == 0:
+            continue
+        # Drop observations that are non-finite — backends occasionally
+        # emit NaN DV for BLQ records or missing timepoints; the PIT
+        # indicator is undefined for a non-finite obs.
+        obs_finite_mask = np.isfinite(obs)
+        if not obs_finite_mask.any():
+            continue
+        # Predictive p-quantile at each observation, across sim replicates.
+        # axis=0 collapses the sim dimension → shape (n_obs_i,).
+        # ``nanpercentile`` ignores NaN sim draws per observation column;
+        # when every draw is NaN for one column the result is NaN there.
+        q_levels = np.nanpercentile(sims, percentile_pcts, axis=0)
+        # Keep only observations where BOTH obs is finite AND the
+        # simulated quantile is finite (latter guards all-NaN sim rows).
+        for idx, p in enumerate(probability_levels):
+            q_row = q_levels[idx]
+            usable = obs_finite_mask & np.isfinite(q_row)
+            n_usable = int(usable.sum())
+            if n_usable == 0:
+                continue
+            hits = (obs[usable] <= q_row[usable]).astype(float)
+            per_subject_rates[p].append(float(hits.mean()))
+        n_observations_used += int(obs_finite_mask.sum())
+        n_subjects_used += 1
+
+    if n_subjects_used == 0 or all(not per_subject_rates[p] for p in probability_levels):
+        msg = (
+            "No subjects with usable finite observations/simulations for "
+            "PIT calibration — cannot produce a calibration summary"
+        )
+        raise ValueError(msg)
+
+    calibration = {
+        _pit_key(p): (float(np.mean(per_subject_rates[p])) if per_subject_rates[p] else 0.0)
+        for p in probability_levels
+    }
+
+    return PITCalibrationSummary(
+        probability_levels=list(probability_levels),
+        calibration=calibration,
+        # Denominator of the outer mean is ``n_subjects_used`` (subjects
+        # that contributed at least one finite obs/sim pair), not
+        # ``len(per_subject_sims)`` — the audit field mirrors the
+        # actual averaging denominator.
+        n_observations=max(n_observations_used, 1),
+        n_subjects=n_subjects_used,
+        aggregation="subject_robust",
+    )
+
+
 def _per_subject_auc_cmax(t_observed: np.ndarray, values: np.ndarray) -> tuple[float, float]:
     """Trapezoidal AUC and Cmax of a 1D concentration vector.
 
@@ -420,6 +530,16 @@ def build_predictive_diagnostics(
         collapse_warn_ratio=policy.vpc_n_bin_collapse_warn_ratio,
     )
 
+    # PIT/NPDE-lite calibration — the 0.4.2 Gate 1 gated metric.
+    # Probability levels mirror the VPC percentile points (5 / 50 / 95)
+    # but expressed as (0, 1) CDF levels instead of 0-100 percentiles.
+    # Fixed vocabulary for now — extending to custom levels would need a
+    # matching ``Gate1Config.pit_probability_levels`` knob.
+    pit_calibration = _compute_pit_calibration(
+        per_subject_sims,
+        probability_levels=tuple(p / 100.0 for p in vpc_percentiles),
+    )
+
     # AUC/Cmax BE — per-subject, aggregation controlled by policy.
     n_total = len(per_subject_sims)
     cand_auc = np.zeros(n_total, dtype=float)
@@ -484,6 +604,7 @@ def build_predictive_diagnostics(
 
     return PredictiveSummaryBundle(
         vpc=vpc,
+        pit_calibration=pit_calibration,
         npe_score=npe_score,
         auc_cmax_be_score=auc_cmax_score,
         auc_cmax_source=auc_cmax_source,

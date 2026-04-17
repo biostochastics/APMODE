@@ -1,5 +1,5 @@
 {
-  "policy_version": "0.4.1",
+  "policy_version": "0.4.2",
   "lane": "optimization",
   "gate1": {
     "convergence_required": true,
@@ -8,6 +8,10 @@
     "vpc_required": false,
     "vpc_coverage_target": 0.90,
     "vpc_coverage_tolerance": 0.12,
+    "pit_required": true,
+    "pit_z_alpha": 2.0,
+    "pit_tol_tail_floor": 0.04,
+    "pit_tol_median_floor": 0.07,
     "seed_stability_n": 3
   },
   "gate2": {

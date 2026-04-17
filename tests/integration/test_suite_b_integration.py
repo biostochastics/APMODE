@@ -30,6 +30,7 @@ from apmode.bundle.models import (
     GOFMetrics,
     IdentifiabilityFlags,
     ParameterEstimate,
+    PITCalibrationSummary,
     VPCSummary,
 )
 from apmode.governance.gates import evaluate_gate1, evaluate_gate2, evaluate_gate3
@@ -311,6 +312,13 @@ def _make_node_fit(
                 coverage={"p5": 0.91, "p50": 0.95, "p95": 0.92},
                 n_bins=10,
                 prediction_corrected=False,
+            ),
+            pit_calibration=PITCalibrationSummary(
+                probability_levels=[0.05, 0.50, 0.95],
+                calibration={"p5": 0.05, "p50": 0.50, "p95": 0.95},
+                n_observations=96,
+                n_subjects=12,
+                aggregation="subject_robust",
             ),
             identifiability=IdentifiabilityFlags(
                 condition_number=20.0,

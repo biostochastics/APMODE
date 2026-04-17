@@ -19,7 +19,13 @@ from typing import TYPE_CHECKING
 import numpy as np
 import structlog
 
-from apmode.bundle.models import CredibilityContext, GateCheckResult, GateResult, LOROMetrics
+from apmode.bundle.models import (
+    CredibilityContext,
+    GateCheckResult,
+    GateResult,
+    LOROMetrics,
+    _pit_key,
+)
 from apmode.governance.policy import Gate25Config  # noqa: TC001 — used at runtime
 from apmode.ids import generate_gate_id
 
@@ -93,7 +99,7 @@ def evaluate_gate1(
     checks.append(_check_parameter_plausibility(result))
     checks.append(_check_state_trajectory(result, g1))
     checks.extend(_check_cwres(result, g1))
-    checks.append(_check_vpc_coverage(result, g1))
+    checks.append(_check_pit_calibration(result, g1))
     checks.append(_check_split_integrity(result, g1))
     checks.append(_check_seed_stability(result, seed_results, g1))
     checks.append(_check_imputation_stability(result, stability, directive))
@@ -245,48 +251,74 @@ def _check_cwres(result: BackendResult, g1: Gate1Config) -> list[GateCheckResult
     return checks
 
 
-def _check_vpc_coverage(result: BackendResult, g1: Gate1Config) -> GateCheckResult:
-    """Check 5: VPC coverage within ``target ± tolerance``.
+def _check_pit_calibration(result: BackendResult, g1: Gate1Config) -> GateCheckResult:
+    """Check 5: PIT / NPDE-lite predictive calibration (policy 0.4.2).
 
-    Compares each percentile band (``p5``, ``p50``, ``p95``) coverage to
-    ``vpc_coverage_target`` using a symmetric tolerance. The previous
-    fixed ``[lower, upper]`` form rejected both well-fitted models
-    (coverage = 1.0 on small-bin VPCs) and mis-specified ones — no
-    achievable discrete hit-rate landed in the narrow admissible gap.
-    See ``Gate1Config.vpc_coverage_target`` / ``..._tolerance`` for the
-    rationale and lane calibration guideline.
+    For each probability level ``p`` in the PIT summary's
+    ``probability_levels`` (default ``{0.05, 0.50, 0.95}``) the check
+    asks ``|c_p - p| <= tol``, where ``c_p`` is the subject-robust
+    empirical CDF hit-rate produced by
+    :func:`apmode.backends.predictive_summary._compute_pit_calibration`.
+    Tails (``p`` in ``(0.0, 0.25]`` or ``[0.75, 1.0)``) use
+    ``pit_tol_tail``; the median band (``p`` in ``(0.25, 0.75)``) uses
+    ``pit_tol_median``. Rationale in :class:`Gate1Config` docstring.
+
+    Replaces the rc8/rc9 bin-level VPC coverage gate, which was brittle
+    on sparse real data because per-band coverage quantized at
+    ``1/n_bins`` with only ~8 bins on datasets like warfarin. PIT is
+    aligned with the NPDE / PIT family of calibration diagnostics and
+    is invariant to binning choice. See CHANGELOG rc9 follow-up
+    "PIT/NPDE-lite Gate 1 calibration" for the design log.
     """
-    vpc = result.diagnostics.vpc
-    if vpc is None:
-        # When the policy does not require a VPC (e.g. Phase 1 backends
-        # that do not yet populate VPC), pass the check explicitly. When
-        # required, missing evidence fails — missing evidence ≠ passing.
-        if not g1.vpc_required:
+    pit = result.diagnostics.pit_calibration
+    if pit is None:
+        # Phase 1 backends that don't emit posterior-predictive sims can
+        # opt out via ``pit_required=False``. When required, missing
+        # evidence fails — missing evidence ≠ passing.
+        if not g1.pit_required:
             return GateCheckResult(
-                check_id="vpc_coverage",
+                check_id="pit_calibration",
                 passed=True,
-                observed="vpc_not_configured",
+                observed="pit_not_configured",
             )
         return GateCheckResult(
-            check_id="vpc_coverage",
+            check_id="pit_calibration",
             passed=False,
-            observed="vpc_not_available",
+            observed="pit_not_available",
         )
 
-    target = g1.vpc_coverage_target
-    tolerance = g1.vpc_coverage_tolerance
+    # n-scaled tolerance: tol(p, n) = max(floor, z_alpha · sqrt(p(1-p)/n_subjects))
+    # keeps the SE-coverage constant across dataset sizes while the floor
+    # prevents large-n vacuous strictness. n_subjects is the outer-mean
+    # denominator under subject-robust aggregation — using n_observations
+    # would understate sampling variance given within-subject correlation.
+    # See ``Gate1Config`` docstring for the derivation.
+    n_eff = max(pit.n_subjects, 1)
+    z_alpha = g1.pit_z_alpha
+    tail_floor = g1.pit_tol_tail_floor
+    med_floor = g1.pit_tol_median_floor
     violations: list[str] = []
-    for band, coverage in vpc.coverage.items():
-        deviation = abs(coverage - target)
-        if deviation > tolerance:
-            violations.append(f"{band}={coverage:.3f} (|Δ|={deviation:.3f} > tol={tolerance})")
+    per_level_tols: list[tuple[str, float]] = []
+    for p in pit.probability_levels:
+        key = _pit_key(p)
+        c_p = pit.calibration[key]
+        deviation = abs(c_p - p)
+        is_tail = p <= 0.25 or p >= 0.75
+        se_p = (p * (1.0 - p) / n_eff) ** 0.5
+        floor = tail_floor if is_tail else med_floor
+        tol = max(floor, z_alpha * se_p)
+        per_level_tols.append((key, tol))
+        if deviation > tol:
+            band = "tail" if is_tail else "med"
+            violations.append(f"{key}={c_p:.3f} (|Δ|={deviation:.3f} > tol_{band}={tol:.3f})")
 
     passed = len(violations) == 0
+    threshold_desc = ", ".join(f"{k}≤{t:.3f}" for k, t in per_level_tols)
     return GateCheckResult(
-        check_id="vpc_coverage",
+        check_id="pit_calibration",
         passed=passed,
         observed="; ".join(violations) if violations else "all_within_tolerance",
-        threshold=f"|coverage - {target}| <= {tolerance}",
+        threshold=f"|c_p - p| n-scaled (z_alpha={z_alpha}, n_subj={n_eff}): {threshold_desc}",
     )
 
 

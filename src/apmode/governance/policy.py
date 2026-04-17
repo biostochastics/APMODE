@@ -42,22 +42,53 @@ class Gate1Config(BaseModel):
     vpc_required: bool = True
     cwres_mean_max: float
     outlier_fraction_max: float = Field(ge=0.0, le=1.0)
-    # VPC coverage check is a target-with-tolerance comparison, not a
-    # fixed-bounds range. The percentile-based post-hoc VPC produces
-    # discrete hit-rates (``n/k`` for ``k`` effective bins), so a
-    # ``lower ≤ coverage ≤ upper`` check creates gaps: with k=7 the only
-    # achievable hit-rates are {0, 1/7, 2/7, ..., 6/7=0.857, 1.0} — no
-    # value lands in (0.857, 0.995). A well-fitted model's 7/7=1.0 then
-    # fails a 0.995 ceiling, and poorly-fitted models always fail the
-    # floor. Target+tolerance makes the check symmetric and semantically
-    # aligned with the nominal VPC coverage target (default 0.90 matches
-    # :attr:`GatePolicy.vpc_concordance_target`).
-    #
-    # Lane calibration guideline: submission uses the tightest tolerance
-    # (≤0.10), optimization slightly wider (~0.12), discovery widest
-    # (~0.15) — discrete small-bin VPCs need headroom.
+    # Legacy VPC knobs — retained for backward compatibility with policy
+    # JSONs that still set them, but Gate 1 no longer consumes these. The
+    # bin-level VPC coverage metric produced brittle 1/n_bins-quantized
+    # coverage values that false-rejected textbook-correct models on
+    # sparse real datasets (warfarin: 0/33 pass in rc9). Replaced by the
+    # PIT/NPDE-lite calibration knobs below (policy 0.4.2).
     vpc_coverage_target: float = Field(default=0.90, ge=0.0, le=1.0)
     vpc_coverage_tolerance: float = Field(default=0.15, gt=0.0, le=1.0)
+    # PIT / NPDE-lite predictive calibration — 0.4.2 Gate 1 gated metric.
+    # For each probability level p in {0.05, 0.50, 0.95} the check asks
+    # ``|c_p - p| <= tol(p, n_subjects)`` where ``c_p`` is the subject-
+    # robust fraction of observations at or below the simulated
+    # p-quantile at that observation (see ``PITCalibrationSummary``
+    # docstring for the formula). The tolerance is **n-scaled** to keep
+    # the SE-coverage constant across dataset sizes:
+    #
+    #   tol(p, n) = max(floor_{tail|med}, z_alpha · sqrt(p(1-p)/n_subjects))
+    #
+    # - ``z_alpha``: lane-specific admissibility (SE multiplier). Submission
+    #   1.5 (strictest, ≈87% CI per-band), optimization 2.0, discovery
+    #   2.5. Higher z_alpha → wider window → more permissive.
+    # - ``floor_*``: absolute lower bounds on the tolerance. They bind
+    #   at large ``n`` where the z·SE expression would otherwise make
+    #   the gate asymptotically vacuous-strict (n=1e4 → SE ≈ 0.002 →
+    #   tol ≈ 0.003 which would reject perfectly-calibrated models
+    #   due to sampling noise alone).
+    # - Effective sample size is ``n_subjects`` (outer-mean denominator)
+    #   rather than ``n_observations`` — governance-conservative since
+    #   within-subject observations are strongly correlated in
+    #   population-PK. Using n_observations would understate the
+    #   sampling variance and produce over-strict gates on dense
+    #   regimens.
+    #
+    # Tail-vs-median split: tail miscalibration is the most diagnostic
+    # signal of residual-error / IIV misspecification, so we allocate a
+    # smaller floor (tighter absolute gate) to tails. The n-scaled term
+    # also gives tails a smaller SE contribution (sqrt(p(1-p)) is ≈0.22
+    # at tails vs ≈0.50 at the median) which aligns with the intent.
+    #
+    # Lane calibration: submission strictest (regulatory), discovery
+    # widest (NODE/agentic variance expected), optimization in between.
+    # Defaults below mirror the ``policies/*.json`` submission lane —
+    # per-lane JSONs override.
+    pit_required: bool = True
+    pit_z_alpha: float = Field(default=1.5, gt=0.0, le=5.0)
+    pit_tol_tail_floor: float = Field(default=0.03, gt=0.0, le=1.0)
+    pit_tol_median_floor: float = Field(default=0.05, gt=0.0, le=1.0)
     seed_stability_n: int = Field(ge=1)
     seed_stability_cv_max: float = Field(default=0.10, gt=0.0, le=1.0)
     # State trajectory validity thresholds

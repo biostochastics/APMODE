@@ -204,31 +204,41 @@ class TestLanePoliciesGate3Contract:
         assert policy.gate3.bic_weight == 0.0
         assert policy.gate3.auc_cmax_weight == pytest.approx(0.30)
 
-    def test_optimization_policy_version_bumped(self) -> None:
-        # 0.4.1 bump: Gate 1 ``vpc_coverage_upper`` relaxed 0.995 → 1.0
-        # across all three lanes because post-hoc binned VPC produces
-        # discrete hit-rates (n/k); with 7-bin VPCs the common
-        # "well-fitted" value of 7/7=1.0 previously rejected on the upper
-        # ceiling — no discrete value exists in (6/7=0.857, 0.995).
-        # See CHANGELOG rc9 follow-up.
-        policy = self._load("optimization")
-        assert policy.policy_version == "0.4.1"
+    def test_all_lanes_policy_version_bumped(self) -> None:
+        # 0.4.2 bump: Gate 1 VPC coverage gate replaced with PIT/NPDE-lite
+        # predictive calibration. The prior bin-level VPC metric
+        # false-rejected textbook-correct models on sparse real datasets
+        # (warfarin: 0/33 pass in rc9) because per-band coverage quantized
+        # at 1/n_bins — target±tolerance couldn't bridge the discrete
+        # gaps. See CHANGELOG rc9 follow-up "PIT/NPDE-lite Gate 1
+        # calibration".
+        for lane in ("submission", "discovery", "optimization"):
+            assert self._load(lane).policy_version == "0.4.2"
 
-    def test_submission_discovery_policy_version_bumped(self) -> None:
-        for lane in ("submission", "discovery"):
-            assert self._load(lane).policy_version == "0.4.1"
+    def test_all_lanes_pit_tolerance_calibration(self) -> None:
+        """0.4.2: PIT calibration replaces VPC coverage as the Gate 1 gate.
 
-    def test_all_lanes_vpc_target_tolerance(self) -> None:
-        """0.4.1: VPC coverage check is target-with-tolerance, not bounds.
+        N-scaled form: ``tol(p, n) = max(floor, z_alpha · sqrt(p(1-p)/n))``.
+        Lane ordering:
 
-        Discrete small-bin VPCs produce hit-rates in ``{0, 1/k, …, 1.0}``,
-        so a fixed ``[lower, upper]`` range creates unreachable gaps.
-        The new check is ``|coverage - target| <= tolerance`` with lane-
-        specific tolerances: submission 0.10 (strict), optimization 0.12,
-        discovery 0.15 (widest, reflecting NODE/agentic variance).
+        * ``z_alpha``: submission 1.5 (strictest), optimization 2.0,
+          discovery 2.5 (widest). Higher z_alpha = more permissive.
+        * Floors: submission tail/med 0.03/0.05 (tightest), optimization
+          0.04/0.07, discovery 0.05/0.10 (widest). Floors bind only at
+          large ``n_subjects`` where the z·SE scaling would go vacuous.
+
+        Tail floors are tighter than median because tail miscalibration
+        is the most diagnostic signal of residual-error / IIV
+        misspecification — same rationale as the z_alpha ordering.
         """
-        expected_tolerance = {"submission": 0.10, "discovery": 0.15, "optimization": 0.12}
-        for lane, tol in expected_tolerance.items():
+        expected = {
+            "submission": (1.5, 0.03, 0.05),
+            "optimization": (2.0, 0.04, 0.07),
+            "discovery": (2.5, 0.05, 0.10),
+        }
+        for lane, (z_alpha, floor_tail, floor_med) in expected.items():
             g1 = self._load(lane).gate1
-            assert g1.vpc_coverage_target == pytest.approx(0.90)
-            assert g1.vpc_coverage_tolerance == pytest.approx(tol)
+            assert g1.pit_required is True
+            assert g1.pit_z_alpha == pytest.approx(z_alpha)
+            assert g1.pit_tol_tail_floor == pytest.approx(floor_tail)
+            assert g1.pit_tol_median_floor == pytest.approx(floor_med)

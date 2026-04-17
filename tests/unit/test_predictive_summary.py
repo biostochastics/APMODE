@@ -451,6 +451,13 @@ class TestBundleSchema:
                 "n_bins": 10,
                 "prediction_corrected": False,
             },
+            "pit_calibration": {
+                "probability_levels": [0.05, 0.50, 0.95],
+                "calibration": {"p5": 0.05, "p50": 0.50, "p95": 0.95},
+                "n_observations": 96,
+                "n_subjects": 12,
+                "aggregation": "subject_robust",
+            },
             "npe_score": 0.5,
             "auc_cmax_be_score": 0.75,
             "auc_cmax_source": "observed_trapezoid",

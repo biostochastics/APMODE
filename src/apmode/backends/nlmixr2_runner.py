@@ -305,6 +305,7 @@ class Nlmixr2Runner:
         backend_result.diagnostics = backend_result.diagnostics.model_copy(
             update={
                 "vpc": predictive.vpc,
+                "pit_calibration": predictive.pit_calibration,
                 "npe_score": predictive.npe_score,
                 "auc_cmax_be_score": predictive.auc_cmax_be_score,
                 "auc_cmax_source": predictive.auc_cmax_source,

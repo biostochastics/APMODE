@@ -105,7 +105,16 @@ class GOFMetrics(BaseModel):
 
 
 class VPCSummary(BaseModel):
-    """Visual Predictive Check summary statistics."""
+    """Visual Predictive Check summary statistics.
+
+    Descriptive only as of policy 0.4.2 — retained for reports/plots and
+    within-lane Gate 3 concordance ranking, but no longer a Gate 1 pass/
+    fail gate. The bin-level percentile-curve-containment metric was
+    brittle on sparse real data (warfarin false-rejected all 33 candidates
+    due to 1/8-discrete tail coverage). Gate 1 now uses
+    :class:`PITCalibrationSummary` instead — see CHANGELOG rc9 follow-up
+    "PIT/NPDE-lite Gate 1 calibration".
+    """
 
     percentiles: list[float] = Field(default_factory=lambda: [5.0, 50.0, 95.0])
     coverage: dict[str, float]
@@ -119,6 +128,78 @@ class VPCSummary(BaseModel):
         if expected != actual:
             msg = f"coverage keys {actual} must match percentiles {expected}"
             raise ValueError(msg)
+        return self
+
+
+def _pit_key(p: float) -> str:
+    """Canonical dict-key for a PIT probability level.
+
+    All sites that round-trip PIT keys — the calibration computer, the
+    Gate 1 check, and ``PITCalibrationSummary``'s Pydantic validator —
+    route through this helper so changes to the naming convention are a
+    one-place edit rather than a three-way drift waiting to happen.
+    """
+    return f"p{round(100 * p)}"
+
+
+class PITCalibrationSummary(BaseModel):
+    """PIT / NPDE-lite predictive calibration (policy 0.4.2 Gate 1 metric).
+
+    Replaces :class:`VPCSummary` as the Gate 1 gated calibration check.
+    For each observation ``j`` and each probability level ``p`` in
+    ``probability_levels`` (default 0.05 / 0.50 / 0.95):
+
+    1. Compute the simulated predictive ``p``-quantile at that observation
+       from the per-subject ``(n_sims, n_obs_i)`` matrix:
+       ``q_p(j) = quantile_p({y_sim[s, j] for s in n_sims})``.
+    2. Evaluate the CDF indicator:
+       ``I_p(j) = 1[y_obs[j] <= q_p(j)]``.
+    3. Aggregate subject-robustly: per-subject mean of ``I_p``, then mean
+       across subjects. ``calibration[f"p{int(p*100)}"] ≈ p`` when the
+       predictive distribution is well-calibrated at level ``p``.
+
+    The Gate 1 check asks ``|calibration[f"p{int(p*100)}"] - p| <= tol``
+    with lane-specific tail vs. median tolerances
+    (``Gate1Config.pit_tol_tail`` / ``pit_tol_median``). Unlike the
+    prior bin-level VPC check, the denominator is ``n_subjects`` (inner
+    mean) then averaged across subjects — no dependency on a bin grid,
+    no 1/n_bins quantization artifact on sparse real-data designs.
+
+    Rationale and design choice log lives in the rc9 follow-up CHANGELOG
+    entry "PIT/NPDE-lite Gate 1 calibration".
+    """
+
+    probability_levels: list[float] = Field(
+        default_factory=lambda: [0.05, 0.50, 0.95],
+        description="p values at which the predictive CDF is evaluated; "
+        "each must be in the open unit interval.",
+    )
+    calibration: dict[str, float] = Field(
+        description="Empirical CDF hit-rate at each probability level. "
+        "Keys ``pNN`` where ``NN = int(100 * p)``. Values in ``[0, 1]``.",
+    )
+    n_observations: int = Field(gt=0)
+    n_subjects: int = Field(gt=0)
+    aggregation: Literal["subject_robust", "pooled"] = "subject_robust"
+
+    @model_validator(mode="after")
+    def _keys_match_levels(self) -> PITCalibrationSummary:
+        expected = {_pit_key(p) for p in self.probability_levels}
+        actual = set(self.calibration.keys())
+        if expected != actual:
+            msg = (
+                f"calibration keys {actual} must match probability_levels "
+                f"{self.probability_levels} (expected {expected})"
+            )
+            raise ValueError(msg)
+        for p in self.probability_levels:
+            if not 0.0 < p < 1.0:
+                msg = f"probability_levels must be in (0, 1), got {p}"
+                raise ValueError(msg)
+        for key, val in self.calibration.items():
+            if not 0.0 <= val <= 1.0:
+                msg = f"calibration[{key}]={val} not in [0, 1]"
+                raise ValueError(msg)
         return self
 
 
@@ -212,6 +293,7 @@ class DiagnosticBundle(BaseModel):
     gof: GOFMetrics
     split_gof: SplitGOFMetrics | None = None
     vpc: VPCSummary | None = None
+    pit_calibration: PITCalibrationSummary | None = None
     identifiability: IdentifiabilityFlags
     blq: BLQHandling
     # Non-negative by construction: NPE is an absolute-error summary.

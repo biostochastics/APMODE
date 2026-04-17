@@ -7,6 +7,137 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### rc9 follow-up — PIT/NPDE-lite Gate 1 calibration (policy 0.4.2)
+
+The rc9 ``target ± tolerance`` VPC fix unblocked Suite A (a1 passed
+11/34 candidates) but the first bench on **real** public data exposed
+a deeper class of the same bug. On warfarin (32 subjects, irregular
+sampling at 0.5/1/2/4/8/12/24/36/48h), **every one of 33 candidates
+failed Gate 1** including the textbook-correct 1cmt + FirstOrder +
+Linear model (BIC=968.3, passed convergence + parameter plausibility
++ CWRES + state trajectory). The Gate 3 ranker wrote zero
+recommendations.
+
+**Smoking gun.** Three structurally-different top candidates showed
+*identical* VPC coverage values ``p5=0.375, p95=0.375`` — proof that
+the metric was reading a property of ``(data × binning scheme)``, not
+of fit quality. Root cause: with ~8 effective time bins, coverage per
+percentile band quantizes at ``{0, 1/8, 2/8, …, 1.0}``. Submission-
+lane tolerance 0.10 admits ``{1.0, 7/8=0.875}`` only; any band at
+``6/8=0.75`` auto-fails. Tail bands (p5, p95) are the most fragile
+because their observed-percentile estimates are high-variance at
+small-n.
+
+**Option review.** Six fix candidates were considered: widen
+tolerance, drop tail bands, subject-based denominator, 2-of-3 bands
+pass, Wilson/binomial CI, replace metric. The only option that
+addresses the *actual* failure mode — too few bin-level trials +
+unstable tail percentiles — is replacing the metric. Every other
+option either widens the gate without fixing discretization, or
+trades one artifact for another. The replacement chosen is PIT /
+NPDE-lite predictive calibration at observed times, aligned with the
+Uppsala/Monolix NPDE family of automated calibration diagnostics
+(Brendel 2006; Comets 2008).
+
+**New gate: PIT calibration at observed times.** For each
+observation ``j`` on subject ``i`` and each probability level
+``p ∈ {0.05, 0.50, 0.95}``:
+
+```
+q_p(i, j) = nanpercentile({ y_sim[s, i, j] for s in n_sims }, 100*p)
+I_p(i, j) = 1[ y_obs[i, j] <= q_p(i, j) ]
+c_p        = mean_i( mean_j I_p(i, j) )      # subject-robust
+```
+
+Under correct predictive calibration ``c_p → p``. The gate fails if
+``|c_p - p| > tol(p, n_subjects)`` where the tolerance is **n-scaled**
+to keep the SE-coverage constant across dataset sizes:
+
+```
+tol(p, n_subjects) = max( floor_{tail|med},
+                          z_alpha · sqrt(p(1-p) / n_subjects) )
+```
+
+- ``z_alpha``: lane-specific SE multiplier (submission 1.5 / strict,
+  optimization 2.0, discovery 2.5 / widest). Higher z_alpha → wider
+  window → more permissive.
+- ``floor_*``: absolute lower bounds that bind only at large
+  ``n_subjects`` where ``z · SE`` would otherwise make the gate
+  asymptotically vacuous-strict. Without a floor, a perfectly-
+  calibrated model at ``n_subj = 10 000`` would face a ~0.003
+  tolerance and false-reject on sampling noise alone.
+- ``n_subjects`` is the outer-mean denominator (subject-robust
+  aggregation). Using ``n_observations`` would understate variance
+  because within-subject observations are strongly correlated in
+  population-PK.
+
+Denominator becomes ``n_subjects`` (inner mean) then averaged across
+subjects — **invariant to binning choice**, no 1/n_bins quantization
+artifact on sparse real-data designs.
+
+**Empirical validation on theophylline (n_subj=12, submission lane).**
+Best-BIC candidate (textbook 1-cmt oral FirstOrder Linear, SAEM fit)
+produced:
+
+* ``c_0.05 = 0.008``  → ``|Δ| = 0.042``  (tol_tail at n=12 = 0.095) → passes
+* ``c_0.50 = 0.258``  → ``|Δ| = 0.242``  (tol_med  at n=12 = 0.216) → **fails (5.6σ deviation)**
+* ``c_0.95 = 0.886``  → ``|Δ| = 0.064``  (tol_tail at n=12 = 0.095) → passes
+
+The n-scaling correctly accommodates small-n noise at tails (0.042
+deviation at 132 obs is ~2.2σ sampling variance) while catching a real
+5.6-sigma median bias that the old bin-level VPC gate missed. The
+old gate passed 9/25 theo_sd candidates; PIT passes zero and this is
+correct — the nlmixr2 SAEM fit genuinely produces a miscalibrated
+predictive median on this dataset.
+
+- **``PITCalibrationSummary``** (new; ``bundle/models.py``) — Pydantic
+  model on ``DiagnosticBundle.pit_calibration`` carrying
+  ``probability_levels``, per-level ``calibration`` dict, and
+  ``n_observations`` / ``n_subjects`` provenance.
+- **``_compute_pit_calibration``** (new;
+  ``backends/predictive_summary.py``) — subject-robust aggregation
+  computed atomically alongside ``_compute_vpc_from_sims`` inside
+  ``build_predictive_diagnostics``. The atomic-population invariant
+  still holds: any backend that emits ``vpc`` must also emit
+  ``pit_calibration`` (both are fields on ``PredictiveSummaryBundle``
+  now).
+- **``_check_pit_calibration``** (new; ``governance/gates.py``)
+  replaces ``_check_vpc_coverage`` in the Gate 1 dispatch list. Tails
+  (``p ≤ 0.25 or p ≥ 0.75``) use ``Gate1Config.pit_tol_tail``; median
+  band uses ``pit_tol_median``.
+- **``Gate1Config``** gains ``pit_required``, ``pit_z_alpha``,
+  ``pit_tol_tail_floor``, ``pit_tol_median_floor``. Legacy
+  ``vpc_coverage_target`` / ``vpc_coverage_tolerance`` / ``vpc_required``
+  knobs are retained for backward compatibility but Gate 1 no longer
+  consumes them. The ``VPCSummary`` object is still written to the
+  bundle for reports / Gate 3 concordance — it's descriptive, not
+  gated.
+- **Lane calibration** (submission strictest → discovery widest,
+  preserving APMODE lane semantics; tails tighter than median because
+  tail miscalibration is the most diagnostic signal of residual-error
+  / IIV misspecification, and ``sqrt(p(1-p))`` is smaller at extremes
+  so tails naturally get a tighter n-scaled tolerance before the
+  floor binds):
+
+  | Lane | ``pit_z_alpha`` | ``pit_tol_tail_floor`` | ``pit_tol_median_floor`` |
+  |---|---:|---:|---:|
+  | submission | 1.5 | 0.03 | 0.05 |
+  | optimization | 2.0 | 0.04 | 0.07 |
+  | discovery | 2.5 | 0.05 | 0.10 |
+
+- **Policy JSONs** (`policies/submission.json`, `.../discovery.json`,
+  `.../optimization.json`) bumped ``0.4.1 → 0.4.2`` and carry the
+  three new PIT knobs. Legacy ``vpc_coverage_*`` fields kept so older
+  bundles parse.
+- **Tests.** ``tests/unit/test_gate_policy.py`` adds
+  ``test_all_lanes_pit_tolerance_calibration`` pinning the lane
+  matrix; ``tests/unit/test_gates.py`` replaces the three VPC-specific
+  tests with PIT equivalents (tail miscalibration, missing-when-
+  required, missing-when-not-required). ``_make_backend_result``
+  helpers in the integration + Suite A/B tests populate a well-
+  calibrated default ``PITCalibrationSummary`` so existing assertions
+  hold.
+
 ### rc9 Scope 1 — orchestrator threading of posterior-predictive kwargs
 
 The rc8 pipeline built the posterior-predictive diagnostics machinery
