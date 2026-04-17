@@ -950,30 +950,32 @@ uv run pytest tests/integration/test_llm_providers_live.py -m live -v
 
 ## FAIR packaging — RO-Crate (Workflow Run / Provenance Run Crate v0.5)
 
-Every sealed bundle can be projected onto a [Workflow Run RO-Crate — Provenance Run Crate v0.5](https://w3id.org/ro/wfrun/provenance/0.5) for FAIR packaging, WorkflowHub / Zenodo-ready archives, and regulatory crosswalk (FDA PCCP, EU AI Act Article 12). The Pydantic bundle remains producer-side truth; the RO-Crate is a read-only external projection.
+A sealed bundle can be projected onto a [Workflow Run RO-Crate — Provenance Run Crate v0.5](https://w3id.org/ro/wfrun/provenance/0.5) for FAIR packaging, WorkflowHub / Zenodo-ready archives, and regulatory crosswalk (FDA PCCP, EU AI Act Article 12). The Pydantic bundle remains producer-side truth; the RO-Crate is a read-only external projection — the source directory is never mutated by export.
 
 ```bash
 # Directory-form crate
 uv run apmode bundle rocrate export runs/<run_id> --out runs/<run_id>.crate
 
-# ZIP-form crate (reproducible archive; stable timestamps + sorted entries)
+# ZIP-form crate (deterministic archive; fixed 1980-01-01 timestamps + sorted entries)
 uv run apmode bundle rocrate export runs/<run_id> --out runs/<run_id>.crate.zip
 
 # Validate with roc-validator (REQUIRED severity, provenance-run-crate-0.5)
 uv run apmode validate runs/<run_id> --rocrate --crate runs/<run_id>.crate
 
-# Round-trip import — verifies _COMPLETE SHA-256 against the extracted tree
+# Round-trip import — extracts and re-verifies the _COMPLETE SHA-256 digest
 uv run apmode bundle import runs/<run_id>.crate.zip --out runs/<run_id>-imported
 
-# Inspect crate summary (mainEntity, action triad counts, sentinel)
+# Inspect crate summary (mainEntity, action-triad counts, sentinel)
 uv run apmode inspect runs/<run_id> --rocrate-view --crate runs/<run_id>.crate
 ```
 
-**What's in the crate** — every JSON/JSONL artifact from the bundle appears as a `File` entity under the root `Dataset.hasPart`; each candidate fit becomes a `CreateAction` instrumenting a candidate `SoftwareApplication`; each gate decision is a `ControlAction` with `instrument=HowToStep`, `object=CreateAction`, and an `apmode:gateRationale` pointer to the gate-decision JSON; the run is wrapped in an `OrganizeAction`. The `_COMPLETE` sentinel is projected as a `File` with `additionalType="apmode:completeSentinel"` so the bundle's SHA-256 integrity digest can be verified externally regardless of the crate packaging.
+**What the export writes** — every file under the bundle directory is copied verbatim into the crate. The `ro-crate-metadata.json` graph registers the core artifacts (data / split / evidence / seed / backend-versions / initial-estimates / policy / missing-data-directive manifests, compiled specs, backend results, gate decisions, candidate + run lineage, search trajectory / failed candidates / search graph, ranking, credibility reports, report provenance, Bayesian artefacts, agentic-trace iterations, regulatory PCCP files, and the `_COMPLETE` sentinel) as graph entities. A few diagnostic artefacts (e.g. `nca_diagnostics.jsonl`, `imputation_stability.json`, `categorical_encoding_provenance.json`, `loro_cv/`, `diagnostics/nca_plots/`, seed-stability `_seed_N_result.json`) are present as files in the crate but are not registered as named `File` entities — consumers can still read them by bundle-relative path.
 
-**Security** — ZIP import rejects path-traversal entries (ZIP-slip), absolute paths, Windows drive prefixes, and symlink/hardlink/socket file-type bits. Directory import rejects symlinks inside the crate. Mismatched `_COMPLETE` digest aborts with a non-zero exit.
+**Graph shape (WRROC action triad)** — each candidate fit is a `CreateAction` instrumenting a candidate `SoftwareApplication` (with `apmode:dslSpec` → compiled spec File). Each gate decision is a `ControlAction` with `instrument=HowToStep`, `object=CreateAction`, `result=gate-decision File`, and `apmode:gateRationale` pointing at the same file. The lane run is wrapped in an `OrganizeAction` carrying `startTime`/`endTime` from the bundle seal timestamp. The `_COMPLETE` sentinel is a `File` with `additionalType="apmode:completeSentinel"` and `identifier="sha256:<hex>"` so external verifiers can re-check bundle integrity without reading the JSON payload.
 
-**Scope (v0.6)** — read-only Submission-lane export, directory and ZIP forms, bundle import, CLI `validate --rocrate`. Discovery-lane tiering, live WorkflowHub/Zenodo uploads, and agentic-trace PROV-AGENT alignment are v0.7–v0.9 per the roadmap. Design authority: `_research/ROCRATE_INTEGRATION_PLAN.md`.
+**Security** — ZIP import performs per-entry validation before extraction: entries whose resolved paths escape the staging root, absolute paths, Windows drive-letter prefixes, and non-regular file types (symlinks, sockets, block devices) are rejected. Directory-form import also rejects symlinks encountered anywhere under the source. A `_COMPLETE` digest mismatch aborts the import with a non-zero exit.
+
+**Scope (v0.6)** — read-only export, directory and ZIP forms, round-trip import, and `apmode validate --rocrate` / `apmode inspect --rocrate-view` wiring. Lane detection reads `policy_file.json.lane` (Submission, Discovery, Optimization) and the corresponding `HowTo` / `HowToStep` graph is emitted per WRROC — the "Submission-lane ranking" guardrail (NODE/agentic never `recommended`) is an APMODE-side governance rule, not an RO-Crate constraint. Agentic-trace iterations are projected by default; the PROV-AGENT namespace + `provagent:ModelInvocation` typing is opt-in via `--include-provagent` for v0.9 alignment. Discovery-lane tiering (capping `ro-crate-metadata.json` size on 10³-candidate runs) and live WorkflowHub / Zenodo uploads are v0.7 / v0.8 roadmap items — a CLI stub for `apmode bundle publish` ships the argument surface today. Design authority: `_research/ROCRATE_INTEGRATION_PLAN.md`.
 
 ---
 
