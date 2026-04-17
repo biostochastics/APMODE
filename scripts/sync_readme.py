@@ -157,7 +157,13 @@ def build_values() -> dict[str, str]:
     # auto-update HTML comments live *outside* the URL. GitHub's markdown
     # parser chokes on HTML comments inside an image URL and renders the
     # whole `![Version](...)` as literal text.
-    badge_version = f"[![Version](https://img.shields.io/badge/version-{version_tag}-blue)]()"
+    #
+    # shields.io interprets a single ``-`` as the label/message/color
+    # separator in ``/badge/<label>-<message>-<color>``; any literal
+    # dash in the value must be doubled. A prerelease like ``v0.5.0-rc2``
+    # needs ``v0.5.0--rc2`` to render correctly.
+    shields_tag = version_tag.replace("-", "--")
+    badge_version = f"[![Version](https://img.shields.io/badge/version-{shields_tag}-blue)]()"
     badge_tests = (
         f"[![Tests](https://img.shields.io/badge/tests-{tests_total}%20collected-success)]()"
     )

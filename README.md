@@ -6,8 +6,8 @@
 
   **Adaptive Pharmacokinetic Model Discovery Engine**
 
-  [![Version](https://img.shields.io/badge/version-<!-- apmode:AUTO:version_tag -->v0.5.0-rc2<!-- apmode:/AUTO:version_tag -->-blue)]()
-  [![Tests](https://img.shields.io/badge/tests-<!-- apmode:AUTO:tests -->1746<!-- apmode:/AUTO:tests -->%20collected-success)]()
+  <!-- apmode:AUTO:badge_version -->[![Version](https://img.shields.io/badge/version-v0.5.0--rc2-blue)]()<!-- apmode:/AUTO:badge_version -->
+  <!-- apmode:AUTO:badge_tests -->[![Tests](https://img.shields.io/badge/tests-1746%20collected-success)]()<!-- apmode:/AUTO:badge_tests -->
   [![License](https://img.shields.io/badge/license-GPL--2.0--or--later-green)](LICENSE)
   [![Python](https://img.shields.io/badge/python-3.12%E2%80%933.14-yellow)]()
   [![mypy](https://img.shields.io/badge/mypy-strict%20%E2%9C%93-blue)]()
