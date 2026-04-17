@@ -42,8 +42,22 @@ class Gate1Config(BaseModel):
     vpc_required: bool = True
     cwres_mean_max: float
     outlier_fraction_max: float = Field(ge=0.0, le=1.0)
-    vpc_coverage_lower: float
-    vpc_coverage_upper: float
+    # VPC coverage check is a target-with-tolerance comparison, not a
+    # fixed-bounds range. The percentile-based post-hoc VPC produces
+    # discrete hit-rates (``n/k`` for ``k`` effective bins), so a
+    # ``lower ≤ coverage ≤ upper`` check creates gaps: with k=7 the only
+    # achievable hit-rates are {0, 1/7, 2/7, ..., 6/7=0.857, 1.0} — no
+    # value lands in (0.857, 0.995). A well-fitted model's 7/7=1.0 then
+    # fails a 0.995 ceiling, and poorly-fitted models always fail the
+    # floor. Target+tolerance makes the check symmetric and semantically
+    # aligned with the nominal VPC coverage target (default 0.90 matches
+    # :attr:`GatePolicy.vpc_concordance_target`).
+    #
+    # Lane calibration guideline: submission uses the tightest tolerance
+    # (≤0.10), optimization slightly wider (~0.12), discovery widest
+    # (~0.15) — discrete small-bin VPCs need headroom.
+    vpc_coverage_target: float = Field(default=0.90, ge=0.0, le=1.0)
+    vpc_coverage_tolerance: float = Field(default=0.15, gt=0.0, le=1.0)
     seed_stability_n: int = Field(ge=1)
     seed_stability_cv_max: float = Field(default=0.10, gt=0.0, le=1.0)
     # State trajectory validity thresholds
@@ -61,16 +75,6 @@ class Gate1Config(BaseModel):
     split_outlier_ratio_intercept: float = Field(default=0.05, ge=0.0, le=1.0)
     # Bayesian-only thresholds (applied when backend == "bayesian_stan")
     bayesian: BayesianThresholds = Field(default_factory=BayesianThresholds)
-
-    @model_validator(mode="after")
-    def vpc_bounds_ordered(self) -> Gate1Config:
-        if self.vpc_coverage_lower >= self.vpc_coverage_upper:
-            msg = (
-                f"vpc_coverage_lower ({self.vpc_coverage_lower}) must be < "
-                f"vpc_coverage_upper ({self.vpc_coverage_upper})"
-            )
-            raise ValueError(msg)
-        return self
 
 
 class Gate2Config(BaseModel):

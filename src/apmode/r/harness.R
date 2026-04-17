@@ -62,15 +62,22 @@ response_path <- args[2]
   # Gate 3 ranking. Never raises, to keep the main harness path alive.
   if (is.null(n_sims) || n_sims <= 0) return(NULL)
   tryCatch({
+    # rxode2 rejects ``keep`` containing reserved columns such as EVID and
+    # typically DV — passing them aborts the whole call and returns NULL
+    # here, silently killing the posterior-predictive pipeline. rxSolve
+    # already drops dose-only rows from its output and the sim matrix
+    # carries its own simulated DV column (``sim`` / ``cp``), so no pass-
+    # through is needed; we read observed DV + observation times from the
+    # original ``data`` frame below instead.
     sim_df <- rxode2::rxSolve(
       object = fit,
       events = data,
       nStud = as.integer(n_sims),
-      keep = c("DV", "EVID"),
       returnType = "data.frame"
     )
 
-    # Observation rows only (drop dosing events).
+    # Defensive filter in case a newer rxode2 starts surfacing EVID in the
+    # output — keep the observation-only invariant downstream.
     if ("EVID" %in% names(sim_df)) {
       sim_df <- sim_df[sim_df$EVID == 0, , drop = FALSE]
     }

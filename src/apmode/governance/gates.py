@@ -70,7 +70,7 @@ def evaluate_gate1(
       2. Parameter plausibility: no extreme/negative structural params
       3. State trajectory validity: no negative concentrations, no NaN
       4. CWRES diagnostics: |mean| < threshold, outlier fraction < threshold
-      5. VPC coverage: within [lower, upper] policy bounds
+      5. VPC coverage: |coverage - target| <= tolerance per band (0.4.1)
       6. Split integrity: (placeholder — requires train/test comparison)
       7. Seed stability: results consistent across ≥N random seeds
       8. Imputation stability (MI runs only): convergence_rate and
@@ -246,10 +246,15 @@ def _check_cwres(result: BackendResult, g1: Gate1Config) -> list[GateCheckResult
 
 
 def _check_vpc_coverage(result: BackendResult, g1: Gate1Config) -> GateCheckResult:
-    """Check 5: VPC coverage within policy thresholds.
+    """Check 5: VPC coverage within ``target ± tolerance``.
 
-    Each percentile band (p5, p50, p95) coverage must be within
-    [vpc_coverage_lower, vpc_coverage_upper].
+    Compares each percentile band (``p5``, ``p50``, ``p95``) coverage to
+    ``vpc_coverage_target`` using a symmetric tolerance. The previous
+    fixed ``[lower, upper]`` form rejected both well-fitted models
+    (coverage = 1.0 on small-bin VPCs) and mis-specified ones — no
+    achievable discrete hit-rate landed in the narrow admissible gap.
+    See ``Gate1Config.vpc_coverage_target`` / ``..._tolerance`` for the
+    rationale and lane calibration guideline.
     """
     vpc = result.diagnostics.vpc
     if vpc is None:
@@ -268,19 +273,20 @@ def _check_vpc_coverage(result: BackendResult, g1: Gate1Config) -> GateCheckResu
             observed="vpc_not_available",
         )
 
+    target = g1.vpc_coverage_target
+    tolerance = g1.vpc_coverage_tolerance
     violations: list[str] = []
     for band, coverage in vpc.coverage.items():
-        if coverage < g1.vpc_coverage_lower:
-            violations.append(f"{band}={coverage:.3f} (<{g1.vpc_coverage_lower})")
-        if coverage > g1.vpc_coverage_upper:
-            violations.append(f"{band}={coverage:.3f} (>{g1.vpc_coverage_upper})")
+        deviation = abs(coverage - target)
+        if deviation > tolerance:
+            violations.append(f"{band}={coverage:.3f} (|Δ|={deviation:.3f} > tol={tolerance})")
 
     passed = len(violations) == 0
     return GateCheckResult(
         check_id="vpc_coverage",
         passed=passed,
-        observed="; ".join(violations) if violations else "all_within_bounds",
-        threshold=f"[{g1.vpc_coverage_lower}, {g1.vpc_coverage_upper}]",
+        observed="; ".join(violations) if violations else "all_within_tolerance",
+        threshold=f"|coverage - {target}| <= {tolerance}",
     )
 
 

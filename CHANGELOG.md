@@ -60,6 +60,74 @@ rc8 posterior-predictive pipeline when the R harness supplies
 structured warning in `Nlmixr2Runner._parse_response` surfaces and Gate
 3 falls back to CWRES — no change to that path.
 
+### rc9 follow-up — R-harness rxSolve fix (posterior-predictive pipeline actually runs)
+
+Scope 1 correctly forwarded `Gate3Config(n_posterior_predictive_sims=500)`
+to the nlmixr2 runner, but the first end-to-end smoke showed the
+structured `"posterior-predictive simulation absent"` warning firing on
+every candidate — meaning the R harness was returning `NULL`
+predicted_simulations. Tracing revealed the root cause in
+`src/apmode/r/harness.R::.simulate_posterior_predictive`:
+
+```r
+rxode2::rxSolve(object = fit, events = data, nStud = n_sims,
+                keep = c("DV", "EVID"),    # ← aborts rxode2 with
+                returnType = "data.frame") #    "'keep' cannot contain evid"
+```
+
+`rxode2` rejects reserved columns in `keep`. The outer `tryCatch`
+swallowed the error and returned `NULL`, silently killing the pipeline
+on every run. Removed the `keep` argument — rxode2 already drops
+dose-only rows, the sim matrix carries its own simulated DV (`sim`),
+and observed DV + observation times are read from the original `data`
+frame downstream. Verified against theophylline: rxSolve returns 396
+rows (132 obs × 3 studies), and reconstruction into the per-subject
+(n_sims × n_obs) matrix now produces finite concentrations in the
+expected 0–9 mg/L range.
+
+### rc9 follow-up — policy 0.4.1 (Gate 1 VPC coverage switched to target ± tolerance)
+
+With the rxSolve fix live, the benchmark suite exposed a second latent
+bug: Gate 1's `vpc_coverage` check rejected **every** candidate —
+well-fitted and poorly-fitted alike — because the post-hoc VPC binning
+produces discrete hit-rates. With ~7 effective bins per VPC, coverage
+can only land on `{0, 1/7, 2/7, …, 6/7=0.857, 7/7=1.0}`. There is **no
+discrete value in the interval `(0.857, 0.995)`**, so the previous
+`[lower, upper]` bounds check had an unreachable admissible gap:
+well-fitted models with perfect coverage (`1.0`) always violated the
+upper ceiling, while noisy candidates fell below the lower bound.
+Pre-rc9 this was invisible because `diagnostics.vpc` was always `None`
+and the check short-circuited to "pass" — the bounds had never actually
+been exercised.
+
+Fix: redesigned `Gate1Config` VPC check as **target-with-tolerance**
+instead of fixed bounds. A VPC percentile band is now admissible iff
+`|coverage - target| <= tolerance`. This is semantically aligned with
+the nominal VPC coverage target (a well-calibrated 90% VPC should
+produce band-level hit-rates near 0.90) and is symmetric by
+construction:
+
+* `Gate1Config.vpc_coverage_lower` / `..._upper` **removed**.
+* `Gate1Config.vpc_coverage_target: float = 0.90` added (matches the
+  existing `GatePolicy.vpc_concordance_target` default).
+* `Gate1Config.vpc_coverage_tolerance: float = 0.15` added.
+* Lane calibration: submission `tolerance=0.10` (strict, regulatory-
+  facing), optimization `0.12`, discovery `0.15` (widest, reflects
+  NODE/agentic variance).
+
+`policies/{submission,discovery,optimization}.json` rewritten to the
+new fields; `policy_version` bumped `0.4.0 → 0.4.1`. Pin tests in
+`tests/unit/test_gate_policy.py` updated to the new shape; new
+`test_all_lanes_vpc_target_tolerance` asserts the lane calibration
+matrix. `_check_vpc_coverage` in `src/apmode/governance/gates.py`
+rewritten to use the deviation check and emit the new threshold string
+`|coverage - 0.90| <= 0.10`.
+
+The earlier Gate 3 concern ("over-coverage / pathologically-wide
+bands") is covered by the cross-paradigm Gate 3 ranker's concordance-
+vs-target normalization, so the Gate 1 side no longer needs a separate
+upper-bound sentinel.
+
 ## [0.4.0] — 2026-04-16
 
 ### Version bump + README single-source automation (+0.1 from 0.3.0-rc series)

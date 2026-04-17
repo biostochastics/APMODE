@@ -16,8 +16,8 @@ def _gate1(**overrides: object) -> Gate1Config:
         convergence_required=True,
         cwres_mean_max=0.1,
         outlier_fraction_max=0.05,
-        vpc_coverage_lower=0.85,
-        vpc_coverage_upper=0.995,
+        vpc_coverage_target=0.90,
+        vpc_coverage_tolerance=0.15,
         seed_stability_n=3,
     )
     defaults.update(overrides)
@@ -42,9 +42,17 @@ class TestGate1Config:
         g1 = _gate1()
         assert g1.cwres_mean_max == pytest.approx(0.1)
 
-    def test_vpc_bounds_inverted_rejected(self) -> None:
+    def test_vpc_tolerance_must_be_positive(self) -> None:
         with pytest.raises(ValidationError):
-            _gate1(vpc_coverage_lower=0.99, vpc_coverage_upper=0.85)
+            _gate1(vpc_coverage_tolerance=0.0)
+
+    def test_vpc_tolerance_upper_bound(self) -> None:
+        with pytest.raises(ValidationError):
+            _gate1(vpc_coverage_tolerance=1.5)
+
+    def test_vpc_target_within_unit_interval(self) -> None:
+        with pytest.raises(ValidationError):
+            _gate1(vpc_coverage_target=1.5)
 
     def test_new_prd_fields_default_true(self) -> None:
         g1 = _gate1()
@@ -115,8 +123,8 @@ class TestValidatePolicyFile:
                 "convergence_required": True,
                 "cwres_mean_max": 0.1,
                 "outlier_fraction_max": 0.05,
-                "vpc_coverage_lower": 0.85,
-                "vpc_coverage_upper": 0.995,
+                "vpc_coverage_target": 0.90,
+                "vpc_coverage_tolerance": 0.10,
                 "seed_stability_n": 3,
             },
             "gate2": {
@@ -196,16 +204,31 @@ class TestLanePoliciesGate3Contract:
         assert policy.gate3.bic_weight == 0.0
         assert policy.gate3.auc_cmax_weight == pytest.approx(0.30)
 
-    def test_optimization_policy_version_bumped_to_0_4_0(self) -> None:
-        # gate3 weight shape changed (auc_cmax_weight flipped to 0.30).
-        # Consumers pinning on 0.3.1 need to know this is an evidence-
-        # model shift, not a defaults-only tick.
+    def test_optimization_policy_version_bumped(self) -> None:
+        # 0.4.1 bump: Gate 1 ``vpc_coverage_upper`` relaxed 0.995 → 1.0
+        # across all three lanes because post-hoc binned VPC produces
+        # discrete hit-rates (n/k); with 7-bin VPCs the common
+        # "well-fitted" value of 7/7=1.0 previously rejected on the upper
+        # ceiling — no discrete value exists in (6/7=0.857, 0.995).
+        # See CHANGELOG rc9 follow-up.
         policy = self._load("optimization")
-        assert policy.policy_version == "0.4.0"
+        assert policy.policy_version == "0.4.1"
 
     def test_submission_discovery_policy_version_bumped(self) -> None:
-        # All three lanes now on 0.4.0 (README-sync bump, 2026-04-16 +0.1).
-        # Optimization was 0.4.0 because its gate3 weights changed; submission
-        # and discovery were moved from 0.3.1 → 0.4.0 for uniform release tag.
         for lane in ("submission", "discovery"):
-            assert self._load(lane).policy_version == "0.4.0"
+            assert self._load(lane).policy_version == "0.4.1"
+
+    def test_all_lanes_vpc_target_tolerance(self) -> None:
+        """0.4.1: VPC coverage check is target-with-tolerance, not bounds.
+
+        Discrete small-bin VPCs produce hit-rates in ``{0, 1/k, …, 1.0}``,
+        so a fixed ``[lower, upper]`` range creates unreachable gaps.
+        The new check is ``|coverage - target| <= tolerance`` with lane-
+        specific tolerances: submission 0.10 (strict), optimization 0.12,
+        discovery 0.15 (widest, reflecting NODE/agentic variance).
+        """
+        expected_tolerance = {"submission": 0.10, "discovery": 0.15, "optimization": 0.12}
+        for lane, tol in expected_tolerance.items():
+            g1 = self._load(lane).gate1
+            assert g1.vpc_coverage_target == pytest.approx(0.90)
+            assert g1.vpc_coverage_tolerance == pytest.approx(tol)
