@@ -97,7 +97,12 @@ response_path <- args[2]
     data_obs <- data[data$EVID == 0, , drop = FALSE]
     subjects <- unique(as.character(data_obs$ID))
 
-    out <- vector("list", length(subjects))
+    # Per-subject sim matrices, still containing NA rows for failed sim
+    # replicates. Sim-replicate failures are pruned globally after this
+    # loop so every subject ends up with the same n_sims (the predictive
+    # helper requires matching shapes across subjects).
+    per_subj_mats <- vector("list", length(subjects))
+    per_subj_meta <- vector("list", length(subjects))
     for (i in seq_along(subjects)) {
       sid <- subjects[i]
       subj_data <- data_obs[as.character(data_obs$ID) == sid, , drop = FALSE]
@@ -116,16 +121,40 @@ response_path <- args[2]
           mat[s, ] <- as.numeric(s_rows[[sim_col]])
         }
       }
+      per_subj_mats[[i]] <- mat
+      per_subj_meta[[i]] <- list(subject_id = sid, t_observed = t_obs,
+                                  observed_dv = dv_obs)
+    }
 
-      # Convert matrix to nested list for JSON. lapply preserves row order.
-      sims_nested <- lapply(seq_len(n_sims), function(r) as.numeric(mat[r, ]))
+    # Globally drop any sim replicate that has a non-finite entry for
+    # ANY subject. rxode2 silently omits rows when its ODE solver fails
+    # for an ETA draw; those rows surface here as all-NA. Keeping them
+    # would poison jsonlite (``digits = NA`` serializes NA_real_ as the
+    # string ``"NA"``, which blows up Pydantic downstream) AND violate
+    # the matching-n_sims invariant in build_predictive_diagnostics.
+    valid_sims <- rep(TRUE, n_sims)
+    for (mat in per_subj_mats) {
+      row_finite <- apply(mat, 1, function(r) all(is.finite(r)))
+      valid_sims <- valid_sims & row_finite
+    }
+    n_valid <- sum(valid_sims)
+    if (n_valid == 0L) {
+      message(paste0("APMODE: VPC simulation produced zero valid ",
+                     "replicates across subjects (requested ", n_sims,
+                     "); falling back to CWRES proxy."))
+      return(NULL)
+    }
+    if (n_valid < n_sims) {
+      message(paste0("APMODE: VPC simulation dropped ", n_sims - n_valid,
+                     " of ", n_sims, " sim replicates due to solver ",
+                     "failures (kept ", n_valid, ")."))
+    }
 
-      out[[i]] <- list(
-        subject_id = sid,
-        t_observed = t_obs,
-        observed_dv = dv_obs,
-        sims_at_observed = sims_nested
-      )
+    out <- vector("list", length(subjects))
+    for (i in seq_along(subjects)) {
+      mat <- per_subj_mats[[i]][valid_sims, , drop = FALSE]
+      sims_nested <- lapply(seq_len(nrow(mat)), function(r) as.numeric(mat[r, ]))
+      out[[i]] <- c(per_subj_meta[[i]], list(sims_at_observed = sims_nested))
     }
     out
   }, error = function(e) {
@@ -408,9 +437,15 @@ tryCatch({
     )
   }
 
-  # 6. Write response
+  # 6. Write response. ``na = "null"`` is load-bearing: with ``digits =
+  # NA`` jsonlite's default format path serializes ``NA_real_`` as the
+  # string ``"NA"`` rather than JSON null, which blows up Pydantic's
+  # float parsing on the Python side. We also prune NA sim rows upstream
+  # in .simulate_posterior_predictive, but keep this as the last line of
+  # defense for any NA that escapes from fit-summary fields (shrinkage,
+  # %RSE, etc.).
   write_json(response, response_path, auto_unbox = TRUE,
-             null = "null", pretty = TRUE, digits = NA)
+             null = "null", na = "null", pretty = TRUE, digits = NA)
 
 }, error = function(e) {
   # Crash-safe: write error response even on unexpected errors
@@ -430,7 +465,7 @@ tryCatch({
   )
   tryCatch(
     write_json(error_response, response_path, auto_unbox = TRUE,
-               null = "null", pretty = TRUE),
+               null = "null", na = "null", pretty = TRUE),
     error = function(e3) {
       message(paste("APMODE: failed to write error response:", e3$message))
     }
