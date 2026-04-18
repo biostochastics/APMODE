@@ -375,10 +375,10 @@ class TestSearchEngineMultiBackend:
         classical = _classical_spec()
         node_spec = _node_spec()
 
-        result_c = asyncio.get_event_loop().run_until_complete(
+        result_c = asyncio.run(
             engine._evaluate_candidate(classical, {"ka": 1.0, "V": 30.0, "CL": 2.0})
         )
-        result_n = asyncio.get_event_loop().run_until_complete(
+        result_n = asyncio.run(
             engine._evaluate_candidate(node_spec, {"ka": 1.0, "V": 30.0, "CL": 2.0})
         )
 
@@ -405,7 +405,7 @@ class TestSearchEngineMultiBackend:
         )
 
         node_spec = _node_spec()
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             engine._evaluate_candidate(node_spec, {"ka": 1.0, "V": 30.0, "CL": 2.0})
         )
 
@@ -518,7 +518,7 @@ class TestDiscoveryLaneIntegration:
             n_doses=2,
         )
 
-        outcome = asyncio.get_event_loop().run_until_complete(orch.run(manifest, df, data_path))
+        outcome = asyncio.run(orch.run(manifest, df, data_path))
 
         # Verify pipeline completed
         assert outcome.search_outcome is not None
@@ -580,7 +580,7 @@ class TestDiscoveryLaneIntegration:
             n_doses=2,
         )
 
-        asyncio.get_event_loop().run_until_complete(orch.run(manifest, df, data_path))
+        asyncio.run(orch.run(manifest, df, data_path))
 
         # NODE runner should never have been called in submission lane
         assert node.call_count == 0
@@ -649,7 +649,7 @@ class TestDiscoveryLaneIntegration:
             n_doses=2,
         )
 
-        asyncio.get_event_loop().run_until_complete(orch.run(manifest, df, data_path))
+        asyncio.run(orch.run(manifest, df, data_path))
 
         # At least one dispatch must have happened.
         assert nlmixr2.call_count > 0
