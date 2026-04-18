@@ -53,6 +53,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 README = ROOT / "README.md"
 CLAUDE_MD = ROOT / "CLAUDE.md"
+CITATION_CFF = ROOT / "CITATION.cff"
 POLICY_DIR = ROOT / "policies"
 CLI_FILE = ROOT / "src/apmode/cli.py"
 DATASETS_FILE = ROOT / "src/apmode/data/datasets.py"
@@ -68,6 +69,17 @@ MARKER_RE = re.compile(
     r"(?P<body>.*?)"
     r"<!--\s*apmode:/AUTO:(?P<close>[a-z0-9_]+)\s*-->",
     re.DOTALL,
+)
+
+# BibTeX fields cannot host HTML-comment markers (they render literally inside
+# a fenced ```bibtex block), so we target the ``version`` field of the
+# ``@software{apmode2026, ...}`` entry with a dedicated line-level regex. The
+# CITATION.cff file uses the same machinery for its top-level ``version:`` key.
+BIBTEX_VERSION_RE = re.compile(
+    r"(?P<prefix>version\s*=\s*\{)(?P<body>[^}]*)(?P<suffix>\})",
+)
+CITATION_VERSION_RE = re.compile(
+    r"(?m)^(?P<prefix>version:\s*)(?P<body>\S+)\s*$",
 )
 
 
@@ -132,7 +144,19 @@ def collect_transform_count() -> int:
 
 
 def collect_cli_command_count() -> int:
-    return len(re.findall(r"^@app\.command\(", CLI_FILE.read_text(), re.M))
+    """Count user-visible commands in `apmode --help`.
+
+    Includes both ``@app.command(...)`` decorators and Typer sub-apps
+    registered via ``register_rocrate_commands(app)`` (which attaches the
+    ``bundle`` group as a single top-level command). The two helpers below
+    resolve to exactly what ``apmode --help`` prints.
+    """
+    text = CLI_FILE.read_text()
+    n_decorated = len(re.findall(r"^@app\.command\(", text, re.M))
+    # Sub-apps: each ``register_*_commands(app)`` call attaches one more
+    # top-level group. Today that's ``register_rocrate_commands`` only.
+    n_subapps = len(re.findall(r"^register_\w+_commands\(app\)", text, re.M))
+    return n_decorated + n_subapps
 
 
 def collect_dataset_count() -> int:
@@ -239,6 +263,36 @@ def main() -> int:
             if not args.check:
                 path.write_text(new)
                 print(f"  → wrote {path.name}")
+
+    # BibTeX version field in README (can't host HTML markers inside a fenced
+    # code block — they render literally). Targeted regex substitution.
+    if README.exists():
+        text = README.read_text()
+
+        def _bib_repl(m: re.Match[str]) -> str:
+            return f"{m.group('prefix')}{values['version']}{m.group('suffix')}"
+
+        new = BIBTEX_VERSION_RE.sub(_bib_repl, text, count=1)
+        if new != text:
+            any_drift = True
+            print(f"\nREADME.md: bibtex version drift → {values['version']}")
+            if not args.check:
+                README.write_text(new)
+
+    # CITATION.cff (GitHub "Cite this repository" source).
+    if CITATION_CFF.exists():
+        text = CITATION_CFF.read_text()
+
+        def _cff_repl(m: re.Match[str]) -> str:
+            return f"{m.group('prefix')}{values['version']}"
+
+        new = CITATION_VERSION_RE.sub(_cff_repl, text, count=1)
+        if new != text:
+            any_drift = True
+            print(f"\nCITATION.cff: version drift → {values['version']}")
+            if not args.check:
+                CITATION_CFF.write_text(new)
+
     if args.check and any_drift:
         print("\nDrift detected. Run without --check to update.", file=sys.stderr)
         return 1

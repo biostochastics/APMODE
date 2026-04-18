@@ -1,0 +1,30 @@
+cff-version: 1.2.0
+message: "If you use APMODE in your research, please cite it as below."
+type: software
+title: "APMODE: Adaptive Pharmacokinetic Model Discovery Engine"
+abstract: >
+  APMODE is a governed meta-system that composes five population PK modeling
+  paradigms — classical NLME (nlmixr2), automated structural search, hybrid
+  mechanistic-NODE (JAX/Diffrax), agentic LLM model construction, and
+  Bayesian Stan/Torsten — under a unified evidence-gate funnel with fully
+  reproducible JSON bundles.
+authors:
+  - family-names: Kornilov
+    given-names: Sergey A.
+    affiliation: Biostochastics
+version: 0.5.0-rc2
+date-released: 2026-04-17
+license: GPL-2.0-or-later
+repository-code: "https://github.com/biostochastics/apmode"
+url: "https://github.com/biostochastics/apmode"
+keywords:
+  - pharmacokinetics
+  - population-pk
+  - nlme
+  - nlmixr2
+  - neural-ode
+  - bayesian
+  - stan
+  - agentic-llm
+  - model-discovery
+  - reproducibility

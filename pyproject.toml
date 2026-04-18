@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-# Copyright (C) 2026 APMODE Contributors
+# Copyright (C) 2026 Biostochastics (Sergey Kornilov)
 
 [build-system]
 requires = ["hatchling", "hatch-vcs"]
@@ -12,7 +12,7 @@ description = "Adaptive Pharmacokinetic Model Discovery Engine"
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
 license = "GPL-2.0-or-later"
-authors = [{ name = "APMODE Contributors" }]
+authors = [{ name = "Sergey Kornilov", email = "sergey.kornilov@biostochastics.com" }]
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
     "Intended Audience :: Science/Research",

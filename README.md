@@ -447,7 +447,7 @@ Formular text ──→ Lark parser ──→ AST ──→     Search Engine
 | Report generator | `src/apmode/report/` | HTML + Markdown regulatory report with credibility framing |
 | Dataset registry | `src/apmode/data/datasets.py` | <!-- apmode:AUTO:datasets -->14<!-- apmode:/AUTO:datasets --> public PK datasets from nlmixr2data with auto-fetch |
 | Path resolver | `src/apmode/paths.py` | `APMODE_POLICIES_DIR` env override + pyproject-walk fallback for CLI/orchestrator |
-| CLI | `src/apmode/cli.py` | Typer CLI with <!-- apmode:AUTO:cli_cmds -->14<!-- apmode:/AUTO:cli_cmds --> commands (see [CLI Reference](#cli-reference)) |
+| CLI | `src/apmode/cli.py` | Typer CLI with <!-- apmode:AUTO:cli_cmds -->15<!-- apmode:/AUTO:cli_cmds --> commands (see [CLI Reference](#cli-reference)) |
 
 ---
 
@@ -798,7 +798,7 @@ Please cite the individual papers listed under *Pharmacometric References* when 
 
 ## CLI Reference
 
-<!-- apmode:AUTO:cli_cmds -->14<!-- apmode:/AUTO:cli_cmds --> commands exposed by `apmode --help` (count auto-synced from `src/apmode/cli.py`):
+<!-- apmode:AUTO:cli_cmds -->15<!-- apmode:/AUTO:cli_cmds --> commands exposed by `apmode --help` (count auto-synced from `src/apmode/cli.py`):
 
 | Command | Description |
 |---------|-------------|
@@ -1056,9 +1056,11 @@ If you use APMODE in your research, please cite:
   year         = {2026},
   url          = {https://github.com/biostochastics/apmode},
   license      = {GPL-2.0-or-later},
-  version      = {<!-- apmode:AUTO:version -->0.5.0-rc2<!-- apmode:/AUTO:version -->}
+  version      = {0.5.0-rc2}
 }
 ```
+
+GitHub users can also click **"Cite this repository"** on the repo page, powered by [`CITATION.cff`](CITATION.cff).
 
 ---
 
