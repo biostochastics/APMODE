@@ -713,7 +713,11 @@ class TestRunWiring:
             async def run(self, *args: Any, **kwargs: Any) -> Any:
                 raise RuntimeError("stop-after-config")
 
-        with patch("apmode.orchestrator.Orchestrator", _FakeOrch):
+        with (
+            patch("apmode.backends.nlmixr2_runner.Nlmixr2Runner") as _fake_runner,
+            patch("apmode.orchestrator.Orchestrator", _FakeOrch),
+        ):
+            _fake_runner.return_value = MagicMock()
             result = runner.invoke(
                 app,
                 [
@@ -742,9 +746,11 @@ class TestRunWiring:
             pytest.skip("fixture CSV missing")
 
         with (
+            patch("apmode.backends.nlmixr2_runner.Nlmixr2Runner") as _fake_runner,
             patch("apmode.cli._try_build_agentic_runner") as mock_build,
             patch("apmode.orchestrator.Orchestrator") as mock_orch,
         ):
+            _fake_runner.return_value = MagicMock()
             # Orchestrator.run is awaited — make it raise to halt after dispatch.
             inst = MagicMock()
 

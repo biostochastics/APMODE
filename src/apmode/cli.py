@@ -3552,10 +3552,11 @@ def doctor() -> None:
 
     # Ollama (local) — narrow exception to OSError (covers URLError/ConnectionRefused).
     # 1s timeout; localhost should be near-instant, and a health check shouldn't hang.
+    # B310: URL is a hardcoded http://localhost literal; no user input reaches urlopen.
     try:
         import urllib.request
 
-        urllib.request.urlopen("http://localhost:11434", timeout=1.0)
+        urllib.request.urlopen("http://localhost:11434", timeout=1.0)  # nosec B310
         table.add_row("LLM: Ollama (local)", "[green]✓ running[/]", "http://localhost:11434")
     except OSError as exc:
         # Surface the specific reason (Connection refused, Timed out, …) so users

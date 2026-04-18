@@ -2,14 +2,20 @@
 """Tests for Nlmixr2Runner subprocess backend (ARCHITECTURE.md S4.2)."""
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
 
-from apmode.backends.nlmixr2_runner import Nlmixr2Runner
-from apmode.backends.protocol import BackendRunner
-from apmode.bundle.models import ColumnMapping, DataManifest
-from apmode.dsl.ast_models import (
+pytestmark = pytest.mark.skipif(
+    shutil.which("Rscript") is None,
+    reason="Rscript not on PATH — #22 defence-in-depth makes Nlmixr2Runner.__init__ require it",
+)
+
+from apmode.backends.nlmixr2_runner import Nlmixr2Runner  # noqa: E402
+from apmode.backends.protocol import BackendRunner  # noqa: E402
+from apmode.bundle.models import ColumnMapping, DataManifest  # noqa: E402
+from apmode.dsl.ast_models import (  # noqa: E402
     IIV,
     DSLSpec,
     FirstOrder,
@@ -17,7 +23,7 @@ from apmode.dsl.ast_models import (
     OneCmt,
     Proportional,
 )
-from apmode.errors import ConvergenceError, CrashError
+from apmode.errors import ConvergenceError, CrashError  # noqa: E402
 
 
 def _test_spec() -> DSLSpec:
