@@ -332,7 +332,7 @@ After all root candidates are fit, the SearchEngine selects the **top-3 converge
 
 Children **warm-start from their parent's fitted parameters** rather than NCA estimates. For an `ka`/`CL`/`V` 2-cmt parent that converged to `ka=0.8, CL=3.2, V1=45, V2=80, Q=9`, those values seed the child's initial estimates, cutting SAEM convergence time by ~3-5x. The child's structural modules can differ (e.g., different IIV structure or error model), but the shared structural parameters inherit the parent's fitted values.
 
-Every parent → child relationship is tracked in the **Search DAG** (`candidate_lineage.jsonl`), with edge labels like `"warm_start_combined"` indicating which error model drove the child.
+Every parent → child relationship is tracked in the **Search DAG** (`candidate_lineage.json`), with edge labels like `"warm_start_combined"` indicating which error model drove the child.
 
 ### Total Budget
 
@@ -363,7 +363,7 @@ Running on the 120-subject Novartis mavoglurant dataset (`nlmixr2data::mavoglura
 - **Phase 3 children:** top-3 converged roots warm-start up to 18 children with varied error models (some dedup, usually 10-15 actual)
 - **Time per candidate:** 2-5 minutes SAEM on 120 subjects, parallelizable up to `max_concurrency`
 - **Total wall time:** ~60-90 minutes for a single-threaded submission-lane run
-- **Output:** `candidate_lineage.jsonl` (DAG edges), `search_trajectory.jsonl` (per-candidate BIC/OFV/convergence)
+- **Output:** `candidate_lineage.json` (DAG edges), `search_trajectory.jsonl` (per-candidate BIC/OFV/convergence)
 
 ### Why This Design
 

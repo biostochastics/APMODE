@@ -2,7 +2,7 @@
 
 **Version:** 0.3
 **Date:** 2026-04-17
-**Status:** Current (tracks APMODE 0.5.0-rc1; Phase 3 in progress)
+**Status:** Current (tracks APMODE 0.5.0-rc2; Phase 3 in progress)
 **Derived from:** PRD v0.3 (§3–§8)
 **Supersedes:** v0.2 (2026-04-13). Change summary: Phase 2/3 framing removed where
 shipped (Bayesian backend, NODE, agentic LLM, Gate 2.5, FREM, Gate 3 ranking all
@@ -93,7 +93,7 @@ See `docs/FORMULAR.md` for the language reference.
 | R invocation | `Rscript src/apmode/r/harness.R` via subprocess; file-based I/O (§4.2) |
 | Stan invocation | `cmdstanpy.CmdStanModel` via `src/apmode/bayes/harness.py` wrapped by `bayesian_runner.py` |
 | Retry/timeout | Bespoke logic in each runner; timeout from policy file, killed attempts write to new `attempt_id/` subdir |
-| CLI | Typer (`src/apmode/cli.py`) — 14 commands |
+| CLI | Typer (`src/apmode/cli.py`) — 15 commands |
 
 **Note on deployment posture.** The codebase runs natively on the user's machine via
 `uv`; there is no Docker-Compose stack, no R container, no K8s. Users who want
@@ -222,10 +222,10 @@ quarterly — cadence tracked in `.github/workflows/`).
 ```
               ┌────────────────────────────────────────────┐
               │            apmode CLI (Typer)              │
-              │    14 commands: run | validate | inspect    │
+              │    15 commands: run | validate | inspect    │
               │    datasets | explore | diff | log | trace  │
               │    lineage | graph | report | doctor | ls   │
-              │    policies                                 │
+              │    policies | bundle                        │
               └──────────────────────┬─────────────────────┘
                                      │
                         ┌────────────▼────────────┐
@@ -369,7 +369,7 @@ All paths rooted at `src/apmode/`.
 
 | File | Role |
 |------|------|
-| `cli.py` | Typer app — 14 commands |
+| `cli.py` | Typer app — 15 commands |
 | `paths.py` | `APMODE_POLICIES_DIR` env override + pyproject-walk fallback |
 | `routing.py` | Lane Router — evidence-manifest-driven dispatch |
 | `logging.py` | `structlog` configuration |
@@ -567,26 +567,21 @@ runs/
     ├── search_trajectory.jsonl            # per-candidate BIC/OFV/convergence
     ├── failed_candidates.jsonl            # per-check gate failures
     ├── candidate_lineage.json             # DAG edges (parent → child + label)
-    ├── candidate_lineage.jsonl            # per-edge JSONL (append-friendly)
-    ├── search_graph.json                  # full DAG for `apmode graph`
+    ├── search_graph.json                  # full DAG for `apmode graph` (when --agentic)
     ├── classical_checkpoint.json          # enables `--resume-agentic`
     ├── ranking.json                       # Gate 3 output
     ├── report_provenance.json
     ├── gate_decisions/
     │   ├── gate1_{candidate_id}.json
     │   ├── gate2_{candidate_id}.json
-    │   ├── gate2_5_{candidate_id}.json
+    │   ├── gate25_{candidate_id}.json
     │   └── gate3_{candidate_id}.json
     ├── compiled_specs/
     │   ├── {candidate_id}.json            # DSLSpec (Pydantic)
     │   └── {candidate_id}.R               # lowered R code
     ├── results/
-    │   ├── {candidate_id}_result.json     # BackendResult
-    │   ├── seeds/{candidate_id}_seed{i}.json
-    │   └── {candidate_id}_diagnostics/
-    │       ├── vpc.png
-    │       ├── gof.png
-    │       └── cwres.png
+    │   ├── {candidate_id}_result.json          # BackendResult
+    │   └── {candidate_id}_seed_{i}_result.json # multi-seed runs
     ├── bayesian/                          # when a Bayesian candidate was fit
     │   ├── prior_manifest.json            # prior_manifest_path points here
     │   ├── simulation_protocol.json
@@ -601,10 +596,8 @@ runs/
     │   ├── {iteration_id}_output.json
     │   └── {iteration_id}_meta.json
     ├── run_lineage.json                   # multi-run provenance
-    └── report/
-        ├── summary.json
-        ├── summary.md
-        └── summary.html
+    ├── report.html                        # regulatory report (HTML)
+    └── report.md                          # regulatory report (Markdown)
 ```
 
 JSON/JSONL artifacts are Pydantic-validated before writing. Binary outputs (PNGs,
@@ -620,7 +613,7 @@ Phases 1 and 2 are complete. Phase 3 is in progress per CLAUDE.md. The per-month
 task list from v0.2 has been removed from this doc; it is preserved in the git
 history at `docs/ARCHITECTURE.md@v0.2` and summarized in `CHANGELOG.md`.
 
-**What is active today (0.5.0-rc1):**
+**What is active today (0.5.0-rc2):**
 
 - DSL grammar + compiler + validator + 7 typed transforms.
 - Classical NLME backend (nlmixr2, SAEM/FOCEi) with warm-start children.
