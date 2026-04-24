@@ -281,6 +281,77 @@ class Gate3Config(BaseModel):
         return self
 
 
+class Gate1BayesianRhat(BaseModel):
+    """Per-parameter-class R-hat floors for Gate 1 Bayesian checks.
+
+    Defaults follow Vehtari et al. (2021) rank-normalized split-R-hat
+    recommendations: 1.01 for well-identified fixed effects / residual
+    error, 1.02 for IIV SDs (slightly looser because partial pooling
+    broadens the posterior), and 1.05 for correlation entries (notoriously
+    slow-mixing under LKJ).
+    """
+
+    fixed_effects: float = Field(default=1.01, gt=1.0, le=2.0)
+    iiv: float = Field(default=1.02, gt=1.0, le=2.0)
+    residual: float = Field(default=1.01, gt=1.0, le=2.0)
+    correlations: float = Field(default=1.05, gt=1.0, le=2.0)
+
+
+class Gate1BayesianESS(BaseModel):
+    """Per-parameter-class effective-sample-size floors for Gate 1 Bayesian."""
+
+    fixed_effects: int = Field(default=400, gt=0)
+    iiv: int = Field(default=400, gt=0)
+    residual: int = Field(default=400, gt=0)
+    correlations: int = Field(default=100, gt=0)
+
+
+_GATE1_BAYESIAN_DEFAULT_SEVERITY: dict[str, Literal["warn", "fail"]] = {
+    "rhat": "fail",
+    "ess": "fail",
+    "divergences": "fail",
+    "pareto_k": "warn",
+}
+
+
+def _default_gate1_bayesian_severity() -> dict[str, Literal["warn", "fail"]]:
+    return dict(_GATE1_BAYESIAN_DEFAULT_SEVERITY)
+
+
+class Gate1BayesianConfig(BaseModel):
+    """Gate 1 Bayesian convergence floor, by parameter class (PRD §4.3.1).
+
+    Refines the scalar :class:`BayesianThresholds` (kept for existing
+    consumers) with per-parameter-class R-hat / ESS floors and a
+    severity map that lets lanes treat specific violations as ``warn``
+    instead of ``fail``. Defaults are strict (submission-lane style);
+    Discovery / Optimization lane policies relax selectively.
+    """
+
+    rhat_max: Gate1BayesianRhat = Field(default_factory=Gate1BayesianRhat)
+    ess_bulk_min: Gate1BayesianESS = Field(default_factory=Gate1BayesianESS)
+    ess_tail_min: Gate1BayesianESS = Field(default_factory=Gate1BayesianESS)
+    divergence_tolerance: int = Field(default=0, ge=0)
+    max_treedepth_fraction: float = Field(default=0.01, ge=0.0, le=1.0)
+    e_bfmi_min: float = Field(default=0.3, gt=0.0, le=1.0)
+    pareto_k_max: float = Field(default=0.7, gt=0.0, le=1.0)
+    severity: dict[str, Literal["warn", "fail"]] = Field(
+        default_factory=_default_gate1_bayesian_severity
+    )
+
+    @model_validator(mode="after")
+    def severity_covers_four_axes(self) -> Self:
+        expected = {"rhat", "ess", "divergences", "pareto_k"}
+        missing = expected - set(self.severity.keys())
+        if missing:
+            msg = (
+                f"gate1_bayesian.severity must cover {sorted(expected)}; "
+                f"missing: {sorted(missing)}"
+            )
+            raise ValueError(msg)
+        return self
+
+
 class Gate25Config(BaseModel):
     """Gate 2.5: Credibility Qualification (Phase 2, PRD §4.3.1 / ICH M15).
 
@@ -374,6 +445,7 @@ class GatePolicy(BaseModel):
     policy_version: str
     lane: Literal["submission", "discovery", "optimization"]
     gate1: Gate1Config
+    gate1_bayesian: Gate1BayesianConfig = Field(default_factory=Gate1BayesianConfig)
     gate2: Gate2Config
     gate2_5: Gate25Config | None = None
     gate3: Gate3Config = Field(default_factory=Gate3Config)

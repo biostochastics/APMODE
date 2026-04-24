@@ -6,7 +6,7 @@
     "cwres_mean_max": 0.12,
     "outlier_fraction_max": 0.06,
     "vpc_required": false,
-    "vpc_coverage_target": 0.90,
+    "vpc_coverage_target": 0.9,
     "vpc_coverage_tolerance": 0.12,
     "pit_required": true,
     "pit_z_alpha": 2.0,
@@ -14,10 +14,40 @@
     "pit_tol_median_floor": 0.07,
     "seed_stability_n": 3
   },
+  "gate1_bayesian": {
+    "rhat_max": {
+      "fixed_effects": 1.01,
+      "iiv": 1.02,
+      "residual": 1.01,
+      "correlations": 1.05
+    },
+    "ess_bulk_min": {
+      "fixed_effects": 400,
+      "iiv": 400,
+      "residual": 400,
+      "correlations": 100
+    },
+    "ess_tail_min": {
+      "fixed_effects": 400,
+      "iiv": 400,
+      "residual": 400,
+      "correlations": 100
+    },
+    "divergence_tolerance": 0,
+    "max_treedepth_fraction": 0.01,
+    "e_bfmi_min": 0.3,
+    "pareto_k_max": 0.5,
+    "severity": {
+      "rhat": "fail",
+      "ess": "fail",
+      "divergences": "fail",
+      "pareto_k": "fail"
+    }
+  },
   "gate2": {
     "interpretable_parameterization": "preferred",
     "reproducible_estimation": "required",
-    "shrinkage_max": 0.30,
+    "shrinkage_max": 0.3,
     "identifiability_required": true,
     "node_eligible": true,
     "loro_required": true
@@ -35,18 +65,18 @@
     "vpc_weight": 0.35,
     "npe_weight": 0.35,
     "bic_weight": 0.0,
-    "auc_cmax_weight": 0.30
+    "auc_cmax_weight": 0.3
   },
   "missing_data": {
     "mi_pmm_max_missingness": 0.25,
     "frem_for_time_varying": true,
-    "frem_preferred_above": 0.30,
+    "frem_preferred_above": 0.3,
     "missforest_fallback": true,
     "m_imputations": 10,
     "adaptive_m": true,
     "m_max": 20,
     "adaptive_variance_threshold": 0.08,
-    "blq_m3_threshold": 0.10,
+    "blq_m3_threshold": 0.1,
     "blq_force_m3": false,
     "llm_pooled_only": true,
     "imputation_stability_penalty": 0.5,

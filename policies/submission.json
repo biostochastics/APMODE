@@ -6,18 +6,48 @@
     "cwres_mean_max": 0.1,
     "outlier_fraction_max": 0.05,
     "vpc_required": false,
-    "vpc_coverage_target": 0.90,
-    "vpc_coverage_tolerance": 0.10,
+    "vpc_coverage_target": 0.9,
+    "vpc_coverage_tolerance": 0.1,
     "pit_required": true,
     "pit_z_alpha": 1.5,
     "pit_tol_tail_floor": 0.03,
     "pit_tol_median_floor": 0.05,
     "seed_stability_n": 3
   },
+  "gate1_bayesian": {
+    "rhat_max": {
+      "fixed_effects": 1.01,
+      "iiv": 1.02,
+      "residual": 1.01,
+      "correlations": 1.05
+    },
+    "ess_bulk_min": {
+      "fixed_effects": 400,
+      "iiv": 400,
+      "residual": 400,
+      "correlations": 100
+    },
+    "ess_tail_min": {
+      "fixed_effects": 400,
+      "iiv": 400,
+      "residual": 400,
+      "correlations": 100
+    },
+    "divergence_tolerance": 0,
+    "max_treedepth_fraction": 0.01,
+    "e_bfmi_min": 0.3,
+    "pareto_k_max": 0.7,
+    "severity": {
+      "rhat": "fail",
+      "ess": "fail",
+      "divergences": "fail",
+      "pareto_k": "warn"
+    }
+  },
   "gate2": {
     "interpretable_parameterization": "required",
     "reproducible_estimation": "required",
-    "shrinkage_max": 0.30,
+    "shrinkage_max": 0.3,
     "identifiability_required": true,
     "node_eligible": false,
     "loro_required": false
@@ -31,7 +61,7 @@
     "ai_ml_transparency_required": false
   },
   "missing_data": {
-    "mi_pmm_max_missingness": 0.20,
+    "mi_pmm_max_missingness": 0.2,
     "frem_for_time_varying": true,
     "frem_preferred_above": 0.25,
     "missforest_fallback": true,
