@@ -218,17 +218,19 @@ def _run(request_path: Path) -> dict[str, Any]:
     sampler_config_persisted["cmdstan_version"] = _cmdstan_version()
     sampler_config_persisted["stan_version"] = _stan_version()
 
+    converged_flag = _is_converged(diag)
+
     result: dict[str, Any] = {
         "model_id": request["candidate_id"],
         "backend": "bayesian_stan",
-        "converged": True,
+        "converged": converged_flag,
         "parameter_estimates": param_estimates,
         "eta_shrinkage": _compute_eta_shrinkage(fit, structural_names),
         "convergence_metadata": {
             "method": "nuts",
-            "converged": True,
+            "converged": converged_flag,
             "iterations": cfg["warmup"] + cfg["sampling"],
-            "minimization_status": "successful",
+            "minimization_status": "successful" if converged_flag else "marginal",
             "wall_time_seconds": wall_time_seconds,
         },
         "diagnostics": {
@@ -273,10 +275,23 @@ def _build_stan_data(request: dict[str, Any]) -> dict[str, Any]:
         event_rate[N_events], event_start[N_subjects], event_end[N_subjects]
         Optional: cens[N], loq (for BLQM3/BLQM4)
                   per-covariate vectors of length N_subjects
+
+    Trust boundary: ``request["data_path"]`` must be produced by the
+    orchestrator (``BayesianRunner`` wires the current
+    ``DataManifest.data_path`` here). This helper validates that the path
+    resolves to an existing regular file before ``pd.read_csv`` touches
+    it — a defence-in-depth guard against a malformed or spoofed request
+    JSON. It does not attempt a chroot-style jail; callers are
+    responsible for constraining the trust domain.
     """
     import pandas as pd
 
-    data_path = Path(request["data_path"])
+    raw_path = request.get("data_path")
+    if not isinstance(raw_path, str) or not raw_path:
+        raise ValueError("request['data_path'] must be a non-empty string")
+    data_path = Path(raw_path).resolve()
+    if not data_path.is_file():
+        raise ValueError(f"data_path does not point to a regular file: {data_path}")
     df = pd.read_csv(data_path)
     df = df.rename(columns={c: c.upper() for c in df.columns})
 
@@ -298,17 +313,22 @@ def _build_stan_data(request: dict[str, Any]) -> dict[str, Any]:
 
     # DV must be strictly positive for lognormal/proportional likelihood.
     # NONMEM convention often encodes pre-dose baseline as DV=0 MDV=0; these
-    # are incompatible with a continuous lognormal observation model. For
-    # Bayesian fits we drop them with a warning. BLQ handling with known LLOQ
-    # should use the BLQM3/M4 observation modules (explicit censoring) instead.
+    # are incompatible with a continuous lognormal observation model.
+    # Silently dropping them would mutate the user's dataset underneath the
+    # posterior likelihood, biasing estimates without any audit trail, so
+    # we escalate to ``invalid_spec`` and point the user at the BLQM3/M4
+    # modules for principled censoring. Callers that legitimately need to
+    # exclude pre-dose baselines should set ``MDV=1`` on those rows.
     if "DV" in obs_df.columns:
         n_nonpos = int((obs_df["DV"].astype(float) <= 0.0).sum())
         if n_nonpos:
-            sys.stderr.write(
-                f"harness: dropping {n_nonpos} non-positive DV observations "
-                f"(incompatible with lognormal likelihood; use BLQM3/M4 for censored data)\n"
+            raise ValueError(
+                f"{n_nonpos} non-positive DV observations (MDV=0) incompatible "
+                f"with the lognormal/proportional likelihood. Mark pre-dose "
+                f"baselines with MDV=1 to exclude them from the likelihood, "
+                f"or use the BLQ_M3 / BLQ_M4 observation module with "
+                f"loq_value set so censoring is handled explicitly."
             )
-            obs_df = obs_df[obs_df["DV"].astype(float) > 0.0].reset_index(drop=True)
 
     # Stable subject index: 1..N_subjects, preserving first-appearance order.
     subjects = df[id_col].drop_duplicates().tolist()
@@ -507,6 +527,31 @@ def _catastrophic(diag: dict[str, Any], cfg: dict[str, Any]) -> bool:
     if diag["ess_bulk_min"] < 10:
         return True
     return bool(diag["n_divergent"] > 0.25 * total_iter)
+
+
+# Convergence decision thresholds. A non-catastrophic but non-converged run
+# (e.g. R-hat 1.1, a handful of divergences) must not be stamped
+# ``converged=True`` — downstream gates and reports consume this flag
+# directly. Values mirror the conservative BDA3 / Vehtari et al. 2021
+# recommendations; the policy-driven Gate 1 Bayesian warn/fail tiers
+# (plan Task 17) will refine on top of this hard floor.
+_CONVERGED_RHAT_MAX = 1.05
+_CONVERGED_ESS_BULK_MIN = 400.0
+
+
+def _is_converged(diag: dict[str, Any]) -> bool:
+    """Return True when ``diag`` meets the conservative convergence floor.
+
+    Requires R-hat <= 1.05, bulk ESS >= 400 across all monitored
+    parameters, and zero divergent transitions. Any one failure flips the
+    run to non-converged so the downstream report surfaces the problem
+    rather than silently shipping a biased posterior.
+    """
+    return bool(
+        diag["rhat_max"] <= _CONVERGED_RHAT_MAX
+        and diag["ess_bulk_min"] >= _CONVERGED_ESS_BULK_MIN
+        and diag["n_divergent"] == 0
+    )
 
 
 def _dataset_flat_values(ds: Any) -> list[float]:
@@ -919,6 +964,14 @@ def sample_with_provenance(
     and data, the cmdstan version, host platform, and the effective
     ``one_process_per_chain`` flag.
 
+    Trust boundary: ``stan_code`` must originate exclusively from
+    :func:`apmode.dsl.stan_emitter.emit_stan`, because the string is
+    written to ``model.stan`` and then handed to ``CmdStanModel`` which
+    invokes the system C++ compiler on it. User-supplied Stan or agentic
+    LLM output must NOT reach this helper unless a separate review pass
+    clears the text — this is the whole point of the DSL's ``[..]``
+    allow-listed transform surface (CLAUDE.md §"PK DSL is the moat").
+
     Returns the ``CmdStanMCMC`` fit so callers can layer diagnostics.
     """
     import hashlib
@@ -935,6 +988,10 @@ def sample_with_provenance(
     stan_path.write_text(stan_code)
     data_path = work_dir / "stan_data.json"
     data_bytes = json.dumps(data, sort_keys=True).encode()
+    # ``json.dumps`` emits pure ASCII by default (``ensure_ascii=True``),
+    # so ``data_bytes.decode()`` is lossless and the SHA-256 stays stable
+    # across Python minor versions. Keep the decode step — writing the
+    # text form keeps the artifact human-inspectable.
     data_path.write_text(data_bytes.decode())
 
     run_kwargs = cmdstan_run_kwargs(uses_reduce_sum=uses_reduce_sum)
