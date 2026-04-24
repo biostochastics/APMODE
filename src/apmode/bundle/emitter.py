@@ -19,9 +19,9 @@ import json
 import os
 import re
 from pathlib import Path  # noqa: TC003 — used at runtime in __init__
-from typing import Any
+from typing import Any, Literal
 
-from apmode.bundle.models import (  # noqa: TC001 — used at runtime in method signatures
+from apmode.bundle.models import (
     AgenticTraceInput,
     AgenticTraceMeta,
     AgenticTraceOutput,
@@ -41,6 +41,7 @@ from apmode.bundle.models import (  # noqa: TC001 — used at runtime in method 
     NCASubjectDiagnostic,
     PosteriorDiagnostics,
     PriorManifest,
+    PriorManifestEntry,
     Ranking,
     ReportProvenance,
     RunLineage,
@@ -53,6 +54,10 @@ from apmode.bundle.models import (  # noqa: TC001 — used at runtime in method 
 )
 from apmode.dsl.ast_models import DSLSpec  # noqa: TC001 — used at runtime
 from apmode.dsl.nlmixr2_emitter import emit_nlmixr2
+from apmode.dsl.priors import (
+    PriorSpec,
+    validate_prior_justification,
+)
 from apmode.ids import generate_run_id
 
 _SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_\-]+$")
@@ -78,6 +83,102 @@ _COMPLETE_SCHEMA_VERSION = 2
 
 class BundleAlreadySealedError(RuntimeError):
     """Raised when an attempt is made to modify a sealed bundle."""
+
+
+def _prior_family_hyperparams(
+    spec: PriorSpec,
+) -> dict[str, float | list[float] | str | list[str]]:
+    """Flatten a ``PriorFamily`` into the ``PriorManifestEntry.hyperparams`` shape.
+
+    Mixture components — which are themselves Pydantic models — are
+    serialised as a ``list[str]`` of compact JSON so the hyperparams field
+    can stay primitive-typed on disk. Numeric fields are coerced to ``float``
+    (no silent int→float drift). The only keys that can appear are those
+    declared on the specific ``PriorFamily`` variant, plus Mixture's
+    ``components``/``weights`` pair and HistoricalBorrowing's string
+    ``historical_refs``.
+    """
+    dump = spec.family.model_dump(mode="python")
+    dump.pop("type", None)
+    flat: dict[str, float | list[float] | str | list[str]] = {}
+    for key, value in dump.items():
+        # ``bool`` is a subclass of ``int`` — the union also catches it, but
+        # we coerce everything through ``float()`` so the narrower arm is
+        # not meaningful behaviourally; one branch keeps the intent clear.
+        if isinstance(value, bool | int | float):
+            flat[key] = float(value)
+        elif isinstance(value, str):
+            flat[key] = value
+        elif isinstance(value, list):
+            if not value:
+                flat[key] = []
+            elif all(isinstance(x, int | float) and not isinstance(x, bool) for x in value):
+                flat[key] = [float(x) for x in value]
+            elif all(isinstance(x, str) for x in value):
+                flat[key] = list(value)
+            else:
+                flat[key] = [json.dumps(x, sort_keys=True, default=str) for x in value]
+        else:
+            flat[key] = json.dumps(value, sort_keys=True, default=str)
+    return flat
+
+
+def _prior_spec_to_manifest_entry(spec: PriorSpec) -> PriorManifestEntry:
+    """Project a DSL ``PriorSpec`` onto a bundle-side ``PriorManifestEntry``."""
+    return PriorManifestEntry(
+        target=spec.target,
+        family=spec.family.type,
+        source=spec.source,
+        hyperparams=_prior_family_hyperparams(spec),
+        justification=spec.justification,
+        historical_refs=list(spec.historical_refs),
+        doi=spec.doi,
+    )
+
+
+def build_prior_manifest(
+    specs: list[PriorSpec],
+    *,
+    policy_version: str,
+    default_prior_policy: Literal["weakly_informative", "custom"] = "weakly_informative",
+    justification_min_length: int = 50,
+) -> PriorManifest:
+    """Validate a list of ``PriorSpec``s and build the on-disk manifest.
+
+    Every informative spec (``historical_data`` / ``expert_elicitation`` /
+    ``meta_analysis``) is run through
+    :func:`apmode.dsl.priors.validate_prior_justification` with the
+    caller-supplied ``justification_min_length``. Errors from every spec
+    are collected before raising so reviewers see every failing prior in
+    one pass rather than one-at-a-time.
+
+    Args:
+        specs: DSL-side prior declarations (typically ``DSLSpec.priors``).
+        policy_version: The lane policy version in force at emit time.
+            Recorded verbatim on the manifest so re-validation can check
+            the same threshold set.
+        default_prior_policy: Whether unspecified parameters fall back to
+            weakly-informative defaults or a custom recipe.
+        justification_min_length: Minimum justification length to enforce.
+            Defaults to the FDA Gate 2 floor (50 chars); lane policies may
+            tighten this (e.g. submission lane bumps to 500 — Task 19).
+
+    Raises:
+        ValueError: Aggregated justification/DOI errors from every spec
+            that failed validation. The message includes one line per
+            error, prefixed with ``priors[i] (target=...)``.
+    """
+    errors: list[str] = []
+    for idx, spec in enumerate(specs):
+        for msg in validate_prior_justification(spec, min_length=justification_min_length):
+            errors.append(f"priors[{idx}] (target={spec.target!r}): {msg}")
+    if errors:
+        raise ValueError("prior_manifest validation failed:\n  " + "\n  ".join(errors))
+    return PriorManifest(
+        policy_version=policy_version,
+        entries=[_prior_spec_to_manifest_entry(s) for s in specs],
+        default_prior_policy=default_prior_policy,
+    )
 
 
 def _validate_path_component(value: str, label: str) -> None:
@@ -457,12 +558,46 @@ class BundleEmitter:
         """Write bayesian/{candidate_id}_prior_manifest.json.
 
         FDA 2026 draft guidance requires the prior justification artifact to be
-        persisted with the run.
+        persisted with the run. Callers that start from a list of DSL
+        ``PriorSpec``s should prefer :meth:`write_prior_manifest_from_specs`
+        so justification/DOI validation happens atomically with the write.
         """
         _validate_path_component(candidate_id, "candidate_id")
         path = self._bayesian_dir() / f"{candidate_id}_prior_manifest.json"
         path.write_text(manifest.model_dump_json(indent=2))
         return path
+
+    def write_prior_manifest_from_specs(
+        self,
+        specs: list[PriorSpec],
+        candidate_id: str,
+        *,
+        policy_version: str,
+        default_prior_policy: Literal["weakly_informative", "custom"] = "weakly_informative",
+        justification_min_length: int = 50,
+    ) -> Path:
+        """Validate DSL ``PriorSpec``s and write their manifest atomically.
+
+        The caller supplies the live list of priors (typically
+        ``DSLSpec.priors``), the policy version, and the resolved
+        ``justification_min_length`` (a per-lane policy override lands in
+        Task 19). Every informative prior is checked for a minimum-length
+        justification + a Crossref DOI; an aggregated ``ValueError`` is
+        raised if any fail so reviewers see every issue in one pass.
+
+        Nothing is written to disk if validation fails — this is important
+        because the bundle is the unit of reproducibility and a partially-
+        written ``bayesian/`` subtree would desync the ``_COMPLETE``
+        digest. Callers can catch the ``ValueError`` and route to Gate 2
+        failure-artifact emission (Task 19).
+        """
+        manifest = build_prior_manifest(
+            specs,
+            policy_version=policy_version,
+            default_prior_policy=default_prior_policy,
+            justification_min_length=justification_min_length,
+        )
+        return self.write_prior_manifest(manifest, candidate_id)
 
     def write_simulation_protocol(self, protocol: SimulationProtocol, candidate_id: str) -> Path:
         """Write bayesian/{candidate_id}_simulation_protocol.json.

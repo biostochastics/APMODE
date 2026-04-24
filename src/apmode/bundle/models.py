@@ -1370,6 +1370,7 @@ class PriorManifestEntry(BaseModel):
     hyperparams: dict[str, float | list[float] | str | list[str]]
     justification: str
     historical_refs: list[str] = Field(default_factory=list)
+    doi: str | None = None
 
 
 class PriorManifest(BaseModel):
