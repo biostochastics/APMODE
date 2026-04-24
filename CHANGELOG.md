@@ -7,6 +7,115 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — v0.6-rc1 in-progress (Bayesian Block 1 + Suite A8 + Gate 2.5 submission)
+
+Work toward v0.6.0-rc1 has landed in pieces; the Bayesian orchestrator
+plumbing, bundle-emitter Bayesian artefacts, Suite A8 scenario, and
+Gate 2.5 block for the submission lane are now on main.
+
+- **Gate 2.5 in submission lane.** `policies/submission.json` gains a
+  `gate2_5` block (context_of_use, limitation_to_risk, data_adequacy
+  with ratio floor 5.0, sensitivity, ai_ml_transparency=false). Policy
+  version bumped to `0.5.1` in all three lane files (single-version
+  invariant enforced by `scripts/sync_readme.py`). New
+  `tests/unit/test_policy_schema.py` asserts the block shape.
+- **Suite A8 — 1-cmt oral + time-varying CL + CRCL covariate.**
+  `benchmarks/suite_a/simulate_all.R` simulates
+  `CL(t, CRCL) = CL0 * (CRCL/90)^0.75 * exp(-0.15 * t / 24)` across
+  60 subjects × 11 observations; `src/apmode/benchmarks/suite_a.py`
+  adds `scenario_a8()` + `A8_COVARIATE_MODEL_NOTES` recording the
+  diurnal rate that no DSL primitive expresses.
+  `reference_params.json` carries an `_expected_misspecification_bias`
+  block so benchmark tooling compares recovery to the time-averaged
+  target rather than raw `CL0`.
+- **LORO-CV lane gating tests.** Property tests
+  (`tests/property/test_loro_fold_properties.py`) assert fold count =
+  regimen count and permutation stability; integration tests
+  (`tests/integration/test_loro_orchestrator.py`) pin that LORO fires
+  in the optimization lane and is skipped in submission even on
+  LORO-eligible data.
+- **Platform-adaptive cmdstanpy kwargs.** New
+  `src/apmode/bayes/platform.py::cmdstan_run_kwargs(*, uses_reduce_sum)`
+  returns Windows-safe `force_one_process_per_chain=True` (cmdstanpy
+  issue #895 — MinGW `thread_local` performance bug) and POSIX
+  `cpp_options={"STAN_THREADS": True}` when `reduce_sum` is active
+  (issue #780).
+- **BayesianRunner wired into discovery/optimization.**
+  `Orchestrator.__init__` gains `bayesian_runner`; `_LANE_BACKENDS`
+  admits `bayesian_stan` in discovery and optimization lanes only
+  (submission stays classical NLME per PRD §3 hard rule).
+- **Provenance-recording sample helper.** New
+  `sample_with_provenance` compiles + samples with
+  `save_cmdstan_config=True` (cmdstanpy issue #848) and writes
+  `backend_versions.json` with SHA-256 hashes of the Stan program and
+  data, cmdstan version, host platform, and the resolved
+  `one_process_per_chain` flag.
+- **Bayesian bundle artefacts.**
+  `BundleEmitter.write_posterior_draws` (long-form Parquet with
+  optional thinning), `write_posterior_summary` (canonical 9-column
+  schema), `write_mcmc_diagnostics`, `write_sampler_config` — each
+  validated against `_SAFE_ID_RE` and written under
+  `run_dir/bayesian/`. `ParameterEstimate` gains
+  `posterior_mean` alongside `posterior_sd` / `q05` / `q50` / `q95`
+  so reports can disambiguate posterior mean from primary estimate.
+- **DSL prior-justification validator.**
+  `apmode.dsl.priors.validate_prior_justification(spec, *, min_length)`
+  checks the Crossref-canonical DOI pattern and a minimum
+  justification length (default 50 chars; callers override via
+  `min_length`). DOI regex accepts SICI-style suffixes with angle /
+  square brackets. `PriorSpec` now carries a `doi: str | None` field
+  and uses `_INFORMATIVE_SOURCES` frozenset as the single source of
+  truth (previously duplicated as a tuple literal).
+
+### Fixed — Multi-model review pass on unpushed v0.6 work
+
+Multi-model review (gemini-pro / droid / crush / opencode) across the
+14 unpushed v0.6-rc1 commits surfaced correctness, safety, and
+documentation gaps. All resolved on main:
+
+- **Bayesian harness hardcoded `converged=True`**. `_run` now derives
+  the flag from a conservative floor — R-hat ≤ 1.05, bulk ESS ≥ 400,
+  zero divergent transitions — via a new unit-testable
+  `_is_converged` helper. Policy-driven warn/fail tiers land in
+  plan Task 17 (Gate 1 Bayesian).
+- **Silent DV≤0 dropping is now an explicit error**. `_build_stan_data`
+  raises `ValueError` (mapped to `error_type="invalid_spec"`) when it
+  encounters non-positive DV rows with `MDV=0`, since the lognormal /
+  proportional likelihood cannot accommodate them. Callers must set
+  `MDV=1` on pre-dose baselines or switch to the BLQ_M3 / BLQ_M4
+  module with explicit censoring.
+- **CSV path hardening**. `_build_stan_data` resolves
+  `request["data_path"]`, rejects non-string / empty values, and
+  requires the path to point to a regular file before `pd.read_csv`
+  touches it (CWE-22 defence-in-depth).
+- **DOI regex extended**. `_DOI_PATTERN` now accepts `<`, `>`, `[`,
+  `]` so Wiley's legacy SICI-style DOIs (`10.1002/(SICI)…`) pass
+  validation.
+- **Bayesian RO-Crate projector coverage**. The
+  `src/apmode/bundle/rocrate/entities/bayesian.py` regex now matches
+  `sampler_config`, `posterior_summary`, and `posterior_draws`
+  alongside the existing `prior_manifest` / `simulation_protocol` /
+  `mcmc_diagnostics` / `draws` shapes.
+- **Dead / duplicated code removed**. Unused
+  `SCENARIOS: dict[str, type[None]]` deleted from `benchmarks/suite_a.py`;
+  `_INFORMATIVE_SOURCES` frozenset is now the single source of truth
+  for `PriorSpec`'s informative-source branch; `routing.py` had a
+  dangling `Follow-up: (` comment, replaced with the active
+  description of the `node_dim_budget` primary gate.
+- **Trust-boundary documentation**. `sample_with_provenance` carries
+  an explicit note that `stan_code` must originate from
+  `apmode.dsl.stan_emitter.emit_stan` — user-supplied or agentic
+  output must pass through the DSL allow-list before reaching
+  cmdstanpy's C++ compile path.
+- **Suite A8 docstring + reference_params.json now disclose
+  misspecification bias**. Benchmark comparisons use the
+  time-averaged `CL` target (`3.678`) rather than raw `CL0 = 4.482`.
+
+Test coverage added: `test_bayes_harness_convergence.py`,
+`test_bayes_harness_data.py`, `tests/unit/rocrate/test_entities_bayesian.py`,
+plus DOI-bracket / `min_length` cases on
+`test_prior_justification.py`.
+
 ### Changed — Deep-review hardening (41-finding audit)
 
 A comprehensive cross-subsystem review identified 41 correctness, wiring,
