@@ -61,6 +61,99 @@ class PublishedModel(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Suite C Phase-1 — published-literature anchor fixtures (plan Task 39)
+# ---------------------------------------------------------------------------
+
+import re  # noqa: E402 — kept local to literature fixture validation
+from pathlib import Path  # noqa: E402, TC003 — runtime-validated Pydantic field
+
+_DOI_PATTERN_LITERATURE = re.compile(
+    r"^10\.\d{4,9}/[-._;()/:A-Z0-9<>\[\]]+$",
+    re.IGNORECASE,
+)
+
+
+class LiteratureReference(BaseModel):
+    """Provenance metadata for a published reference parameterization.
+
+    Suite C Phase 1 (plan Task 39) compares APMODE against published,
+    peer-reviewed PK models on real clinical datasets. Each reference
+    must carry a Crossref-canonical DOI so the citation is verifiable
+    and a population description so reviewers can check the comparison
+    is in scope (paediatric vs adult, healthy vs renally-impaired, etc.).
+
+    The DOI pattern matches the same Crossref shape that
+    :func:`apmode.dsl.priors.validate_prior_justification` uses, so
+    Phase-1 references and Bayesian priors share a single regex.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    citation: str = Field(min_length=10)
+    doi: str
+    population_description: str = Field(min_length=10)
+
+    @model_validator(mode="after")
+    def doi_matches_crossref_pattern(self) -> LiteratureReference:
+        if not _DOI_PATTERN_LITERATURE.match(self.doi):
+            msg = (
+                f"LiteratureReference.doi {self.doi!r} does not match "
+                "Crossref-canonical pattern '10.<registrant>/<suffix>'"
+            )
+            raise ValueError(msg)
+        return self
+
+
+class LiteratureFixture(BaseModel):
+    """One Phase-1 Suite C fixture — dataset + DSL spec + literature anchor.
+
+    Per plan Task 39 / Task 40: each fixture pairs a NONMEM-style CSV
+    dataset (resolved via ``dataset_id`` against the benchmark dataset
+    cards) with a DSL spec the literature anchor was originally fit to,
+    plus the published reference parameter values and the
+    parameterization mapping that converts published names (e.g.
+    ``TVCL``) into APMODE DSL names (e.g. ``CL``).
+
+    The mapping makes cross-tool comparisons explicit — published
+    NONMEM models often use ``TV<param>`` style typical-value names,
+    Monolix uses ``<param>_pop``, and the DSL standardises on bare
+    ``CL``/``V``. The fixture loader uses ``parameterization_mapping``
+    when computing the cross-tool NPE so APMODE-reported ``CL`` is
+    compared against the right published value, not a name-misaligned
+    one.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    dataset_id: str = Field(min_length=1)
+    reference: LiteratureReference
+    dsl_spec_path: Path
+    reference_params: dict[str, float] = Field(min_length=1)
+    parameterization_mapping: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def mapping_values_resolve_to_known_params(self) -> LiteratureFixture:
+        """Mapping is ``{published_name: dsl_name}`` — values index reference_params.
+
+        The published-paper name (e.g. ``TVCL``) is the key; the
+        DSL-canonical name (e.g. ``CL``) is the value, and ``CL`` must
+        appear in :attr:`reference_params` for the cross-tool NPE
+        comparison to find a target. A value missing from
+        ``reference_params`` would silently mis-align the comparison —
+        we surface it here so the fixture is rejected at load time.
+        """
+        unknown = sorted(set(self.parameterization_mapping.values()) - set(self.reference_params))
+        if unknown:
+            msg = (
+                f"parameterization_mapping values {unknown} do not appear in "
+                f"reference_params; mapping is {{published_name: dsl_name}} "
+                "and values must index reference_params (the DSL-canonical names)"
+            )
+            raise ValueError(msg)
+        return self
+
+
+# ---------------------------------------------------------------------------
 # Dataset Card
 # ---------------------------------------------------------------------------
 
