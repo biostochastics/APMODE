@@ -191,6 +191,32 @@ class Gate2Config(BaseModel):
     # to 500 so reviewers see substantive provenance, not boilerplate.
     bayesian_prior_justification_min_length: int = Field(default=50, ge=10)
 
+    # Bayesian prior-data conflict (plan Task 20, Box 1980 / Evans &
+    # Moshonov 2006 / Gabry et al. 2019 prior-predictive checking). When
+    # ``prior_data_conflict_required`` is True the candidate must carry
+    # a ``PriorDataConflict(status="computed")`` artefact whose
+    # ``conflict_fraction`` does not exceed
+    # ``prior_data_conflict_threshold``. The Submission lane defaults
+    # this to True (FDA-style operating-characteristics review);
+    # Discovery / Optimization default False so model-search workflows
+    # aren't blocked by the cost of an extra prior-only Stan pass.
+    prior_data_conflict_required: bool = False
+    prior_data_conflict_threshold: float = Field(default=0.05, ge=0.0, le=1.0)
+
+    # Bayesian prior sensitivity (plan Task 21, Roos et al. 2015 /
+    # Kallioinen et al. 2024). When ``prior_sensitivity_required`` is
+    # True the candidate must carry a
+    # ``PriorSensitivity(status="computed")`` artefact whose
+    # ``max_delta`` does not exceed ``sensitivity_max_delta``. The
+    # Submission lane defaults this to True; Discovery / Optimization
+    # default False because the N+1 Stan refits are expensive and the
+    # search-lane cost-benefit doesn't yet justify them. Increasing
+    # ``sensitivity_max_delta`` relaxes the gate (more posterior drift
+    # tolerated) — Submission keeps the default 0.20 (≤ 1/5 of a
+    # posterior SD shift) per FDA 2026 draft guidance.
+    prior_sensitivity_required: bool = False
+    sensitivity_max_delta: float = Field(default=0.20, ge=0.0)
+
 
 _GATE3_DEFAULT_METRIC_STACK: list[Literal["vpc_concordance", "auc_cmax_gmr", "npe"]] = [
     "vpc_concordance",

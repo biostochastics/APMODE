@@ -7,6 +7,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — v0.6-rc1 Gate 2 prior-data-conflict + prior-sensitivity hard-gates (plan Tasks 20 + 21)
+
+The Bayesian Gate 2 admissibility funnel now includes the two
+remaining FDA-style prior diagnostics from PRD §4.3.1 / plan
+§Block 1B. Both follow the same three-layer pattern as Task 19's
+prior-justification check: a Pydantic artefact written to disk by
+the harness/orchestrator, a pure-Python compute helper that the
+harness can call once cmdstanpy lands the prior-only Stan pass, and
+a Gate 2 check that reads the artefact back and rules pass/fail
+against a versioned threshold.
+
+- **`PriorDataConflict` + `PriorDataConflictEntry` schemas (Task 20).**
+  New artefact `bayesian/{cid}_prior_data_conflict.json` records,
+  per key dataset statistic, the observed value vs the central 95%
+  prior-predictive PI computed from a fresh Stan
+  `generated_quantities` pass with `prior_only=true`. The summary
+  carries `conflict_fraction` (Gate threshold), per-entry
+  `in_pi` flags with bound-consistency validation, and a
+  `status="not_computed"` branch with a mandatory `reason` so a
+  recorded skip is distinguishable from a missing artefact (Box
+  1980; Evans & Moshonov 2006; Gabry et al. 2019).
+- **`PriorSensitivity` + `PriorSensitivityEntry` schemas (Task 21).**
+  New artefact `bayesian/{cid}_prior_sensitivity.json` records, per
+  (parameter, alternative-prior) pair, the normalised posterior-mean
+  shift `|Δmean|/posterior_sd_baseline`. The schema cross-checks the
+  scoring arithmetic and the running `max_delta` so a hand-edited
+  artefact cannot misreport (Roos et al. 2015; Kallioinen et al.
+  2024 power-scaling sensitivity).
+- **Pure-Python compute helpers.** `apmode.bayes.prior_data_conflict`
+  exposes `compute_observed_summary`, `compute_prior_predictive_summaries`,
+  and `compute_prior_data_conflict`; `apmode.bayes.prior_sensitivity`
+  exposes `compute_prior_sensitivity`. They take already-computed
+  numpy arrays / dict summaries so unit tests can exercise the gate
+  end-to-end without cmdstanpy on the runner. The harness will plug
+  them in once the prior-only Stan pass and N+1 alternative-prior
+  refits land.
+- **`Gate2Config.prior_data_conflict_required/_threshold` and
+  `prior_sensitivity_required/sensitivity_max_delta`.** Submission
+  defaults to `required=True` with `threshold=0.05` (5% of key
+  statistics outside the prior 95% PI) and `max_delta=0.20` (≤ 1/5
+  of a baseline posterior SD shift). Discovery / Optimization
+  default both `*_required` knobs to `False` because the prior-only
+  pass and N+1 refits are too expensive for the search-lane
+  cost-benefit. Schema is fail-closed: when the lane requires the
+  check but the artefact is missing or `status="not_computed"`,
+  Gate 2 fails with a precise reason.
+- **`evaluate_gate2` keyword-only `prior_data_conflict` and
+  `prior_sensitivity`.** New `_check_prior_data_conflict` /
+  `_check_prior_sensitivity` checks added to the Gate 2 funnel
+  alongside the existing prior-justification check. Both trivially
+  pass when the candidate is non-Bayesian or the lane policy
+  doesn't require them.
+- **`BackendResult.prior_data_conflict` /
+  `prior_sensitivity` sidecar fields + emitter methods.** Mirror the
+  `loo_summary` / `reparameterization_recommendation` pattern: the
+  harness embeds the artefact inline on the result, the orchestrator
+  emits it via `BundleEmitter.write_prior_data_conflict` /
+  `write_prior_sensitivity`, and the gate reads the emitted JSON
+  back through the new `evaluate_gate2` keywords so the
+  reviewer-facing artefact is exactly what the gate ruled on.
+- **Policy version bump 0.5.1 → 0.6.0.** All three lane policies
+  carry the new fields with lane-appropriate defaults.
+
 ### Fixed — v0.6-rc1 multi-model review pass (correctness + wiring)
 
 A second review pass turned up six high-confidence findings on the

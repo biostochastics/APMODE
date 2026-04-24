@@ -581,6 +581,9 @@ class TestGate2:
             "reproducible_estimation",
             "loro_required",
             "bayesian_prior_justification",
+            # plan Tasks 20 + 21
+            "prior_data_conflict",
+            "prior_sensitivity",
         }
         assert expected == check_ids
 

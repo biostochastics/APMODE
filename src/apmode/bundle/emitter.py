@@ -41,8 +41,10 @@ from apmode.bundle.models import (
     MissingDataDirective,
     NCASubjectDiagnostic,
     PosteriorDiagnostics,
+    PriorDataConflict,
     PriorManifest,
     PriorManifestEntry,
+    PriorSensitivity,
     Ranking,
     ReparameterizationRecommendation,
     ReportProvenance,
@@ -679,6 +681,35 @@ class BundleEmitter:
         filename = f"{recommendation.candidate_id}_reparameterization_recommendation.json"
         path = self._bayesian_dir() / filename
         path.write_text(recommendation.model_dump_json(indent=2))
+        return path
+
+    def write_prior_data_conflict(self, artifact: PriorDataConflict) -> Path:
+        """Write bayesian/{candidate_id}_prior_data_conflict.json (plan Task 20).
+
+        Always emitted on a Bayesian run when the lane policy enables
+        the check — when the harness cannot run the prior-only Stan
+        pass it still writes a ``status="not_computed"`` payload so the
+        absence of computation is recorded. Gate 2 reads this artefact
+        back via :func:`evaluate_gate2`'s ``prior_data_conflict``
+        keyword.
+        """
+        _validate_path_component(artifact.candidate_id, "candidate_id")
+        path = self._bayesian_dir() / f"{artifact.candidate_id}_prior_data_conflict.json"
+        path.write_text(artifact.model_dump_json(indent=2))
+        return path
+
+    def write_prior_sensitivity(self, artifact: PriorSensitivity) -> Path:
+        """Write bayesian/{candidate_id}_prior_sensitivity.json (plan Task 21).
+
+        Same emission contract as
+        :meth:`write_prior_data_conflict`: the file is the audit-trail
+        carrier, ``status`` distinguishes a real result from a recorded
+        skip, and Gate 2 consumes it via
+        :func:`evaluate_gate2`'s ``prior_sensitivity`` keyword.
+        """
+        _validate_path_component(artifact.candidate_id, "candidate_id")
+        path = self._bayesian_dir() / f"{artifact.candidate_id}_prior_sensitivity.json"
+        path.write_text(artifact.model_dump_json(indent=2))
         return path
 
     def write_sampler_config(self, config: SamplerConfig, candidate_id: str) -> Path:

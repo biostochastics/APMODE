@@ -25,5 +25,8 @@ def test_submission_has_gate2_5_block() -> None:
 
 
 def test_submission_policy_version_bumped() -> None:
+    # 0.6.0 bump: Gate 2 prior-data conflict + prior-sensitivity hard-gates
+    # added (plan Tasks 20 + 21). Submission requires both; Discovery /
+    # Optimization default the new ``*_required`` knobs to False.
     data = json.loads((_POLICIES / "submission.json").read_text())
-    assert data["policy_version"] == "0.5.1", "expected policy_version bump to 0.5.1"
+    assert data["policy_version"] == "0.6.0", "expected policy_version bump to 0.6.0"

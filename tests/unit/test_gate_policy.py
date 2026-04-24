@@ -218,8 +218,12 @@ class TestLanePoliciesGate3Contract:
         # 0.5.1 bump: Gate 2.5 block added to submission lane. Discovery
         # and optimization versions track in lockstep (sync_readme.py
         # enforces a single gate policy version across all lanes).
+        # 0.6.0 bump: Gate 2 prior-data conflict + prior-sensitivity
+        # hard-gates added (plan Tasks 20 + 21). Submission requires
+        # both; Discovery / Optimization default the new ``*_required``
+        # knobs to False.
         for lane in ("submission", "discovery", "optimization"):
-            assert self._load(lane).policy_version == "0.5.1"
+            assert self._load(lane).policy_version == "0.6.0"
 
     def test_all_lanes_pit_tolerance_calibration(self) -> None:
         """0.4.2: PIT calibration replaces VPC coverage as the Gate 1 gate.

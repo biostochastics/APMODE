@@ -34,7 +34,9 @@ from apmode.bundle.models import (
     FailedCandidate,
     LOROCVResult,
     LOROMetrics,
+    PriorDataConflict,
     PriorManifest,
+    PriorSensitivity,
     SeedRegistry,
 )
 from apmode.data.initial_estimates import NCAEstimator, build_initial_estimates_bundle
@@ -639,10 +641,13 @@ class Orchestrator:
             # Stage 6b: Gate 1 (+ Gate 1 Bayesian for Stan candidates)
             #
             # Bayesian-only sidecars (loo_summary, reparameterization
-            # recommendation, prior_manifest) are emitted on the same pass
-            # so a clean ``bayesian/<cid>_*.json`` subtree is in place
-            # before any gate emits its decision artefact.
+            # recommendation, prior_manifest, prior_data_conflict,
+            # prior_sensitivity) are emitted on the same pass so a clean
+            # ``bayesian/<cid>_*.json`` subtree is in place before any
+            # gate emits its decision artefact.
             prior_manifest_paths: dict[str, Path] = {}
+            prior_data_conflict_paths: dict[str, Path] = {}
+            prior_sensitivity_paths: dict[str, Path] = {}
             gate1_survivors: list[tuple[SearchResult, BRModel]] = []
             for sr in search_outcome.results:
                 if sr.result is None:
@@ -656,6 +661,8 @@ class Orchestrator:
                         emitter=emitter,
                         policy=policy,
                         prior_manifest_paths=prior_manifest_paths,
+                        prior_data_conflict_paths=prior_data_conflict_paths,
+                        prior_sensitivity_paths=prior_sensitivity_paths,
                     )
 
                 seed_results = seed_results_map.get(sr.candidate_id)
@@ -739,16 +746,27 @@ class Orchestrator:
             for _, sr_result in gate1_survivors:
                 loro_m = loro_metrics_map.get(sr_result.model_id)
 
-                # Bayesian Gate 2 prior-justification check needs the
-                # canonical PriorManifest emitted upstream — load from
-                # disk so the gate evaluates the same artefact a
-                # reviewer would inspect, not an in-memory shadow.
-                prior_manifest = None
+                # Bayesian Gate 2 prior-justification + prior-data-conflict
+                # + prior-sensitivity checks need their respective canonical
+                # artefacts emitted upstream — load from disk so the gate
+                # evaluates the same artefact a reviewer would inspect, not
+                # an in-memory shadow.
+                prior_manifest: PriorManifest | None = None
+                prior_data_conflict_artifact: PriorDataConflict | None = None
+                prior_sensitivity_artifact: PriorSensitivity | None = None
                 if sr_result.backend == "bayesian_stan":
                     pm_path = prior_manifest_paths.get(sr_result.model_id)
                     if pm_path is not None:
-                        prior_manifest = PriorManifest.model_validate_json(
-                            pm_path.read_text()
+                        prior_manifest = PriorManifest.model_validate_json(pm_path.read_text())
+                    pdc_path = prior_data_conflict_paths.get(sr_result.model_id)
+                    if pdc_path is not None:
+                        prior_data_conflict_artifact = PriorDataConflict.model_validate_json(
+                            pdc_path.read_text()
+                        )
+                    ps_path = prior_sensitivity_paths.get(sr_result.model_id)
+                    if ps_path is not None:
+                        prior_sensitivity_artifact = PriorSensitivity.model_validate_json(
+                            ps_path.read_text()
                         )
 
                 g2 = evaluate_gate2(
@@ -757,6 +775,8 @@ class Orchestrator:
                     self._config.lane,
                     loro_metrics=loro_m,
                     prior_manifest=prior_manifest,
+                    prior_data_conflict=prior_data_conflict_artifact,
+                    prior_sensitivity=prior_sensitivity_artifact,
                 )
                 emitter.write_gate_decision(g2, gate_number=2)
                 outcome.gate2_results.append((sr_result.model_id, g2.passed))
@@ -1437,6 +1457,8 @@ class Orchestrator:
         emitter: BundleEmitter,
         policy: GatePolicy,
         prior_manifest_paths: dict[str, Path],
+        prior_data_conflict_paths: dict[str, Path],
+        prior_sensitivity_paths: dict[str, Path],
     ) -> None:
         """Emit the Bayesian-only sidecar artefacts for one candidate.
 
@@ -1454,6 +1476,15 @@ class Orchestrator:
           surface is auditable; the path is recorded so the Gate 2
           evaluator below loads the same artefact a reviewer would
           inspect (and the JSON-validation contract is exercised once).
+        * ``bayesian/{cid}_prior_data_conflict.json`` — populated by the
+          harness when the lane policy enables the prior-only Stan pass
+          (plan Task 20). Always emitted when a value is on the result
+          (even ``status="not_computed"``) so the audit trail records
+          either the computation or the recorded skip.
+        * ``bayesian/{cid}_prior_sensitivity.json`` — populated by the
+          harness when the lane policy enables N+1 alternative-prior
+          refits (plan Task 21). Same emission contract as
+          ``prior_data_conflict``.
 
         Errors during prior-manifest emission are logged but do not
         abort the run — the candidate proceeds to Gate 2 with no
@@ -1471,6 +1502,12 @@ class Orchestrator:
             emitter.write_reparameterization_recommendation(
                 result.reparameterization_recommendation
             )
+        if result.prior_data_conflict is not None:
+            pdc_path = emitter.write_prior_data_conflict(result.prior_data_conflict)
+            prior_data_conflict_paths[sr.candidate_id] = pdc_path
+        if result.prior_sensitivity is not None:
+            ps_path = emitter.write_prior_sensitivity(result.prior_sensitivity)
+            prior_sensitivity_paths[sr.candidate_id] = ps_path
 
         priors = list(getattr(sr.spec, "priors", []) or [])
         if not priors:
@@ -1480,9 +1517,7 @@ class Orchestrator:
                 priors,
                 candidate_id=sr.candidate_id,
                 policy_version=policy.policy_version,
-                justification_min_length=(
-                    policy.gate2.bayesian_prior_justification_min_length
-                ),
+                justification_min_length=(policy.gate2.bayesian_prior_justification_min_length),
             )
         except ValueError as exc:
             # Surface the validation error in the run log; Gate 2 will

@@ -38,7 +38,9 @@ if TYPE_CHECKING:
         BackendResult,
         ImputationStabilityEntry,
         MissingDataDirective,
+        PriorDataConflict,
         PriorManifest,
+        PriorSensitivity,
     )
     from apmode.governance.policy import (
         Gate1BayesianConfig,
@@ -569,6 +571,8 @@ def evaluate_gate2(
     loro_metrics: LOROMetrics | None = None,
     *,
     prior_manifest: PriorManifest | None = None,
+    prior_data_conflict: PriorDataConflict | None = None,
+    prior_sensitivity: PriorSensitivity | None = None,
 ) -> GateResult:
     """Evaluate Gate 2: Lane-Specific Admissibility.
 
@@ -590,6 +594,14 @@ def evaluate_gate2(
             (plan Task 19). ``None`` in other cases — the check passes
             trivially for non-Bayesian backends or lanes that don't
             demand prior provenance.
+        prior_data_conflict: Loaded ``PriorDataConflict`` (from
+            ``bayesian/{cid}_prior_data_conflict.json``). Required when
+            ``policy.gate2.prior_data_conflict_required`` is True
+            (plan Task 20).
+        prior_sensitivity: Loaded ``PriorSensitivity`` (from
+            ``bayesian/{cid}_prior_sensitivity.json``). Required when
+            ``policy.gate2.prior_sensitivity_required`` is True
+            (plan Task 21).
     """
     if lane not in _VALID_LANES:
         msg = f"Invalid lane '{lane}'. Must be one of {sorted(_VALID_LANES)}"
@@ -605,6 +617,8 @@ def evaluate_gate2(
     checks.append(_check_reproducible_estimation(result, g2))
     checks.append(_check_loro_requirement(result, g2, lane, loro_metrics=loro_metrics))
     checks.append(_check_bayesian_prior_justification(result, g2, prior_manifest))
+    checks.append(_check_prior_data_conflict(result, g2, prior_data_conflict))
+    checks.append(_check_prior_sensitivity(result, g2, prior_sensitivity))
 
     passed = all(c.passed for c in checks)
     failed_names = [c.check_id for c in checks if not c.passed]
@@ -898,6 +912,134 @@ def _check_bayesian_prior_justification(
         passed=passed,
         observed="all_justified" if passed else "; ".join(issues),
         threshold=f"min_len={min_len}, doi_required",
+    )
+
+
+def _check_prior_data_conflict(
+    result: BackendResult,
+    g2: Gate2Config,
+    artifact: PriorDataConflict | None,
+) -> GateCheckResult:
+    """Gate 2 prior-data conflict hard-gate (plan Task 20).
+
+    Fails when the candidate's prior-predictive distribution rejects
+    the observed dataset on more than ``prior_data_conflict_threshold``
+    of the key statistics (Box 1980, Evans & Moshonov 2006). Trivially
+    passes when:
+
+    * the lane policy does not require the check
+      (``prior_data_conflict_required`` is False),
+    * the backend is not Bayesian (no priors to conflict against), or
+    * the artefact reports ``status="not_computed"`` AND the lane
+      policy permits the skip — currently we *fail-closed* in that
+      branch so a Submission-lane operator must wire the prior-only
+      Stan pass; Discovery / Optimization defaults skip the check
+      entirely via ``required=False``.
+    """
+    if not g2.prior_data_conflict_required:
+        return GateCheckResult(
+            check_id="prior_data_conflict",
+            passed=True,
+            observed="not_required",
+        )
+    if result.backend != "bayesian_stan":
+        return GateCheckResult(
+            check_id="prior_data_conflict",
+            passed=True,
+            observed=f"not_bayesian_backend ({result.backend})",
+        )
+    if artifact is None:
+        return GateCheckResult(
+            check_id="prior_data_conflict",
+            passed=False,
+            observed="prior_data_conflict_artifact_missing",
+            threshold=f"<= {g2.prior_data_conflict_threshold}",
+        )
+    if artifact.status != "computed":
+        return GateCheckResult(
+            check_id="prior_data_conflict",
+            passed=False,
+            observed=f"not_computed: {artifact.reason or 'unspecified'}",
+            threshold=f"<= {g2.prior_data_conflict_threshold}",
+        )
+
+    # ``conflict_fraction`` is guaranteed non-None by the model
+    # validator when status="computed"; the local re-assert keeps mypy
+    # happy and double-locks the runtime invariant.
+    fraction = artifact.conflict_fraction
+    assert fraction is not None
+    passed = fraction <= g2.prior_data_conflict_threshold
+    flagged = ", ".join(e.name for e in artifact.entries if not e.in_pi)
+    detail = (
+        f"{artifact.n_statistics_flagged}/{artifact.n_statistics_total} statistics "
+        f"outside prior 95% PI"
+    )
+    if flagged:
+        detail += f" [{flagged}]"
+    return GateCheckResult(
+        check_id="prior_data_conflict",
+        passed=passed,
+        observed=f"fraction={fraction:.3f} ({detail})",
+        threshold=f"<= {g2.prior_data_conflict_threshold}",
+    )
+
+
+def _check_prior_sensitivity(
+    result: BackendResult,
+    g2: Gate2Config,
+    artifact: PriorSensitivity | None,
+) -> GateCheckResult:
+    """Gate 2 prior-sensitivity hard-gate (plan Task 21).
+
+    Fails when any structural parameter's posterior mean shifts by more
+    than ``sensitivity_max_delta`` baseline-posterior-SDs under an
+    alternative prior (Roos et al. 2015 power-scaling sensitivity).
+    Same fail-closed semantics as :func:`_check_prior_data_conflict`:
+    Submission lane requires a computed artefact; Discovery /
+    Optimization skip via ``required=False``.
+    """
+    if not g2.prior_sensitivity_required:
+        return GateCheckResult(
+            check_id="prior_sensitivity",
+            passed=True,
+            observed="not_required",
+        )
+    if result.backend != "bayesian_stan":
+        return GateCheckResult(
+            check_id="prior_sensitivity",
+            passed=True,
+            observed=f"not_bayesian_backend ({result.backend})",
+        )
+    if artifact is None:
+        return GateCheckResult(
+            check_id="prior_sensitivity",
+            passed=False,
+            observed="prior_sensitivity_artifact_missing",
+            threshold=f"max_delta <= {g2.sensitivity_max_delta}",
+        )
+    if artifact.status != "computed":
+        return GateCheckResult(
+            check_id="prior_sensitivity",
+            passed=False,
+            observed=f"not_computed: {artifact.reason or 'unspecified'}",
+            threshold=f"max_delta <= {g2.sensitivity_max_delta}",
+        )
+
+    max_delta = artifact.max_delta
+    assert max_delta is not None
+    passed = max_delta <= g2.sensitivity_max_delta
+    flagged = ", ".join(artifact.flagged_parameters)
+    detail = (
+        f"{artifact.n_parameters} parameters x "
+        f"{artifact.n_alternatives_per_parameter} alternatives"
+    )
+    if flagged:
+        detail += f"; flagged=[{flagged}]"
+    return GateCheckResult(
+        check_id="prior_sensitivity",
+        passed=passed,
+        observed=f"max_delta={max_delta:.3f} ({detail})",
+        threshold=f"max_delta <= {g2.sensitivity_max_delta}",
     )
 
 
@@ -1510,9 +1652,7 @@ def evaluate_gate1_bayesian(
             if reason:
                 failure_reasons.append(reason)
             elif check.evidence_ref:
-                warning_reasons.append(
-                    f"ESS-bulk warn on {class_name}: observed={observed:.0f}"
-                )
+                warning_reasons.append(f"ESS-bulk warn on {class_name}: observed={observed:.0f}")
         if class_name in diag.ess_tail_min_by_class:
             threshold = _resolve_threshold(g, "ess_tail_min", class_name)
             observed = diag.ess_tail_min_by_class[class_name]
@@ -1527,9 +1667,7 @@ def evaluate_gate1_bayesian(
             if reason:
                 failure_reasons.append(reason)
             elif check.evidence_ref:
-                warning_reasons.append(
-                    f"ESS-tail warn on {class_name}: observed={observed:.0f}"
-                )
+                warning_reasons.append(f"ESS-tail warn on {class_name}: observed={observed:.0f}")
 
     # Scalar knobs
     div_violates = diag.n_divergent > g.divergence_tolerance
@@ -1636,9 +1774,7 @@ def evaluate_gate1_bayesian(
         )
     else:
         total_iter = sampler_cfg.chains * sampler_cfg.sampling
-        td_fraction = (
-            0.0 if total_iter <= 0 else diag.n_max_treedepth / total_iter
-        )
+        td_fraction = 0.0 if total_iter <= 0 else diag.n_max_treedepth / total_iter
         td_violates = td_fraction > g.max_treedepth_fraction
         td_is_failure = td_violates and treedepth_severity == "fail"
         checks.append(

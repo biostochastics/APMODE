@@ -473,6 +473,13 @@ class BackendResult(BaseModel):
     # is None when the sampler ran cleanly.
     loo_summary: LOOSummary | None = None
     reparameterization_recommendation: ReparameterizationRecommendation | None = None
+    # Gate 2 prior diagnostics (plan Tasks 20 + 21). Both default to
+    # ``None`` so MLE backends and Bayesian runs without informative
+    # priors carry no extra payload; the orchestrator decides whether
+    # to emit ``status="not_computed"`` artefacts when the lane policy
+    # demands a recorded skip vs an actual computation.
+    prior_data_conflict: PriorDataConflict | None = None
+    prior_sensitivity: PriorSensitivity | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -1657,4 +1664,209 @@ class SimulationProtocol(BaseModel):
             "posterior_probability_target",
         ]
     ] = Field(min_length=1)
+
+
+class PriorDataConflictEntry(BaseModel):
+    """One T(y) statistic compared against the prior-predictive distribution.
+
+    The prior 95% PI is the (2.5%, 97.5%) quantile of T(y_rep) where each
+    y_rep is drawn from the *prior* predictive distribution (no data
+    conditioning). ``in_pi`` is False when the observed value falls
+    outside this interval — a marginal sign that the prior excludes the
+    observed regime (Box 1980, Evans & Moshonov 2006).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str
+    observed: float
+    prior_pi_low: float
+    prior_pi_high: float
+    in_pi: bool
+    prior_pred_mean: float | None = None
+    prior_pred_sd: float | None = None
+
+    @model_validator(mode="after")
+    def in_pi_matches_bounds(self) -> Self:
+        # Defensive: producers and consumers must agree on the band — if
+        # ``in_pi`` is True but the observed value sits outside the
+        # interval the artefact is internally inconsistent and the gate
+        # would silently pass for the wrong reason.
+        actually_in = self.prior_pi_low <= self.observed <= self.prior_pi_high
+        if actually_in != self.in_pi:
+            msg = (
+                f"PriorDataConflictEntry({self.name!r}): in_pi={self.in_pi} "
+                f"contradicts observed={self.observed} vs PI "
+                f"[{self.prior_pi_low}, {self.prior_pi_high}]"
+            )
+            raise ValueError(msg)
+        return self
+
+
+class PriorDataConflict(BaseModel):
+    """prior_data_conflict.json — Gate 2 prior-data conflict diagnostic (plan Task 20).
+
+    Compares observed dataset summaries T(y) against the prior-predictive
+    distribution induced by ``DSLSpec.priors`` via a fresh Stan
+    ``generated_quantities`` pass with ``prior_only=true``. Gate 2 fails
+    when ``conflict_fraction > prior_data_conflict_threshold`` so a
+    candidate whose priors systematically exclude the observed data
+    surface the violation in the audit trail (Evans & Moshonov 2006,
+    Gabry et al. 2019 prior-predictive checking).
+
+    ``status="not_computed"`` covers two legitimate cases:
+
+    * Lane policy doesn't enable prior-data conflict (Discovery /
+      Optimization defaults). The artefact is still emitted so the
+      *absence of computation* is recorded, not the *absence of file*.
+    * Bayesian extras (cmdstanpy) are unavailable in the runtime —
+      typically a unit-test environment without Stan installed.
+
+    The harness sets ``status="computed"`` only when it actually ran the
+    prior-only sampling pass and computed the summaries.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    candidate_id: str
+    status: Literal["computed", "not_computed"]
+    threshold: float = Field(ge=0.0, le=1.0)
+    conflict_fraction: float | None = Field(default=None, ge=0.0, le=1.0)
+    n_statistics_total: int = Field(default=0, ge=0)
+    n_statistics_flagged: int = Field(default=0, ge=0)
+    entries: list[PriorDataConflictEntry] = Field(default_factory=list)
+    n_prior_predictive_draws: int | None = Field(default=None, ge=0)
+    reason: str | None = None
+
+    @model_validator(mode="after")
+    def fields_consistent_with_status(self) -> Self:
+        # When ``status="computed"`` the summary fields must be populated
+        # so the gate can rule on them; when ``status="not_computed"`` we
+        # require a reason so the audit trail explains the skip.
+        if self.status == "computed":
+            if self.conflict_fraction is None:
+                msg = "PriorDataConflict(status='computed') requires conflict_fraction"
+                raise ValueError(msg)
+            if self.n_statistics_total != len(self.entries):
+                msg = (
+                    f"PriorDataConflict.n_statistics_total ({self.n_statistics_total}) "
+                    f"must equal len(entries) ({len(self.entries)})"
+                )
+                raise ValueError(msg)
+            actual_flagged = sum(1 for e in self.entries if not e.in_pi)
+            if actual_flagged != self.n_statistics_flagged:
+                msg = (
+                    f"PriorDataConflict.n_statistics_flagged "
+                    f"({self.n_statistics_flagged}) does not match the count of "
+                    f"entries with in_pi=False ({actual_flagged})"
+                )
+                raise ValueError(msg)
+        elif self.reason is None or not self.reason.strip():
+            msg = "PriorDataConflict(status='not_computed') requires a non-empty reason"
+            raise ValueError(msg)
+        return self
+
+
+class PriorSensitivityEntry(BaseModel):
+    """One alternative-prior refit summary for a single structural parameter.
+
+    ``alternative_id`` is a free-form tag identifying the perturbation
+    (e.g. ``"sigma_x0.5"``, ``"sigma_x2.0"``). ``delta_normalized`` is
+    ``|posterior_mean_alt - posterior_mean_baseline| / posterior_sd_baseline``
+    — the unitless sensitivity score Gate 2 thresholds against
+    ``sensitivity_max_delta`` (Roos et al. 2015, Kallioinen et al. 2024
+    power-scaling sensitivity).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    parameter: str
+    alternative_id: str
+    posterior_mean_baseline: float
+    posterior_mean_alternative: float
+    posterior_sd_baseline: float = Field(gt=0.0)
+    delta_normalized: float = Field(ge=0.0)
+
+    @model_validator(mode="after")
+    def delta_matches_components(self) -> Self:
+        # Producers compute the score themselves so consumers don't have
+        # to reproduce the denominator semantics — but cross-check the
+        # arithmetic so a hand-edited artefact can't lie about the value.
+        expected = (
+            abs(self.posterior_mean_alternative - self.posterior_mean_baseline)
+            / self.posterior_sd_baseline
+        )
+        if abs(expected - self.delta_normalized) > 1e-6:
+            msg = (
+                f"PriorSensitivityEntry({self.parameter!r}, "
+                f"{self.alternative_id!r}): delta_normalized={self.delta_normalized} "
+                f"does not match |Δmean|/sd_baseline={expected}"
+            )
+            raise ValueError(msg)
+        return self
+
+
+class PriorSensitivity(BaseModel):
+    """prior_sensitivity.json — Gate 2 prior-sensitivity diagnostic (plan Task 21).
+
+    For every structural parameter the harness refits the model under
+    N≥2 alternative priors (typically scale perturbations of the
+    informative components). Gate 2 fails when any
+    ``delta_normalized > sensitivity_max_delta`` — informally, when the
+    posterior moves by more than ``sensitivity_max_delta`` posterior SDs
+    under a prior the regulator might equally have chosen.
+
+    ``status="not_computed"`` records lane-policy disablement or the
+    absence of cmdstanpy / arviz at runtime so reviewers see the skip
+    explicitly. ``max_delta`` is the running maximum across entries —
+    used by the gate so the per-entry list need not be re-scanned.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    candidate_id: str
+    status: Literal["computed", "not_computed"]
+    threshold: float = Field(ge=0.0)
+    max_delta: float | None = Field(default=None, ge=0.0)
+    n_parameters: int = Field(default=0, ge=0)
+    n_alternatives_per_parameter: int = Field(default=0, ge=0)
+    entries: list[PriorSensitivityEntry] = Field(default_factory=list)
+    flagged_parameters: list[str] = Field(default_factory=list)
+    reason: str | None = None
+
+    @model_validator(mode="after")
+    def fields_consistent_with_status(self) -> Self:
+        if self.status == "computed":
+            if self.max_delta is None:
+                msg = "PriorSensitivity(status='computed') requires max_delta"
+                raise ValueError(msg)
+            if self.entries:
+                actual_max = max(e.delta_normalized for e in self.entries)
+                if abs(actual_max - self.max_delta) > 1e-6:
+                    msg = (
+                        f"PriorSensitivity.max_delta ({self.max_delta}) does not "
+                        f"match max(entry.delta_normalized)={actual_max}"
+                    )
+                    raise ValueError(msg)
+                actual_flagged = sorted(
+                    {e.parameter for e in self.entries if e.delta_normalized > self.threshold}
+                )
+                if actual_flagged != sorted(self.flagged_parameters):
+                    msg = (
+                        f"PriorSensitivity.flagged_parameters "
+                        f"({sorted(self.flagged_parameters)}) does not match the "
+                        f"set of parameters with delta > threshold ({actual_flagged})"
+                    )
+                    raise ValueError(msg)
+            elif self.max_delta != 0.0:
+                msg = (
+                    "PriorSensitivity(status='computed') with no entries must report "
+                    f"max_delta=0.0 (got {self.max_delta})"
+                )
+                raise ValueError(msg)
+        elif self.reason is None or not self.reason.strip():
+            msg = "PriorSensitivity(status='not_computed') requires a non-empty reason"
+            raise ValueError(msg)
+        return self
+
     seed: int = 0
