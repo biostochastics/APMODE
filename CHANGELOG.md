@@ -7,6 +7,81 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — v0.6-rc1 Bayesian Block 1B/1C + Gate 1/2 Bayesian gates
+
+Nine plan tasks (15, 16, 17, 18, 19, 22, 23, 24, 25) landed in a single
+session, extending the Bayesian plumbing from "orchestrator wires through"
+to "governance funnel actively consumes".
+
+- **Plan Task 15 — `prior_manifest.json` emitter with validation.**
+  `BundleEmitter.write_prior_manifest_from_specs(specs, cid, *, policy_version,
+  justification_min_length)` validates every informative prior's
+  justification + DOI before writing; aggregates failures so reviewers see
+  every offending prior in one pass. `PriorManifestEntry` gains a `doi`
+  field so Task 14's Crossref identifier survives the round-trip.
+- **Plan Task 16 — per-lane `gate1_bayesian` block.**
+  `Gate1BayesianConfig` splits R-hat and ESS floors across parameter
+  classes (fixed_effects / iiv / residual / correlations) with a per-axis
+  severity map (rhat / ess / divergences / pareto_k). Submission strictest,
+  Discovery relaxes fixed-effects R-hat to 1.05, Optimization tightens
+  Pareto-k to 0.5 with `fail` severity.
+- **Plan Task 17 — `evaluate_gate1_bayesian()` warn/fail tiers.**
+  `PosteriorDiagnostics` carries `rhat_max_by_class` / `ess_bulk_min_by_class`
+  / `ess_tail_min_by_class`. The evaluator walks each axis against the
+  matching threshold and applies the severity tier: warn-severity
+  violations surface via `evidence_ref` without dropping the gate;
+  fail-severity violations drop it with class-specific reasons.
+- **Plan Task 18 — PSIS-LOO via `arviz.loo` + `loo_summary.json`.**
+  `build_loo_summary(idata, cid)` is forward-compatible with arviz_stats
+  1.0's renamed fields (`elpd` / `p`); bins Pareto-k into the four
+  Vehtari 2017 reliability bands (`good` ≤ 0.5, `ok` ≤ 0.7, `bad` ≤ 1.0,
+  `very_bad` > 1.0). Always emitted — `status="not_computed"` with reason
+  is explicit, not an absent artifact.
+- **Plan Task 19 — Gate 2 Bayesian prior-justification hard-gate.**
+  `Gate2Config.bayesian_prior_justification_required` (Submission=True,
+  Discovery/Optimization=False) + `bayesian_prior_justification_min_length`
+  (Submission tightens to 500 chars). `evaluate_gate2` consumes an
+  optional `prior_manifest` kwarg and aggregates per-prior errors. Fails
+  closed when the lane demands the manifest but it isn't supplied.
+- **Plan Task 22 — Laplace/MVN approximate posterior-predictive helper.**
+  `apmode.governance.approximate_posterior.laplace_draws(theta, cov,
+  n_draws, seed, *, fallback)` draws from the Laplace approximation for
+  MLE backends so Gate 3 compares MLE and Bayesian candidates on
+  commensurate intervals. Falls back to `empirical_bootstrap` (diagonal
+  Normal around theta) when the covariance is ill-conditioned (cond > 1e12,
+  non-finite entries, non-symmetric); `fallback="raise"` re-raises
+  `LinAlgError` for callers that prefer hard-failing on degenerate MLE fits.
+- **Plan Task 23 — commensurate `MetricTuple` carrier.**
+  `MetricTuple(mean, ci_low, ci_high, method: Literal["posterior_draws",
+  "laplace_draws", "empirical_bootstrap"], ci_level)` enforces
+  `ci_low <= mean <= ci_high` at construction; the `method` tag records
+  provenance so reviewers tell real posterior draws from Laplace-
+  approximated ones. Dump shape is identical across methods so Gate 3
+  iterates keys uniformly.
+- **Plan Task 24 — Gate 3 metric stack + laplace_draws.**
+  `Gate3Config.metric_stack: list[Literal[...]]` is the anti-metric-
+  shopping whitelist; `Gate3Config.validate_metric(metric)` raises the
+  new `PolicyError` (narrow `ValueError` subclass) when a candidate
+  proposes an off-list metric. `Gate3Config.laplace_draws`: Submission
+  2000, Discovery 500, Optimization 1000.
+- **Plan Task 25 — drop silent auto-reparameterization.**
+  `ReparameterizationRecommendation` advisory artifact emitted under
+  `bayesian/{cid}_reparameterization_recommendation.json` when
+  divergences or tree-depth saturations warrant intervention.
+  `build_reparameterization_recommendation(diag, cfg, cid)` escalates
+  above a 5% divergence-fraction floor to `switch_to_non_centered`
+  (Betancourt & Girolami 2015) and falls back to
+  `refit_with_higher_adapt_delta` for lower-rate divergences or tree-
+  depth saturations. APMODE never switches parameterization silently —
+  this is a consensus-review decision so the audit trail matches the run.
+
+New unit tests: `test_bundle_prior_manifest.py` (10), `test_policy_gate1_bayesian.py` (12),
+`test_gate1_bayesian.py` (24), `test_bayes_loo.py` (6),
+`test_gate2_prior_justification.py` (8), `test_approximate_posterior.py` (12),
+`test_metric_tuple.py` (9), `test_policy_gate3_metric_stack.py` (12),
+`test_reparameterization_recommendation.py` (10). mypy `--strict` clean; ruff
+`check` + `format` clean.
+
 ### Added — v0.6-rc1 in-progress (Bayesian Block 1 + Suite A8 + Gate 2.5 submission)
 
 Work toward v0.6.0-rc1 has landed in pieces; the Bayesian orchestrator
