@@ -20,8 +20,20 @@ from apmode.bundle.rocrate.entities._common import (
 )
 
 # ``<candidate_id>_<suffix>.(json|parquet)``
+#
+# Covers the sealed-bundle Bayesian artifacts:
+#   *_prior_manifest.json       — plan Task 15
+#   *_simulation_protocol.json  — plan Task 23
+#   *_mcmc_diagnostics.json     — plan Task 12
+#   *_sampler_config.json       — plan Task 12
+#   *_posterior_summary.parquet — plan Task 11
+#   *_posterior_draws.parquet   — plan Task 10
+#   *_draws.parquet             — legacy ``copy_posterior_draws`` sidecar
 _BAYESIAN_NAME_RE = re.compile(
-    r"^(?P<candidate>.+)_(?P<kind>prior_manifest|simulation_protocol|mcmc_diagnostics|draws)\.(?P<ext>json|parquet)$"
+    r"^(?P<candidate>.+)_(?P<kind>"
+    r"prior_manifest|simulation_protocol|mcmc_diagnostics|sampler_config|"
+    r"posterior_summary|posterior_draws|draws"
+    r")\.(?P<ext>json|parquet)$"
 )
 
 
