@@ -12,6 +12,7 @@ Scenarios:
   A5: TMDD quasi-steady-state (SC mAb)
   A6: 1-cmt oral, allometric WT + categorical renal covariates on CL
   A7: 2-cmt, NODE nonlinear absorption (ground truth: saturable Michaelis-Menten)
+  A8: 1-cmt oral, time-varying CL (diurnal) + allometric CRCL covariate
 """
 
 from __future__ import annotations
@@ -168,6 +169,30 @@ def scenario_a7() -> DSLSpec:
     )
 
 
+def scenario_a8() -> DSLSpec:
+    """A8: 1-cmt oral with time-varying CL and CRCL covariate.
+
+    Ground truth in the R simulator is
+    ``CL(t, CRCL) = CL0 * (CRCL / 90)^theta * exp(-delta * t / 24)``. The
+    DSL captures the static allometric CRCL effect via a power CovariateLink;
+    the diurnal damping (``exp(-delta * t / 24)``) is not expressible in the
+    current DSL and is recorded in ``A8_COVARIATE_MODEL_NOTES`` for Suite A
+    comparison measurements — i.e., fit quality vs ground truth is an
+    APMODE output, not a DSL capability claim.
+    """
+    return DSLSpec(
+        model_id="suite_a_scenario_a8",
+        absorption=FirstOrder(ka=1.822),
+        distribution=OneCmt(V=29.964),
+        elimination=LinearElim(CL=4.482),
+        variability=[
+            IIV(params=["CL", "V"], structure="diagonal"),
+            CovariateLink(param="CL", covariate="CRCL", form="power"),
+        ],
+        observation=Proportional(sigma_prop=0.10),
+    )
+
+
 # Reference parameter values (ground truth for recovery testing).
 # Keys match structural_param_names() for each scenario's DSLSpec.
 REFERENCE_PARAMS: dict[str, dict[str, float]] = {
@@ -179,6 +204,7 @@ REFERENCE_PARAMS: dict[str, dict[str, float]] = {
     "A6": {"ka": 1.5, "V": 70.0, "CL": 5.0},
     # A7: mechanistic params only (NODE absorption weights are not named structural params)
     "A7": {"V1": 50.0, "V2": 80.0, "Q": 10.0, "CL": 4.0},
+    "A8": {"ka": 1.822, "V": 29.964, "CL": 4.482},
 }
 
 # Ground truth absorption parameters for A7 (not in DSLSpec structural params,
@@ -186,6 +212,17 @@ REFERENCE_PARAMS: dict[str, dict[str, float]] = {
 A7_ABSORPTION_TRUTH: dict[str, float] = {
     "Vmax_abs": 50.0,  # mg/h, saturable absorption Vmax
     "Km_abs": 20.0,  # mg, saturable absorption Km
+}
+
+# Ground truth covariate-model parameters for A8 that are not currently
+# expressible as DSL primitives. ``theta_crcl`` is the static CRCL allometric
+# exponent (captured in the DSL via ``CovariateLink(form="power")``), while
+# ``delta_diurnal`` is a time-dependent damping rate (``exp(-delta * t / 24)``)
+# with no DSL primitive today. The value is recorded here so Suite A fit
+# comparisons can distinguish DSL-approximation bias from estimation error.
+A8_COVARIATE_MODEL_NOTES: dict[str, float] = {
+    "theta_crcl": 0.75,  # allometric exponent, CRCL/90 reference
+    "delta_diurnal": 0.15,  # diurnal damping per 24 h (not in DSL today)
 }
 
 # All scenario factories for iteration
@@ -199,4 +236,5 @@ ALL_SCENARIOS = [
     ("A5", scenario_a5),
     ("A6", scenario_a6),
     ("A7", scenario_a7),
+    ("A8", scenario_a8),
 ]

@@ -5,6 +5,7 @@ import pytest
 
 from apmode.backends.protocol import Lane
 from apmode.benchmarks.suite_a import (
+    A8_COVARIATE_MODEL_NOTES,
     ALL_SCENARIOS,
     REFERENCE_PARAMS,
     scenario_a1,
@@ -14,6 +15,7 @@ from apmode.benchmarks.suite_a import (
     scenario_a5,
     scenario_a6,
     scenario_a7,
+    scenario_a8,
 )
 from apmode.dsl.nlmixr2_emitter import emit_nlmixr2
 from apmode.dsl.validator import validate_dsl
@@ -142,6 +144,19 @@ class TestSuiteASpecific:
         assert spec.has_node_modules()
         assert spec.absorption.type == "NODE_Absorption"
 
+    def test_a8_has_crcl_covariate_and_notes(self) -> None:
+        """A8 captures the allometric CRCL effect in the DSL and records the
+        inexpressible diurnal damping as covariate-model notes metadata.
+        """
+        spec = scenario_a8()
+        assert not spec.has_node_modules()
+        cov_links = [v for v in spec.variability if v.type == "CovariateLink"]
+        assert len(cov_links) == 1
+        link = cov_links[0]
+        assert (link.param, link.covariate, link.form) == ("CL", "CRCL", "power")
+        for key in ("theta_crcl", "delta_diurnal"):
+            assert key in A8_COVARIATE_MODEL_NOTES
+
     def test_all_scenarios_have_iiv(self) -> None:
         for name, factory in ALL_SCENARIOS:
             spec = factory()
@@ -153,7 +168,16 @@ class TestSuiteASpecific:
 
     def test_reference_params_complete(self) -> None:
         """Every scenario has reference params."""
-        assert set(REFERENCE_PARAMS.keys()) == {"A1", "A2", "A3", "A4", "A5", "A6", "A7"}
+        assert set(REFERENCE_PARAMS.keys()) == {
+            "A1",
+            "A2",
+            "A3",
+            "A4",
+            "A5",
+            "A6",
+            "A7",
+            "A8",
+        }
         for name, factory in CLASSICAL_SCENARIOS:
             spec = factory()
             struct = set(spec.structural_param_names())
