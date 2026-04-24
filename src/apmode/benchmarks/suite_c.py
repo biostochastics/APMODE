@@ -1,40 +1,45 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Benchmark Suite C: Expert head-to-head comparison (PRD §5, Phase 3).
+"""Benchmark Suite C: Methodology validation vs established literature models.
 
-Evaluates APMODE's workflow competitiveness against human pharmacometricians
-on real clinical PK datasets. The primary metric is:
+Phase 1 (v0.6 scope) evaluates APMODE against *published, peer-reviewed*
+reference parameterizations on real clinical PK datasets. The primary
+metric is ``fraction-beats-literature-median``:
 
-    fraction-beats-median-expert >= 60%
+    fraction-beats-literature-median >= 60%
 
-Methodology:
-  1. For each dataset d, obtain K expert final models (K=3-5).
-  2. Score each expert model using the same harness applied to APMODE.
-  3. Compute the median expert score for that dataset.
-  4. APMODE "wins" on dataset d if NPE_APMODE <= MedianExpertNPE * (1 - delta).
-  5. Fraction-beats-median = (#datasets APMODE wins) / total.
+Phase 2 (head-to-head vs a blinded human-expert panel) is gated on
+external collaborator coordination and **is not in v0.6 scope**. The
+plan-task rename (plan Task 38) reframed the suite to match the evidence
+this release actually ships: the literature anchor is a fixed baseline;
+the expert panel baseline lands with Phase 2.
+
+Methodology (Phase 1):
+  1. For each dataset d, load the published literature model fixture.
+  2. Score the literature model using the same harness applied to APMODE.
+  3. APMODE "wins" on dataset d if NPE_APMODE <= NPE_literature * (1 - delta).
+  4. Fraction-beats-literature-median = (#datasets APMODE wins) / total.
 
 Pre-registered evaluation protocol:
   - Split: subject-level 5-fold cross-validation
   - Primary metric: NPE (median absolute prediction error from posterior
     predictive simulations on held-out subjects)
-  - Win margin (delta): 0.02 (APMODE must beat expert median by >= 2%)
-  - Bootstrap CI: 80% CI of (NPE_APMODE - median_expert) < 0
+  - Win margin (delta): 0.02 (APMODE must beat the literature NPE by >= 2%)
+  - Bootstrap CI: 80% CI of (NPE_APMODE - NPE_literature) < 0
 
 Secondary outcomes:
-  - NLPD gap vs best expert (qualified: same observation model only)
+  - NLPD gap vs literature (qualified: same observation model only)
   - Structure agreement with published model
-  - Wall-clock time-to-model (APMODE measured; experts self-report)
+  - Wall-clock time-to-model (APMODE measured)
   - Prediction interval calibration (50/80/90/95% PI coverage)
 
-Initial Suite C datasets (Phase 3):
+Initial Suite C datasets (Phase 1):
   C1: Mavoglurant (nlmixr2data) — 222 subjects, oral 2-CMT
   C2: Gentamicin IOV (DDMoRe) — 205 neonates, IOV challenge
   C3: Eleveld Propofol (OpenTCI) — 1033 subjects, IV infusion 3-CMT
 
-Expert baseline strategy:
-  - Published models serve as *reference comparators* ("published anchor")
-  - Primary baseline: blinded expert panel working under same time budget
-  - Experts deliver: structural model, final estimates, BLQ handling, time spent
+Literature baseline strategy:
+  - Published models serve as *reference comparators* ("literature anchor")
+  - Phase 2 (future): blinded expert panel working under same time budget
 """
 
 from __future__ import annotations
@@ -56,16 +61,21 @@ DEFAULT_SPLIT = SplitStrategy(
     seed=20260414,
 )
 
-WIN_MARGIN_DELTA: float = 0.02  # APMODE must beat expert median by >= 2%
+WIN_MARGIN_DELTA: float = 0.02  # APMODE must beat literature NPE by >= 2%
 BOOTSTRAP_CI_LEVEL: float = 0.80  # 80% CI for NPE gap
-MIN_EXPERT_COUNT: int = 3  # Minimum experts for reliable median
+# Minimum literature comparators for a reliable Phase-1 median. Phase 2's
+# blinded expert panel (post v0.6) reuses this floor as its N_experts.
+MIN_LITERATURE_COUNT: int = 3
+# Backwards-compatible alias: some callers still import MIN_EXPERT_COUNT.
+# Scheduled for removal in v0.7 once the Suite C orchestration lands.
+MIN_EXPERT_COUNT: int = MIN_LITERATURE_COUNT
 
-# NOTE on expert models: Each case currently provides 1 published model as a
-# *reference anchor* (absolute baseline). The primary expert baseline is a
-# blinded expert panel (N >= MIN_EXPERT_COUNT) working under the same time
-# budget — this panel is assembled per evaluation round, not hard-coded.
-# If the panel is unavailable, scoring falls back to comparing AIC/BIC/OFV
-# against the published anchor. See evaluate_expert_comparison() guard.
+# NOTE on literature_models: Each case currently provides 1 published model
+# as a *reference anchor* (absolute baseline). Phase 2 will add a blinded
+# expert panel (N >= MIN_LITERATURE_COUNT) working under the same time
+# budget — that panel is assembled per evaluation round, not hard-coded.
+# If a panel is unavailable, scoring falls back to comparing AIC/BIC/OFV
+# against the published literature anchor.
 
 
 # ---------------------------------------------------------------------------
@@ -86,7 +96,7 @@ CASE_C1_MAVOGLURANT = BenchmarkCase(
     suite="C",
     dataset_id="nlmixr2data_mavoglurant",
     description=(
-        "Mavoglurant expert comparison: 222 subjects, oral 2-CMT. "
+        "Mavoglurant literature comparison: 222 subjects, oral 2-CMT. "
         "Primary Suite C dataset — freely available, adequate complexity. "
         "Published nlmixr2 model available as anchor baseline."
     ),
@@ -98,7 +108,7 @@ CASE_C1_MAVOGLURANT = BenchmarkCase(
         elimination="Linear",
         n_compartments=2,
     ),
-    expert_models=[MAVOGLURANT_PUBLISHED],
+    literature_models=[MAVOGLURANT_PUBLISHED],
     win_margin=WIN_MARGIN_DELTA,
     ci_cadence="quarterly",
 )
@@ -125,7 +135,7 @@ CASE_C2_GENTAMICIN = BenchmarkCase(
     suite="C",
     dataset_id="ddmore_gentamicin",
     description=(
-        "Gentamicin IOV expert comparison: 205 neonates, 2788 obs. "
+        "Gentamicin IOV literature comparison: 205 neonates, 2788 obs. "
         "IOV on CL is the primary challenge — algorithmic stress test. "
         "Published NONMEM model (Germovsek 2017) as reference anchor. "
         "CC0 license, fully open."
@@ -133,7 +143,7 @@ CASE_C2_GENTAMICIN = BenchmarkCase(
     lane="submission",
     policy_file="submission.json",
     split_strategy=DEFAULT_SPLIT,
-    expert_models=[GENTAMICIN_PUBLISHED],
+    literature_models=[GENTAMICIN_PUBLISHED],
     win_margin=WIN_MARGIN_DELTA,
     ci_cadence="quarterly",
 )
@@ -165,7 +175,7 @@ CASE_C3_PROPOFOL = BenchmarkCase(
     suite="C",
     dataset_id="opentci_propofol",
     description=(
-        "Eleveld propofol expert comparison: 1033 subjects, 15433 PK obs. "
+        "Eleveld propofol literature comparison: 1033 subjects, 15433 PK obs. "
         "3-CMT IV infusion with rich covariates. The published Eleveld 2018 "
         "model is the gold standard — tests whether APMODE can match or "
         "improve on an expert model developed over multiple years. "
@@ -177,7 +187,7 @@ CASE_C3_PROPOFOL = BenchmarkCase(
     expected_structure=ExpectedStructure(
         n_compartments=3,
     ),
-    expert_models=[PROPOFOL_PUBLISHED],
+    literature_models=[PROPOFOL_PUBLISHED],
     win_margin=WIN_MARGIN_DELTA,
     ci_cadence="quarterly",
 )
@@ -206,7 +216,8 @@ __all__ = [
     "CASE_C2_GENTAMICIN",
     "CASE_C3_PROPOFOL",
     "DEFAULT_SPLIT",
-    "MIN_EXPERT_COUNT",
+    "MIN_EXPERT_COUNT",  # deprecated alias, removed in v0.7
+    "MIN_LITERATURE_COUNT",
     "PRIORITY_ORDER",
     "WIN_MARGIN_DELTA",
 ]

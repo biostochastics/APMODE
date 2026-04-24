@@ -276,8 +276,12 @@ class BenchmarkCase(BaseModel):
     expected_dispatch_includes: list[str] = Field(default_factory=list)
     expected_dispatch_excludes: list[str] = Field(default_factory=list)
 
-    # Suite C: expert comparison config
-    expert_models: list[PublishedModel] = Field(default_factory=list)
+    # Suite C: literature-benchmark comparators (plan Task 38 rename from
+    # ``expert_models``). Phase 1 of Suite C compares APMODE against
+    # published, peer-reviewed reference parameterizations. Phase 2
+    # (head-to-head vs a blinded human-expert panel) is gated on
+    # external collaborator coordination and out of v0.6 scope.
+    literature_models: list[PublishedModel] = Field(default_factory=list)
     win_margin: float = 0.02  # delta for NPE win rule
 
     # CI cadence

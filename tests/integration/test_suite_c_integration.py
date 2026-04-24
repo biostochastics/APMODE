@@ -55,10 +55,10 @@ class TestSuiteCCases:
             assert case.split_strategy.method == "subject_level_kfold"
             assert case.split_strategy.n_folds == 5
 
-    def test_all_cases_have_expert_models(self) -> None:
-        """Every Suite C case has at least one expert model reference."""
+    def test_all_cases_have_literature_models(self) -> None:
+        """Every Suite C case has at least one published-literature reference."""
         for case in ALL_CASES:
-            assert len(case.expert_models) >= 1
+            assert len(case.literature_models) >= 1
 
     def test_c1_mavoglurant(self) -> None:
         """C1 targets mavoglurant with submission lane."""
