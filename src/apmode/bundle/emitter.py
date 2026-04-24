@@ -19,6 +19,7 @@ import json
 import os
 import re
 from pathlib import Path  # noqa: TC003 — used at runtime in __init__
+from typing import Any
 
 from apmode.bundle.models import (  # noqa: TC001 — used at runtime in method signatures
     AgenticTraceInput,
@@ -497,6 +498,48 @@ class BundleEmitter:
         shutil.copy2(source, dest)
         return dest
 
+    def write_posterior_summary(
+        self,
+        candidate_id: str,
+        summary_df: Any,
+    ) -> Path:
+        """Write a long-form posterior summary to ``{cid}_posterior_summary.parquet``.
+
+        Expects a pandas DataFrame with the canonical column set
+        ``{param, rhat, ess_bulk, ess_tail, mean, sd, q05, q50, q95}``.
+        One row per parameter. Callers driving cmdstanpy should rename
+        ``CmdStanMCMC.summary()`` columns (``Mean``/``StdDev``/``5%``/...)
+        to match before invoking this emitter — the strict schema is the
+        point, since downstream Gate-1 Bayesian checks read these fields
+        by name.
+        """
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        _validate_path_component(candidate_id, "candidate_id")
+
+        canonical = (
+            "param",
+            "rhat",
+            "ess_bulk",
+            "ess_tail",
+            "mean",
+            "sd",
+            "q05",
+            "q50",
+            "q95",
+        )
+        actual = set(getattr(summary_df, "columns", []))
+        missing = set(canonical) - actual
+        if missing:
+            msg = f"summary_df missing required columns: {sorted(missing)}"
+            raise ValueError(msg)
+
+        table = pa.Table.from_pandas(summary_df[list(canonical)], preserve_index=False)
+        dest = self._bayesian_dir() / f"{candidate_id}_posterior_summary.parquet"
+        pq.write_table(table, dest)
+        return dest
+
     def write_posterior_draws(
         self,
         candidate_id: str,
@@ -537,10 +580,7 @@ class BundleEmitter:
         for name, arr_obj in draws_by_param.items():
             arr = np.asarray(arr_obj)
             if arr.ndim != 2:
-                msg = (
-                    f"draws for {name!r} must be 2-D (chains, iters); "
-                    f"got shape {arr.shape}"
-                )
+                msg = f"draws for {name!r} must be 2-D (chains, iters); got shape {arr.shape}"
                 raise ValueError(msg)
             thinned = arr[:, ::thin_every]
             n_chains, n_iters = thinned.shape
