@@ -48,9 +48,12 @@ if TYPE_CHECKING:
 # the bayesian extras are absent.
 _CMDSTAN_AVAILABLE = False
 _ARVIZ_AVAILABLE = False
+CmdStanModel: Any = None
 try:  # pragma: no cover - import-time guard
     import cmdstanpy  # noqa: F401 — imported at runtime inside _run_sampling
+    from cmdstanpy import CmdStanModel as _CmdStanModel
 
+    CmdStanModel = _CmdStanModel
     _CMDSTAN_AVAILABLE = True
 except ImportError:
     pass
@@ -891,6 +894,76 @@ def build_predictive_from_draws(
             )
         )
     return build_predictive_diagnostics(subject_sims, policy=gate3_policy)
+
+
+def sample_with_provenance(
+    *,
+    stan_code: str,
+    data: dict[str, Any],
+    work_dir: Path,
+    seed: int,
+    chains: int,
+    warmup: int,
+    sampling: int,
+    adapt_delta: float,
+    max_treedepth: int,
+    uses_reduce_sum: bool,
+) -> Any:
+    """Compile + sample a Stan program and record provenance metadata.
+
+    Writes ``model.stan`` and ``stan_data.json`` into ``work_dir``, invokes
+    cmdstanpy with ``save_cmdstan_config=True`` (cmdstanpy issue #848) and
+    platform-adaptive ``force_one_process_per_chain`` (cmdstanpy issue
+    #895, via :func:`apmode.bayes.platform.cmdstan_run_kwargs`), and emits
+    ``backend_versions.json`` containing SHA-256 hashes of the Stan code
+    and data, the cmdstan version, host platform, and the effective
+    ``one_process_per_chain`` flag.
+
+    Returns the ``CmdStanMCMC`` fit so callers can layer diagnostics.
+    """
+    import hashlib
+    import platform as _platform
+
+    from apmode.bayes.platform import cmdstan_run_kwargs
+
+    if CmdStanModel is None:  # pragma: no cover - import guard
+        msg = "cmdstanpy not installed; install with `uv sync --extra bayesian`"
+        raise RuntimeError(msg)
+
+    work_dir.mkdir(parents=True, exist_ok=True)
+    stan_path = work_dir / "model.stan"
+    stan_path.write_text(stan_code)
+    data_path = work_dir / "stan_data.json"
+    data_bytes = json.dumps(data, sort_keys=True).encode()
+    data_path.write_text(data_bytes.decode())
+
+    run_kwargs = cmdstan_run_kwargs(uses_reduce_sum=uses_reduce_sum)
+    model = CmdStanModel(stan_file=str(stan_path))
+    fit = model.sample(
+        data=str(data_path),
+        chains=chains,
+        iter_warmup=warmup,
+        iter_sampling=sampling,
+        adapt_delta=adapt_delta,
+        max_treedepth=max_treedepth,
+        seed=seed,
+        save_cmdstan_config=True,
+        output_dir=str(work_dir),
+        **run_kwargs,
+    )
+
+    meta: dict[str, Any] = {
+        "stan_code_sha256": hashlib.sha256(stan_code.encode()).hexdigest(),
+        "data_sha256": hashlib.sha256(data_bytes).hexdigest(),
+        "cmdstan_version": _cmdstan_version(),
+        "cmdstanpy_version": _stan_version(),
+        "python_version": sys.version.split()[0],
+        "platform": _platform.system(),
+        "uses_reduce_sum": uses_reduce_sum,
+        "one_process_per_chain": bool(run_kwargs.get("force_one_process_per_chain", False)),
+    }
+    (work_dir / "backend_versions.json").write_text(json.dumps(meta, indent=2, sort_keys=True))
+    return fit
 
 
 if __name__ == "__main__":
