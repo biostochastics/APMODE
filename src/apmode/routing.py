@@ -86,10 +86,10 @@ def route(
             backends.remove("agentic_llm")
         constraints.append("NODE excluded (submission lane)")
 
-    # NODE data sufficiency check. Follow-up: (
-    # ): use the new `node_dim_budget` manifest field as the
-    # primary gate. Legacy richness-only check retained as a fallback for
-    # v1 manifests (schema_version < 2).
+    # NODE data sufficiency check. Uses the v2 ``node_dim_budget``
+    # manifest field as the primary gate; falls back to the v1
+    # richness+coverage heuristic for manifests that predate the field
+    # (schema_version < 2).
     if node_eligible and "jax_node" in backends:
         budget = getattr(manifest, "node_dim_budget", None)
         if budget is not None and budget == 0:
