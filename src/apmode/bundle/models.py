@@ -63,7 +63,9 @@ class ParameterEstimate(BaseModel):
 
     Fields are a superset of what any single backend emits:
     - MLE backends populate estimate/se/rse/ci95_{lower,upper}.
-    - Bayesian backend populates estimate (posterior mean), posterior_sd,
+    - Bayesian backend populates estimate (primary point estimate —
+      posterior mean by default), posterior_mean (redundantly, when reports
+      need to disambiguate from posterior median), posterior_sd,
       q05/q50/q95, and leaves se/rse/ci95 as None. ci95 from Bayesian is
       the 95% credible interval; MLE-side ci95 is the Wald/profile CI.
     """
@@ -74,6 +76,7 @@ class ParameterEstimate(BaseModel):
     rse: float | None = None
     ci95_lower: float | None = None
     ci95_upper: float | None = None
+    posterior_mean: float | None = None
     posterior_sd: float | None = None
     q05: float | None = None
     q50: float | None = None
