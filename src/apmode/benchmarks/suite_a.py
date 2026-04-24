@@ -174,11 +174,20 @@ def scenario_a8() -> DSLSpec:
 
     Ground truth in the R simulator is
     ``CL(t, CRCL) = CL0 * (CRCL / 90)^theta * exp(-delta * t / 24)``. The
-    DSL captures the static allometric CRCL effect via a power CovariateLink;
-    the diurnal damping (``exp(-delta * t / 24)``) is not expressible in the
-    current DSL and is recorded in ``A8_COVARIATE_MODEL_NOTES`` for Suite A
-    comparison measurements — i.e., fit quality vs ground truth is an
-    APMODE output, not a DSL capability claim.
+    DSL captures the static allometric CRCL effect via a power
+    CovariateLink; the diurnal damping (``exp(-delta * t / 24)``) has no
+    DSL primitive and is recorded in ``A8_COVARIATE_MODEL_NOTES``.
+
+    Expected misspecification bias
+    ------------------------------
+    Because APMODE fits a static ``CL`` against diurnally-varying truth,
+    the recovered point estimate will be a time-average of ``CL0``, biased
+    downward by ``(1 - exp(-delta)) / delta`` over the 24 h cycle — roughly
+    ``-7%`` at ``delta=0.15``. Benchmark tooling must compare recovery to
+    this time-averaged target, not to the raw ``CL0 = 4.482``. The scenario
+    is therefore a *DSL-capability* test (can APMODE detect the residual
+    pattern as a covariate-vs-time misspecification?), not a pure
+    parameter-recovery test like A1-A6.
     """
     return DSLSpec(
         model_id="suite_a_scenario_a8",
@@ -226,8 +235,6 @@ A8_COVARIATE_MODEL_NOTES: dict[str, float] = {
 }
 
 # All scenario factories for iteration
-SCENARIOS: dict[str, type[None]] = {}  # populated below for type safety
-
 ALL_SCENARIOS = [
     ("A1", scenario_a1),
     ("A2", scenario_a2),

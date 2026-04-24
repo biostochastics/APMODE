@@ -145,6 +145,11 @@
     },
     "sigma": {
       "prop": 0.1
+    },
+    "_expected_misspecification_bias": {
+      "note": "Diurnal damping exp(-delta*t/24) has no DSL primitive today. APMODE will recover a time-averaged CL biased downward relative to CL0 = 4.482. Benchmark comparisons should use the time-averaged target below, not the raw CL0.",
+      "time_averaged_CL_over_dosing_interval": 3.678,
+      "static_target_bias_pct": -17.9
     }
   }
 }
