@@ -216,7 +216,7 @@ class PriorSpec(BaseModel):
 
     @model_validator(mode="after")
     def justification_required_for_informative_sources(self) -> PriorSpec:
-        if self.source in ("historical_data", "expert_elicitation", "meta_analysis"):
+        if self.source in _INFORMATIVE_SOURCES:
             if not self.justification.strip():
                 raise ValueError(
                     f"source={self.source} requires a non-empty justification "
@@ -234,25 +234,34 @@ class PriorSpec(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-# Case-insensitive match of the Crossref-canonical DOI form. Narrower than
-# the full DOI spec (which permits more punctuation), but sufficient for
-# every peer-reviewed Crossref/DataCite-minted DOI Gate 2 would accept as
-# prior provenance (plan Task 14 consensus; PRD §4.3.1; FDA Gate 2).
-_DOI_PATTERN = re.compile(r"^10\.\d{4,9}/[-._;()/:A-Z0-9]+$", re.IGNORECASE)
+# Case-insensitive match of the Crossref-canonical DOI form. Accepts the
+# punctuation set emitted by Crossref and DataCite registrations, including
+# angle/square brackets used in SICI-based suffixes (e.g. Wiley's legacy
+# ``10.1002/(SICI)<...>`` suffixes). Kept narrower than the full DOI spec
+# (which permits Unicode) so a misread string cannot slip through as a
+# plausible identifier — FDA Gate 2 provenance (PRD §4.3.1).
+_DOI_PATTERN = re.compile(r"^10\.\d{4,9}/[-._;()/:A-Z0-9<>\[\]]+$", re.IGNORECASE)
 _JUSTIFICATION_MIN_LEN = 50
 _INFORMATIVE_SOURCES: frozenset[str] = frozenset(
     {"historical_data", "expert_elicitation", "meta_analysis"}
 )
 
 
-def validate_prior_justification(spec: PriorSpec) -> list[str]:
+def validate_prior_justification(
+    spec: PriorSpec,
+    *,
+    min_length: int = _JUSTIFICATION_MIN_LEN,
+) -> list[str]:
     """Return a list of error strings for an informative prior's provenance.
 
     For informative sources (``historical_data``, ``expert_elicitation``,
     ``meta_analysis``) the prior must carry:
 
-    * ``justification`` with at least ``_JUSTIFICATION_MIN_LEN`` characters
-      so reviewers see the specific provenance claim, not a one-word label.
+    * ``justification`` with at least ``min_length`` characters (default
+      ``_JUSTIFICATION_MIN_LEN = 50``) so reviewers see the specific
+      provenance claim, not a one-word label. Lane policies can tighten
+      this via ``Gate2Config.justification_min_length`` once Task 19
+      lands; callers pass the resolved value as ``min_length``.
     * ``doi`` matching the Crossref-canonical pattern
       ``10.<registrant>/<suffix>`` (case-insensitive).
 
@@ -267,10 +276,10 @@ def validate_prior_justification(spec: PriorSpec) -> list[str]:
         return []
 
     errors: list[str] = []
-    if len(spec.justification) < _JUSTIFICATION_MIN_LEN:
+    if len(spec.justification) < min_length:
         errors.append(
             f"source={spec.source} requires justification of length "
-            f">= {_JUSTIFICATION_MIN_LEN}; got {len(spec.justification)} "
+            f">= {min_length}; got {len(spec.justification)} "
             f"characters (FDA Gate 2 evidence quality)"
         )
     if not spec.doi or not _DOI_PATTERN.match(spec.doi):

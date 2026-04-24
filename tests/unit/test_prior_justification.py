@@ -90,3 +90,52 @@ def test_uninformative_source_is_exempt() -> None:
         doi=None,
     )
     assert validate_prior_justification(spec) == []
+
+
+def test_sici_bracketed_doi_accepted() -> None:
+    """Wiley SICI-style DOIs carry angle/square brackets; accept them."""
+    spec = PriorSpec(
+        target="CL",
+        family=NormalPrior(mu=2.0, sigma=0.3),
+        source="meta_analysis",
+        justification=(
+            "Historical SICI-identified pooled analysis across adult oral PK "
+            "studies aligned on weight-corrected clearance as the endpoint."
+        ),
+        doi="10.1002/(SICI)1099-081X(199601)17:1<1::AID-BDD931>3.0.CO;2-G",
+    )
+    assert validate_prior_justification(spec) == []
+
+
+def test_min_length_override_relaxes_threshold() -> None:
+    """Callers can relax the default 50-char floor through ``min_length``."""
+    spec = PriorSpec(
+        target="CL",
+        family=NormalPrior(mu=2.0, sigma=0.3),
+        source="meta_analysis",
+        justification="Vancomycin pop-PK meta-analysis.",
+        doi="10.1111/biom.12242",
+    )
+    # Default rejects the short justification.
+    assert any("50" in e for e in validate_prior_justification(spec))
+    # Relaxing to 20 accepts it.
+    assert validate_prior_justification(spec, min_length=20) == []
+
+
+def test_min_length_override_can_tighten_threshold() -> None:
+    """Lane policies may tighten the floor above the module default."""
+    spec = PriorSpec(
+        target="CL",
+        family=NormalPrior(mu=2.0, sigma=0.3),
+        source="expert_elicitation",
+        justification=(
+            "Anchored elicitation across three NCS panelists with calibrated "
+            "uncertainty bounds recorded in the panel workbook."
+        ),
+        doi="10.1111/biom.12242",
+    )
+    # Default (50) accepts.
+    assert validate_prior_justification(spec) == []
+    # Tightened (500) rejects and mentions the bespoke threshold.
+    errs = validate_prior_justification(spec, min_length=500)
+    assert any("500" in e for e in errs)
