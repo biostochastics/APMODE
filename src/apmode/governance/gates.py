@@ -38,6 +38,7 @@ if TYPE_CHECKING:
         BackendResult,
         ImputationStabilityEntry,
         MissingDataDirective,
+        PriorManifest,
     )
     from apmode.governance.policy import (
         Gate1BayesianConfig,
@@ -566,6 +567,8 @@ def evaluate_gate2(
     policy: GatePolicy,
     lane: str,
     loro_metrics: LOROMetrics | None = None,
+    *,
+    prior_manifest: PriorManifest | None = None,
 ) -> GateResult:
     """Evaluate Gate 2: Lane-Specific Admissibility.
 
@@ -581,6 +584,12 @@ def evaluate_gate2(
         policy: GatePolicy with gate2 thresholds.
         lane: Operating lane ("submission", "discovery", "optimization").
         loro_metrics: Optional LORO-CV metrics for optimization lane.
+        prior_manifest: Loaded ``PriorManifest`` (from
+            ``bayesian/{cid}_prior_manifest.json``). Required when
+            ``policy.gate2.bayesian_prior_justification_required`` is True
+            (plan Task 19). ``None`` in other cases — the check passes
+            trivially for non-Bayesian backends or lanes that don't
+            demand prior provenance.
     """
     if lane not in _VALID_LANES:
         msg = f"Invalid lane '{lane}'. Must be one of {sorted(_VALID_LANES)}"
@@ -595,6 +604,7 @@ def evaluate_gate2(
     checks.append(_check_node_eligibility(result, g2))
     checks.append(_check_reproducible_estimation(result, g2))
     checks.append(_check_loro_requirement(result, g2, lane, loro_metrics=loro_metrics))
+    checks.append(_check_bayesian_prior_justification(result, g2, prior_manifest))
 
     passed = all(c.passed for c in checks)
     failed_names = [c.check_id for c in checks if not c.passed]
@@ -815,6 +825,79 @@ def _check_loro_requirement(
             f"npde_var[{g2.loro_npde_variance_min}-{g2.loro_npde_variance_max}], "
             f"vpc>{g2.loro_vpc_coverage_min}"
         ),
+    )
+
+
+_INFORMATIVE_PRIOR_SOURCES = frozenset({"historical_data", "expert_elicitation", "meta_analysis"})
+
+
+def _check_bayesian_prior_justification(
+    result: BackendResult,
+    g2: Gate2Config,
+    prior_manifest: PriorManifest | None,
+) -> GateCheckResult:
+    """Gate 2 Bayesian prior-justification hard-gate (plan Task 19).
+
+    Every informative prior on the candidate's ``PriorManifest`` must
+    carry a justification of at least
+    ``g2.bayesian_prior_justification_min_length`` characters AND a
+    Crossref-canonical DOI (FDA 2026 draft). Aggregates errors across
+    priors so reviewers see every failing entry in one pass.
+
+    Trivially passes when the lane policy does not require provenance
+    (``bayesian_prior_justification_required`` is False), when the
+    backend is not Bayesian, or when there are no informative priors
+    on the manifest.
+    """
+    if not g2.bayesian_prior_justification_required:
+        return GateCheckResult(
+            check_id="bayesian_prior_justification",
+            passed=True,
+            observed="not_required",
+        )
+    if result.backend != "bayesian_stan":
+        return GateCheckResult(
+            check_id="bayesian_prior_justification",
+            passed=True,
+            observed=f"not_bayesian_backend ({result.backend})",
+        )
+    if prior_manifest is None:
+        return GateCheckResult(
+            check_id="bayesian_prior_justification",
+            passed=False,
+            observed="prior_manifest_missing",
+            threshold="required",
+        )
+
+    min_len = g2.bayesian_prior_justification_min_length
+    issues: list[str] = []
+    informative_count = 0
+    for idx, entry in enumerate(prior_manifest.entries):
+        if entry.source not in _INFORMATIVE_PRIOR_SOURCES:
+            continue
+        informative_count += 1
+        entry_issues: list[str] = []
+        if len(entry.justification) < min_len:
+            entry_issues.append(f"justification {len(entry.justification)} < {min_len}")
+        if not entry.doi:
+            entry_issues.append("doi missing")
+        if entry_issues:
+            issues.append(f"entries[{idx}] target={entry.target!r}: {'; '.join(entry_issues)}")
+
+    if informative_count == 0:
+        return GateCheckResult(
+            check_id="bayesian_prior_justification",
+            passed=True,
+            observed="no_informative_priors",
+            threshold=f"min_len={min_len}, doi_required",
+        )
+
+    passed = not issues
+    return GateCheckResult(
+        check_id="bayesian_prior_justification",
+        passed=passed,
+        observed="all_justified" if passed else "; ".join(issues),
+        threshold=f"min_len={min_len}, doi_required",
     )
 
 

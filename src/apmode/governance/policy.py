@@ -167,6 +167,20 @@ class Gate2Config(BaseModel):
     loro_min_folds: int = Field(default=3, ge=2)
     loro_budget_top_n: int | None = None
 
+    # Bayesian prior justification (plan Task 19, FDA 2026 draft). When
+    # True, every informative prior on the candidate's prior manifest
+    # must carry a justification of at least
+    # ``bayesian_prior_justification_min_length`` characters AND a
+    # Crossref-canonical DOI. The Submission lane defaults this to True;
+    # Discovery/Optimization leave it False so model-search workflows
+    # aren't held hostage by provenance paperwork.
+    bayesian_prior_justification_required: bool = False
+    # Length floor for the justification when
+    # ``bayesian_prior_justification_required`` is True. Defaults to
+    # the FDA Gate 2 floor (50 chars); Submission-lane policies tighten
+    # to 500 so reviewers see substantive provenance, not boilerplate.
+    bayesian_prior_justification_min_length: int = Field(default=50, ge=10)
+
 
 class Gate3Config(BaseModel):
     """Gate 3: Cross-paradigm ranking composite configuration (PRD §4.3.1).

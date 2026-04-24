@@ -580,6 +580,7 @@ class TestGate2:
             "node_eligibility",
             "reproducible_estimation",
             "loro_required",
+            "bayesian_prior_justification",
         }
         assert expected == check_ids
 

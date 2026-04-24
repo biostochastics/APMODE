@@ -50,7 +50,8 @@
     "shrinkage_max": null,
     "identifiability_required": false,
     "node_eligible": true,
-    "loro_required": false
+    "loro_required": false,
+    "bayesian_prior_justification_required": false
   },
   "gate2_5": {
     "context_of_use_required": true,

@@ -50,7 +50,9 @@
     "shrinkage_max": 0.3,
     "identifiability_required": true,
     "node_eligible": false,
-    "loro_required": false
+    "loro_required": false,
+    "bayesian_prior_justification_required": true,
+    "bayesian_prior_justification_min_length": 500
   },
   "gate2_5": {
     "context_of_use_required": true,
