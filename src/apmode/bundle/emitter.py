@@ -44,6 +44,7 @@ from apmode.bundle.models import (  # noqa: TC001 — used at runtime in method 
     Ranking,
     ReportProvenance,
     RunLineage,
+    SamplerConfig,
     SearchGraph,
     SearchTrajectoryEntry,
     SeedRegistry,
@@ -483,6 +484,20 @@ class BundleEmitter:
         _validate_path_component(candidate_id, "candidate_id")
         path = self._bayesian_dir() / f"{candidate_id}_mcmc_diagnostics.json"
         path.write_text(diagnostics.model_dump_json(indent=2))
+        return path
+
+    def write_sampler_config(self, config: SamplerConfig, candidate_id: str) -> Path:
+        """Write bayesian/{candidate_id}_sampler_config.json.
+
+        The persisted ``SamplerConfig`` is the exact configuration cmdstanpy
+        was asked to use (chains, warmup, sampling, adapt_delta,
+        max_treedepth, seed, etc.). Paired with ``backend_versions.json``
+        and the ``save_cmdstan_config=True`` CSV hash set, this is enough
+        to reconstruct the run (cmdstanpy issue #848).
+        """
+        _validate_path_component(candidate_id, "candidate_id")
+        path = self._bayesian_dir() / f"{candidate_id}_sampler_config.json"
+        path.write_text(config.model_dump_json(indent=2))
         return path
 
     def copy_posterior_draws(self, source: Path, candidate_id: str) -> Path:
