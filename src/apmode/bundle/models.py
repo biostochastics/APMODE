@@ -1363,6 +1363,65 @@ class ReportProvenance(BaseModel):
 # --- Bayesian artifacts (Phase 2+) ---
 
 
+class SBCPriorEntry(BaseModel):
+    """One prior's Simulation-Based Calibration result (Talts et al. 2018).
+
+    SBC tests whether posterior intervals from the inference algorithm are
+    correctly calibrated to the prior: under exact inference, ranks of the
+    simulated true parameter relative to the posterior draws are uniform.
+    Departure from uniformity (low KS p-value) flags miscalibration in
+    either the model or the sampler.
+
+    The nightly runner (plan Task 27) fills this entry; the per-run
+    orchestrator only emits a stub manifest (``priors: []``) so the
+    artefact is always present in the bundle.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    target: str
+    family: str
+    n_simulations: int = Field(ge=1)
+    rank_histogram_bins: int = Field(ge=4)
+    rank_histogram_counts: list[int]
+    ks_pvalue: float | None = Field(default=None, ge=0.0, le=1.0)
+    passed: bool
+
+    @model_validator(mode="after")
+    def histogram_matches_bins(self) -> Self:
+        if len(self.rank_histogram_counts) != self.rank_histogram_bins:
+            msg = (
+                f"rank_histogram_counts length {len(self.rank_histogram_counts)} "
+                f"does not match rank_histogram_bins {self.rank_histogram_bins}"
+            )
+            raise ValueError(msg)
+        if any(c < 0 for c in self.rank_histogram_counts):
+            raise ValueError("rank_histogram_counts must be non-negative")
+        return self
+
+
+class SBCManifest(BaseModel):
+    """sbc_manifest.json — Simulation-Based Calibration roll-up (plan Task 26).
+
+    Always emitted on Bayesian runs as a stub with ``priors=[]`` so the
+    artefact's *presence* signals the orchestrator did its job. The
+    nightly SBC runner (Task 27) populates the entries from a canonical
+    3-scenario set (1-cmt, 2-cmt, 2-cmt with IIV correlation).
+
+    The file lives under ``artifacts/sbc/manifest.json`` — outside the
+    sealed-digest scope (added to ``_DIGEST_EXCLUDED_NAMES``) so the
+    nightly runner can rewrite it without invalidating ``_COMPLETE``.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    schema_version: Literal["1.0"] = "1.0"
+    run_id: str
+    sbc_runner_commit: str = ""
+    priors: list[SBCPriorEntry] = Field(default_factory=list)
+    generated_at: str  # ISO-8601 UTC
+
+
 class LOOSummary(BaseModel):
     """PSIS-LOO summary (plan Task 18, Vehtari et al. 2017).
 
