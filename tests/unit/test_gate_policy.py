@@ -215,8 +215,12 @@ class TestLanePoliciesGate3Contract:
         # at 1/n_bins — target±tolerance couldn't bridge the discrete
         # gaps. See CHANGELOG rc9 follow-up "PIT/NPDE-lite Gate 1
         # calibration".
-        for lane in ("submission", "discovery", "optimization"):
-            assert self._load(lane).policy_version == "0.5.0"
+        # 0.5.1 bump (submission only): Gate 2.5 block added to submission
+        # lane. Discovery/optimization stay at 0.5.0 until gate1_bayesian
+        # lands in those lanes.
+        assert self._load("submission").policy_version == "0.5.1"
+        assert self._load("discovery").policy_version == "0.5.0"
+        assert self._load("optimization").policy_version == "0.5.0"
 
     def test_all_lanes_pit_tolerance_calibration(self) -> None:
         """0.4.2: PIT calibration replaces VPC coverage as the Gate 1 gate.

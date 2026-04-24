@@ -1,5 +1,5 @@
 {
-  "policy_version": "0.5.0",
+  "policy_version": "0.5.1",
   "lane": "submission",
   "gate1": {
     "convergence_required": true,
@@ -21,6 +21,14 @@
     "identifiability_required": true,
     "node_eligible": false,
     "loro_required": false
+  },
+  "gate2_5": {
+    "context_of_use_required": true,
+    "limitation_to_risk_mapping_required": true,
+    "data_adequacy_required": true,
+    "data_adequacy_ratio_min": 5.0,
+    "sensitivity_analysis_required": true,
+    "ai_ml_transparency_required": false
   },
   "missing_data": {
     "mi_pmm_max_missingness": 0.20,

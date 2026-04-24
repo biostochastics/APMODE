@@ -789,7 +789,12 @@ class TestGate25:
     def test_no_gate25_config_passes(self) -> None:
         """When policy has no gate2_5, all candidates pass."""
         result = _make_backend_result()
-        policy = _load_policy("submission")  # no gate2_5 in default
+        # submission.json now ships with a gate2_5 block (policy_version 0.5.1);
+        # build an explicit no-gate2_5 policy to exercise the ``g25 is None``
+        # branch of ``evaluate_gate2_5``.
+        base = json.loads(POLICY_DIR.joinpath("submission.json").read_text())
+        base.pop("gate2_5", None)
+        policy = GatePolicy.model_validate(base)
         g25 = evaluate_gate2_5(result, policy)
         assert g25.passed is True
         assert g25.gate_name == "credibility_qualification"
