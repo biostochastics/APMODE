@@ -148,12 +148,20 @@ class Orchestrator:
         config: RunConfig | None = None,
         node_runner: BackendRunner | None = None,
         agentic_runner: BackendRunner | None = None,
+        bayesian_runner: BackendRunner | None = None,
         frem_runner: Nlmixr2Runner | None = None,
         mi_provider: ImputationProvider | None = None,
     ) -> None:
         """Construct the orchestrator.
 
         Args:
+            bayesian_runner: Optional runner for the ``bayesian_stan`` backend
+                (Torsten via cmdstanpy). Wired into the SearchEngine runner
+                map when the lane policy admits ``bayesian_stan`` (discovery
+                / optimization only in v0.6). A classical spec is never
+                auto-dispatched to the Bayesian runner; dispatch is triggered
+                by caller intent (API ``backend=bayesian_stan`` body flag or
+                Gate-1 survivor re-dispatch during LORO-CV).
             frem_runner: Optional FOCE-I-configured ``Nlmixr2Runner`` used
                 for the FREM execution stage. When omitted but the
                 missing-data directive resolves to ``FREM``, the orchestrator
@@ -170,6 +178,7 @@ class Orchestrator:
         self._config = config or RunConfig()
         self._node_runner = node_runner
         self._agentic_runner = agentic_runner
+        self._bayesian_runner = bayesian_runner
         self._frem_runner = frem_runner
         self._mi_provider = mi_provider
         self._spec_map: dict[str, DSLSpec] = {}  # candidate_id → DSLSpec
@@ -382,6 +391,8 @@ class Orchestrator:
                 runners["jax_node"] = self._node_runner
             if self._agentic_runner is not None and "agentic_llm" in dispatch.backends:
                 runners["agentic_llm"] = self._agentic_runner
+            if self._bayesian_runner is not None and "bayesian_stan" in dispatch.backends:
+                runners["bayesian_stan"] = self._bayesian_runner
             search_engine = SearchEngine(
                 runner=self._runner,
                 data_manifest=manifest,
@@ -1306,6 +1317,8 @@ class Orchestrator:
                 cand_runner = self._node_runner
             elif cand_result.backend == "agentic_llm" and self._agentic_runner is not None:
                 cand_runner = self._agentic_runner
+            elif cand_result.backend == "bayesian_stan" and self._bayesian_runner is not None:
+                cand_runner = self._bayesian_runner
 
             warm_estimates = {
                 name: pe.estimate
