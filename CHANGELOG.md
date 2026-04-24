@@ -82,6 +82,46 @@ New unit tests: `test_bundle_prior_manifest.py` (10), `test_policy_gate1_bayesia
 `test_reparameterization_recommendation.py` (10). mypy `--strict` clean; ruff
 `check` + `format` clean.
 
+Continued in the same session — four more plan tasks (26, 38, 39, 42):
+
+- **Plan Task 26 — `sbc_manifest.json` schema + stub emitter.**
+  `SBCManifest` + `SBCPriorEntry` are the on-disk shape for the
+  Talts 2018 Simulation-Based Calibration roll-up the nightly runner
+  (Task 27) populates. Producer-side `BundleEmitter.write_sbc_manifest`
+  emits a stub with `priors=[]` so the artefact's *presence* signals
+  the Bayesian path executed end-to-end. Filename `sbc_manifest.json`
+  joins the SBOM in `_DIGEST_EXCLUDED_NAMES` so a nightly rewrite does
+  not invalidate `_COMPLETE`.
+- **Plan Task 38 — Suite C rename + reframed claims.**
+  `BenchmarkCase.expert_models` → `literature_models`. Suite C Phase 1
+  is now framed as "methodology validation vs established literature
+  models"; Phase 2 (head-to-head vs blinded human-expert panel) is
+  marked out of v0.6 scope. `MIN_EXPERT_COUNT` retained as a
+  deprecated alias for `MIN_LITERATURE_COUNT` (removal in v0.7).
+- **Plan Task 39 — `LiteratureFixture` schema with parameterization mapping.**
+  `LiteratureReference` (Crossref-canonical DOI + citation +
+  population description) + `LiteratureFixture` (dataset_id + DSL
+  spec path + reference_params + parameterization_mapping). The
+  mapping is `{published_name: dsl_name}`; the validator enforces
+  that mapping values index `reference_params` so cross-tool NPE
+  comparisons (e.g. NONMEM `TVCL` vs DSL `CL`) cannot silently
+  mis-align.
+- **Plan Task 42 — Eleveld propofol DSLSpec coverage assessment.**
+  `docs/discovery/eleveld_propofol_coverage.md` documents three
+  blocking gaps preventing Eleveld 2018 from running on the
+  Bayesian path: Stan emitter raises `NotImplementedError` for the
+  `maturation` covariate form; no derived-covariate primitive
+  (FFM = f(weight, sex, height)); no piecewise age-decay primitive.
+  `scripts/check_eleveld_dslspec_coverage.py` is the auditable
+  CI-friendly counterpart — exits non-zero on blocking gaps.
+  Recommendation: **NO-GO** for v0.6 Phase-1 Bayesian fixtures.
+  Vancomycin (Roberts 2011) is the only Phase-1 Bayesian fixture.
+
+Plan tasks 26, 38, 39, 42 added unit tests:
+`test_sbc_manifest.py` (9), `test_literature_fixture_schema.py` (11).
+Total session test additions: 113 unit tests across thirteen plan
+tasks. Test collected count: 1894 → 2018.
+
 ### Added — v0.6-rc1 in-progress (Bayesian Block 1 + Suite A8 + Gate 2.5 submission)
 
 Work toward v0.6.0-rc1 has landed in pieces; the Bayesian orchestrator
