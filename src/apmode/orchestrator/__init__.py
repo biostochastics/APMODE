@@ -34,6 +34,7 @@ from apmode.bundle.models import (
     FailedCandidate,
     LOROCVResult,
     LOROMetrics,
+    PriorManifest,
     SeedRegistry,
 )
 from apmode.data.initial_estimates import NCAEstimator, build_initial_estimates_bundle
@@ -43,6 +44,7 @@ from apmode.errors import AgenticExhaustionError, BackendError
 from apmode.evaluation.loro_cv import evaluate_loro_cv
 from apmode.governance.gates import (
     evaluate_gate1,
+    evaluate_gate1_bayesian,
     evaluate_gate2,
     evaluate_gate2_5,
     evaluate_gate3,
@@ -634,13 +636,27 @@ class Orchestrator:
                         seed_results_map.setdefault(cid, []).append(result)
                         emitter.write_seed_result(result, cid, seed_offset)
 
-            # Stage 6b: Gate 1 evaluation (collect survivors)
+            # Stage 6b: Gate 1 (+ Gate 1 Bayesian for Stan candidates)
+            #
+            # Bayesian-only sidecars (loo_summary, reparameterization
+            # recommendation, prior_manifest) are emitted on the same pass
+            # so a clean ``bayesian/<cid>_*.json`` subtree is in place
+            # before any gate emits its decision artefact.
+            prior_manifest_paths: dict[str, Path] = {}
             gate1_survivors: list[tuple[SearchResult, BRModel]] = []
             for sr in search_outcome.results:
                 if sr.result is None:
                     continue
 
                 emitter.write_backend_result(sr.result)
+
+                if sr.result.backend == "bayesian_stan":
+                    self._emit_bayesian_sidecars(
+                        sr=sr,
+                        emitter=emitter,
+                        policy=policy,
+                        prior_manifest_paths=prior_manifest_paths,
+                    )
 
                 seed_results = seed_results_map.get(sr.candidate_id)
                 # When MI is active, look up this candidate's per-imputation
@@ -669,6 +685,14 @@ class Orchestrator:
                 emitter.write_gate_decision(g1, gate_number=1)
                 outcome.gate1_results.append((sr.candidate_id, g1.passed))
 
+                # Gate 1 Bayesian — per-class warn/fail tiers on R-hat /
+                # ESS / divergences / treedepth / E-BFMI / Pareto-k. The
+                # evaluator returns ``not_applicable`` for non-Bayesian
+                # backends so calling unconditionally keeps the audit
+                # trail uniform.
+                g1b = evaluate_gate1_bayesian(sr.result, policy)
+                emitter.write_gate_decision(g1b, gate_number=1)
+
                 if not g1.passed:
                     emitter.append_failed_candidate(
                         FailedCandidate(
@@ -677,6 +701,18 @@ class Orchestrator:
                             gate_failed="gate1",
                             failed_checks=[c.check_id for c in g1.checks if not c.passed],
                             summary_reason=g1.summary_reason,
+                            timestamp=datetime.now(tz=UTC).isoformat(),
+                        )
+                    )
+                    continue
+                if not g1b.passed:
+                    emitter.append_failed_candidate(
+                        FailedCandidate(
+                            candidate_id=sr.candidate_id,
+                            backend=sr.result.backend,
+                            gate_failed="gate1_bayesian",
+                            failed_checks=[c.check_id for c in g1b.checks if not c.passed],
+                            summary_reason=g1b.summary_reason,
                             timestamp=datetime.now(tz=UTC).isoformat(),
                         )
                     )
@@ -703,7 +739,25 @@ class Orchestrator:
             for _, sr_result in gate1_survivors:
                 loro_m = loro_metrics_map.get(sr_result.model_id)
 
-                g2 = evaluate_gate2(sr_result, policy, self._config.lane, loro_metrics=loro_m)
+                # Bayesian Gate 2 prior-justification check needs the
+                # canonical PriorManifest emitted upstream — load from
+                # disk so the gate evaluates the same artefact a
+                # reviewer would inspect, not an in-memory shadow.
+                prior_manifest = None
+                if sr_result.backend == "bayesian_stan":
+                    pm_path = prior_manifest_paths.get(sr_result.model_id)
+                    if pm_path is not None:
+                        prior_manifest = PriorManifest.model_validate_json(
+                            pm_path.read_text()
+                        )
+
+                g2 = evaluate_gate2(
+                    sr_result,
+                    policy,
+                    self._config.lane,
+                    loro_metrics=loro_m,
+                    prior_manifest=prior_manifest,
+                )
                 emitter.write_gate_decision(g2, gate_number=2)
                 outcome.gate2_results.append((sr_result.model_id, g2.passed))
 
@@ -1375,6 +1429,71 @@ class Orchestrator:
                     vpc_concordance=loro_result.metrics.vpc_coverage_concordance,
                 )
         return loro_map
+
+    def _emit_bayesian_sidecars(
+        self,
+        *,
+        sr: SearchResult,
+        emitter: BundleEmitter,
+        policy: GatePolicy,
+        prior_manifest_paths: dict[str, Path],
+    ) -> None:
+        """Emit the Bayesian-only sidecar artefacts for one candidate.
+
+        Writes (when present):
+
+        * ``bayesian/{cid}_loo_summary.json`` — populated by the harness
+          when the Stan program declares ``log_lik``; emits a
+          ``status="not_computed"`` payload otherwise so the absence is
+          itself recorded in the audit trail.
+        * ``bayesian/{cid}_reparameterization_recommendation.json`` —
+          advisory only; the harness *suggests* but never switches
+          parameterization automatically (PRD §4.3.2 / Task 25).
+        * ``bayesian/{cid}_prior_manifest.json`` — derived from the
+          live ``DSLSpec.priors`` so the FDA-required justification
+          surface is auditable; the path is recorded so the Gate 2
+          evaluator below loads the same artefact a reviewer would
+          inspect (and the JSON-validation contract is exercised once).
+
+        Errors during prior-manifest emission are logged but do not
+        abort the run — the candidate proceeds to Gate 2 with no
+        manifest, where ``_check_bayesian_prior_justification`` either
+        marks it ``not_applicable`` (lane policy permits) or fails
+        (submission lane requires the manifest).
+        """
+        result = sr.result
+        if result is None or result.backend != "bayesian_stan":
+            return
+
+        if result.loo_summary is not None:
+            emitter.write_loo_summary(result.loo_summary)
+        if result.reparameterization_recommendation is not None:
+            emitter.write_reparameterization_recommendation(
+                result.reparameterization_recommendation
+            )
+
+        priors = list(getattr(sr.spec, "priors", []) or [])
+        if not priors:
+            return
+        try:
+            pm_path = emitter.write_prior_manifest_from_specs(
+                priors,
+                candidate_id=sr.candidate_id,
+                policy_version=policy.policy_version,
+                justification_min_length=(
+                    policy.gate2.bayesian_prior_justification_min_length
+                ),
+            )
+        except ValueError as exc:
+            # Surface the validation error in the run log; Gate 2 will
+            # subsequently fail this candidate with a precise reason.
+            logger.warning(
+                "prior_manifest validation failed",
+                candidate_id=sr.candidate_id,
+                error=str(exc),
+            )
+        else:
+            prior_manifest_paths[sr.candidate_id] = pm_path
 
     def _find_existing_run_id(self) -> str | None:
         """Return the run_id of the single existing bundle in ``_bundle_base``.

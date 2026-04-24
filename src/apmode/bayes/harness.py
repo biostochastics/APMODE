@@ -261,6 +261,25 @@ def _run(request_path: Path) -> dict[str, Any]:
     if reparam_recommendation is not None:
         result["reparameterization_recommendation"] = reparam_recommendation
 
+    # PSIS-LOO summary — gate-able via Pareto-k buckets. Computed only
+    # when the Stan program declares ``log_lik``; ``build_loo_summary``
+    # returns ``status="not_computed"`` otherwise (small models without
+    # log_lik are legitimate). Embedded inline so the orchestrator can
+    # emit ``bayesian/{cid}_loo_summary.json`` via the bundle emitter.
+    try:
+        import arviz as _az_for_loo
+
+        idata_for_loo = _az_for_loo.from_cmdstanpy(fit, log_likelihood="log_lik")
+    except Exception as exc:
+        sys.stderr.write(
+            f"WARN: failed to construct InferenceData for LOO: {exc}\n"
+        )
+    else:
+        loo_summary = build_loo_summary(
+            idata_for_loo, candidate_id=request["candidate_id"]
+        )
+        result["loo_summary"] = loo_summary
+
     return {
         "schema_version": "1.0",
         "status": "success",
@@ -461,12 +480,22 @@ def _compute_diagnostics(fit: Any) -> dict[str, Any]:
     """Compute PosteriorDiagnostics-shaped dict from a CmdStanMCMC fit."""
     import arviz as az
 
+    from apmode.governance.param_class import (
+        PARAM_CLASS_NAMES,
+        classify_param_class,
+    )
+
     idata = az.from_cmdstanpy(fit, log_likelihood="log_lik")
 
-    # R-hat
+    # R-hat — also bucketed by parameter class so Gate 1 Bayesian can
+    # compare each class against its own threshold (Vehtari et al. 2021
+    # recommend looser floors for IIV / correlations than fixed effects).
     rhat_ds = az.rhat(idata)
     rhat_vals = _dataset_flat_values(rhat_ds)
     rhat_max = float(max(rhat_vals)) if rhat_vals else 1.0
+    rhat_by_class: dict[str, float] = _bucket_worst_by_class(
+        rhat_ds, classify_param_class, kind="max"
+    )
 
     # ESS
     ess_bulk_ds = az.ess(idata, method="bulk")
@@ -475,6 +504,17 @@ def _compute_diagnostics(fit: Any) -> dict[str, Any]:
     ess_tail_vals = _dataset_flat_values(ess_tail_ds)
     ess_bulk_min = float(min(ess_bulk_vals)) if ess_bulk_vals else 0.0
     ess_tail_min = float(min(ess_tail_vals)) if ess_tail_vals else 0.0
+    ess_bulk_by_class: dict[str, float] = _bucket_worst_by_class(
+        ess_bulk_ds, classify_param_class, kind="min"
+    )
+    ess_tail_by_class: dict[str, float] = _bucket_worst_by_class(
+        ess_tail_ds, classify_param_class, kind="min"
+    )
+    # The classifier only emits names from PARAM_CLASS_NAMES, so the
+    # bucket dicts are guaranteed to use the policy-recognised
+    # spelling — no defensive remap needed downstream. Empty buckets
+    # are fine (Gate 1 Bayesian skips classes it has no data for).
+    _ = PARAM_CLASS_NAMES  # anchor the import — keeps the schema spec close to its consumers
 
     # Divergences / max-treedepth — from sample diagnostics
     import numpy as np
@@ -491,17 +531,23 @@ def _compute_diagnostics(fit: Any) -> dict[str, Any]:
     except Exception:
         ebfmi_min = float("nan")
 
-    # Pareto-k via LOO (if log_lik present)
+    # Pareto-k via LOO (if log_lik present). arviz can emit non-finite
+    # entries for observations where PSIS smoothing fails — those are
+    # filtered before computing the max so ``pareto_k_max`` stays a
+    # finite float (or ``None`` when no observation has a finite k).
     pareto_k_max: float | None = None
     pareto_k_counts: dict[str, int] = {}
     try:
         loo = az.loo(idata, pointwise=True)
         pareto_k = loo.pareto_k.values
-        pareto_k_max = float(pareto_k.max())
+        finite_k = pareto_k[np.isfinite(pareto_k)]
+        pareto_k_max = float(finite_k.max()) if finite_k.size else None
         bins = [(-float("inf"), 0.5), (0.5, 0.7), (0.7, 1.0), (1.0, float("inf"))]
         labels = ["good", "ok", "bad", "very_bad"]
         for (lo, hi), label in zip(bins, labels, strict=True):
-            pareto_k_counts[label] = int(((pareto_k > lo) & (pareto_k <= hi)).sum())
+            pareto_k_counts[label] = int(
+                ((finite_k > lo) & (finite_k <= hi)).sum()
+            )
     except Exception:
         pass
 
@@ -525,6 +571,13 @@ def _compute_diagnostics(fit: Any) -> dict[str, Any]:
         "pareto_k_counts": pareto_k_counts,
         "mcse_by_param": mcse_by_param,
         "per_chain_rhat": per_chain_rhat,
+        # Per-parameter-class buckets. Empty when the dataset's variables
+        # didn't match a recognised prefix; Gate 1 Bayesian falls through
+        # to scalar comparisons in that case (BackendResult-loaded older
+        # bundles also remain valid).
+        "rhat_max_by_class": rhat_by_class,
+        "ess_bulk_min_by_class": ess_bulk_by_class,
+        "ess_tail_min_by_class": ess_tail_by_class,
     }
 
 
@@ -566,13 +619,20 @@ _LOO_K_BINS: tuple[tuple[float, float, str], ...] = (
 
 
 def _bin_pareto_k(values: Any) -> dict[str, int]:
-    """Bucket Pareto-k values into the four arviz reliability bands."""
+    """Bucket Pareto-k values into the four arviz reliability bands.
+
+    Non-finite entries (``nan``/``inf``) are dropped before bucketing —
+    arviz can emit them when PSIS smoothing fails on a specific
+    observation, and the boundary tests below would otherwise quietly
+    miscount them as ``very_bad``.
+    """
     import numpy as np
 
     arr = np.asarray(values, dtype=float)
+    finite = arr[np.isfinite(arr)]
     counts: dict[str, int] = {}
     for low, high, label in _LOO_K_BINS:
-        mask = (arr > low) & (arr <= high)
+        mask = (finite > low) & (finite <= high)
         counts[label] = int(mask.sum())
     return counts
 
@@ -615,26 +675,45 @@ def build_loo_summary(
             "reason": f"arviz.loo skipped: {exc}",
         }
 
-    # arviz_stats >= 1.0 renamed the legacy ``elpd_loo``/``p_loo``
-    # accessors to ``elpd``/``p`` (the older arviz API kept both names
-    # via ``ELPDData`` aliases). Probe both to stay forward-compatible.
-    def _coerce_float(value: Any) -> float:
+    # arviz_stats >= 1.0 renamed the legacy ``elpd_loo``/``p_loo``/``se``
+    # accessors to ``elpd``/``p``/``elpd_se`` (the older arviz API kept
+    # both names via ``ELPDData`` aliases). Probe both via explicit
+    # ``is not None`` rather than ``or``, since a legitimate ``elpd_loo``
+    # of ``0.0`` would otherwise fall through to the renamed accessor.
+    def _coerce_float(value: Any) -> float | None:
         if value is None:
-            return float("nan")
+            return None
         try:
-            return float(value)
+            coerced = float(value)
         except (TypeError, ValueError):
-            return float("nan")
+            return None
+        # NaN must surface as None so ``LOOSummary``'s ``float | None``
+        # contract holds and downstream ``if x is not None`` guards do
+        # not enter the branch on NaN. JSON also rejects NaN per RFC 8259.
+        if coerced != coerced:
+            return None
+        return coerced
 
-    elpd = getattr(loo, "elpd_loo", None) or getattr(loo, "elpd", None)
-    p_loo = getattr(loo, "p_loo", None) or getattr(loo, "p", None)
+    def _first_not_none(*candidates: Any) -> Any:
+        for c in candidates:
+            if c is not None:
+                return c
+        return None
+
+    elpd = _first_not_none(
+        getattr(loo, "elpd_loo", None), getattr(loo, "elpd", None)
+    )
+    p_loo = _first_not_none(getattr(loo, "p_loo", None), getattr(loo, "p", None))
+    se_elpd = _first_not_none(
+        getattr(loo, "se", None), getattr(loo, "elpd_se", None)
+    )
     n_obs = getattr(loo, "n_data_points", None)
     pareto_k = getattr(loo, "pareto_k", None)
     return {
         "candidate_id": candidate_id,
         "status": "computed",
         "elpd_loo": _coerce_float(elpd),
-        "se_elpd_loo": _coerce_float(getattr(loo, "se", None)),
+        "se_elpd_loo": _coerce_float(se_elpd),
         "p_loo": _coerce_float(p_loo),
         "pareto_k_max": (float(pareto_k.values.max()) if pareto_k is not None else None),
         "n_observations": (
@@ -737,6 +816,46 @@ def _dataset_flat_values(ds: Any) -> list[float]:
         vals = np.asarray(arr.values).ravel()
         out.extend(float(v) for v in vals if np.isfinite(v))
     return out
+
+
+def _bucket_worst_by_class(
+    ds: Any,
+    classifier: Any,
+    *,
+    kind: str,
+) -> dict[str, float]:
+    """Bucket a Dataset's variables by parameter class and pick worst-case.
+
+    For R-hat (``kind="max"``) the worst-case is the maximum within the
+    class; for ESS (``kind="min"``) it's the minimum. Variables are
+    routed via ``classifier(name)``; multi-element arrays contribute
+    every finite element to the bucket. Empty buckets are dropped from
+    the result so consumers can use ``in`` to test whether a class has
+    any data — Gate 1 Bayesian skips classes it has no data for.
+    """
+    import math
+
+    import numpy as np
+
+    if kind not in {"min", "max"}:
+        msg = f"kind must be 'min' or 'max', got {kind!r}"
+        raise ValueError(msg)
+
+    by_class: dict[str, float] = {}
+    for name, arr in ds.data_vars.items():
+        cls = classifier(str(name))
+        for v in np.asarray(arr.values).ravel():
+            fv = float(v)
+            if not math.isfinite(fv):
+                continue
+            current = by_class.get(cls)
+            if current is None:
+                by_class[cls] = fv
+            elif kind == "max":
+                by_class[cls] = max(current, fv)
+            else:
+                by_class[cls] = min(current, fv)
+    return by_class
 
 
 def _flatten_dataset_items(ds: Any) -> list[tuple[str, float]]:

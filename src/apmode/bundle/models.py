@@ -7,6 +7,7 @@ Models are validated before writing to disk.
 
 from __future__ import annotations
 
+import re
 from enum import StrEnum
 from typing import Annotated, Literal, Self
 
@@ -463,6 +464,15 @@ class BackendResult(BaseModel):
     posterior_draws_path: str | None = None  # relative to bundle root
     prior_manifest_path: str | None = None  # bundle-relative path to prior_manifest.json
     simulation_protocol_path: str | None = None  # bundle-relative path to simulation_protocol.json
+    # Sidecar artefacts produced by the Bayesian harness alongside the
+    # main result. Embedded inline rather than persisted as separate
+    # files in the harness output dir so the orchestrator owns the
+    # bundle-write step (single emitter call site, single audit trail).
+    # ``loo_summary`` is None when the model does not declare ``log_lik``
+    # or arviz could not compute LOO; ``reparameterization_recommendation``
+    # is None when the sampler ran cleanly.
+    loo_summary: LOOSummary | None = None
+    reparameterization_recommendation: ReparameterizationRecommendation | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -1448,6 +1458,21 @@ class LOOSummary(BaseModel):
     k_counts: dict[str, int] = Field(default_factory=dict)
     reason: str | None = None
 
+    @model_validator(mode="after")
+    def k_counts_keys_are_known(self) -> Self:
+        # The four Vehtari 2017 reliability bands are the only valid
+        # keys; unknown labels (typos like "god" → silently lost in
+        # downstream report rendering) must surface at construction time.
+        expected = {"good", "ok", "bad", "very_bad"}
+        unknown = sorted(set(self.k_counts) - expected)
+        if unknown:
+            msg = (
+                f"LOOSummary.k_counts has unknown band labels {unknown}; "
+                f"expected subset of {sorted(expected)}"
+            )
+            raise ValueError(msg)
+        return self
+
 
 class ReparameterizationRecommendation(BaseModel):
     """Diagnostic-driven reparameterization suggestion (advisory, not automatic).
@@ -1490,8 +1515,19 @@ class ReparameterizationRecommendation(BaseModel):
     rationale: str
 
 
+_PRIOR_DOI_PATTERN = re.compile(
+    r"^10\.\d{4,9}/[-._;()/:A-Z0-9<>\[\]]+$",
+    re.IGNORECASE,
+)
+
+
 class PriorManifestEntry(BaseModel):
-    """One declared prior with full provenance for FDA Gate 2 justification."""
+    """One declared prior with full provenance for FDA Gate 2 justification.
+
+    The optional :attr:`doi` is enforced to match the Crossref canonical
+    pattern when present — a free-form ``"n/a"`` would silently satisfy
+    the Gate 2 prior-justification check that only tests truthiness.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -1508,6 +1544,17 @@ class PriorManifestEntry(BaseModel):
     justification: str
     historical_refs: list[str] = Field(default_factory=list)
     doi: str | None = None
+
+    @model_validator(mode="after")
+    def doi_is_crossref_canonical(self) -> Self:
+        if self.doi is not None and not _PRIOR_DOI_PATTERN.match(self.doi):
+            msg = (
+                f"PriorManifestEntry.doi {self.doi!r} does not match the "
+                "Crossref-canonical pattern '10.<registrant>/<suffix>'. "
+                "Use ``None`` rather than 'n/a' when no DOI is available."
+            )
+            raise ValueError(msg)
+        return self
 
 
 class PriorManifest(BaseModel):
@@ -1548,8 +1595,19 @@ class MetricTuple(BaseModel):
     ci_low: float
     ci_high: float
     method: Literal[
+        # Real posterior samples from MCMC (Bayesian backend).
         "posterior_draws",
+        # Generic Laplace tag — kept for back-compat with bundles that
+        # don't distinguish faithful MVN from the diagonal fallback.
         "laplace_draws",
+        # Faithful MVN draw from the asymptotic covariance (full
+        # off-diagonal correlation structure preserved).
+        "laplace_mvn",
+        # Diagonal-only fallback when the asymptotic covariance is
+        # ill-conditioned. Marginal SE is preserved but correlations
+        # are lost — Gate 3 ranker should weight these intervals lower.
+        "laplace_bootstrap_diagonal",
+        # Legacy synonym for the diagonal fallback.
         "empirical_bootstrap",
     ]
     ci_level: float = Field(default=0.95, gt=0.0, lt=1.0)

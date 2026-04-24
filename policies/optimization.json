@@ -41,6 +41,8 @@
       "rhat": "fail",
       "ess": "fail",
       "divergences": "fail",
+      "treedepth": "fail",
+      "ebfmi": "fail",
       "pareto_k": "fail"
     }
   },

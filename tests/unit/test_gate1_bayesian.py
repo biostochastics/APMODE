@@ -50,12 +50,19 @@ from apmode.governance.policy import (
 _POLICY_DIR = Path(__file__).resolve().parents[2] / "policies"
 
 
+_SENTINEL_SAMPLER_CFG = SamplerConfig()
+
+
 def _make_result(
     diag: PosteriorDiagnostics | None,
     *,
     backend: str = "bayesian_stan",
     model_id: str = "cand001",
+    sampler_config: SamplerConfig | None = _SENTINEL_SAMPLER_CFG,
 ) -> BackendResult:
+    if sampler_config is _SENTINEL_SAMPLER_CFG:
+        # Default: real config when this is a Bayesian fit, else None.
+        sampler_config = SamplerConfig() if backend == "bayesian_stan" else None
     return BackendResult(
         model_id=model_id,
         backend=backend,  # type: ignore[arg-type]
@@ -107,7 +114,7 @@ def _make_result(
         backend_versions={},
         initial_estimate_source="fallback",
         posterior_diagnostics=diag,
-        sampler_config=SamplerConfig() if backend == "bayesian_stan" else None,
+        sampler_config=sampler_config,
     )
 
 
@@ -258,6 +265,8 @@ def test_pareto_k_fail_severity_drops_gate() -> None:
             "rhat": "fail",
             "ess": "fail",
             "divergences": "fail",
+            "treedepth": "warn",
+            "ebfmi": "fail",
             "pareto_k": "fail",  # Optimization-lane override
         },
     )
@@ -266,6 +275,91 @@ def test_pareto_k_fail_severity_drops_gate() -> None:
     out = evaluate_gate1_bayesian(res, _policy(gate1_bayesian=cfg))
     assert out.passed is False
     assert "Pareto-k" in out.summary_reason
+
+
+# --- E-BFMI + tree-depth fraction (six-axis severity expansion) ----------
+
+
+def test_ebfmi_below_threshold_fails_with_default_severity() -> None:
+    """E-BFMI < 0.3 disqualifies under the submission-lane ``ebfmi=fail`` tier."""
+    diag = _clean_diag(ebfmi_min=0.2)
+    res = _make_result(diag)
+    out = evaluate_gate1_bayesian(res, _policy(lane="submission"))
+    assert out.passed is False
+    assert "E-BFMI" in out.summary_reason
+    ebfmi_check = next(c for c in out.checks if c.check_id == "bayesian_ebfmi")
+    assert ebfmi_check.passed is False
+
+
+def test_ebfmi_warn_severity_keeps_gate_passing() -> None:
+    """Discovery-lane override demotes E-BFMI to warn — gate still passes."""
+    cfg = Gate1BayesianConfig(
+        severity={
+            "rhat": "fail",
+            "ess": "fail",
+            "divergences": "fail",
+            "treedepth": "warn",
+            "ebfmi": "warn",
+            "pareto_k": "warn",
+        },
+    )
+    diag = _clean_diag(ebfmi_min=0.1)
+    res = _make_result(diag)
+    out = evaluate_gate1_bayesian(res, _policy(gate1_bayesian=cfg))
+    assert out.passed is True
+    assert "warn" in out.summary_reason.lower()
+
+
+def test_ebfmi_nan_surfaces_as_warning() -> None:
+    """NaN E-BFMI (arviz could not compute) is recorded but not gated on."""
+    diag = _clean_diag(ebfmi_min=float("nan"))
+    res = _make_result(diag)
+    out = evaluate_gate1_bayesian(res, _policy())
+    assert out.passed is True
+    assert "not computed" in out.summary_reason.lower()
+    ebfmi_check = next(c for c in out.checks if c.check_id == "bayesian_ebfmi")
+    assert ebfmi_check.observed == "not_computed"
+
+
+def test_treedepth_fraction_above_threshold_warns_by_default() -> None:
+    """``severity['treedepth']='warn'`` (default) keeps the gate passing."""
+    # 100/4000 = 2.5% > 1% threshold, but warn-tier — gate still passes.
+    diag = _clean_diag(n_max_treedepth=100)
+    res = _make_result(diag)
+    out = evaluate_gate1_bayesian(res, _policy())
+    assert out.passed is True
+    assert "tree-depth" in out.summary_reason.lower()
+
+
+def test_treedepth_fraction_above_threshold_fails_when_severity_fail() -> None:
+    """Optimization-lane sets ``treedepth=fail`` to disqualify saturating fits."""
+    cfg = Gate1BayesianConfig(
+        severity={
+            "rhat": "fail",
+            "ess": "fail",
+            "divergences": "fail",
+            "treedepth": "fail",
+            "ebfmi": "fail",
+            "pareto_k": "fail",
+        },
+    )
+    diag = _clean_diag(n_max_treedepth=200)  # 200/4000 = 5% > 1%
+    res = _make_result(diag)
+    out = evaluate_gate1_bayesian(res, _policy(gate1_bayesian=cfg))
+    assert out.passed is False
+    assert "tree-depth" in out.summary_reason.lower()
+
+
+def test_treedepth_skipped_without_sampler_config() -> None:
+    """If sampler_config is None the check records a warning but doesn't gate."""
+    diag = _clean_diag(n_max_treedepth=999)
+    res = _make_result(diag, sampler_config=None)
+    out = evaluate_gate1_bayesian(res, _policy())
+    assert out.passed is True
+    td_check = next(
+        c for c in out.checks if c.check_id == "bayesian_treedepth_fraction"
+    )
+    assert td_check.observed == "not_evaluated"
 
 
 # --- Threshold overrides -------------------------------------------------

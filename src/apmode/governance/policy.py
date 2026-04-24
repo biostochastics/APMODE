@@ -384,6 +384,8 @@ _GATE1_BAYESIAN_DEFAULT_SEVERITY: dict[str, Literal["warn", "fail"]] = {
     "rhat": "fail",
     "ess": "fail",
     "divergences": "fail",
+    "treedepth": "warn",
+    "ebfmi": "fail",
     "pareto_k": "warn",
 }
 
@@ -414,8 +416,13 @@ class Gate1BayesianConfig(BaseModel):
     )
 
     @model_validator(mode="after")
-    def severity_covers_four_axes(self) -> Self:
-        expected = {"rhat", "ess", "divergences", "pareto_k"}
+    def severity_covers_all_axes(self) -> Self:
+        # Six diagnostic axes — each must have an explicit severity tier so
+        # lanes never silently drop a check by omission. ``treedepth`` and
+        # ``ebfmi`` were added in v0.6-rc1 once the Gate 1 evaluator
+        # learnt to read both fields; older bundles without them fail
+        # validation early rather than passing for the wrong reason.
+        expected = {"rhat", "ess", "divergences", "treedepth", "ebfmi", "pareto_k"}
         missing = expected - set(self.severity.keys())
         if missing:
             msg = (

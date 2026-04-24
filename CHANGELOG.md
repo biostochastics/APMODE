@@ -7,6 +7,104 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — v0.6-rc1 multi-model review pass (correctness + wiring)
+
+A second review pass turned up six high-confidence findings on the
+just-merged Bayesian block, several of which were dead-code in
+production. This change closes them.
+
+- **`build_loo_summary` correctness.** `_coerce_float` returned
+  `float("nan")` when arviz returned `None` or a non-coercible value,
+  smuggling NaN past the `LOOSummary.<field>: float | None` contract
+  and tripping JSON-serialization (NaN is not valid per RFC 8259).
+  NaN now coerces to `None`. The `or` short-circuit on `getattr(loo,
+  "elpd_loo", None) or getattr(loo, "elpd", None)` would have skipped
+  legitimate `0.0` values and is replaced by an explicit
+  `is not None` probe; `se_elpd_loo` also probes the
+  `arviz_stats >= 1.0` `elpd_se` rename.
+- **Per-class diagnostic dicts populated by the harness.** The Gate 1
+  Bayesian evaluator already iterated
+  `PosteriorDiagnostics.{rhat_max,ess_bulk_min,ess_tail_min}_by_class`
+  but the harness left them as empty defaults — every per-class check
+  silently skipped. `_compute_diagnostics` now buckets each variable
+  via the new `apmode.governance.param_class.classify_param_class`
+  (extracted to break the latent gates ↔ harness circular import).
+- **Six-axis severity coverage on Gate 1 Bayesian.** `Gate1BayesianConfig`
+  exposed `max_treedepth_fraction` and `e_bfmi_min` thresholds but the
+  evaluator never read them and the severity validator listed only
+  four axes (`rhat`, `ess`, `divergences`, `pareto_k`). Added explicit
+  E-BFMI (Betancourt 2017 §6.1) and tree-depth-fraction checks; the
+  severity dict now requires all six axes (`treedepth`, `ebfmi`
+  added). Lane defaults: Submission/Optimization fail on `ebfmi`,
+  warn on `treedepth`; Discovery warns on both. ESS warn-tier
+  violations also surface in `warning_reasons` (previously dropped on
+  the floor — only R-hat / divergences / pareto_k surfaced).
+- **`pareto_k` non-finite sanitisation.** arviz can emit NaN/Inf
+  Pareto-k entries when PSIS smoothing fails on individual
+  observations. `_compute_diagnostics` now filters them before
+  computing the max; `_bin_pareto_k` does the same so the bucket
+  counts can't include phantom `very_bad` entries.
+- **`PriorManifestEntry.doi` Crossref-canonical validator.** `doi`
+  was `str | None` with no pattern check, so a free-form `"n/a"`
+  satisfied Gate 2's truthiness probe. Added a Crossref regex
+  validator matching the one on `LiteratureReference.doi`.
+- **`LOOSummary.k_counts` key validator.** Accepts only the four
+  Vehtari 2017 reliability bands (`good`/`ok`/`bad`/`very_bad`); a
+  typo would otherwise corrupt downstream report rendering silently.
+- **`approximate_posterior` polish.** `_empirical_bootstrap_draws`
+  routed NaN diagonals through `np.where(np.isfinite(d) & (d > 0), …)`
+  which raised RuntimeWarnings on NaN; now wrapped in
+  `np.errstate(invalid="ignore")`. The `noise * std[np.newaxis, :]`
+  reshape is removed in favour of natural broadcasting. The
+  `cholesky-then-svd` comment that didn't match the actual `method="svd"`
+  call is rewritten to describe what the code does. The variance
+  floor `_BOOTSTRAP_VARIANCE_FLOOR = 1e-6` is now a named constant
+  with a docstring describing when it activates.
+- **`MetricTuple.method` distinguishes faithful Laplace from
+  diagonal fallback.** Added `laplace_mvn` and
+  `laplace_bootstrap_diagonal` literals so the Gate 3 ranker can tell
+  a real MVN draw (full off-diagonal covariance preserved) from the
+  degraded diagonal-only fallback. New
+  `apmode.governance.approximate_posterior.laplace_draws_with_method`
+  returns a `LaplaceDrawsResult` named tuple `(draws, method)` for
+  callers that need the provenance; the array-only `laplace_draws`
+  remains as a thin wrapper.
+
+### Wired — v0.6-rc1 Bayesian artefacts into the orchestrator
+
+The previous batch built `evaluate_gate1_bayesian`, `build_loo_summary`,
+`build_reparameterization_recommendation`, and the prior-manifest
+emitter — but none had a production caller, so they were dead code.
+This change wires them into the orchestrator so v0.6-rc1 actually
+governs Bayesian runs.
+
+- **`evaluate_gate1_bayesian` runs alongside `evaluate_gate1`.**
+  Bayesian candidates are now disqualified when per-class R-hat / ESS
+  / divergences / treedepth / E-BFMI / Pareto-k thresholds fail with
+  `severity="fail"`; `severity="warn"` violations surface in
+  `summary_reason` without dropping the gate. Non-Bayesian backends
+  pass trivially with `summary_reason="not_applicable — non-Bayesian
+  backend"` so the audit trail is uniform.
+- **Bayesian sidecar artefacts emitted on every run.**
+  `Orchestrator._emit_bayesian_sidecars` writes
+  `bayesian/{cid}_loo_summary.json`,
+  `bayesian/{cid}_reparameterization_recommendation.json` (when the
+  harness produces one), and `bayesian/{cid}_prior_manifest.json`
+  before either gate evaluates. The harness now embeds `loo_summary`
+  + `reparameterization_recommendation` inline on the result payload
+  (new `BackendResult` fields) so the orchestrator owns the bundle-
+  write step (single audit-trail point).
+- **`evaluate_gate2` consumes the prior-manifest artefact.** The
+  Submission-lane requirement (`bayesian_prior_justification_required:
+  true`) is now actually enforced — the orchestrator loads
+  `bayesian/{cid}_prior_manifest.json` from disk (the same artefact a
+  reviewer would inspect) and threads it into `evaluate_gate2(...,
+  prior_manifest=...)`.
+
+Test counts: 2018 → <!-- apmode:AUTO:tests -->2024<!-- apmode:/AUTO:tests --> collected
+(2001 → <!-- apmode:AUTO:tests_nonlive -->2007<!-- apmode:/AUTO:tests_nonlive --> non-live).
+mypy `--strict` clean (108 source files); ruff `check` + `format` clean.
+
 ### Added — v0.6-rc1 Bayesian Block 1B/1C + Gate 1/2 Bayesian gates
 
 Nine plan tasks (15, 16, 17, 18, 19, 22, 23, 24, 25) landed in a single

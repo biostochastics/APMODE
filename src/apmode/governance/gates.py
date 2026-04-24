@@ -1334,34 +1334,16 @@ def _check_ml_transparency(
 # ---------------------------------------------------------------------------
 # Gate 1 Bayesian — per-parameter-class warn/fail tiers (plan Task 17)
 # ---------------------------------------------------------------------------
-
-_PARAM_CLASS_NAMES = ("fixed_effects", "iiv", "residual", "correlations")
-
-
-def classify_param_class(name: str) -> str:
-    """Map a Stan parameter name to its :class:`Gate1BayesianConfig` class.
-
-    Recognised prefixes match the DSL's on-disk naming (see
-    ``apmode/dsl/priors.py`` / ``apmode/dsl/stan_emitter.py``):
-
-    * ``omega_<p>`` → ``iiv`` (between-subject SDs, centered or
-      non-centered — both produce ``omega_*`` names after decomposition).
-    * ``sigma_``-prefixed / ``residual_sd`` / ``sigma_prop`` /
-      ``sigma_add`` → ``residual``.
-    * ``L_corr_``, ``corr_iiv``, ``L_Omega`` → ``correlations``.
-    * everything else → ``fixed_effects`` (structural parameters and
-      covariate betas).
-
-    Unknown names default to ``fixed_effects`` so the Gate 1 Bayesian
-    evaluator errs on the strict side.
-    """
-    if name.startswith(("L_corr_", "L_Omega")) or name == "corr_iiv":
-        return "correlations"
-    if name.startswith("omega_"):
-        return "iiv"
-    if name.startswith("sigma_") or name in {"residual_sd", "sigma_prop", "sigma_add"}:
-        return "residual"
-    return "fixed_effects"
+# ``classify_param_class`` and the class-name tuple live in
+# :mod:`apmode.governance.param_class` so the Bayesian harness can
+# share the single source of truth without importing the gate
+# evaluator (and the circular dep that would imply). The ``as`` aliases
+# below are intentional re-exports — public callers still import
+# ``classify_param_class`` from this module.
+from apmode.governance.param_class import (  # noqa: E402, I001
+    PARAM_CLASS_NAMES as _PARAM_CLASS_NAMES,
+    classify_param_class as classify_param_class,
+)
 
 
 def _rhat_check(
@@ -1516,9 +1498,10 @@ def evaluate_gate1_bayesian(
                 )
         if class_name in diag.ess_bulk_min_by_class:
             threshold = _resolve_threshold(g, "ess_bulk_min", class_name)
+            observed = diag.ess_bulk_min_by_class[class_name]
             check, reason = _ess_check(
                 class_name,
-                diag.ess_bulk_min_by_class[class_name],
+                observed,
                 threshold,
                 ess_severity,
                 kind="bulk",
@@ -1526,11 +1509,16 @@ def evaluate_gate1_bayesian(
             checks.append(check)
             if reason:
                 failure_reasons.append(reason)
+            elif check.evidence_ref:
+                warning_reasons.append(
+                    f"ESS-bulk warn on {class_name}: observed={observed:.0f}"
+                )
         if class_name in diag.ess_tail_min_by_class:
             threshold = _resolve_threshold(g, "ess_tail_min", class_name)
+            observed = diag.ess_tail_min_by_class[class_name]
             check, reason = _ess_check(
                 class_name,
-                diag.ess_tail_min_by_class[class_name],
+                observed,
                 threshold,
                 ess_severity,
                 kind="tail",
@@ -1538,6 +1526,10 @@ def evaluate_gate1_bayesian(
             checks.append(check)
             if reason:
                 failure_reasons.append(reason)
+            elif check.evidence_ref:
+                warning_reasons.append(
+                    f"ESS-tail warn on {class_name}: observed={observed:.0f}"
+                )
 
     # Scalar knobs
     div_violates = diag.n_divergent > g.divergence_tolerance
@@ -1583,6 +1575,89 @@ def evaluate_gate1_bayesian(
         elif pareto_violates:
             warning_reasons.append(
                 f"Pareto-k_max warn: {diag.pareto_k_max:.2f} (threshold {g.pareto_k_max})"
+            )
+
+    # E-BFMI — Betancourt 2017 / Vehtari 2021. NaN means arviz could
+    # not compute it (energy series unavailable); treat that as a
+    # ``warn``-level signal so the operator sees it but the gate does
+    # not collapse on missing telemetry.
+    ebfmi_severity = g.severity["ebfmi"]
+    if not np.isfinite(diag.ebfmi_min):
+        checks.append(
+            GateCheckResult(
+                check_id="bayesian_ebfmi",
+                passed=True,
+                observed="not_computed",
+                threshold=g.e_bfmi_min,
+                evidence_ref="ebfmi=NaN — arviz could not compute energy diagnostics",
+            )
+        )
+        warning_reasons.append("E-BFMI not computed (arviz returned NaN)")
+    else:
+        ebfmi_violates = diag.ebfmi_min < g.e_bfmi_min
+        ebfmi_is_failure = ebfmi_violates and ebfmi_severity == "fail"
+        checks.append(
+            GateCheckResult(
+                check_id="bayesian_ebfmi",
+                passed=not ebfmi_is_failure,
+                observed=float(diag.ebfmi_min),
+                threshold=float(g.e_bfmi_min),
+                evidence_ref=(f"severity={ebfmi_severity}" if ebfmi_violates else None),
+            )
+        )
+        if ebfmi_is_failure:
+            failure_reasons.append(
+                f"E-BFMI {diag.ebfmi_min:.2f} < {g.e_bfmi_min:.2f} (Betancourt 2017)"
+            )
+        elif ebfmi_violates:
+            warning_reasons.append(
+                f"E-BFMI warn: {diag.ebfmi_min:.2f} (threshold {g.e_bfmi_min:.2f})"
+            )
+
+    # Tree-depth saturation as a fraction of total post-warmup samples.
+    # The fraction is ``n_max_treedepth / (chains * sampling)`` —
+    # absolute counts on long chains are misleading. When the sampler
+    # config is unknown the check is skipped with an evidence note so
+    # the gate result still records the absent enforcement.
+    treedepth_severity = g.severity["treedepth"]
+    sampler_cfg = result.sampler_config
+    if sampler_cfg is None:
+        checks.append(
+            GateCheckResult(
+                check_id="bayesian_treedepth_fraction",
+                passed=True,
+                observed="not_evaluated",
+                threshold=g.max_treedepth_fraction,
+                evidence_ref="sampler_config missing — cannot derive total iter",
+            )
+        )
+        warning_reasons.append(
+            "tree-depth fraction not evaluated (BackendResult.sampler_config is None)"
+        )
+    else:
+        total_iter = sampler_cfg.chains * sampler_cfg.sampling
+        td_fraction = (
+            0.0 if total_iter <= 0 else diag.n_max_treedepth / total_iter
+        )
+        td_violates = td_fraction > g.max_treedepth_fraction
+        td_is_failure = td_violates and treedepth_severity == "fail"
+        checks.append(
+            GateCheckResult(
+                check_id="bayesian_treedepth_fraction",
+                passed=not td_is_failure,
+                observed=td_fraction,
+                threshold=float(g.max_treedepth_fraction),
+                evidence_ref=(f"severity={treedepth_severity}" if td_violates else None),
+            )
+        )
+        if td_is_failure:
+            failure_reasons.append(
+                f"tree-depth saturation {td_fraction:.3f} > "
+                f"{g.max_treedepth_fraction} ({diag.n_max_treedepth}/{total_iter})"
+            )
+        elif td_violates:
+            warning_reasons.append(
+                f"tree-depth warn: {td_fraction:.3f} ({diag.n_max_treedepth}/{total_iter})"
             )
 
     passed = not failure_reasons

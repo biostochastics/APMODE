@@ -71,12 +71,26 @@ def test_default_scalar_knobs() -> None:
     assert cfg.pareto_k_max == 0.7
 
 
-def test_default_severity_map_covers_four_axes() -> None:
+def test_default_severity_map_covers_six_axes() -> None:
     cfg = Gate1BayesianConfig()
-    assert set(cfg.severity.keys()) == {"rhat", "ess", "divergences", "pareto_k"}
+    assert set(cfg.severity.keys()) == {
+        "rhat",
+        "ess",
+        "divergences",
+        "treedepth",
+        "ebfmi",
+        "pareto_k",
+    }
     assert cfg.severity["rhat"] == "fail"
     assert cfg.severity["ess"] == "fail"
     assert cfg.severity["divergences"] == "fail"
+    # Tree-depth saturation is warn-by-default — Stan recommends it as a
+    # tuning hint, not a sampling-correctness disqualifier (Betancourt 2017).
+    assert cfg.severity["treedepth"] == "warn"
+    # E-BFMI fails by default — values < 0.3 indicate the sampler cannot
+    # explore the posterior efficiently and the fit's tail estimates are
+    # unreliable (Betancourt 2017 §6.1).
+    assert cfg.severity["ebfmi"] == "fail"
     # Pareto-k is warn-only by default — LOO is an informative check, not
     # a disqualifier, until a canonical log_lik declaration is mandated.
     assert cfg.severity["pareto_k"] == "warn"
