@@ -406,6 +406,16 @@ class PosteriorDiagnostics(BaseModel):
     mcse_by_param: dict[str, float] = Field(default_factory=dict)  # headline params only
     per_chain_rhat: dict[str, list[float]] = Field(default_factory=dict)
 
+    # Per-parameter-class diagnostics (plan Task 17). Keys are
+    # ``{"fixed_effects", "iiv", "residual", "correlations"}``; values
+    # are the worst-case R-hat / minimum bulk / tail ESS within each
+    # class. Defaults to ``{}`` so older bundles remain loadable; the
+    # Gate 1 Bayesian evaluator treats an empty dict as "no per-class
+    # information, fall back to the scalar fields".
+    rhat_max_by_class: dict[str, float] = Field(default_factory=dict)
+    ess_bulk_min_by_class: dict[str, float] = Field(default_factory=dict)
+    ess_tail_min_by_class: dict[str, float] = Field(default_factory=dict)
+
 
 class SamplerConfig(BaseModel):
     """NUTS sampler configuration and environment — captured for reproducibility.

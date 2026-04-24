@@ -39,7 +39,12 @@ if TYPE_CHECKING:
         ImputationStabilityEntry,
         MissingDataDirective,
     )
-    from apmode.governance.policy import Gate1Config, Gate2Config, GatePolicy
+    from apmode.governance.policy import (
+        Gate1BayesianConfig,
+        Gate1Config,
+        Gate2Config,
+        GatePolicy,
+    )
 
 
 def _safe_bic(result: BackendResult) -> float:
@@ -1240,4 +1245,278 @@ def _check_ml_transparency(
         passed=has_statement,
         observed="present" if has_statement else "missing",
         threshold="required",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Gate 1 Bayesian — per-parameter-class warn/fail tiers (plan Task 17)
+# ---------------------------------------------------------------------------
+
+_PARAM_CLASS_NAMES = ("fixed_effects", "iiv", "residual", "correlations")
+
+
+def classify_param_class(name: str) -> str:
+    """Map a Stan parameter name to its :class:`Gate1BayesianConfig` class.
+
+    Recognised prefixes match the DSL's on-disk naming (see
+    ``apmode/dsl/priors.py`` / ``apmode/dsl/stan_emitter.py``):
+
+    * ``omega_<p>`` → ``iiv`` (between-subject SDs, centered or
+      non-centered — both produce ``omega_*`` names after decomposition).
+    * ``sigma_``-prefixed / ``residual_sd`` / ``sigma_prop`` /
+      ``sigma_add`` → ``residual``.
+    * ``L_corr_``, ``corr_iiv``, ``L_Omega`` → ``correlations``.
+    * everything else → ``fixed_effects`` (structural parameters and
+      covariate betas).
+
+    Unknown names default to ``fixed_effects`` so the Gate 1 Bayesian
+    evaluator errs on the strict side.
+    """
+    if name.startswith(("L_corr_", "L_Omega")) or name == "corr_iiv":
+        return "correlations"
+    if name.startswith("omega_"):
+        return "iiv"
+    if name.startswith("sigma_") or name in {"residual_sd", "sigma_prop", "sigma_add"}:
+        return "residual"
+    return "fixed_effects"
+
+
+def _rhat_check(
+    class_name: str,
+    observed: float,
+    threshold: float,
+    severity: str,
+) -> tuple[GateCheckResult, str | None]:
+    """Build a GateCheckResult for one rhat-by-class comparison.
+
+    Returns ``(check, failure_reason | None)``. A ``warn``-severity
+    violation yields a passing check so the gate as a whole does not
+    fail, but the observed value is still surfaced.
+    """
+    violates = observed > threshold
+    is_failure = violates and severity == "fail"
+    reason: str | None = None
+    if violates:
+        reason = f"R-hat {observed:.3f} > {threshold:.3f} on {class_name}"
+    return (
+        GateCheckResult(
+            check_id=f"bayesian_rhat_{class_name}",
+            passed=not is_failure,
+            observed=observed,
+            threshold=threshold,
+            evidence_ref=f"severity={severity}" if violates else None,
+        ),
+        reason if is_failure else None,
+    )
+
+
+def _ess_check(
+    class_name: str,
+    observed: float,
+    threshold: float,
+    severity: str,
+    kind: str,
+) -> tuple[GateCheckResult, str | None]:
+    """Analogue of :func:`_rhat_check` for ESS (lower = worse)."""
+    violates = observed < threshold
+    is_failure = violates and severity == "fail"
+    reason: str | None = None
+    if violates:
+        reason = f"ESS-{kind} {observed:.0f} < {threshold:.0f} on {class_name}"
+    return (
+        GateCheckResult(
+            check_id=f"bayesian_ess_{kind}_{class_name}",
+            passed=not is_failure,
+            observed=observed,
+            threshold=threshold,
+            evidence_ref=f"severity={severity}" if violates else None,
+        ),
+        reason if is_failure else None,
+    )
+
+
+def evaluate_gate1_bayesian(
+    result: BackendResult,
+    policy: GatePolicy,
+) -> GateResult:
+    """Evaluate Gate 1 Bayesian checks for a ``BackendResult``.
+
+    Applies only when ``result.backend == "bayesian_stan"``. Non-
+    Bayesian backends pass trivially with a single ``not_applicable``
+    check so the gate evaluator can be called uniformly in the
+    orchestration layer.
+
+    The evaluator walks every per-class R-hat / bulk ESS / tail ESS
+    entry against the matching ``Gate1BayesianConfig`` threshold, and
+    additionally enforces the scalar knobs (divergences, tree-depth
+    saturation, Pareto-k, E-BFMI). Each diagnostic axis has its own
+    severity tier (``warn`` / ``fail``) so Discovery-lane policies can
+    keep Pareto-k informative while Submission keeps it disqualifying.
+
+    The ``passed`` flag is True when no ``fail``-severity violation
+    fired. Warnings are recorded in each check's ``evidence_ref`` and
+    aggregated into ``summary_reason``.
+    """
+    g = policy.gate1_bayesian
+    checks: list[GateCheckResult] = []
+    failure_reasons: list[str] = []
+    warning_reasons: list[str] = []
+
+    if result.backend != "bayesian_stan":
+        return GateResult(
+            gate_id=generate_gate_id(),
+            gate_name="gate1_bayesian",
+            candidate_id=result.model_id,
+            passed=True,
+            checks=[
+                GateCheckResult(
+                    check_id="bayesian_backend",
+                    passed=True,
+                    observed=result.backend,
+                    threshold="bayesian_stan",
+                )
+            ],
+            summary_reason="not_applicable — non-Bayesian backend",
+            policy_version=policy.policy_version,
+            timestamp=datetime.now(tz=UTC).isoformat(),
+        )
+
+    diag = result.posterior_diagnostics
+    if diag is None:
+        return GateResult(
+            gate_id=generate_gate_id(),
+            gate_name="gate1_bayesian",
+            candidate_id=result.model_id,
+            passed=False,
+            checks=[
+                GateCheckResult(
+                    check_id="posterior_diagnostics_present",
+                    passed=False,
+                    observed="missing",
+                    threshold="required",
+                )
+            ],
+            summary_reason=(
+                "BackendResult.posterior_diagnostics is None — cannot "
+                "evaluate Gate 1 Bayesian. The BayesianRunner must "
+                "populate this field on every run."
+            ),
+            policy_version=policy.policy_version,
+            timestamp=datetime.now(tz=UTC).isoformat(),
+        )
+
+    rhat_severity = g.severity["rhat"]
+    ess_severity = g.severity["ess"]
+    div_severity = g.severity["divergences"]
+    pareto_severity = g.severity["pareto_k"]
+
+    def _resolve_threshold(cfg: Gate1BayesianConfig, axis: str, class_name: str) -> float:
+        block = getattr(cfg, axis)
+        return float(getattr(block, class_name))
+
+    for class_name in _PARAM_CLASS_NAMES:
+        if class_name in diag.rhat_max_by_class:
+            threshold = _resolve_threshold(g, "rhat_max", class_name)
+            check, reason = _rhat_check(
+                class_name,
+                diag.rhat_max_by_class[class_name],
+                threshold,
+                rhat_severity,
+            )
+            checks.append(check)
+            if reason:
+                failure_reasons.append(reason)
+            elif check.evidence_ref:
+                warning_reasons.append(
+                    f"R-hat warn on {class_name}: "
+                    f"observed={diag.rhat_max_by_class[class_name]:.3f}"
+                )
+        if class_name in diag.ess_bulk_min_by_class:
+            threshold = _resolve_threshold(g, "ess_bulk_min", class_name)
+            check, reason = _ess_check(
+                class_name,
+                diag.ess_bulk_min_by_class[class_name],
+                threshold,
+                ess_severity,
+                kind="bulk",
+            )
+            checks.append(check)
+            if reason:
+                failure_reasons.append(reason)
+        if class_name in diag.ess_tail_min_by_class:
+            threshold = _resolve_threshold(g, "ess_tail_min", class_name)
+            check, reason = _ess_check(
+                class_name,
+                diag.ess_tail_min_by_class[class_name],
+                threshold,
+                ess_severity,
+                kind="tail",
+            )
+            checks.append(check)
+            if reason:
+                failure_reasons.append(reason)
+
+    # Scalar knobs
+    div_violates = diag.n_divergent > g.divergence_tolerance
+    div_is_failure = div_violates and div_severity == "fail"
+    checks.append(
+        GateCheckResult(
+            check_id="bayesian_divergences",
+            passed=not div_is_failure,
+            observed=float(diag.n_divergent),
+            threshold=float(g.divergence_tolerance),
+            evidence_ref=(
+                f"severity={div_severity}; see reparameterization_recommendation"
+                if div_violates
+                else None
+            ),
+        )
+    )
+    if div_is_failure:
+        failure_reasons.append(
+            f"divergent transitions {diag.n_divergent} > {g.divergence_tolerance}"
+        )
+    elif div_violates:
+        warning_reasons.append(
+            f"divergent transitions warn: {diag.n_divergent} "
+            f"(tolerance {g.divergence_tolerance}; see "
+            "reparameterization_recommendation)"
+        )
+
+    if diag.pareto_k_max is not None:
+        pareto_violates = diag.pareto_k_max > g.pareto_k_max
+        pareto_is_failure = pareto_violates and pareto_severity == "fail"
+        checks.append(
+            GateCheckResult(
+                check_id="bayesian_pareto_k",
+                passed=not pareto_is_failure,
+                observed=diag.pareto_k_max,
+                threshold=g.pareto_k_max,
+                evidence_ref=(f"severity={pareto_severity}" if pareto_violates else None),
+            )
+        )
+        if pareto_is_failure:
+            failure_reasons.append(f"Pareto-k_max {diag.pareto_k_max:.2f} > {g.pareto_k_max}")
+        elif pareto_violates:
+            warning_reasons.append(
+                f"Pareto-k_max warn: {diag.pareto_k_max:.2f} (threshold {g.pareto_k_max})"
+            )
+
+    passed = not failure_reasons
+    if passed and not warning_reasons:
+        summary = "All Gate 1 Bayesian checks passed"
+    elif passed:
+        summary = "Passed with warnings: " + "; ".join(warning_reasons)
+    else:
+        summary = "Failed: " + "; ".join(failure_reasons)
+
+    return GateResult(
+        gate_id=generate_gate_id(),
+        gate_name="gate1_bayesian",
+        candidate_id=result.model_id,
+        passed=passed,
+        checks=checks,
+        summary_reason=summary,
+        policy_version=policy.policy_version,
+        timestamp=datetime.now(tz=UTC).isoformat(),
     )
