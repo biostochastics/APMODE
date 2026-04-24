@@ -252,6 +252,15 @@ def _run(request_path: Path) -> dict[str, Any]:
         "posterior_draws_path": str(draws_path),
     }
 
+    # Advisory reparameterization artifact — the harness never switches
+    # parameterization automatically. When None, the emitter skips the
+    # file entirely so a clean run produces no stray artefact.
+    reparam_recommendation = build_reparameterization_recommendation(
+        diag, cfg, candidate_id=request["candidate_id"]
+    )
+    if reparam_recommendation is not None:
+        result["reparameterization_recommendation"] = reparam_recommendation
+
     return {
         "schema_version": "1.0",
         "status": "success",
@@ -537,6 +546,80 @@ def _catastrophic(diag: dict[str, Any], cfg: dict[str, Any]) -> bool:
 # (plan Task 17) will refine on top of this hard floor.
 _CONVERGED_RHAT_MAX = 1.05
 _CONVERGED_ESS_BULK_MIN = 400.0
+
+# Divergence fraction above which the harness recommends switching from
+# centered to non-centered parameterization. Below the threshold the
+# harness still flags the fit, but recommends the cheaper fix of raising
+# ``adapt_delta`` first. Betancourt & Girolami 2015 argue non-centered
+# helps once divergences are frequent rather than sporadic.
+_REPARAM_DIVERGENCE_FRACTION_THRESHOLD = 0.05
+
+
+def build_reparameterization_recommendation(
+    diag: dict[str, Any],
+    cfg: dict[str, Any],
+    candidate_id: str,
+) -> dict[str, Any] | None:
+    """Build an advisory reparameterization recommendation payload, or ``None``.
+
+    Returns a dict matching ``ReparameterizationRecommendation`` when the
+    sampler reported any divergent transitions or tree-depth saturations;
+    ``None`` otherwise so the emitter can skip the artifact entirely.
+    The harness never applies the recommendation automatically — silent
+    parameterization switches were explicitly removed in plan Task 25.
+
+    Args:
+        diag: Diagnostic dict as returned by :func:`_compute_diagnostics`
+            (carries ``n_divergent`` and ``n_max_treedepth``).
+        cfg: Sampler config dict (reads ``chains``, ``sampling``, and
+            ``adapt_delta`` for the rationale string).
+        candidate_id: Candidate model id — stamped on the returned payload
+            so the emitter writes to
+            ``{bundle}/bayesian/{candidate_id}_reparameterization_recommendation.json``.
+    """
+    n_divergent = int(diag.get("n_divergent", 0))
+    n_max_treedepth = int(diag.get("n_max_treedepth", 0))
+    if n_divergent == 0 and n_max_treedepth == 0:
+        return None
+    total_iter = int(cfg["sampling"]) * int(cfg["chains"])
+    divergence_fraction = (n_divergent / total_iter) if total_iter else 0.0
+    adapt_delta = float(cfg.get("adapt_delta", 0.8))
+    if divergence_fraction > _REPARAM_DIVERGENCE_FRACTION_THRESHOLD:
+        action = "switch_to_non_centered"
+        rationale = (
+            f"{n_divergent} divergent transitions out of {total_iter} "
+            f"post-warmup iterations ({divergence_fraction:.1%}). Divergence "
+            f"rate above the {_REPARAM_DIVERGENCE_FRACTION_THRESHOLD:.0%} "
+            "threshold indicates funnel geometry; non-centered "
+            "parameterization typically resolves this "
+            "(Betancourt & Girolami 2015; Stan User's Guide §25.7). "
+            "APMODE does not switch automatically — review this artifact "
+            "and refit with the updated DSL spec."
+        )
+    elif n_divergent > 0:
+        action = "refit_with_higher_adapt_delta"
+        rationale = (
+            f"{n_divergent} divergent transitions at adapt_delta={adapt_delta:.3f}. "
+            "Rate is below the non-centered-reparameterization threshold "
+            f"({_REPARAM_DIVERGENCE_FRACTION_THRESHOLD:.0%}); try raising "
+            "adapt_delta (0.95+) before restructuring the model."
+        )
+    else:
+        action = "refit_with_higher_adapt_delta"
+        rationale = (
+            f"{n_max_treedepth} tree-depth saturations and zero divergences at "
+            f"adapt_delta={adapt_delta:.3f}. Either raise max_treedepth or "
+            "tighten adapt_delta — the step-size adaptation is under-damped, "
+            "not the model geometry."
+        )
+    return {
+        "candidate_id": candidate_id,
+        "divergence_count": n_divergent,
+        "divergence_fraction": divergence_fraction,
+        "max_treedepth_count": n_max_treedepth,
+        "recommended_action": action,
+        "rationale": rationale,
+    }
 
 
 def _is_converged(diag: dict[str, Any]) -> bool:

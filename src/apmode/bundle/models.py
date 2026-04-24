@@ -1353,6 +1353,47 @@ class ReportProvenance(BaseModel):
 # --- Bayesian artifacts (Phase 2+) ---
 
 
+class ReparameterizationRecommendation(BaseModel):
+    """Diagnostic-driven reparameterization suggestion (advisory, not automatic).
+
+    APMODE never switches a sampler's parameterization silently — per PRD
+    §4.3.2 and consensus during multi-model review, auto-switching between
+    centered and non-centered parameterizations masks model pathology and
+    desynchronises the audit trail from the run. Instead the harness
+    inspects the post-warmup divergence and tree-depth counts and emits
+    this artifact when Gate 1 Bayesian would flag the fit.
+
+    ``recommended_action`` is one of:
+
+    * ``switch_to_non_centered`` — divergent-transition rate above the
+      harness threshold (default 5% of post-warmup iterations). Non-
+      centered parameterization typically clears funnel geometries
+      (Betancourt & Girolami 2015).
+    * ``refit_with_higher_adapt_delta`` — low-rate divergences or tree-
+      depth saturation. Tightening the step-size adaptation is cheaper
+      than restructuring the model.
+    * ``add_jacobian`` — explicit Jacobian adjustment for non-linear
+      reparameterization (reserved; emitted only by agentic-LLM
+      transforms that know they've introduced a change-of-variable).
+
+    The Gate 1 Bayesian check (plan Task 17) routes operators to this
+    file when surfacing a divergence failure.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    candidate_id: str
+    divergence_count: int = Field(ge=0)
+    divergence_fraction: float = Field(ge=0.0, le=1.0)
+    max_treedepth_count: int = Field(ge=0, default=0)
+    recommended_action: Literal[
+        "switch_to_non_centered",
+        "add_jacobian",
+        "refit_with_higher_adapt_delta",
+    ]
+    rationale: str
+
+
 class PriorManifestEntry(BaseModel):
     """One declared prior with full provenance for FDA Gate 2 justification."""
 

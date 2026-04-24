@@ -43,6 +43,7 @@ from apmode.bundle.models import (
     PriorManifest,
     PriorManifestEntry,
     Ranking,
+    ReparameterizationRecommendation,
     ReportProvenance,
     RunLineage,
     SamplerConfig,
@@ -619,6 +620,24 @@ class BundleEmitter:
         _validate_path_component(candidate_id, "candidate_id")
         path = self._bayesian_dir() / f"{candidate_id}_mcmc_diagnostics.json"
         path.write_text(diagnostics.model_dump_json(indent=2))
+        return path
+
+    def write_reparameterization_recommendation(
+        self,
+        recommendation: ReparameterizationRecommendation,
+    ) -> Path:
+        """Write bayesian/{candidate_id}_reparameterization_recommendation.json.
+
+        Advisory-only artifact. APMODE never switches parameterization
+        silently (plan Task 25) — this file tells the operator which
+        intervention the diagnostics suggest and why. The Gate 1
+        Bayesian check (Task 17) surfaces the file path in its failure
+        message so the recommendation stays in the audit trail.
+        """
+        _validate_path_component(recommendation.candidate_id, "candidate_id")
+        filename = f"{recommendation.candidate_id}_reparameterization_recommendation.json"
+        path = self._bayesian_dir() / filename
+        path.write_text(recommendation.model_dump_json(indent=2))
         return path
 
     def write_sampler_config(self, config: SamplerConfig, candidate_id: str) -> Path:
