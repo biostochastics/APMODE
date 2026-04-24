@@ -554,6 +554,97 @@ _CONVERGED_ESS_BULK_MIN = 400.0
 # helps once divergences are frequent rather than sporadic.
 _REPARAM_DIVERGENCE_FRACTION_THRESHOLD = 0.05
 
+# Pareto-k bin edges for arviz LOO reliability counts (Vehtari 2017).
+# Keys match ``LOOSummary.k_counts`` so downstream consumers can read by
+# label without reproducing the boundary set.
+_LOO_K_BINS: tuple[tuple[float, float, str], ...] = (
+    (-float("inf"), 0.5, "good"),
+    (0.5, 0.7, "ok"),
+    (0.7, 1.0, "bad"),
+    (1.0, float("inf"), "very_bad"),
+)
+
+
+def _bin_pareto_k(values: Any) -> dict[str, int]:
+    """Bucket Pareto-k values into the four arviz reliability bands."""
+    import numpy as np
+
+    arr = np.asarray(values, dtype=float)
+    counts: dict[str, int] = {}
+    for low, high, label in _LOO_K_BINS:
+        mask = (arr > low) & (arr <= high)
+        counts[label] = int(mask.sum())
+    return counts
+
+
+def build_loo_summary(
+    inference_data: Any,
+    candidate_id: str,
+    *,
+    log_lik_var: str = "log_lik",
+) -> dict[str, Any]:
+    """Compute PSIS-LOO via arviz and project onto the LOOSummary shape.
+
+    Returns a dict with the LOOSummary fields. When the model does not
+    declare ``log_lik`` (or ``arviz.loo`` raises for any other reason)
+    the dict carries ``status="not_computed"`` and the captured exception
+    message — Gate 1 Bayesian treats this as a warning, not a failure
+    (small models legitimately ship without log_lik).
+
+    Implementation note: ``arviz.loo`` returns an ``ELPDData`` whose
+    ``pareto_k`` field exposes per-observation Pareto shape parameters
+    when called with ``pointwise=True``. ``arviz_stats.loo`` is the
+    newer entry point but the legacy ``arviz.loo`` remains supported
+    and is what cmdstanpy outputs ride on today.
+    """
+    try:
+        import arviz as az
+    except ImportError as exc:
+        return {
+            "candidate_id": candidate_id,
+            "status": "not_computed",
+            "reason": f"arviz import failed: {exc}",
+        }
+
+    try:
+        loo = az.loo(inference_data, pointwise=True, var_name=log_lik_var)
+    except (KeyError, ValueError, TypeError) as exc:
+        return {
+            "candidate_id": candidate_id,
+            "status": "not_computed",
+            "reason": f"arviz.loo skipped: {exc}",
+        }
+
+    # arviz_stats >= 1.0 renamed the legacy ``elpd_loo``/``p_loo``
+    # accessors to ``elpd``/``p`` (the older arviz API kept both names
+    # via ``ELPDData`` aliases). Probe both to stay forward-compatible.
+    def _coerce_float(value: Any) -> float:
+        if value is None:
+            return float("nan")
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return float("nan")
+
+    elpd = getattr(loo, "elpd_loo", None) or getattr(loo, "elpd", None)
+    p_loo = getattr(loo, "p_loo", None) or getattr(loo, "p", None)
+    n_obs = getattr(loo, "n_data_points", None)
+    pareto_k = getattr(loo, "pareto_k", None)
+    return {
+        "candidate_id": candidate_id,
+        "status": "computed",
+        "elpd_loo": _coerce_float(elpd),
+        "se_elpd_loo": _coerce_float(getattr(loo, "se", None)),
+        "p_loo": _coerce_float(p_loo),
+        "pareto_k_max": (float(pareto_k.values.max()) if pareto_k is not None else None),
+        "n_observations": (
+            int(n_obs)
+            if n_obs is not None
+            else (int(getattr(pareto_k, "size", 0)) if pareto_k is not None else None)
+        ),
+        "k_counts": (_bin_pareto_k(pareto_k.values) if pareto_k is not None else {}),
+    }
+
 
 def build_reparameterization_recommendation(
     diag: dict[str, Any],

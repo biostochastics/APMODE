@@ -1363,6 +1363,33 @@ class ReportProvenance(BaseModel):
 # --- Bayesian artifacts (Phase 2+) ---
 
 
+class LOOSummary(BaseModel):
+    """PSIS-LOO summary (plan Task 18, Vehtari et al. 2017).
+
+    Captured under ``bayesian/{cid}_loo_summary.json``. ``status``
+    distinguishes a real summary from a graceful skip when the Stan
+    program does not declare a per-observation ``log_lik`` — small
+    models legitimately ship without it, and Gate 1 Bayesian treats
+    that case as a warning, not a failure.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    candidate_id: str
+    status: Literal["computed", "not_computed"]
+    elpd_loo: float | None = None
+    se_elpd_loo: float | None = None
+    p_loo: float | None = None
+    pareto_k_max: float | None = None
+    n_observations: int | None = Field(default=None, ge=0)
+    # Counts of observations whose Pareto-k landed in each band, per
+    # ``arviz.loo`` documentation (Vehtari et al. 2017): good <= 0.5,
+    # ok in (0.5, 0.7], bad in (0.7, 1.0], very_bad > 1.0. Used by
+    # Gate 1 Bayesian and the report generator for at-a-glance reliability.
+    k_counts: dict[str, int] = Field(default_factory=dict)
+    reason: str | None = None
+
+
 class ReparameterizationRecommendation(BaseModel):
     """Diagnostic-driven reparameterization suggestion (advisory, not automatic).
 

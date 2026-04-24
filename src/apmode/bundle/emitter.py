@@ -40,6 +40,7 @@ from apmode.bundle.models import (
     MissingDataDirective,
     NCASubjectDiagnostic,
     PosteriorDiagnostics,
+    LOOSummary,
     PriorManifest,
     PriorManifestEntry,
     Ranking,
@@ -620,6 +621,20 @@ class BundleEmitter:
         _validate_path_component(candidate_id, "candidate_id")
         path = self._bayesian_dir() / f"{candidate_id}_mcmc_diagnostics.json"
         path.write_text(diagnostics.model_dump_json(indent=2))
+        return path
+
+    def write_loo_summary(self, summary: LOOSummary) -> Path:
+        """Write bayesian/{candidate_id}_loo_summary.json (plan Task 18).
+
+        Always emitted on a Bayesian run — when the Stan program lacks
+        a ``log_lik`` per-observation declaration the harness still
+        writes a ``status="not_computed"`` payload with the reason, so
+        downstream gates can distinguish "skipped" from "missing
+        artefact".
+        """
+        _validate_path_component(summary.candidate_id, "candidate_id")
+        path = self._bayesian_dir() / f"{summary.candidate_id}_loo_summary.json"
+        path.write_text(summary.model_dump_json(indent=2))
         return path
 
     def write_reparameterization_recommendation(
