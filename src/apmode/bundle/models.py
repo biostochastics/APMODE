@@ -8,7 +8,7 @@ Models are validated before writing to disk.
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
@@ -1464,6 +1464,46 @@ class PriorManifest(BaseModel):
     policy_version: str
     entries: list[PriorManifestEntry]
     default_prior_policy: Literal["weakly_informative", "custom"] = "weakly_informative"
+
+
+class MetricTuple(BaseModel):
+    """Commensurate mean + 90/95% interval carrier for Gate 3 ranking.
+
+    Populated by the Bayesian backend directly from ``posterior_draws.parquet``
+    or by the MLE path via :func:`apmode.governance.approximate_posterior.laplace_draws`
+    (falling back to ``empirical_bootstrap`` when the asymptotic
+    covariance is ill-conditioned). The ``method`` tag is carried onto
+    disk so reviewers can tell whether the interval comes from real
+    posterior draws or the Laplace approximation — the two have
+    different credibility.
+
+    Plan Task 23 / Task 22. Gate 3 ranker (``gate3_metric_stack``,
+    Task 24) groups candidates by scoring contract and within each
+    group consumes the interval to compute Borda rank or the weighted
+    composite.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    mean: float
+    ci_low: float
+    ci_high: float
+    method: Literal[
+        "posterior_draws",
+        "laplace_draws",
+        "empirical_bootstrap",
+    ]
+    ci_level: float = Field(default=0.95, gt=0.0, lt=1.0)
+
+    @model_validator(mode="after")
+    def ci_is_ordered(self) -> Self:
+        if not (self.ci_low <= self.mean <= self.ci_high):
+            msg = (
+                f"MetricTuple must satisfy ci_low <= mean <= ci_high; "
+                f"got ({self.ci_low}, {self.mean}, {self.ci_high})"
+            )
+            raise ValueError(msg)
+        return self
 
 
 class SimulationScenario(BaseModel):
