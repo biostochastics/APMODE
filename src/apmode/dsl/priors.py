@@ -21,6 +21,7 @@ References:
 
 from __future__ import annotations
 
+import re
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -198,7 +199,10 @@ class PriorSpec(BaseModel):
       - "beta_<param>_<covariate>" → "covariate" target
 
     `justification` is required for any `source` other than uninformative/weakly_informative.
-    This is an FDA Gate 2 requirement (PRD §4.3.1).
+    This is an FDA Gate 2 requirement (PRD §4.3.1). See also
+    :func:`validate_prior_justification` for evidence-quality checks
+    (minimum length + DOI provenance) that the emitter runs before
+    writing ``prior_manifest.json``.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -207,6 +211,7 @@ class PriorSpec(BaseModel):
     family: PriorFamily
     source: PriorSource = "weakly_informative"
     justification: str = ""
+    doi: str | None = None
     historical_refs: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -222,6 +227,59 @@ class PriorSpec(BaseModel):
                     "source=historical_data requires historical_refs (dataset identifiers)"
                 )
         return self
+
+
+# ---------------------------------------------------------------------------
+# Evidence-quality validation — minimum justification length + DOI provenance
+# ---------------------------------------------------------------------------
+
+
+# Case-insensitive match of the Crossref-canonical DOI form. Narrower than
+# the full DOI spec (which permits more punctuation), but sufficient for
+# every peer-reviewed Crossref/DataCite-minted DOI Gate 2 would accept as
+# prior provenance (plan Task 14 consensus; PRD §4.3.1; FDA Gate 2).
+_DOI_PATTERN = re.compile(r"^10\.\d{4,9}/[-._;()/:A-Z0-9]+$", re.IGNORECASE)
+_JUSTIFICATION_MIN_LEN = 50
+_INFORMATIVE_SOURCES: frozenset[str] = frozenset(
+    {"historical_data", "expert_elicitation", "meta_analysis"}
+)
+
+
+def validate_prior_justification(spec: PriorSpec) -> list[str]:
+    """Return a list of error strings for an informative prior's provenance.
+
+    For informative sources (``historical_data``, ``expert_elicitation``,
+    ``meta_analysis``) the prior must carry:
+
+    * ``justification`` with at least ``_JUSTIFICATION_MIN_LEN`` characters
+      so reviewers see the specific provenance claim, not a one-word label.
+    * ``doi`` matching the Crossref-canonical pattern
+      ``10.<registrant>/<suffix>`` (case-insensitive).
+
+    Returns an empty list when the spec satisfies both invariants or when
+    the source is non-informative (uninformative / weakly_informative).
+    The ``PriorSpec`` model validator still enforces non-empty justification
+    and ``historical_refs`` for ``historical_data`` — this function is the
+    second, finer-grained layer the emitter runs before writing
+    ``prior_manifest.json``.
+    """
+    if spec.source not in _INFORMATIVE_SOURCES:
+        return []
+
+    errors: list[str] = []
+    if len(spec.justification) < _JUSTIFICATION_MIN_LEN:
+        errors.append(
+            f"source={spec.source} requires justification of length "
+            f">= {_JUSTIFICATION_MIN_LEN}; got {len(spec.justification)} "
+            f"characters (FDA Gate 2 evidence quality)"
+        )
+    if not spec.doi or not _DOI_PATTERN.match(spec.doi):
+        errors.append(
+            f"source={spec.source} requires a valid DOI (Crossref canonical "
+            f"form '10.<registrant>/<suffix>') for prior provenance; "
+            f"got doi={spec.doi!r}"
+        )
+    return errors
 
 
 # ---------------------------------------------------------------------------
