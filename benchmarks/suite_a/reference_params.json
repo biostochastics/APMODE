@@ -122,5 +122,29 @@
       "prop": 0.1,
       "add": 0.3
     }
+  },
+  "A8": {
+    "ka": 1.822,
+    "CL0": 4.482,
+    "V": 29.964,
+    "covariates": {
+      "CRCL_on_CL": {
+        "form": "power",
+        "exponent": 0.75,
+        "reference": 90
+      },
+      "time_on_CL": {
+        "form": "diurnal",
+        "rate": 0.15,
+        "period_hr": 24
+      }
+    },
+    "omega": {
+      "CL": 0.04,
+      "V": 0.05
+    },
+    "sigma": {
+      "prop": 0.1
+    }
   }
 }

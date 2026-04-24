@@ -419,6 +419,77 @@ write.csv(a7_out, file.path(output_dir, "a7_2cmt_node_absorption.csv"),
 cat("  A7 done:", nrow(a7_out), "rows\n")
 
 
+# ===== Scenario A8: 1-cmt oral, time-varying CL + CRCL covariate =====
+cat("Simulating A8...\n")
+
+# Ground truth: CL(t, CRCL) = CL0 * (CRCL/90)^theta_crcl *
+#                              exp(-delta_diurnal * t / 24).
+# Tests whether APMODE can detect static allometric-style renal scaling
+# combined with a diurnal clearance rhythm. PRD §5 Suite A: nonstandard
+# pharmacology scenarios. 60 subjects × 11 observations.
+n_a8 <- 60
+
+a8_mod <- rxode2({
+  ka  <- exp(lka)
+  CL0 <- exp(lCL0 + eta.CL)
+  V   <- exp(lV + eta.V)
+  CL  <- CL0 * (CRCL / 90)^theta_crcl * exp(-delta_diurnal * t / 24)
+  d/dt(depot) <- -ka * depot
+  d/dt(centr) <- ka * depot - CL / V * centr
+  cp <- centr / V
+})
+
+a8_params <- c(lka = 0.6, lCL0 = 1.5, lV = 3.4,
+               theta_crcl = 0.75, delta_diurnal = 0.15)
+a8_omega <- lotri(eta.CL ~ 0.04, eta.V ~ 0.05)
+
+# Custom event table: 11 observations per subject at c(0.25, 0.5, 1, 2,
+# 4, 8, 12, 18, 24, 36, 48) h post a single 200 mg oral dose.
+a8_event_table <- function(n_id) {
+  times <- c(0.25, 0.5, 1, 2, 4, 8, 12, 18, 24, 36, 48)
+  dose_amt <- 200
+
+  rows <- list()
+  for (id in seq_len(n_id)) {
+    rows[[length(rows) + 1]] <- data.frame(
+      NMID = id, TIME = 0, DV = 0, MDV = 1, EVID = 1,
+      AMT = dose_amt, CMT = 1
+    )
+    for (t in times) {
+      rows[[length(rows) + 1]] <- data.frame(
+        NMID = id, TIME = t, DV = NA_real_, MDV = 0, EVID = 0,
+        AMT = 0, CMT = 1
+      )
+    }
+  }
+  do.call(rbind, rows)
+}
+
+a8_et <- a8_event_table(n_a8)
+a8_et$id <- a8_et$NMID
+
+# Subject-level CRCL covariate: Uniform(30, 150) mL/min
+a8_covs <- data.frame(
+  id   = seq_len(n_a8),
+  CRCL = runif(n_a8, min = 30, max = 150)
+)
+
+a8_sim <- rxSolve(
+  a8_mod, a8_params, a8_et,
+  omega = a8_omega,
+  iCov = a8_covs,
+  nSub = n_a8, seed = SEED + 7
+)
+
+a8_out <- build_nonmem_output(a8_sim, a8_et, n_a8, a8_covs,
+                               sigma_prop = 0.10)
+# Drop the auxiliary 'id' column added for rxode2 iCov dispatch
+a8_out$id <- NULL
+write.csv(a8_out, file.path(output_dir, "a8_1cmt_tvcl_covariate.csv"),
+          row.names = FALSE)
+cat("  A8 done:", nrow(a8_out), "rows,", n_a8, "subjects\n")
+
+
 # ===== Reference Parameters =====
 ref_params <- list(
   A1 = list(ka = 1.5, V = 70, CL = 5,
@@ -447,7 +518,14 @@ ref_params <- list(
   A7 = list(V1 = 50, V2 = 80, Q = 10, CL = 4,
             absorption = list(type = "saturable_mm", Vmax_abs = 50, Km_abs = 20),
             omega = list(CL = 0.09, V1 = 0.04),
-            sigma = list(prop = 0.1, add = 0.3))
+            sigma = list(prop = 0.1, add = 0.3)),
+  A8 = list(ka = 1.822, CL0 = 4.482, V = 29.964,
+            covariates = list(
+              CRCL_on_CL = list(form = "power", exponent = 0.75, reference = 90),
+              time_on_CL = list(form = "diurnal", rate = 0.15, period_hr = 24)
+            ),
+            omega = list(CL = 0.04, V = 0.05),
+            sigma = list(prop = 0.10))
 )
 
 jsonlite::write_json(ref_params,
