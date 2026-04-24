@@ -76,5 +76,13 @@
     "llm_pooled_only": true,
     "imputation_stability_penalty": 0.0,
     "imputation_convergence_rate_min": 0.75
+  },
+  "gate3": {
+    "metric_stack": [
+      "vpc_concordance",
+      "auc_cmax_gmr",
+      "npe"
+    ],
+    "laplace_draws": 2000
   }
 }

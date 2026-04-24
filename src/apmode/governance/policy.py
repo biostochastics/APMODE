@@ -11,6 +11,16 @@ from typing import Literal, Self
 from pydantic import BaseModel, Field, model_validator
 
 
+class PolicyError(ValueError):
+    """Raised when a candidate violates a versioned lane policy invariant.
+
+    Scoped narrowly to disambiguate policy-driven rejections (metric
+    shopping, unsupported backends, unsupported metric names) from the
+    pydantic ``ValueError`` raised at schema-validation time. Inherits
+    from :class:`ValueError` so existing except-handlers stay correct.
+    """
+
+
 class BayesianThresholds(BaseModel):
     """Gate-1 Bayesian MCMC disqualification thresholds (PRD §4.3.1).
 
@@ -182,6 +192,17 @@ class Gate2Config(BaseModel):
     bayesian_prior_justification_min_length: int = Field(default=50, ge=10)
 
 
+_GATE3_DEFAULT_METRIC_STACK: list[Literal["vpc_concordance", "auc_cmax_gmr", "npe"]] = [
+    "vpc_concordance",
+    "auc_cmax_gmr",
+    "npe",
+]
+
+
+def _default_gate3_metric_stack() -> list[Literal["vpc_concordance", "auc_cmax_gmr", "npe"]]:
+    return list(_GATE3_DEFAULT_METRIC_STACK)
+
+
 class Gate3Config(BaseModel):
     """Gate 3: Cross-paradigm ranking composite configuration (PRD §4.3.1).
 
@@ -278,6 +299,45 @@ class Gate3Config(BaseModel):
     # Default False: rc8 ships the observed-time VPC only. The R harness
     # side of the second pass is tracked as a follow-up commit.
     vpc_include_prediction_corrected: bool = False
+
+    # Gate 3 anti-metric-shopping whitelist (plan Task 24). Candidates
+    # that propose a Gate-3 metric outside this list are rejected by
+    # the ranker with a ``PolicyError``. The default covers the three
+    # metrics the PRD §4.3.1 ranker computes today. Deployments that
+    # add a metric must extend the Literal type *and* re-version the
+    # policy so downstream bundles can detect the change.
+    metric_stack: list[Literal["vpc_concordance", "auc_cmax_gmr", "npe"]] = Field(
+        default_factory=_default_gate3_metric_stack,
+    )
+    # Number of Laplace draws for the MLE posterior-predictive helper
+    # (plan Task 22). Submission lane defaults to 2000 (tight intervals
+    # for regulatory review); Discovery to 500 (exploration budget).
+    laplace_draws: int = Field(default=500, ge=100, le=10000)
+
+    def validate_metric(self, metric: str) -> None:
+        """Raise :class:`PolicyError` if ``metric`` is outside ``metric_stack``.
+
+        Gate 3 ranker calls this before consuming any candidate-proposed
+        metric to prevent *metric shopping*: a candidate declaring a
+        favourable metric not on the lane's whitelist would otherwise
+        dominate the ranking by exclusion. The stack is policy-versioned
+        so an addition/removal shows up in ``policy_file.json`` and
+        downstream bundles.
+        """
+        if metric not in self.metric_stack:
+            msg = (
+                f"Gate 3 metric {metric!r} is not on this lane's "
+                f"metric_stack {sorted(self.metric_stack)}; refusing to "
+                "rank with it (policy anti-metric-shopping invariant)."
+            )
+            raise PolicyError(msg)
+
+    @model_validator(mode="after")
+    def metric_stack_non_empty(self) -> Self:
+        if not self.metric_stack:
+            msg = "gate3.metric_stack must list at least one metric"
+            raise ValueError(msg)
+        return self
 
     @model_validator(mode="after")
     def weights_sum_to_one(self) -> Self:

@@ -66,7 +66,13 @@
     "vpc_weight": 0.5,
     "npe_weight": 0.5,
     "bic_weight": 0.0,
-    "auc_cmax_weight": 0.0
+    "auc_cmax_weight": 0.0,
+    "metric_stack": [
+      "vpc_concordance",
+      "auc_cmax_gmr",
+      "npe"
+    ],
+    "laplace_draws": 500
   },
   "missing_data": {
     "mi_pmm_max_missingness": 0.3,
