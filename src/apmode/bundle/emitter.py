@@ -496,3 +496,69 @@ class BundleEmitter:
         dest = self._bayesian_dir() / f"{candidate_id}_draws.parquet"
         shutil.copy2(source, dest)
         return dest
+
+    def write_posterior_draws(
+        self,
+        candidate_id: str,
+        draws_by_param: dict[str, object],
+        thin_every: int = 1,
+    ) -> Path:
+        """Write thinned posterior draws to ``{cid}_posterior_draws.parquet``.
+
+        In-memory counterpart to ``copy_posterior_draws`` — used when the
+        caller already has draws as numpy arrays (e.g. when tests synthesise
+        draws without running cmdstanpy). The layout is long-form
+        ``(chain, iter, param, value)`` so parameters can be appended over
+        multiple calls without schema divergence.
+
+        Args:
+            candidate_id: Safe path component identifying the candidate.
+            draws_by_param: Mapping ``param_name -> ndarray(chains, iters)``.
+                Each array must have ``ndim == 2``.
+            thin_every: Retain every ``thin_every``-th iteration per chain.
+                Default 1 (no thinning).
+
+        Returns:
+            Absolute path to the written parquet file.
+        """
+        import numpy as np
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        _validate_path_component(candidate_id, "candidate_id")
+        if thin_every < 1:
+            msg = f"thin_every must be >= 1, got {thin_every}"
+            raise ValueError(msg)
+
+        rows_chain: list[int] = []
+        rows_iter: list[int] = []
+        rows_param: list[str] = []
+        rows_value: list[float] = []
+        for name, arr_obj in draws_by_param.items():
+            arr = np.asarray(arr_obj)
+            if arr.ndim != 2:
+                msg = (
+                    f"draws for {name!r} must be 2-D (chains, iters); "
+                    f"got shape {arr.shape}"
+                )
+                raise ValueError(msg)
+            thinned = arr[:, ::thin_every]
+            n_chains, n_iters = thinned.shape
+            for c in range(n_chains):
+                for i in range(n_iters):
+                    rows_chain.append(c)
+                    rows_iter.append(i)
+                    rows_param.append(name)
+                    rows_value.append(float(thinned[c, i]))
+
+        table = pa.table(
+            {
+                "chain": rows_chain,
+                "iter": rows_iter,
+                "param": rows_param,
+                "value": rows_value,
+            }
+        )
+        dest = self._bayesian_dir() / f"{candidate_id}_posterior_draws.parquet"
+        pq.write_table(table, dest)
+        return dest
