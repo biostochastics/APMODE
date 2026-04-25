@@ -115,6 +115,11 @@ class RunRecord(BaseModel):
     # ~10 jobs/day the JOIN cost is pure overhead and tracebacks are
     # always read alongside the row.
     error: str | None = None
+    # Plan Task 34 — opt-in flag honoured by a future re-queue worker.
+    # We persist it (rather than discarding the request body field) so
+    # the worker can read every INTERRUPTED row and decide whether to
+    # replay without consulting an out-of-band request log.
+    requeue_on_interrupt: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -191,19 +196,28 @@ class RunStore(Protocol):
 # rolling schema upgrades for the v0.6-rc1 API surface.
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS runs (
-    run_id     TEXT PRIMARY KEY,
-    status     TEXT NOT NULL,
-    bundle_dir TEXT NOT NULL,
-    lane       TEXT,
-    backend    TEXT,
-    seed       INTEGER,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    error      TEXT
+    run_id               TEXT PRIMARY KEY,
+    status               TEXT NOT NULL,
+    bundle_dir           TEXT NOT NULL,
+    lane                 TEXT,
+    backend              TEXT,
+    seed                 INTEGER,
+    created_at           TEXT NOT NULL,
+    updated_at           TEXT NOT NULL,
+    error                TEXT,
+    requeue_on_interrupt INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status);
 CREATE INDEX IF NOT EXISTS idx_runs_created_at ON runs(created_at);
 """
+
+# Idempotent ALTER for databases created before plan Task 34. SQLite
+# does not have ``ADD COLUMN IF NOT EXISTS``, so the migration walks
+# ``PRAGMA table_info`` and only issues the ALTER when the column is
+# missing — keeping the schema bootstrap a single safe statement set.
+_REQUEUE_COLUMN_BACKFILL_SQL = (
+    "ALTER TABLE runs ADD COLUMN requeue_on_interrupt INTEGER NOT NULL DEFAULT 0"
+)
 
 
 class SQLiteRunStore:
@@ -251,6 +265,14 @@ class SQLiteRunStore:
         # deletes without a migration.
         await self._conn.execute("PRAGMA foreign_keys=ON;")
         await self._conn.executescript(_SCHEMA_SQL)
+        # Plan Task 34 backfill — older databases (Task 31 baseline)
+        # are missing the requeue_on_interrupt column. Detect and add
+        # it idempotently so an in-place v0.6-rc0 → rc1 upgrade is
+        # zero-touch.
+        async with self._conn.execute("PRAGMA table_info(runs)") as cur:
+            cols = {row[1] for row in await cur.fetchall()}
+        if "requeue_on_interrupt" not in cols:
+            await self._conn.execute(_REQUEUE_COLUMN_BACKFILL_SQL)
         await self._conn.commit()
         # Reconcile any RUNNING rows from a prior process *before* the
         # API starts serving. Done inside initialize() so callers cannot
@@ -272,8 +294,8 @@ class SQLiteRunStore:
                 await conn.execute(
                     "INSERT INTO runs ("
                     "run_id, status, bundle_dir, lane, backend, seed, "
-                    "created_at, updated_at, error"
-                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "created_at, updated_at, error, requeue_on_interrupt"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         record.run_id,
                         record.status.value,
@@ -284,6 +306,7 @@ class SQLiteRunStore:
                         record.created_at,
                         record.updated_at,
                         record.error,
+                        int(record.requeue_on_interrupt),
                     ),
                 )
                 await conn.commit()
@@ -295,7 +318,7 @@ class SQLiteRunStore:
         conn = self._require_conn()
         async with conn.execute(
             "SELECT run_id, status, bundle_dir, lane, backend, seed, "
-            "created_at, updated_at, error FROM runs WHERE run_id = ?",
+            "created_at, updated_at, error, requeue_on_interrupt FROM runs WHERE run_id = ?",
             (run_id,),
         ) as cur:
             row = await cur.fetchone()
@@ -307,7 +330,8 @@ class SQLiteRunStore:
         conn = self._require_conn()
         async with conn.execute(
             "SELECT run_id, status, bundle_dir, lane, backend, seed, "
-            "created_at, updated_at, error FROM runs ORDER BY created_at ASC"
+            "created_at, updated_at, error, requeue_on_interrupt FROM runs "
+            "ORDER BY created_at ASC"
         ) as cur:
             rows = await cur.fetchall()
         return [_row_to_record(row) for row in rows]
@@ -391,6 +415,8 @@ def _row_to_record(row: Sequence[object]) -> RunRecord:
     """
     raw_seed = row[5]
     seed = int(raw_seed) if isinstance(raw_seed, int) else None
+    raw_requeue = row[9] if len(row) > 9 else 0
+    requeue = bool(raw_requeue) if isinstance(raw_requeue, int) else False
     return RunRecord(
         run_id=str(row[0]),
         status=RunStatus(str(row[1])),
@@ -401,6 +427,7 @@ def _row_to_record(row: Sequence[object]) -> RunRecord:
         created_at=str(row[6]),
         updated_at=str(row[7]),
         error=str(row[8]) if row[8] is not None else None,
+        requeue_on_interrupt=requeue,
     )
 
 

@@ -28,6 +28,7 @@ from apmode.backends.predictive_summary import (
     SubjectSimulation,
     build_predictive_diagnostics,
 )
+from apmode.backends.process_lifecycle import terminate_process_group
 from apmode.backends.r_schemas import (
     PredictedSimulationsSubject,
     RSubprocessRequest,
@@ -235,6 +236,16 @@ class Nlmixr2Runner:
                 timeout_seconds=timeout_seconds,
                 pid=proc.pid,
             ) from None
+        except asyncio.CancelledError:
+            # Plan Task 33 — DELETE /runs/{id} cancelled the parent
+            # task while R was running. SIGTERM the whole process group
+            # (5 s grace, then SIGKILL); R cleans up its temp files on
+            # SIGTERM but not on SIGKILL, so the grace pass is worth
+            # the wait. ``terminate_process_group`` is idempotent and
+            # handles the race where R exited between the wait_for
+            # raising and us looking at the PID.
+            await terminate_process_group(proc)
+            raise
 
         return proc.returncode or 0
 

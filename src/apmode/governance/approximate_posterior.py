@@ -62,6 +62,7 @@ class LaplaceDrawsResult(NamedTuple):
     draws: NDArray[np.float64]
     method: DrawMethod
 
+
 _COND_NUMBER_THRESHOLD = 1e12
 # Variance floor for the diagonal-bootstrap fallback. Engaged only when
 # the Hessian-derived diagonal is itself NaN/inf/zero — small enough
@@ -228,6 +229,4 @@ def laplace_draws(
         numpy.linalg.LinAlgError: ``fallback == "raise"`` and sampling
             fails (no implicit fallback).
     """
-    return laplace_draws_with_method(
-        theta, cov, n_draws, seed, fallback=fallback
-    ).draws
+    return laplace_draws_with_method(theta, cov, n_draws, seed, fallback=fallback).draws

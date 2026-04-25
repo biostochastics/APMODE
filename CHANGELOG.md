@@ -7,6 +7,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — v0.6-rc1 HTTP API surface (plan Tasks 32, 33, 34)
+
+The FastAPI app stack landed on top of the Task 31 SQLite RunStore.
+Three lifecycle endpoints (POST/GET/DELETE), two streaming download
+endpoints (bundle ZIP + RO-Crate ZIP), and a Starlette lifespan that
+ties the run registry, background-task tracker, and subprocess
+termination contract together.
+
+- **`apmode.api.app.build_app()` factory + Starlette lifespan
+  (Task 32 + 34).** New modules `src/apmode/api/{models,runs,routes,
+  app}.py`. The factory wires the `SQLiteRunStore`, an injectable
+  `runner_factory` (defaults to `Nlmixr2Runner`), and an
+  `allow_backends` allowlist (default `("nlmixr2",)`; Task 36 will
+  add `bayesian_stan`). The `@asynccontextmanager` lifespan calls
+  `store.initialize()` (which runs `sweep_interrupted_on_startup`
+  internally) before serving the first request, exposes
+  `app.state.{store,runs_dir,active_tasks}`, and on shutdown cancels
+  every still-running entry of `active_tasks` then closes the store.
+  The recommended uvicorn pairing is `timeout_graceful_shutdown=30`
+  to leave headroom for the SIGTERM-to-SIGKILL grace window in the
+  runner.
+- **`POST /runs` → 202 + Retry-After: 5 (Task 32).** `CreateRunRequest`
+  is `extra="forbid"` Pydantic with explicit `lane`, `backend`,
+  `seed`, `timeout_seconds`, `max_concurrency`, `covariate_names`,
+  `column_mapping`, `context_of_use`, and `requeue_on_interrupt`
+  fields. The handler creates the `RunRecord(status=PENDING)`,
+  spawns `asyncio.create_task(execute_run(...))` (named
+  `apmode-run-{run_id}` for observability), tracks it in
+  `app.state.active_tasks`, and returns the
+  `RunCreatedResponse(run_id, status, status_url)` payload. An
+  unknown backend → 400; an unknown lane / extra field → 422.
+- **`Orchestrator.run(..., run_id=...)` parameter (Task 32 plumbing).**
+  The orchestrator now accepts an optional pre-allocated `run_id` so
+  the API's RunRecord and the orchestrator's bundle dir share the
+  same path (`runs_dir/<run_id>/`). Mutually exclusive with
+  `skip_classical=True` (resume already binds to an existing run).
+- **`GET /runs/{run_id}/{status,bundle,rocrate}` + `GET /runs`
+  (Task 32).** Status returns `RunStatusResponse` (404 if unknown).
+  Bundle and RO-Crate endpoints stream a per-request temp ZIP via
+  `FileResponse` + `BackgroundTask` cleanup; both gate on
+  `RunStatus.COMPLETED` (404 if unknown, 425 *Too Early* if not yet
+  COMPLETED so polling clients can back off cleanly per RFC 8470).
+  Bundle ZIP is built with `shutil.make_archive` in a thread; RO-Crate
+  ZIP is built via the existing `RoCrateEmitter.export_from_sealed_bundle`.
+- **`DELETE /runs/{run_id}` cancellation (Task 33).** Two-phase: the
+  handler `task.cancel()`s the background coroutine and polls the
+  store (5 s budget) until the row reaches a terminal status. The
+  background task's `asyncio.CancelledError` handler in
+  `apmode.api.runs.execute_run` writes `RunStatus.CANCELLED` and
+  re-raises so asyncio's default exception handler sees clean
+  cancellation. 404 if unknown, 409 if already terminal
+  (`COMPLETED`/`FAILED`/`CANCELLED`/`INTERRUPTED`).
+- **`apmode.backends.process_lifecycle.terminate_process_group`
+  (Task 33).** New shared helper used by both `Nlmixr2Runner._spawn_r`
+  and `BayesianRunner._spawn_python_harness`: SIGTERM the child
+  process group, wait `grace_seconds=5.0` for graceful exit, escalate
+  to SIGKILL. Idempotent and `ProcessLookupError`-safe. Both runners
+  now catch `asyncio.CancelledError` on `proc.communicate()` and call
+  the helper before re-raising — this is the path that prevents
+  cancellation from leaving an orphan R or cmdstan child consuming
+  CPU after `DELETE /runs/{id}` returns.
+- **`requeue_on_interrupt` opt-in flag (Task 34).** Added to
+  `CreateRunRequest`, persisted in the SQLite `runs` table via a new
+  `INTEGER NOT NULL DEFAULT 0` column with idempotent ALTER backfill
+  on `initialize()` (zero-touch upgrade from rc0). Surfaced in
+  `RunStatusResponse` so a future re-queue worker can read every
+  `INTERRUPTED` row's flag without consulting an out-of-band request
+  log.
+- **18 new tests** (15 in `tests/integration/test_api_runs.py` + 3 in
+  `tests/unit/test_process_lifecycle.py`) cover: 202 + Retry-After,
+  backend allowlist 400, unknown-lane 422, `extra='forbid'` 422,
+  list ordering, status round-trip, bundle ZIP entries, 425 on
+  unsealed bundle, DELETE → CANCELLED, DELETE on unknown 404, DELETE
+  on completed 409, `requeue_on_interrupt` round-trip, lifespan
+  startup sweep marks RUNNING → INTERRUPTED, and the
+  `terminate_process_group` SIGTERM exit / idempotence /
+  self-completion paths.
+
 ### Added — v0.6-rc1 RunStore + Suite C Phase-1 fixtures (plan Tasks 31, 40, 43)
 
 Three independent slices of the v0.6 work landed together: the SQLite

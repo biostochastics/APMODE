@@ -194,6 +194,7 @@ class Orchestrator:
         data_path: Path,
         *,
         skip_classical: bool = False,
+        run_id: str | None = None,
     ) -> RunOutcome:
         """Execute the full APMODE pipeline.
 
@@ -207,12 +208,28 @@ class Orchestrator:
                 agentic refinement loop.  Use ``apmode run --resume-agentic``
                 to restart a run after an LLM API failure without re-running
                 the expensive classical SAEM search.
+            run_id: Optional pre-allocated run_id. When provided, the
+                bundle is written to ``bundle_base_dir/<run_id>/`` instead
+                of an auto-generated sparkid. Used by the HTTP API
+                (plan Task 32) so the API row's ``bundle_dir`` and the
+                orchestrator's run dir are the same path — this lets
+                ``GET /runs/{id}/bundle`` stream the right directory
+                without an extra lookup. Mutually exclusive with
+                ``skip_classical=True`` (resume already binds to an
+                existing run dir).
         """
         from apmode.search.engine import SearchEngine
 
+        if skip_classical and run_id is not None:
+            msg = (
+                "skip_classical=True and run_id are mutually exclusive — "
+                "resume binds to the existing bundle's run_id"
+            )
+            raise ValueError(msg)
+
         # Initialize bundle — when resuming, reuse the existing run dir so
         # all artifacts land in the same bundle as the original classical run.
-        existing_run_id: str | None = None
+        existing_run_id: str | None = run_id
         if skip_classical:
             existing_run_id = self._find_existing_run_id()
             if existing_run_id is None:

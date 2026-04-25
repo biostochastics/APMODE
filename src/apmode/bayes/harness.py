@@ -271,13 +271,9 @@ def _run(request_path: Path) -> dict[str, Any]:
 
         idata_for_loo = _az_for_loo.from_cmdstanpy(fit, log_likelihood="log_lik")
     except Exception as exc:
-        sys.stderr.write(
-            f"WARN: failed to construct InferenceData for LOO: {exc}\n"
-        )
+        sys.stderr.write(f"WARN: failed to construct InferenceData for LOO: {exc}\n")
     else:
-        loo_summary = build_loo_summary(
-            idata_for_loo, candidate_id=request["candidate_id"]
-        )
+        loo_summary = build_loo_summary(idata_for_loo, candidate_id=request["candidate_id"])
         result["loo_summary"] = loo_summary
 
     return {
@@ -545,9 +541,7 @@ def _compute_diagnostics(fit: Any) -> dict[str, Any]:
         bins = [(-float("inf"), 0.5), (0.5, 0.7), (0.7, 1.0), (1.0, float("inf"))]
         labels = ["good", "ok", "bad", "very_bad"]
         for (lo, hi), label in zip(bins, labels, strict=True):
-            pareto_k_counts[label] = int(
-                ((finite_k > lo) & (finite_k <= hi)).sum()
-            )
+            pareto_k_counts[label] = int(((finite_k > lo) & (finite_k <= hi)).sum())
     except Exception:
         pass
 
@@ -700,13 +694,9 @@ def build_loo_summary(
                 return c
         return None
 
-    elpd = _first_not_none(
-        getattr(loo, "elpd_loo", None), getattr(loo, "elpd", None)
-    )
+    elpd = _first_not_none(getattr(loo, "elpd_loo", None), getattr(loo, "elpd", None))
     p_loo = _first_not_none(getattr(loo, "p_loo", None), getattr(loo, "p", None))
-    se_elpd = _first_not_none(
-        getattr(loo, "se", None), getattr(loo, "elpd_se", None)
-    )
+    se_elpd = _first_not_none(getattr(loo, "se", None), getattr(loo, "elpd_se", None))
     n_obs = getattr(loo, "n_data_points", None)
     pareto_k = getattr(loo, "pareto_k", None)
     return {

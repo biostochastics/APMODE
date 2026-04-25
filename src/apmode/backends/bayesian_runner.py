@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field
 
+from apmode.backends.process_lifecycle import terminate_process_group
 from apmode.bundle.models import SamplerConfig
 from apmode.dsl.stan_emitter import emit_stan
 from apmode.errors import BackendTimeoutError, ConvergenceError, CrashError
@@ -218,6 +219,14 @@ class BayesianRunner:
                 timeout_seconds=timeout_seconds,
                 pid=proc.pid,
             ) from None
+        except asyncio.CancelledError:
+            # Plan Task 33 — DELETE /runs/{id} cancelled the parent
+            # task while cmdstan was sampling. SIGTERM the whole
+            # process group (5 s grace, then SIGKILL) so the cmdstan
+            # binary stops chewing CPU instead of running orphaned to
+            # completion. Same idempotence story as the nlmixr2 path.
+            await terminate_process_group(proc)
+            raise
 
         return proc.returncode or 0
 
