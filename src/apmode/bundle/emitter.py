@@ -344,9 +344,7 @@ class BundleEmitter:
             if not allow_sealed:
                 self._ensure_unsealed()
             path.parent.mkdir(parents=True, exist_ok=True)
-            tmp_path = path.with_name(
-                f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
-            )
+            tmp_path = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
             try:
                 tmp_path.write_text(text)
                 os.replace(tmp_path, path)

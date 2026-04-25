@@ -10,7 +10,7 @@
   [![Version](https://img.shields.io/badge/version-v0.6.0--rc1-blue)]()
   <!-- apmode:/AUTO:badge_version -->
   <!-- apmode:AUTO:badge_tests -->
-  [![Tests](https://img.shields.io/badge/tests-2403%20collected-success)]()
+  [![Tests](https://img.shields.io/badge/tests-2429%20collected-success)]()
   <!-- apmode:/AUTO:badge_tests -->
   [![License](https://img.shields.io/badge/license-GPL--2.0--or--later-green)](LICENSE)
   [![Python](https://img.shields.io/badge/python-3.12%E2%80%933.14-yellow)]()
@@ -35,7 +35,7 @@ APMODE is a **governed meta-system** that composes five population PK modeling p
 
 **Formular — a typed PK DSL — is the control surface.** Models are specified in [Formular](docs/FORMULAR.md), a five-block grammar (`Absorption × Distribution × Elimination × Variability × Observation`) plus a sixth semantic axis — `priors` — populated via the `SetPrior` transform rather than grammar text. Specs compile to a typed AST, are validated against pharmacometric constraints, and lower to backend-specific code (nlmixr2 R, Stan/Torsten, JAX/Diffrax). The agentic LLM backend (Phase 3) operates exclusively through the 7 typed Formular transforms — including `SetPrior` for Bayesian workflows — it cannot emit raw code.
 
-> **Status**: **<!-- apmode:AUTO:version_tag -->v0.6.0-rc1<!-- apmode:/AUTO:version_tag -->** (2026-04-24) — 0.6 release candidate. <!-- apmode:AUTO:tests_nonlive -->2386<!-- apmode:/AUTO:tests_nonlive --> tests passing (`-m "not live"`); `mypy --strict` clean; `ruff` clean. Supports Python 3.12–3.14. Gate policy schema <!-- apmode:AUTO:policy_gate -->0.6.0<!-- apmode:/AUTO:policy_gate -->; profiler policy <!-- apmode:AUTO:policy_profiler -->2.1.0<!-- apmode:/AUTO:policy_profiler --> (manifest_schema_version = <!-- apmode:AUTO:profiler_manifest -->2<!-- apmode:/AUTO:profiler_manifest -->). v0.6 ships the FastAPI HTTP API surface (`apmode serve`, `POST /runs`, cancellation lifecycle), Suite C Phase-1 MLE + Bayesian fixtures with weekly NPE scoring, and the v0.6 RO-Crate projector hardening pass. Reproducibility bundles continue to carry a `_COMPLETE` sentinel with a SHA-256 digest; `apmode validate` refuses unsealed bundles. See [CHANGELOG.md](CHANGELOG.md) for the full 0.6.0 release-candidate changes.
+> **Status**: **<!-- apmode:AUTO:version_tag -->v0.6.0-rc1<!-- apmode:/AUTO:version_tag -->** (2026-04-24) — 0.6 release candidate. <!-- apmode:AUTO:tests_nonlive -->2412<!-- apmode:/AUTO:tests_nonlive --> tests passing (`-m "not live"`); `mypy --strict` clean; `ruff` clean. Supports Python 3.12–3.14. Gate policy schema <!-- apmode:AUTO:policy_gate -->0.6.0<!-- apmode:/AUTO:policy_gate -->; profiler policy <!-- apmode:AUTO:policy_profiler -->2.1.0<!-- apmode:/AUTO:policy_profiler --> (manifest_schema_version = <!-- apmode:AUTO:profiler_manifest -->2<!-- apmode:/AUTO:profiler_manifest -->). v0.6 ships the FastAPI HTTP API surface (`apmode serve`, `POST /runs`, cancellation lifecycle), Suite C Phase-1 MLE + Bayesian fixtures with weekly NPE scoring, and the v0.6 RO-Crate projector hardening pass. Reproducibility bundles continue to carry a `_COMPLETE` sentinel with a SHA-256 digest; `apmode validate` refuses unsealed bundles. See [CHANGELOG.md](CHANGELOG.md) for the full 0.6.0 release-candidate changes.
 
 ### Capability status
 
@@ -224,8 +224,8 @@ continues to point the policy loader at an alternative directory.
 ### Test + typecheck + lint
 
 ```bash
-uv run pytest tests/ -q                         # <!-- apmode:AUTO:tests -->2403<!-- apmode:/AUTO:tests --> collected
-uv run pytest tests/ -q -m "not live"           # <!-- apmode:AUTO:tests_nonlive -->2386<!-- apmode:/AUTO:tests_nonlive --> skip live LLM tests
+uv run pytest tests/ -q                         # <!-- apmode:AUTO:tests -->2429<!-- apmode:/AUTO:tests --> collected
+uv run pytest tests/ -q -m "not live"           # <!-- apmode:AUTO:tests_nonlive -->2412<!-- apmode:/AUTO:tests_nonlive --> skip live LLM tests
 uv run mypy src/apmode/ --strict                # type checking
 uv run ruff check src/apmode/ tests/            # linting
 uv run python scripts/sync_readme.py --check    # README ↔ codebase drift guard
@@ -628,6 +628,8 @@ The integration tests (`tests/integration/test_suite_c_phase1_mle.py`, `tests/in
 
 The scoring harness — `fraction-beats-literature-median ≥ 60%` with δ=0.02 win margin and 5-fold subject-level CV — runs in **honest mode**: the live-fit driver `python -m apmode.benchmarks.suite_c_phase1_runner` writes a disjoint train/test CSV pair per fold, fits the APMODE side on the train CSV with posterior-predictive sims routed at the held-out fold (`Nlmixr2Runner.run(..., test_data_path=test_csv)` → `rxode2::rxSolve(events=test_df)`), and fits the literature side at the published parameter values via `est='posthoc'` (`fixed_parameter=True` → harness freezes THETA/OMEGA/SIGMA at the compiled `ini()` values and only estimates ETAs). The reported NPE on each side is therefore true held-out generalisation; the gate is a methodology-drift detector rather than a goodness-of-fit detector. The weekly CI workflow at `.github/workflows/suite_c_phase1.yml` consumes the resulting `phase1_npe_inputs.json` via `suite_c_phase1_cli.py`.
 
+Two infrastructure fixes from the v0.6.1 honest-mode bring-up keep this pipeline robust on the canonical fixtures: (1) `Nlmixr2Runner.run` pre-adapts the on-disk CSV through `apmode.data.adapters.to_nlmixr2_format` (NMID→ID rename + `DVID` PK-row filter + string-categorical remap) and points the harness at the adapted copy in the per-fit scratch directory — without it, FOCEI silently entered a "Theta reset (ETA drift)" loop on small folds; `r/harness.R::.normalize_id_column` keeps an idempotent NMID→ID rename as defence in depth. (2) `NCAEstimator` shares the runner's `PK_DVID_ALLOWLIST` to filter mixed-endpoint datasets (warfarin's `DVID="cp"`/`"pca"`) before per-subject NCA, and a new data-driven fallback (`V = Dose_geo / Cmax_geo`, `CL = Dose_geo / AUC_obs_geo`, `ka = 2.5 / Tmax_geo` with log-normal floors/caps) precedes the conservative hard-coded defaults — the cascade is `nca → dataset_card → data_driven → defaults`. End-to-end Phase-1 on the three nlmixr2data fixtures (theophylline / warfarin / mavoglurant) now runs in ~30 minutes wall-clock with all 30 fits returning `status=success`; the previous regression (warfarin fold02 hung at the 600 s per-fit budget) is closed.
+
 ### End-to-End Benchmark Results
 
 Full `apmode run` pipeline on all Suite A fixtures plus three real
@@ -673,7 +675,7 @@ reason, vote). `apmode inspect <bundle>` renders the per-signal table;
 
 ## Test Suite
 
-**<!-- apmode:AUTO:tests -->2403<!-- apmode:/AUTO:tests --> tests collected** (<!-- apmode:AUTO:tests_nonlive -->2386<!-- apmode:/AUTO:tests_nonlive --> non-live) across multiple strategies — all counts auto-synced by `scripts/sync_readme.py`:
+**<!-- apmode:AUTO:tests -->2429<!-- apmode:/AUTO:tests --> tests collected** (<!-- apmode:AUTO:tests_nonlive -->2412<!-- apmode:/AUTO:tests_nonlive --> non-live) across multiple strategies — all counts auto-synced by `scripts/sync_readme.py`:
 
 ```bash
 uv run pytest tests/unit/ -q               # unit tests
@@ -1145,7 +1147,7 @@ Every CI run and every tagged release ships a [CycloneDX](https://cyclonedx.org/
 This README's numeric claims (version, test count, transform count, CLI-command count, dataset count, policy versions, profiler manifest version) are rewritten from the codebase by [`scripts/sync_readme.py`](scripts/sync_readme.py). Each auto-synced value sits between HTML comment markers like:
 
 ```
-<!-- apmode:AUTO:tests -->2403<!-- apmode:/AUTO:tests -->
+<!-- apmode:AUTO:tests -->2429<!-- apmode:/AUTO:tests -->
 ```
 
 Running the script:
