@@ -28,37 +28,33 @@ into a single producer of ``benchmarks/suite_c/phase1_npe_inputs.json``:
   7. Atomic write of the inputs JSON (tmp + rename) so a SIGKILL
      mid-write never half-writes the file the Task 41 scorer ingests.
 
-Honest scope boundaries
------------------------
+Honest mode (v0.6.1)
+--------------------
 
-* **In-sample NPE per fold.** The current R harness fits and simulates
-  on the same CSV passed via ``data_path``; there is no
-  ``fit on A, simulate on B`` mode yet. The 5-fold split gives five
-  different in-sample NPE values (one per train subset) for variance
-  estimation, but this is **not** strictly held-out NPE. Migrating to
-  true held-out NPE requires extending
-  ``r/harness.R::.simulate_posterior_predictive`` with an optional
-  ``test_data`` argument that is passed as ``events=test_data`` to
-  ``rxode2::rxSolve``. The runner's per-fold loop is shaped so that
-  only the inner ``Nlmixr2Runner.run`` call needs to change once the
-  harness gains that contract.
+* **Held-out NPE per fold.** Each fold writes both a ``train.csv`` and
+  a disjoint ``test.csv``. The APMODE-side fit uses the train CSV via
+  ``Nlmixr2Runner.run(..., data_path=train_csv,
+  test_data_path=test_csv)``; the harness fits on the train CSV and
+  routes ``rxode2::rxSolve(events=test_df)`` so the posterior-predictive
+  matrix is generated on subjects the model never saw. The reported
+  NPE is therefore a true held-out generalisation metric, not a
+  goodness-of-fit metric. Subject-level k-fold guarantees the train/test
+  IDs are disjoint — required because rxode2 partitions sims by ID
+  and a colliding ID would silently recycle the train subject's
+  posthoc ETA instead of drawing from Omega.
 
-* **Literature NPE = warm-started fit, not fixed-THETA evaluation
-  (TAUTOLOGY RISK on canonical fixtures).** ``Nlmixr2Runner.run(...,
-  fixed_parameter=True)`` raises ``NotImplementedError`` because the
-  harness does not yet honour ``FIX`` on all THETA/OMEGA/SIGMA. Until
-  it does, the literature run is "nlmixr2 starting from the published
-  parameter values, allowed to converge." For canonical fixtures
-  whose ``reference_params`` ARE the data-driven optimum (Theophylline,
-  Warfarin, etc.), both fits converge to indistinguishable
-  THETA/OMEGA/SIGMA and the per-fold NPEs differ only by Monte Carlo
-  noise. The gate is therefore a **catastrophic-drift detector** in
-  v0.6 — it catches APMODE breaking the structural model badly enough
-  that the optimizer cannot reach the published optimum, but it cannot
-  detect subtle methodology drift. Migrating to fixed-THETA evaluation
-  (which IS a true methodology test) is the v0.7 unblock; the runner's
-  two-run-per-fold structure stays the same — only the inner runner
-  call swaps to ``fixed_parameter=True`` once the R harness honours it.
+* **Literature side is fixed-THETA evaluation** (true methodology-drift
+  detector). The literature-side fit calls
+  ``Nlmixr2Runner.run(..., fixed_parameter=True,
+  initial_estimates=reference_params)``: the harness runs
+  ``est='posthoc'`` exactly once, freezing THETA/OMEGA/SIGMA at the
+  published values and only estimating ETAs. Posterior-predictive sims
+  then run on the held-out fold. APMODE wins iff its free-fit NPE is
+  better than the published parameter set's NPE on the same held-out
+  subjects — which is the definition of methodology drift (or its
+  absence). For fixtures whose published parameters ARE the data-driven
+  optimum, the two NPEs should be statistically indistinguishable; only
+  drift away from that optimum produces a measurable APMODE win.
 
 * **Same seed within a fold.** Both fits in a fold use the *same* RNG
   seed so the only NPE difference comes from differing parameter
@@ -234,8 +230,16 @@ async def _fit_one(
     seed: int,
     gate3_policy: Gate3Config,
     timeout_seconds: int | None,
+    test_data_path: Path | None = None,
+    fixed_parameter: bool = False,
 ) -> BackendResult:
-    """Single nlmixr2 fit with NPE-producing posterior-predictive sims requested."""
+    """Single nlmixr2 fit with NPE-producing posterior-predictive sims requested.
+
+    ``test_data_path`` and ``fixed_parameter`` switch the inner runner
+    call into honest-mode: held-out NPE for the APMODE side, fixed-THETA
+    held-out NPE for the literature side. Defaults preserve the legacy
+    in-sample / warm-start behaviour for callers that need it.
+    """
     return await runner.run(
         spec,
         manifest,
@@ -244,6 +248,8 @@ async def _fit_one(
         timeout_seconds=timeout_seconds,
         data_path=data_path,
         gate3_policy=gate3_policy,
+        test_data_path=test_data_path,
+        fixed_parameter=fixed_parameter,
     )
 
 
@@ -329,18 +335,36 @@ async def run_fixture(
         fold_dir = work_dir / fixture_id / f"fold{fold_idx:02d}"
         fold_dir.mkdir(parents=True, exist_ok=True)
 
-        # Derive the train subset DataFrame ONCE and reuse for both the
-        # CSV emission and the NCA estimator. Single source of truth
-        # eliminates the risk of a future filter-logic divergence
-        # silently desynchronising the fitted data and the initial
-        # estimates.
-        keep_subjects = {a.subject_id for a in fold.assignments if a.fold == "train"}
-        train_df = df[df["NMID"].astype(str).isin(keep_subjects)].copy()
+        # Derive train + test subset DataFrames ONCE and reuse for CSV
+        # emission, the NCA estimator, and the held-out simulation. A
+        # single source of truth eliminates the risk of a future filter
+        # divergence silently desynchronising the fitted data and the
+        # held-out events.
+        train_subjects = {a.subject_id for a in fold.assignments if a.fold == "train"}
+        test_subjects = {a.subject_id for a in fold.assignments if a.fold == "test"}
+        if not train_subjects.isdisjoint(test_subjects):
+            # Defence in depth: subject-level k-fold MUST emit disjoint
+            # subsets. A future split bug would otherwise feed colliding
+            # IDs to rxode2's per-ID partition and silently recycle the
+            # train subject's posthoc ETA in place of a fresh draw.
+            msg = (
+                f"fold {fold_idx}: train/test subject IDs overlap "
+                f"({sorted(train_subjects & test_subjects)[:5]}); "
+                "rxode2 would silently recycle posthoc ETAs"
+            )
+            raise ValueError(msg)
+        train_df = df[df["NMID"].astype(str).isin(train_subjects)].copy()
+        test_df = df[df["NMID"].astype(str).isin(test_subjects)].copy()
         if train_df.empty:
             msg = f"fold {fold_idx}: train subset is empty after subject filter"
             raise ValueError(msg)
+        if test_df.empty:
+            msg = f"fold {fold_idx}: test subset is empty after subject filter"
+            raise ValueError(msg)
         train_csv = fold_dir / f"fold{fold_idx:02d}_train.csv"
+        test_csv = fold_dir / f"fold{fold_idx:02d}_test.csv"
         train_df.to_csv(train_csv, index=False)
+        test_df.to_csv(test_csv, index=False)
 
         # Re-ingest the train CSV so the DataManifest the backend
         # receives reflects the actual fitted data (sha256, n_subjects,
@@ -368,6 +392,8 @@ async def run_fixture(
         fold_rng_seed = fold_seed + 7919 * fold_idx
 
         try:
+            # APMODE side: free fit on train, posterior-predictive on
+            # the held-out test fold → true cross-validation NPE.
             apmode_result = await _fit_one(
                 runner=runner,
                 spec=spec,
@@ -377,7 +403,14 @@ async def run_fixture(
                 seed=fold_rng_seed,
                 gate3_policy=gate3_policy,
                 timeout_seconds=timeout_seconds,
+                test_data_path=test_csv,
             )
+            # Literature side: fixed-THETA evaluation. The harness runs
+            # est='posthoc' once with reference_params loaded into the
+            # ini() block, freezing THETA/OMEGA/SIGMA, then simulates on
+            # the held-out fold. The resulting NPE is the true target
+            # APMODE must beat to demonstrate methodology improvement
+            # (not just optimisation noise around the published optimum).
             literature_result = await _fit_one(
                 runner=runner,
                 spec=spec,
@@ -387,6 +420,8 @@ async def run_fixture(
                 seed=fold_rng_seed,
                 gate3_policy=gate3_policy,
                 timeout_seconds=timeout_seconds,
+                test_data_path=test_csv,
+                fixed_parameter=True,
             )
         except Exception:
             logger.exception(

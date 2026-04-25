@@ -246,6 +246,7 @@ class AgenticRunner:
         gate3_policy: Gate3Config | None = None,
         nca_diagnostics: list[NCASubjectDiagnostic] | None = None,
         fixed_parameter: bool = False,
+        test_data_path: Path | None = None,
         stability_manifest: ImputationStabilityManifest | None = None,
         directive: MissingDataDirective | None = None,
     ) -> BackendResult:
@@ -278,6 +279,7 @@ class AgenticRunner:
                 "classical runner for LORO-CV fixed-parameter evaluation."
             )
             raise NotImplementedError(msg)
+        _ = test_data_path  # held-out NPE flows via inner runner; agentic loop is full-data
         pooled_only = directive is not None and directive.llm_pooled_only
         stability_by_candidate: dict[str, Any] = (
             {e.candidate_id: e for e in stability_manifest.entries}

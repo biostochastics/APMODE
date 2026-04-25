@@ -178,6 +178,7 @@ class NodeBackendRunner:
         gate3_policy: Gate3Config | None = None,
         nca_diagnostics: list[NCASubjectDiagnostic] | None = None,
         fixed_parameter: bool = False,
+        test_data_path: Path | None = None,
     ) -> BackendResult:
         """Run NODE estimation.
 
@@ -202,7 +203,8 @@ class NodeBackendRunner:
         Raises:
             InvalidSpecError: If spec has no NODE modules.
         """
-        _ = gate3_policy, nca_diagnostics  # reserved for Phase 3 posterior-predictive path
+        # reserved for Phase 3 posterior-predictive path
+        _ = gate3_policy, nca_diagnostics, test_data_path
         if fixed_parameter:
             msg = (
                 "fixed_parameter=True not yet honoured by NODE runner "

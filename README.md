@@ -626,7 +626,7 @@ Suite C anchors APMODE against published, peer-reviewed reference parameterisati
 
 The integration tests (`tests/integration/test_suite_c_phase1_mle.py`, `tests/integration/test_suite_c_bayesian.py`) verify each fixture loads, validates against its target lane, lowers cleanly to nlmixr2 R or Stan code, and carries a Crossref-canonical DOI. The full short-fit recovery test (warmup=200, sampling=200, chains=2 vs 8-subject shrink data) is gated behind `@pytest.mark.slow` for the weekly CI workflow.
 
-The scoring harness — `fraction-beats-literature-median ≥ 60%` with δ=0.02 win margin and 5-fold subject-level CV — is under development; the weekly CI workflow at `.github/workflows/suite_c_phase1.yml` runs the Phase-1 scorer once the dashboard is in place.
+The scoring harness — `fraction-beats-literature-median ≥ 60%` with δ=0.02 win margin and 5-fold subject-level CV — runs in **honest mode**: the live-fit driver `python -m apmode.benchmarks.suite_c_phase1_runner` writes a disjoint train/test CSV pair per fold, fits the APMODE side on the train CSV with posterior-predictive sims routed at the held-out fold (`Nlmixr2Runner.run(..., test_data_path=test_csv)` → `rxode2::rxSolve(events=test_df)`), and fits the literature side at the published parameter values via `est='posthoc'` (`fixed_parameter=True` → harness freezes THETA/OMEGA/SIGMA at the compiled `ini()` values and only estimates ETAs). The reported NPE on each side is therefore true held-out generalisation; the gate is a methodology-drift detector rather than a goodness-of-fit detector. The weekly CI workflow at `.github/workflows/suite_c_phase1.yml` consumes the resulting `phase1_npe_inputs.json` via `suite_c_phase1_cli.py`.
 
 ### End-to-End Benchmark Results
 

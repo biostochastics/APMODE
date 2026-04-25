@@ -187,6 +187,7 @@ class Nlmixr2Runner:
         gate3_policy: Gate3Config | None = None,
         nca_diagnostics: list[NCASubjectDiagnostic] | None = None,
         fixed_parameter: bool = False,
+        test_data_path: Path | None = None,
     ) -> BackendResult:
         """Run nlmixr2 estimation via R subprocess.
 
@@ -226,17 +227,9 @@ class Nlmixr2Runner:
             msg = "data_path is required for Nlmixr2Runner"
             raise ValueError(msg)
 
-        # fixed_parameter is a governance-critical flag for LORO-CV
-        # (no-refit evaluation). The R harness does not yet honour it —
-        # this runner raises until the harness contract is extended
-        # rather than silently leaking training data into held-out folds.
-        if fixed_parameter:
-            msg = (
-                "fixed_parameter=True not yet honoured by Nlmixr2Runner "
-                "(R harness extension required — see PRD \u00a78 Phase 3 / loro_cv.py). "
-                "Refusing to evaluate to avoid silent train/test leakage."
-            )
-            raise NotImplementedError(msg)
+        if test_data_path is not None and not test_data_path.is_absolute():
+            msg = f"test_data_path must be absolute, got {test_data_path!r}"
+            raise ValueError(msg)
 
         request_id = generate_run_id()
         run_dir = self.work_dir / request_id
@@ -269,6 +262,8 @@ class Nlmixr2Runner:
             compiled_r_code=compiled_r_code,
             split_manifest=split_manifest,
             n_posterior_predictive_sims=n_sims_req,
+            test_data_path=str(test_data_path) if test_data_path is not None else None,
+            fixed_parameter=fixed_parameter,
         )
 
         request_path = run_dir / "request.json"

@@ -42,6 +42,7 @@ class BackendRunner(Protocol):
         gate3_policy: Gate3Config | None = None,
         nca_diagnostics: list[NCASubjectDiagnostic] | None = None,
         fixed_parameter: bool = False,
+        test_data_path: Path | None = None,
     ) -> BackendResult:
         """Run the backend.
 
@@ -52,5 +53,12 @@ class BackendRunner(Protocol):
         on to prevent full-data posteriors from leaking into held-out
         folds via warm-start refits. Backends that cannot honour
         fixed-parameter mode must raise ``NotImplementedError``.
+
+        ``test_data_path``: when set, the backend fits on ``data_path``
+        and runs posterior-predictive simulation on this disjoint CSV.
+        Required for true held-out NPE / VPC / AUC-Cmax. The two CSVs
+        MUST carry disjoint subject IDs — backends partitioning sims by
+        ID would otherwise silently recycle the train subject's
+        empirical-Bayes ETAs in place of fresh draws.
         """
         ...

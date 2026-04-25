@@ -305,6 +305,79 @@ class TestNlmixr2RunnerRequestCreation:
         # New rc8 field: n_posterior_predictive_sims defaults to 0 when no
         # Gate3Config policy is threaded through (CLI one-shot runs).
         assert req_data["n_posterior_predictive_sims"] == 0
+        # New honest-mode fields default to absent / False so the
+        # request shape stays bit-identical to the v0.6 baseline when
+        # the caller does not opt in.
+        assert req_data.get("test_data_path") is None
+        assert req_data.get("fixed_parameter") is False
+
+    @pytest.mark.asyncio
+    async def test_request_carries_test_data_and_fixed_parameter(self, tmp_path: Path) -> None:
+        """Honest-mode kwargs survive the round trip to request.json verbatim.
+
+        The R harness only honours these when present and explicitly set,
+        so a regression that drops them silently would re-introduce the
+        in-sample / warm-start tautology the v0.6.1 work fixed.
+        """
+        script = tmp_path / "noop.sh"
+        script.write_text(
+            "#!/bin/sh\n"
+            "cat > \"$3\" << 'RESP'\n"
+            '{"schema_version":"1.0","status":"error","error_type":"convergence",'
+            '"result":null,"r_session_info":{"r_version":"4.4.1",'
+            '"nlmixr2_version":"3.0.0","platform":"test","packages":{}},'
+            '"random_seed_state":null}\n'
+            "RESP\n"
+        )
+        script.chmod(0o755)
+        runner = Nlmixr2Runner(
+            work_dir=tmp_path / "work",
+            r_executable=str(script),
+            harness_path=Path("/dev/null"),
+        )
+        test_csv = tmp_path / "held_out.csv"
+        test_csv.write_text("NMID,TIME,DV,AMT,EVID,MDV,CMT\n99,0.0,0,1,1,1,1\n")
+        with pytest.raises(ConvergenceError):
+            await runner.run(
+                spec=_test_spec(),
+                data_manifest=_test_manifest(),
+                initial_estimates={"CL": 5.0, "V": 70.0},
+                seed=42,
+                data_path=Path("/data/test.csv"),
+                test_data_path=test_csv,
+                fixed_parameter=True,
+            )
+        work_dirs = list((tmp_path / "work").iterdir())
+        assert len(work_dirs) == 1
+        req_data = json.loads((work_dirs[0] / "request.json").read_text())
+        assert req_data["test_data_path"] == str(test_csv)
+        assert req_data["fixed_parameter"] is True
+
+    @pytest.mark.asyncio
+    async def test_test_data_path_must_be_absolute(self, tmp_path: Path) -> None:
+        """Relative ``test_data_path`` is rejected at the runner boundary.
+
+        Catches the bug class where a CLI tool passes a path resolved
+        against a soon-to-change CWD; the harness reads paths verbatim
+        so we want the failure surfaced before the subprocess spawn.
+        """
+        script = tmp_path / "noop.sh"
+        script.write_text("#!/bin/sh\necho should-not-run\n")
+        script.chmod(0o755)
+        runner = Nlmixr2Runner(
+            work_dir=tmp_path / "work",
+            r_executable=str(script),
+            harness_path=Path("/dev/null"),
+        )
+        with pytest.raises(ValueError, match="test_data_path must be absolute"):
+            await runner.run(
+                spec=_test_spec(),
+                data_manifest=_test_manifest(),
+                initial_estimates={"CL": 5.0, "V": 70.0},
+                seed=42,
+                data_path=Path("/data/test.csv"),
+                test_data_path=Path("relative/test.csv"),
+            )
 
 
 class TestParseResponseWithPredictedSimulations:

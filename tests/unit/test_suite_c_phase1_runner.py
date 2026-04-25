@@ -407,6 +407,86 @@ def test_run_fixture_surfaces_missing_npe_loudly(
 # ---------------------------------------------------------------------------
 
 
+def test_run_fixture_drives_honest_mode_calls(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    synthetic_pk_csv: Path,
+    fake_backend_result_factory: object,
+) -> None:
+    """Honest-mode contract: per fold the runner emits a disjoint train+test CSV pair,
+    APMODE side passes ``test_data_path`` only, literature side passes both
+    ``test_data_path`` and ``fixed_parameter=True``.
+
+    These four kwargs are the load-bearing wire that turns the gate from
+    a catastrophic-drift detector into a true methodology-drift detector.
+    """
+    make_result = fake_backend_result_factory  # callable factory
+    fake_runner = AsyncMock()
+    fake_runner.run = AsyncMock(side_effect=[make_result(0.95) for _ in range(10)])
+
+    monkeypatch.setattr(
+        "apmode.benchmarks.suite_c_phase1_runner.load_fixture_by_id",
+        lambda _fid: cast("LiteratureFixture", _StubFixture("nlmixr2data_theophylline")),
+    )
+    monkeypatch.setattr(
+        "apmode.benchmarks.suite_c_phase1_runner.load_dsl_spec",
+        lambda _fix: object(),
+    )
+    monkeypatch.setattr(
+        "apmode.benchmarks.suite_c_phase1_runner.resolve_dataset_csv",
+        lambda _fix, *, cache_dir, overrides: synthetic_pk_csv,
+    )
+    monkeypatch.setattr(
+        "apmode.benchmarks.suite_c_phase1_runner._translate_reference_params",
+        lambda _fix: {"CL": 2.83, "V": 32.0, "ka": 1.5},
+    )
+
+    asyncio.run(
+        run_fixture(
+            "theophylline_boeckmann_1992",
+            runner=fake_runner,  # type: ignore[arg-type]
+            cache_dir=tmp_path / "cache",
+            work_dir=tmp_path / "work",
+            n_folds=5,
+            n_sims=100,
+        )
+    )
+
+    # 10 calls = 5 folds * (apmode + literature).
+    assert fake_runner.run.await_count == 10
+    apmode_calls = fake_runner.run.call_args_list[0::2]
+    literature_calls = fake_runner.run.call_args_list[1::2]
+
+    # APMODE side: held-out NPE (test_data_path set), free fit
+    # (fixed_parameter omitted/False).
+    for call in apmode_calls:
+        assert call.kwargs.get("test_data_path") is not None
+        assert call.kwargs.get("fixed_parameter", False) is False
+
+    # Literature side: held-out NPE + fixed-THETA evaluation.
+    for call in literature_calls:
+        assert call.kwargs.get("test_data_path") is not None
+        assert call.kwargs.get("fixed_parameter") is True
+
+    # Per-fold train/test CSVs were emitted with disjoint subject IDs —
+    # collisions would silently recycle posthoc ETAs in rxode2.
+    fold_dirs = sorted((tmp_path / "work" / "theophylline_boeckmann_1992").iterdir())
+    assert len(fold_dirs) == 5
+    for fold_dir in fold_dirs:
+        train_csv = next(fold_dir.glob("*_train.csv"))
+        test_csv = next(fold_dir.glob("*_test.csv"))
+        train_ids = set(pd.read_csv(train_csv)["NMID"].astype(str))
+        test_ids = set(pd.read_csv(test_csv)["NMID"].astype(str))
+        assert train_ids and test_ids
+        assert train_ids.isdisjoint(test_ids), (
+            f"fold {fold_dir.name}: train/test ID overlap = {train_ids & test_ids}"
+        )
+
+    # Train/test CSV paths in the kwargs match the on-disk fold layout.
+    for call, fold_dir in zip(apmode_calls, fold_dirs, strict=True):
+        assert call.kwargs["test_data_path"] == next(fold_dir.glob("*_test.csv"))
+
+
 def test_main_returns_usage_error_on_unknown_fixture() -> None:
     rc = main(["--fixtures", "not_a_real_fixture", "--out", "/tmp/x.json"])
     assert rc == 2  # _EXIT_USAGE

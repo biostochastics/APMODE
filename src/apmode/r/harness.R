@@ -319,9 +319,20 @@ response_path <- args[2]
   # 0 (default) or rxSolve fails, ``predicted_simulations`` is NULL and
   # the runner leaves the three diagnostics unset → Gate 3 falls back
   # to the CWRES proxy.
+  #
+  # When req$.test_data_frame is set (held-out NPE path), simulation
+  # uses the held-out CSV instead of the training CSV — the fit object
+  # supplies frozen THETA/OMEGA/SIGMA, rxode2 draws fresh ETAs from
+  # Omega for the held-out subject IDs, and the resulting NPE measures
+  # generalisation rather than goodness-of-fit. Subject IDs in the two
+  # frames MUST be disjoint (subject-level k-fold split guarantees this
+  # at the runner layer); a colliding ID would silently reuse the
+  # train subject's posthoc ETA.
   n_sims <- if (!is.null(req$n_posterior_predictive_sims))
               as.integer(req$n_posterior_predictive_sims) else 0L
-  predicted_sims <- .simulate_posterior_predictive(fit, req$.data_frame, n_sims)
+  sim_events <- if (!is.null(req$.test_data_frame)) req$.test_data_frame
+                else req$.data_frame
+  predicted_sims <- .simulate_posterior_predictive(fit, sim_events, n_sims)
 
   list(
     model_id = req$candidate_id,
@@ -388,12 +399,28 @@ tryCatch({
   # so it can't collide with a schema field.
   req$.data_frame <- data
 
+  # 3b. Optional held-out CSV. Read once and stash so the posterior-
+  # predictive helper can route rxSolve at the held-out events. NULL or
+  # empty => behaviour identical to today (in-sample sims).
+  if (!is.null(req$test_data_path) && nzchar(req$test_data_path)) {
+    req$.test_data_frame <- read.csv(req$test_data_path, header = TRUE,
+                                     stringsAsFactors = FALSE)
+  }
+
   # 4. Build model function from DSL-compiled R code
   model_fn <- parse(text = req$compiled_r_code)
   model_fn <- base::eval(model_fn)
 
-  # 5. Run estimation for each method, keep best by AIC
-  estimation_methods <- req$estimation
+  # 5. Run estimation for each method, keep best by AIC.
+  # When fixed_parameter is set, override with a single posthoc pass
+  # so nlmixr2 freezes THETA/OMEGA/SIGMA at the compiled ini() values
+  # and only fits ETAs. The AIC-best loop collapses to a single method
+  # by construction; downstream extract still picks the (only) survivor.
+  estimation_methods <- if (isTRUE(req$fixed_parameter)) {
+    c("posthoc")
+  } else {
+    req$estimation
+  }
   best_fit <- NULL
   best_method <- NULL
 

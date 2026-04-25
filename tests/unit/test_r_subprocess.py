@@ -119,6 +119,59 @@ class TestRSubprocessRequest:
                 estimation=["saem"],
             )
 
+    def test_test_data_path_traversal_rejected(self) -> None:
+        """Held-out CSV path is subject to the same no-traversal rule as data_path."""
+        with pytest.raises(ValidationError, match="traversal"):
+            RSubprocessRequest(
+                schema_version="1.0",
+                request_id="id1",
+                run_id="id2",
+                candidate_id="id3",
+                spec=_test_spec(),
+                data_path="/data/train.csv",
+                seed=1,
+                rng_kind="L'Ecuyer-CMRG",
+                initial_estimates={},
+                estimation=["saem"],
+                test_data_path="/tmp/../../etc/shadow",
+            )
+
+    def test_test_data_path_relative_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="absolute"):
+            RSubprocessRequest(
+                schema_version="1.0",
+                request_id="id1",
+                run_id="id2",
+                candidate_id="id3",
+                spec=_test_spec(),
+                data_path="/data/train.csv",
+                seed=1,
+                rng_kind="L'Ecuyer-CMRG",
+                initial_estimates={},
+                estimation=["saem"],
+                test_data_path="relative/test.csv",
+            )
+
+    def test_test_data_path_none_is_default(self) -> None:
+        """``test_data_path`` defaults to None and ``fixed_parameter`` to False
+        so the wire shape is bit-identical to the v0.6 baseline when callers
+        do not opt into honest mode.
+        """
+        req = RSubprocessRequest(
+            schema_version="1.0",
+            request_id="id1",
+            run_id="id2",
+            candidate_id="id3",
+            spec=_test_spec(),
+            data_path="/data/pk.csv",
+            seed=1,
+            rng_kind="L'Ecuyer-CMRG",
+            initial_estimates={},
+            estimation=["saem"],
+        )
+        assert req.test_data_path is None
+        assert req.fixed_parameter is False
+
 
 class TestRSubprocessResponse:
     def test_success(self) -> None:

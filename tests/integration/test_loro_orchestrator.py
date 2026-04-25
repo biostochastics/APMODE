@@ -156,10 +156,12 @@ class _FullProtocolMockRunner:
         gate3_policy: object | None = None,
         nca_diagnostics: object | None = None,
         fixed_parameter: bool = False,
+        test_data_path: Path | None = None,
     ) -> BackendResult:
         self.call_count += 1
         if fixed_parameter:
             self.fixed_parameter_calls += 1
+        _ = test_data_path  # mock honours the protocol but ignores the kwarg
         return _make_mock_result(spec.model_id, self._bic)
 
 

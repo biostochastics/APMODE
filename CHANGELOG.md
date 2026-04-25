@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — Suite-C Phase-1 honest mode (held-out NPE + fixed-THETA literature)
+
+The Phase-1 weekly benchmark grows from a catastrophic-drift detector
+into a true methodology-drift detector. Two interlocking R-harness +
+Python-runner extensions close the v0.6 scope-boundaries that the
+Task 44 docstring listed as v0.7 unblocks.
+
+- **Held-out NPE per fold (`r/harness.R::.simulate_posterior_predictive`
+  + `RSubprocessRequest.test_data_path`).** When the request carries an
+  optional `test_data_path`, the harness fits on `data_path` (train CSV)
+  and routes `rxode2::rxSolve(events=test_df)` so the posterior-
+  predictive matrix — and therefore NPE / VPC / AUC-Cmax — is generated
+  on subjects the model never saw. The reported NPE is true held-out
+  generalisation, not goodness-of-fit. Disjoint train/test subject IDs
+  are required (rxode2 partitions sims by ID; a colliding ID silently
+  recycles the train subject's posthoc ETA in place of an Ω draw); the
+  subject-level k-fold split satisfies this by construction and the
+  `suite_c_phase1_runner` adds an explicit assertion as defence in
+  depth. Backwards-compat: when the field is absent the harness
+  behaves bit-identically to the v0.6 in-sample path.
+- **Fixed-THETA literature evaluation (`Nlmixr2Runner.run(...,
+  fixed_parameter=True)` + `RSubprocessRequest.fixed_parameter`).** The
+  runner's `NotImplementedError` gate is dropped; with `fixed_parameter
+  =True` the harness collapses the AIC-best estimation loop to a single
+  `est='posthoc'` pass that freezes THETA/OMEGA/SIGMA at the compiled
+  `ini()` values (which the DSL emitter already writes from
+  `initial_estimates`) and only estimates ETAs. Combined with the
+  held-out path, the literature-side fit becomes "how well do the
+  published parameters generalise to unseen subjects?" — the
+  methodology-drift signal the v0.6 warm-start path could not produce.
+- **`suite_c_phase1_runner` switched to honest mode.** Per fold the
+  driver now writes a disjoint `train.csv` + `test.csv` pair, runs
+  the APMODE side with `test_data_path=test_csv` and the literature
+  side with both `test_data_path=test_csv` and `fixed_parameter=True`.
+  Same RNG seed within a fold (so per-fold NPE differences are
+  THETA-driven, not Monte-Carlo noise) is preserved. The runner
+  module docstring now describes the honest contract instead of
+  the v0.6 scope-boundary list.
+- **`BackendRunner` protocol carries `test_data_path`.** All four
+  backends (`nlmixr2`, `bayesian`, `node`, `agentic`) accept the
+  kwarg; only `Nlmixr2Runner` honours it today, the others record
+  and ignore it pending their own posterior-predictive paths. Test
+  fakes (`tests/integration/test_loro_orchestrator.py::
+  _FullProtocolMockRunner`) updated to match.
+- **Tests.** New unit coverage in
+  `tests/unit/test_r_subprocess.py` (path-traversal + relative-path
+  rejection on `test_data_path`, defaults bit-identical to v0.6),
+  `tests/unit/test_nlmixr2_runner.py` (request.json carries the new
+  fields verbatim, relative `test_data_path` rejected at the runner
+  boundary), and `tests/unit/test_suite_c_phase1_runner.py` (per-
+  fold train/test CSVs are emitted with disjoint subject IDs,
+  literature side gets `fixed_parameter=True`, APMODE side does
+  not). Full non-live sweep stays green at 2398 tests.
+
 ### Added — CLI infrastructure: version drift, typed errors, completion, SAEM streaming
 
 Four interlocking slices land the CLI plumbing the v0.7 plan calls for —

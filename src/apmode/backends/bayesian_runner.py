@@ -114,6 +114,7 @@ class BayesianRunner:
         gate3_policy: Gate3Config | None = None,
         nca_diagnostics: list[NCASubjectDiagnostic] | None = None,
         fixed_parameter: bool = False,
+        test_data_path: Path | None = None,
     ) -> BackendResult:
         """Run Stan sampling via Python subprocess.
 
@@ -128,7 +129,7 @@ class BayesianRunner:
         :func:`apmode.backends.predictive_summary.build_predictive_diagnostics`.
         Until that lands the kwargs are recorded and ignored.
         """
-        _ = gate3_policy, nca_diagnostics  # Scope 2: Stan y_pred wiring
+        _ = gate3_policy, nca_diagnostics, test_data_path  # Scope 2 / honest-mode TODO
         if fixed_parameter:
             msg = (
                 "fixed_parameter=True not yet honoured by BayesianRunner "

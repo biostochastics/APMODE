@@ -38,6 +38,23 @@ class RSubprocessRequest(BaseModel):
     # ranking falls back to the CWRES NPE proxy. Wired to
     # Gate3Config.n_posterior_predictive_sims by the runner.
     n_posterior_predictive_sims: int = Field(default=0, ge=0)
+    # When set, the R harness fits on ``data_path`` (train) but routes
+    # ``rxode2::rxSolve(events=test_data_path_df)`` so the posterior-
+    # predictive sim matrix — and therefore NPE / VPC / AUC-Cmax — is
+    # held-out (true cross-validation NPE) instead of in-sample. The
+    # held-out subjects MUST be disjoint from the training subjects;
+    # rxode2 partitions sims by ID and a colliding ID would silently
+    # recycle the train subject's posthoc ETA instead of drawing a
+    # fresh ETA from the fitted Omega.
+    test_data_path: str | None = None
+    # When True the harness skips the AIC-best estimation loop and
+    # runs ``est='posthoc'`` exactly once: nlmixr2 freezes
+    # THETA/OMEGA/SIGMA at the compiled ini() values (which the DSL
+    # emitter writes from ``initial_estimates``) and only estimates
+    # ETAs. Combined with ``test_data_path`` this turns the literature-
+    # side fit in Suite-C Phase-1 into a real methodology-drift
+    # detector instead of a warm-start tautology.
+    fixed_parameter: bool = False
 
     @field_validator("data_path")
     @classmethod
@@ -48,6 +65,19 @@ class RSubprocessRequest(BaseModel):
             raise ValueError("data_path must not contain '..' traversal")
         if not p.is_absolute():
             raise ValueError("data_path must be an absolute path")
+        return v
+
+    @field_validator("test_data_path")
+    @classmethod
+    def test_data_path_no_traversal(cls, v: str | None) -> str | None:
+        """Same path-safety rules as ``data_path``; ``None`` is allowed."""
+        if v is None:
+            return v
+        p = Path(v)
+        if ".." in p.parts:
+            raise ValueError("test_data_path must not contain '..' traversal")
+        if not p.is_absolute():
+            raise ValueError("test_data_path must be an absolute path")
         return v
 
 
