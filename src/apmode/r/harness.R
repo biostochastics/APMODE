@@ -392,8 +392,27 @@ tryCatch({
   }
   set.seed(req$seed)
 
-  # 3. Load data
+  # 3. Load data.
+  #
+  # APMODE's canonical subject-id column is NMID; nlmixr2/rxode2 only
+  # recognise the literal column name "ID" (case-insensitive). Without
+  # the rename FOCEI silently treats every row as belonging to the same
+  # subject, the residual likelihood becomes degenerate, and the outer
+  # optimiser enters the Theta-reset (ETA drift) loop forever — which
+  # surfaces as a per-fit BackendTimeoutError on small folds. The rename
+  # is local to the R session: the persisted CSV keeps NMID so the bundle
+  # / RO-Crate digest contracts and the per-fold train/test CSVs stay
+  # byte-identical to the producer.
+  .normalize_id_column <- function(df) {
+    if (is.null(df)) return(df)
+    if ("ID" %in% names(df)) return(df)
+    if ("NMID" %in% names(df)) {
+      names(df)[names(df) == "NMID"] <- "ID"
+    }
+    df
+  }
   data <- read.csv(req$data_path, header = TRUE, stringsAsFactors = FALSE)
+  data <- .normalize_id_column(data)
   # Stash on req for use inside .extract_backend_result (posterior-predictive
   # simulation needs the original event table). Keyed with a leading dot
   # so it can't collide with a schema field.
@@ -403,8 +422,9 @@ tryCatch({
   # predictive helper can route rxSolve at the held-out events. NULL or
   # empty => behaviour identical to today (in-sample sims).
   if (!is.null(req$test_data_path) && nzchar(req$test_data_path)) {
-    req$.test_data_frame <- read.csv(req$test_data_path, header = TRUE,
-                                     stringsAsFactors = FALSE)
+    req$.test_data_frame <- .normalize_id_column(
+      read.csv(req$test_data_path, header = TRUE, stringsAsFactors = FALSE)
+    )
   }
 
   # 4. Build model function from DSL-compiled R code

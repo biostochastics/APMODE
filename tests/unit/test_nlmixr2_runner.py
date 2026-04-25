@@ -282,13 +282,19 @@ class TestNlmixr2RunnerRequestCreation:
             harness_path=Path("/dev/null"),  # mock ignores this
         )
 
+        # The runner now pre-adapts the on-disk CSV (NMID -> ID, DVID
+        # filter, categorical remap), so it must actually open the file.
+        # An NMID-shaped two-row CSV exercises the rename path.
+        train_csv = tmp_path / "train.csv"
+        train_csv.write_text("NMID,TIME,DV,AMT,EVID,MDV,CMT\n1,0.0,0,1,1,1,1\n1,1.0,5,0,0,0,1\n")
+
         with pytest.raises(ConvergenceError):
             await runner.run(
                 spec=_test_spec(),
                 data_manifest=_test_manifest(),
                 initial_estimates={"CL": 5.0, "V": 70.0},
                 seed=42,
-                data_path=Path("/data/test.csv"),
+                data_path=train_csv,
             )
 
         # Verify request.json was created
@@ -310,6 +316,16 @@ class TestNlmixr2RunnerRequestCreation:
         # the caller does not opt in.
         assert req_data.get("test_data_path") is None
         assert req_data.get("fixed_parameter") is False
+        # The runner pre-adapts the on-disk CSV (NMID -> ID, DVID filter,
+        # categorical remap) and writes the adapted copy to the run's
+        # scratch ``data_nlmixr2.csv`` to keep nlmixr2's column-name
+        # contract; the request should point at the adapted path so the
+        # harness reads the renamed columns.
+        adapted = work_dirs[0] / "data_nlmixr2.csv"
+        assert adapted.exists()
+        assert req_data["data_path"] == str(adapted)
+        assert "ID," in adapted.read_text()
+        assert "NMID," not in adapted.read_text()
 
     @pytest.mark.asyncio
     async def test_request_carries_test_data_and_fixed_parameter(self, tmp_path: Path) -> None:
@@ -335,6 +351,8 @@ class TestNlmixr2RunnerRequestCreation:
             r_executable=str(script),
             harness_path=Path("/dev/null"),
         )
+        train_csv = tmp_path / "train.csv"
+        train_csv.write_text("NMID,TIME,DV,AMT,EVID,MDV,CMT\n1,0.0,0,1,1,1,1\n1,1.0,5,0,0,0,1\n")
         test_csv = tmp_path / "held_out.csv"
         test_csv.write_text("NMID,TIME,DV,AMT,EVID,MDV,CMT\n99,0.0,0,1,1,1,1\n")
         with pytest.raises(ConvergenceError):
@@ -343,15 +361,27 @@ class TestNlmixr2RunnerRequestCreation:
                 data_manifest=_test_manifest(),
                 initial_estimates={"CL": 5.0, "V": 70.0},
                 seed=42,
-                data_path=Path("/data/test.csv"),
+                data_path=train_csv,
                 test_data_path=test_csv,
                 fixed_parameter=True,
             )
         work_dirs = list((tmp_path / "work").iterdir())
         assert len(work_dirs) == 1
         req_data = json.loads((work_dirs[0] / "request.json").read_text())
-        assert req_data["test_data_path"] == str(test_csv)
+        # The runner adapts both train and test CSVs in the work_dir; the
+        # request.json fields point at the adapted (NMID -> ID renamed)
+        # copies so the harness reads canonical-ID-column data.
+        adapted_train = work_dirs[0] / "data_nlmixr2.csv"
+        adapted_test = work_dirs[0] / "test_data_nlmixr2.csv"
+        assert adapted_train.exists()
+        assert adapted_test.exists()
+        assert req_data["data_path"] == str(adapted_train)
+        assert req_data["test_data_path"] == str(adapted_test)
         assert req_data["fixed_parameter"] is True
+        # Persisted train/test CSVs at the caller's path are byte-identical
+        # to what they wrote — only the in-runner copy is adapted.
+        assert "NMID," in train_csv.read_text()
+        assert "NMID," in test_csv.read_text()
 
     @pytest.mark.asyncio
     async def test_test_data_path_must_be_absolute(self, tmp_path: Path) -> None:

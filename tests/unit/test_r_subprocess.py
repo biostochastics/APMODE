@@ -239,3 +239,47 @@ class TestRSubprocessResponse:
                 r_session_info=_session_info(),
                 random_seed_state=None,
             )
+
+
+class TestHarnessRRenamesNMID:
+    """Pin the NMID->ID rename in `r/harness.R`.
+
+    Removing the rename re-introduces a silent FOCEI failure: nlmixr2/rxode2
+    only recognise the column name ``ID`` for subject identity, and on
+    canonical APMODE CSVs (which use ``NMID``) FOCEI's outer optimiser
+    enters a "Theta reset (ETA drift)" loop that surfaces as a per-fit
+    BackendTimeoutError. The rename happens R-side so persisted train/test
+    CSVs (and their bundle digest contributions) keep ``NMID`` byte-for-byte.
+    """
+
+    def _harness_text(self) -> str:
+        from pathlib import Path
+
+        import apmode
+
+        harness = Path(apmode.__file__).parent / "r" / "harness.R"
+        assert harness.is_file(), f"harness.R missing at {harness}"
+        return harness.read_text()
+
+    def test_normalize_id_helper_present(self) -> None:
+        text = self._harness_text()
+        assert ".normalize_id_column" in text, (
+            "harness.R must define .normalize_id_column to map NMID -> ID "
+            "(see eta-drift loop discussion in test docstring)."
+        )
+
+    def test_normalize_applied_to_train_data(self) -> None:
+        text = self._harness_text()
+        assert "data <- .normalize_id_column(data)" in text, (
+            "harness.R must apply .normalize_id_column to the training data; "
+            "without it nlmixr2 sees no ID column and FOCEI enters the "
+            "Theta-reset (ETA drift) loop."
+        )
+
+    def test_normalize_applied_to_test_data(self) -> None:
+        text = self._harness_text()
+        assert "req$.test_data_frame <- .normalize_id_column(" in text, (
+            "harness.R must apply .normalize_id_column to the held-out test "
+            "data path so rxode2 partitions the held-out events by subject "
+            "id rather than treating the file as a single subject."
+        )

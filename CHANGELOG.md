@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — `Nlmixr2Runner` pre-adapts the on-disk CSV; `r/harness.R` rename is the safety net
+
+Two interlocking layers close a class of indefinite-hang bugs that the
+v0.6.1 honest-mode wiring exposed on the Suite-C Phase-1 weekly run.
+The user-visible symptom in both layers was the same: a per-fit
+`BackendTimeoutError` after the configured budget elapsed, with no
+diagnostic in the response (the R subprocess never wrote one because
+it was stuck in C-level FOCEI Newton iterations).
+
+- **Runner layer (`Nlmixr2Runner.run`).** Before spawning Rscript the
+  runner now reads the on-disk `data_path` (and optional
+  `test_data_path`), pipes each through
+  `apmode.data.adapters.to_nlmixr2_format`, and writes the adapted
+  copy as `data_nlmixr2.csv` / `test_data_nlmixr2.csv` inside the
+  per-fit scratch directory. The request.json `data_path` /
+  `test_data_path` fields point at the adapted copies. The adapter
+  performs three transformations the canonical APMODE schema does
+  not enforce but nlmixr2 / rxode2 require: (a) `NMID` → `ID` rename
+  (without it FOCEI enters a "Theta reset (ETA drift)" loop forever
+  because no row is recognised as belonging to a distinct subject);
+  (b) PK-row filter on `DVID` plus column drop on single-endpoint
+  models (without it nlmixr2 raises "mis-match in nbr endpoints in
+  model & in data" or hangs depending on whether the model has a
+  multi-endpoint `~` clause); (c) string / two-level categorical
+  covariate remap to integer 0/1 (e.g. `SEX="male"/"female"` →
+  `1/0`) since nlmixr2 cannot consume string-typed covariates.
+  Persisted train/test CSVs at the caller's path are byte-identical
+  to what they wrote — the adapted copy lives only in the per-fit
+  scratch and is GC'd with the run directory.
+- **Harness layer (`r/harness.R::.normalize_id_column`).** A
+  defence-in-depth NMID → ID rename remains in the R harness so the
+  failure mode does not return if a future caller bypasses
+  `Nlmixr2Runner` (e.g. operator runs `Rscript harness.R` directly
+  during a debug session). The harness rename is a no-op when the
+  runner has already adapted the CSV.
+- **Tests.** Updated unit tests in
+  `tests/unit/test_nlmixr2_runner.py` (`test_creates_request_json`,
+  `test_request_carries_test_data_and_fixed_parameter`) write real
+  NMID-shaped CSVs through the runner, then assert the adapted
+  `data_nlmixr2.csv` exists, has `ID` columns instead of `NMID`,
+  and that request.json points at the adapted path. New
+  `tests/unit/test_r_subprocess.py::TestHarnessRRenamesNMID` (3
+  pins) prevents the harness rename from being reverted.
+- **End-to-end.** Phase-1 theophylline now fits all 5 folds in
+  <1 minute on the default SAEM+FOCEI chain (was: indefinite hang
+  in the FOCEI leg). Phase-1 warfarin (whose dataset carries
+  `DVID="cp"/"pca"` and `SEX="male"/"female"`) now fits without
+  raising the multi-endpoint mismatch (was: hung on FOCEI before
+  the adapter wiring). Non-live sweep stays green at 2404 tests.
+
 ### Changed — Suite-C Phase-1 honest mode (held-out NPE + fixed-THETA literature)
 
 The Phase-1 weekly benchmark grows from a catastrophic-drift detector

@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
+import pandas as pd
 
 from apmode.backends.predictive_summary import (
     SubjectSimulation,
@@ -33,6 +34,7 @@ from apmode.backends.r_schemas import (
     RSubprocessRequest,
     RSubprocessResponse,
 )
+from apmode.data.adapters import to_nlmixr2_format
 from apmode.dsl.nlmixr2_emitter import emit_nlmixr2
 from apmode.errors import BackendTimeoutError, ConvergenceError, CrashError
 from apmode.ids import generate_run_id
@@ -235,6 +237,33 @@ class Nlmixr2Runner:
         run_dir = self.work_dir / request_id
         run_dir.mkdir(parents=True, exist_ok=True)
 
+        # Adapt the on-disk CSV to the nlmixr2-ready shape and write the
+        # adapted copy alongside request.json. Two transformations are
+        # critical for FOCEI / SAEM stability and have caused indefinite
+        # hangs when missed in the past:
+        #   1. ``NMID`` -> ``ID`` rename. nlmixr2 / rxode2 only recognise
+        #      the literal column ``ID`` for subject identity. Without the
+        #      rename the engine treats every row as a single subject and
+        #      FOCEI enters a "Theta reset (ETA drift)" loop forever.
+        #   2. ``DVID`` PK-row filtering + drop on single-endpoint models.
+        #      The default warfarin / FREM joint datasets carry a ``DVID``
+        #      column ("cp" for PK, other values for PD); single-endpoint
+        #      DSL specs raise "mis-match in nbr endpoints in model & in
+        #      data" or, worse, hang FOCEI on the ambiguous endpoint count.
+        # The persisted train/test CSVs (and the bundle digest contributions
+        # they make at the orchestrator layer) are unchanged: the adapted
+        # copy lives in this run's scratch ``run_dir``. The ``data_path``
+        # field on RSubprocessRequest still points at the (adapted)
+        # path the harness reads.
+        adapted_data_path = run_dir / "data_nlmixr2.csv"
+        to_nlmixr2_format(pd.read_csv(data_path)).to_csv(adapted_data_path, index=False)
+        adapted_test_data_path: Path | None = None
+        if test_data_path is not None:
+            adapted_test_data_path = run_dir / "test_data_nlmixr2.csv"
+            to_nlmixr2_format(pd.read_csv(test_data_path)).to_csv(
+                adapted_test_data_path, index=False
+            )
+
         # Compile R code from DSL spec (unless the caller pre-compiled, e.g.
         # the FREM path).
         compiled_r_code = (
@@ -254,7 +283,7 @@ class Nlmixr2Runner:
             run_id=request_id,
             candidate_id=spec.model_id,
             spec=spec,
-            data_path=str(data_path),
+            data_path=str(adapted_data_path),
             seed=seed,
             rng_kind="L'Ecuyer-CMRG",
             initial_estimates=initial_estimates,
@@ -262,7 +291,9 @@ class Nlmixr2Runner:
             compiled_r_code=compiled_r_code,
             split_manifest=split_manifest,
             n_posterior_predictive_sims=n_sims_req,
-            test_data_path=str(test_data_path) if test_data_path is not None else None,
+            test_data_path=(
+                str(adapted_test_data_path) if adapted_test_data_path is not None else None
+            ),
             fixed_parameter=fixed_parameter,
         )
 
