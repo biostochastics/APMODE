@@ -135,15 +135,25 @@ ignore = [
 known-first-party = ["apmode"]
 
 [tool.uv]
-# litellm 1.83.7+ patches the GHSA SQL-injection (critical) and SSTI
-# (high) advisories but hard-pins ``click==8.1.8`` for its proxy CLI.
-# That collides with ``roc-validator>=0.8.1`` (needs ``click>=8.2``).
-# Click 8.2 is a backward-compatible release that litellm just hasn't
-# been re-tested against; override the constraint so the security fix
-# resolves cleanly. APMODE never invokes the litellm proxy CLI — it
-# only imports ``litellm.acompletion`` — so the override is safe.
+# litellm 1.83.7+ patches GHSA SQL-injection (critical) and SSTI (high)
+# advisories but hard-pins several transitive dependencies to test-time
+# versions that have since picked up their *own* CVE patches. The
+# overrides below force the patched releases — APMODE only imports
+# ``litellm.acompletion`` (not the proxy CLI / Jinja templating paths
+# that litellm pins for), so the runtime contract is unaffected.
+#
+# - ``click>=8.2``         : roc-validator>=0.8.1 needs >=8.2;
+#                            litellm pins ==8.1.8.
+# - ``aiohttp>=3.13.4``    : clears 10 GHSA advisories
+#                            (header injection, response splitting,
+#                            cookie leak, multipart DoS, ...);
+#                            litellm pins ==3.13.3.
+# - ``python-dotenv>=1.2.2``: clears the symlink-follow CVE in
+#                            set_key; litellm pins ==1.0.1.
 override-dependencies = [
     "click>=8.2",
+    "aiohttp>=3.13.4",
+    "python-dotenv>=1.2.2",
 ]
 
 [tool.mypy]
