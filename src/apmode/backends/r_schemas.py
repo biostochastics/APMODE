@@ -101,6 +101,25 @@ class PredictedSimulationsSubject(BaseModel):
     # reshapes into a numpy (n_sims, n_obs) array before validation.
     sims_at_observed: list[list[float]] = Field(min_length=1)
 
+    @field_validator("t_observed", "observed_dv", mode="before")
+    @classmethod
+    def _coerce_scalar_to_list(cls, v: object) -> object:
+        """Tolerate a bare scalar for the n_obs == 1 case.
+
+        The R harness wraps single-observation vectors with ``I(...)``
+        so ``jsonlite::toJSON(..., auto_unbox = TRUE)`` keeps length-1
+        numeric arrays as JSON arrays. Without the wrap (older bundles
+        or a future regression), a subject with n_obs == 1 emits
+        ``t_observed: 1.5`` instead of ``t_observed: [1.5]`` and the
+        ``list[float]`` field rejects the float with
+        ``Input should be a valid list``. Coerce a bare scalar to a
+        length-1 list defensively; well-formed inputs (list-of-floats)
+        are unaffected.
+        """
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            return [float(v)]
+        return v
+
     @field_validator("sims_at_observed", mode="before")
     @classmethod
     def _coerce_1d_to_2d(cls, v: object) -> object:

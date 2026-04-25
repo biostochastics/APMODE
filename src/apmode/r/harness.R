@@ -122,8 +122,21 @@ response_path <- args[2]
         }
       }
       per_subj_mats[[i]] <- mat
-      per_subj_meta[[i]] <- list(subject_id = sid, t_observed = t_obs,
-                                  observed_dv = dv_obs)
+      # I() wraps both observation vectors so jsonlite preserves them
+      # as JSON arrays even when ``auto_unbox = TRUE`` is set on the
+      # outer write_json call. Without I(), a subject with n_obs == 1
+      # emits ``t_observed: 1.5`` (a JSON scalar) instead of
+      # ``t_observed: [1.5]``, which the Pydantic
+      # ``PredictedSimulationsSubject.t_observed: list[float]`` field
+      # rejects with ``Input should be a valid list``. The bug is
+      # symmetric with the sims_at_observed I() wrap below — sparse
+      # PK fixtures (pheno_sd: 155 obs across 59 subjects → some
+      # subjects have a single observation) hit it on every fold.
+      per_subj_meta[[i]] <- list(
+        subject_id = sid,
+        t_observed = I(t_obs),
+        observed_dv = I(dv_obs)
+      )
     }
 
     # Globally drop any sim replicate that has a non-finite entry for

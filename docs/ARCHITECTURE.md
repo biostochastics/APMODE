@@ -1,8 +1,8 @@
 # APMODE Technical Architecture
 
 **Version:** 0.3
-**Date:** 2026-04-17
-**Status:** Current (tracks APMODE 0.5.0-rc2; Phase 3 in progress)
+**Date:** 2026-04-25
+**Status:** Current (tracks APMODE 0.6.1-rc1; Phase 3 in progress)
 **Derived from:** PRD v0.3 (§3–§8)
 **Supersedes:** v0.2 (2026-04-13). Change summary: Phase 2/3 framing removed where
 shipped (Bayesian backend, NODE, agentic LLM, Gate 2.5, FREM, Gate 3 ranking all
@@ -19,8 +19,9 @@ Flowcept) moved to §10 Non-goals.
    + subprocess) is the main loop. The `BackendRunner` protocol is designed so Flyte
    or Temporal could be swapped in for GPU scheduling without rewriting adapters, but
    no such migration is planned (see §10).
-2. **Process isolation is non-negotiable.** Every backend (R/nlmixr2, Python/JAX,
-   LLM SDK, R/Rstan) runs in its own subprocess. A segfault in R must not crash the
+2. **Process isolation is non-negotiable.** Every backend boundary (R/nlmixr2,
+   Python/JAX, LLM SDK calls, cmdstanpy/CmdStan) is isolated from the orchestrator
+   where practical. A segfault in R must not crash the
    orchestrator.
 3. **The DSL is the moat.** All model specifications flow through the typed PK DSL
    (Formular). No backend emits or consumes model code outside of a deterministic
@@ -79,7 +80,7 @@ See `docs/FORMULAR.md` for the language reference.
 | AST canonicalization | `src/apmode/dsl/normalize.py` |
 | Semantic validator | `src/apmode/dsl/validator.py::validate_dsl(spec, lane=...)` — lane-aware, non-fail-fast |
 | Priors + admissibility | `src/apmode/dsl/priors.py` (families, target taxonomy, `_VALID_FAMILIES` matrix) |
-| Transforms | `src/apmode/dsl/transforms.py` (6) + `prior_transforms.py::SetPrior` (1) — 7 total |
+| Transforms | `src/apmode/dsl/transforms.py` (9) + `prior_transforms.py::SetPrior` (1) — 10 total |
 | Emitters | `nlmixr2_emitter.py`, `stan_emitter.py`, `frem_emitter.py` |
 | Testing | Hypothesis property tests + syrupy golden masters for emitter output |
 
@@ -93,7 +94,7 @@ See `docs/FORMULAR.md` for the language reference.
 | R invocation | `Rscript src/apmode/r/harness.R` via subprocess; file-based I/O (§4.2) |
 | Stan invocation | `cmdstanpy.CmdStanModel` via `src/apmode/bayes/harness.py` wrapped by `bayesian_runner.py` |
 | Retry/timeout | Bespoke logic in each runner; timeout from policy file, killed attempts write to new `attempt_id/` subdir |
-| CLI | Typer (`src/apmode/cli.py`) — 15 commands |
+| CLI | Typer (`src/apmode/cli.py`) — 16 direct commands plus registered `bundle` / `completion` groups |
 
 **Note on deployment posture.** The codebase runs natively on the user's machine via
 `uv`; there is no Docker-Compose stack, no R container, no K8s. Users who want
@@ -212,8 +213,8 @@ here.
 
 GitHub Actions: `uv sync --all-extras` → pytest → mypy strict → ruff check + format.
 Pre-commit runs ruff + mypy + the policy validator. Matrix is Python 3.12 / 3.13 /
-3.14. The benchmark suites run as separate workflows (Suite A nightly, B weekly, C
-quarterly — cadence tracked in `.github/workflows/`).
+3.14. Suite C has a dedicated workflow in `.github/workflows/suite_c_phase1.yml`;
+other benchmark cadences are operator-driven unless a workflow exists in `.github/workflows/`.
 
 ---
 
@@ -222,7 +223,7 @@ quarterly — cadence tracked in `.github/workflows/`).
 ```
               ┌────────────────────────────────────────────┐
               │            apmode CLI (Typer)              │
-              │    15 commands: run | validate | inspect    │
+              │    16 direct commands + registered groups    │
               │    datasets | explore | diff | log | trace  │
               │    lineage | graph | report | doctor | ls   │
               │    policies | bundle                        │
@@ -293,11 +294,11 @@ All paths rooted at `src/apmode/`.
 | `dsl/ast_models.py` | `DSLSpec` + all module Pydantic nodes |
 | `dsl/normalize.py` | AST canonicalization |
 | `dsl/validator.py` | Lane-aware `validate_dsl` |
-| `dsl/transforms.py` | 6 structural transforms + `FormularTransform` union |
-| `dsl/prior_transforms.py` | `SetPrior` transform (7th) |
+| `dsl/transforms.py` | 9 structural transforms + `FormularTransform` union |
+| `dsl/prior_transforms.py` | `SetPrior` transform (10th) |
 | `dsl/priors.py` | Prior families + `_VALID_FAMILIES` admissibility matrix |
 | `dsl/nlmixr2_emitter.py` | AST → nlmixr2 R code |
-| `dsl/stan_emitter.py` | AST → Stan program (BLQ M3/M4, IOV, NODE ⇒ `NotImplementedError`) |
+| `dsl/stan_emitter.py` | AST → Stan program (IOV, NODE, maturation covariates, and v0.7 absorption preview forms ⇒ `NotImplementedError`) |
 | `dsl/frem_emitter.py` | AST → FREM-augmented nlmixr2 |
 | `dsl/_emitter_utils.py` | Shared emitter helpers |
 
@@ -369,7 +370,7 @@ All paths rooted at `src/apmode/`.
 
 | File | Role |
 |------|------|
-| `cli.py` | Typer app — 15 commands |
+| `cli.py` | Typer app — 16 direct commands plus `bundle` / `completion` groups |
 | `paths.py` | `APMODE_POLICIES_DIR` env override + pyproject-walk fallback |
 | `routing.py` | Lane Router — evidence-manifest-driven dispatch |
 | `logging.py` | `structlog` configuration |
@@ -613,9 +614,9 @@ Phases 1 and 2 are complete. Phase 3 is in progress per CLAUDE.md. The per-month
 task list from v0.2 has been removed from this doc; it is preserved in the git
 history at `docs/ARCHITECTURE.md@v0.2` and summarized in `CHANGELOG.md`.
 
-**What is active today (0.5.0-rc2):**
+**What is active today (0.6.1-rc1):**
 
-- DSL grammar + compiler + validator + 7 typed transforms.
+- DSL grammar + compiler + validator + 10 typed transforms.
 - Classical NLME backend (nlmixr2, SAEM/FOCEi) with warm-start children.
 - Bayesian backend (Stan / Torsten via `cmdstanpy`) with R̂ / ESS / E-BFMI /
   Pareto-k Gate 1 integration.
@@ -625,13 +626,15 @@ history at `docs/ARCHITECTURE.md@v0.2` and summarized in `CHANGELOG.md`.
 - FREM + MI-PMM + MI-missRanger missing-data pipelines.
 - Gate 1 (PIT / NPDE-lite) + Gate 2 (lane-specific) + Gate 2.5 (ICH M15) +
   Gate 3 (Borda / weighted ranking with uniform-drop rule).
-- Reproducibility bundle with `_COMPLETE` sentinel.
-- 14-command CLI + HTML / Markdown regulatory report.
-- Benchmark Suite A (full, 7 scenarios) + B + C scaffolding.
+- Reproducibility bundle with `_COMPLETE` sentinel and RO-Crate projection.
+- Typer CLI (`run`, bundle inspection/reporting, HTTP `serve`, RO-Crate/SBOM subcommands) + HTML / Markdown regulatory report.
+- Benchmark Suite A (8 scenarios), Suite B perturbation anchors, and Suite C literature fixtures.
+- FastAPI HTTP surface (`apmode serve`) with loopback default, static API-key floor for non-loopback binds, SQLite run store, and cancellation lifecycle.
 
-**What remains for Phase 3 completion:** LORO-CV full integration into the
-Optimization lane, NODE posterior-predictive simulation (currently inert stub),
-Stan-side BLQ M3/M4 + IOV + maturation-covariate lowering, REST API.
+**What remains for Phase 3 completion:** NODE posterior-predictive simulation
+(currently inert stub), Stan-side IOV + maturation-covariate lowering, full
+Stan/Torsten support for the v0.7 absorption preview forms, and broader
+production hardening around public API deployments.
 
 ---
 
@@ -671,9 +674,7 @@ initial-estimate strategy: NCA-seeded + warm-start per §2.5). Items still open:
    and a pharmacometric-review workflow. PRD §10 Q1.
 2. **Regulatory engagement timing** — when to seek informal FDA / EMA feedback on
    the credibility framework (PRD §10 Q4).
-3. **LORO-CV operationalization** — the Gate 2 policy fields are in place but the
-   Optimization-lane pipeline wiring is in progress (Phase 3 completion).
-4. **NODE posterior-predictive simulation** — `NodeBackendRunner.sample_posterior_predictive`
+3. **NODE posterior-predictive simulation** — `NodeBackendRunner.sample_posterior_predictive`
    is a discoverable inert stub; Phase 3 completion item. Concrete integration
    point: `backends/node_trainer.py`.
 
@@ -693,7 +694,6 @@ this section is the canonical record of why they were deferred.
   `structlog` JSON output.
 - **Rust parser migration.** Lark in Python is adequate; the Phase-2 LALRPOP+PyO3
   branch was considered and rejected.
-- **REST API.** Planned for Phase 3 completion — out of scope for 0.5-rc.
 - **Web UI.** A minimal browser UI was prototyped and removed; the CLI + HTML
   report is the current UX.
 

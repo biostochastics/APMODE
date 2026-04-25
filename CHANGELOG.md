@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — Documentation accuracy and drift cleanup
+
+- Synced README / CLAUDE auto-managed counters to the current test collection
+  and clarified the CLI-command count versus registered command groups.
+- Reconciled HTTP API security documentation with the implemented static
+  API-key and dataset-root requirements for non-loopback binds.
+- Updated Architecture, Formular, Suite A/C, and R adapter docs for the
+  v0.6.1-rc1 surface: 10 Formular transforms, shipped API/RO-Crate commands,
+  v0.7 absorption preview forms, BLQ M3/M4 Stan support, and the current
+  benchmark fixture rosters.
+- Removed stale/broken ADR references and repo-resident process attribution
+  from documentation and changelog prose.
+
+### Fixed — CLI trace/graph hardening: typed traces, valid exporters, DAG invariants
+
+The `apmode trace` and `apmode graph` deep-inspection commands now handle
+malformed or adversarial bundle artifacts without corrupting machine-readable
+output or crashing read-only inspection:
+
+- `apmode trace --json` keeps stdout as pure JSON even when
+  `agentic_iterations.jsonl` contains corrupt lines. Invalid iteration rows are
+  validated against `AgenticIterationEntry` and skipped with human-mode
+  diagnostics rather than causing renderer crashes.
+- `apmode trace --cost` now tolerates malformed token/cost/time fields in
+  `iter_*_meta.json`, warning in human mode and using zero for bad numeric
+  cells instead of raising `ValueError`.
+- `apmode graph --format dot` and `--format mermaid` now emit raw text on
+  stdout. Rich no longer interprets DOT attributes or Mermaid labels as markup
+  (for example `node [shape=box, fontsize=10]` is preserved).
+- Mermaid export uses stable generated node IDs (`n0`, `n1`, ...) so candidate
+  IDs such as `a-b` and `a_b` cannot collide after sanitization; original
+  candidate IDs remain visible in labels.
+- `SearchGraph` validation now rejects duplicate `candidate_id` values and
+  edges that reference missing nodes, aligning the bundle model with the CLI's
+  advertised DAG semantics.
+- `apmode graph --backend` help now includes `bayesian_stan`, matching the
+  accepted backend enum.
+
+Tests: `tests/unit/test_deep_inspect.py` adds regression pins for corrupt trace
+rows under `--json`, invalid typed iteration rows, malformed cost metadata, DOT
+stdout, Mermaid ID collisions, duplicate graph nodes, and dangling graph edges.
+
 ### Fixed — Sparse-data harness: 1D `sims_at_observed` no longer crashes the runner
 
 When a subject has a single observation (the `pheno_sd` neonatal
@@ -152,9 +194,9 @@ SumIG closed-form input rate integrates to ≈1 over (0, ∞).
 
 ### Fixed — Multi-CLI code review hardening pass: cancellation, durability, digest scoping, harness diagnostics
 
-A multi-model code review (droid, crush=glm-5, gemini-3-pro, opencode=minimax-m2.7) of the
-`api/`, `bundle/`, `backends/`, and `bayes/` surfaces produced 9 actionable findings, all
-addressed in this set of patches. No public API change; existing bundles remain loadable.
+A focused code review of the `api/`, `bundle/`, `backends/`, and `bayes/`
+surfaces produced 9 actionable findings, all addressed in this set of patches.
+No public API change; existing bundles remain loadable.
 
 **API run-state cancellation contract — slot leak on double-cancel closed.**
 `apmode.api.runs.execute_run` now wraps the `on_complete` callback and the `FAILED`
@@ -562,11 +604,10 @@ and SAEM streaming progress.
   `--allow-public` test was updated to satisfy the concurrent
   `APMODE_API_KEY` + `--dataset-root` security gates.
 
-### Fixed — Multi-model audit pass: cancellation, auth, digest integrity
+### Fixed — Audit pass: cancellation, auth, digest integrity
 
-A targeted hardening sweep informed by an external multi-model review
-(self + clink: gemini, droid, crush, opencode). All 2035 non-live unit
-tests pass; `mypy --strict` and `ruff check` are clean.
+A targeted hardening sweep of cancellation, auth, and digest-integrity surfaces.
+All 2035 non-live unit tests pass; `mypy --strict` and `ruff check` are clean.
 
 - **Bayesian Gate 1 no longer clobbers the classical Gate 1 audit
   artifact.** `BundleEmitter.write_gate_decision` now accepts

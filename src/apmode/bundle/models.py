@@ -1091,6 +1091,30 @@ class SearchGraph(BaseModel):
     nodes: list[SearchGraphNode]
     edges: list[SearchGraphEdge] = Field(default_factory=list)
 
+    @model_validator(mode="after")
+    def _candidate_ids_are_unique_and_edges_resolve(self) -> Self:
+        seen: set[str] = set()
+        duplicates: set[str] = set()
+        for node in self.nodes:
+            if node.candidate_id in seen:
+                duplicates.add(node.candidate_id)
+            seen.add(node.candidate_id)
+        duplicate_ids = sorted(duplicates)
+        if duplicate_ids:
+            msg = f"duplicate candidate_id values in search graph: {duplicate_ids}"
+            raise ValueError(msg)
+
+        missing: list[str] = []
+        for edge in self.edges:
+            if edge.parent_id not in seen:
+                missing.append(f"{edge.parent_id} (parent)")
+            if edge.child_id not in seen:
+                missing.append(f"{edge.child_id} (child)")
+        if missing:
+            msg = f"search graph edges reference unknown candidate_id values: {sorted(missing)}"
+            raise ValueError(msg)
+        return self
+
 
 # --- Agentic Iteration Entry (Deep Inspection) ---
 

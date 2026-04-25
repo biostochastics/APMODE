@@ -346,3 +346,32 @@ class TestPredictedSimulations1DCoercion:
             "Without the wrap the runner crashes on sparse PK fixtures "
             "with ``Input should be a valid list`` Pydantic errors."
         )
+        # And both observation vectors get the same I() wrap for the
+        # symmetric ``t_observed: 1.5`` (vs ``[1.5]``) and
+        # ``observed_dv: 24.3`` (vs ``[24.3]``) bug class.
+        assert "t_observed = I(t_obs)" in harness, (
+            "r/harness.R must wrap t_observed in I() so a single-"
+            "observation subject emits a length-1 JSON array, not a "
+            "bare scalar that fails Pydantic's list[float] validation."
+        )
+        assert "observed_dv = I(dv_obs)" in harness, (
+            "r/harness.R must wrap observed_dv in I() symmetrically "
+            "with t_observed; otherwise sparse-data subjects produce "
+            "a JSON scalar instead of a length-1 list."
+        )
+
+    def test_scalar_t_observed_is_coerced_to_list(self) -> None:
+        from apmode.backends.r_schemas import PredictedSimulationsSubject
+
+        # n_obs == 1 with auto_unbox-without-I() shape: t_observed and
+        # observed_dv emit as bare floats; sims_at_observed comes
+        # through as an n_sims-long flat list. All three must coerce.
+        subj = PredictedSimulationsSubject(
+            subject_id="s1",
+            t_observed=57.5,  # type: ignore[arg-type]
+            observed_dv=24.3,  # type: ignore[arg-type]
+            sims_at_observed=[1.0, 2.0, 3.0],  # type: ignore[arg-type]
+        )
+        assert subj.t_observed == [57.5]
+        assert subj.observed_dv == [24.3]
+        assert subj.sims_at_observed == [[1.0], [2.0], [3.0]]

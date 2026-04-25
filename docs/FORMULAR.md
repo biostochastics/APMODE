@@ -1,7 +1,7 @@
 # Formular — The APMODE PK Specification Language
 
-**Version:** 0.5 (tracks APMODE 0.5.0-rc1)
-**Status:** Current (Phase 3 in progress)
+**Version:** 0.6.1 (tracks APMODE 0.6.1-rc1)
+**Status:** Current
 **Canonical source:** `src/apmode/dsl/` — grammar (`pk_grammar.lark`), AST (`ast_models.py`),
 validator (`validator.py`), transforms (`transforms.py` + `prior_transforms.py`), priors
 (`priors.py`), emitters (`nlmixr2_emitter.py`, `stan_emitter.py`, `frem_emitter.py`).
@@ -266,12 +266,14 @@ Enforced at `SetPrior` validation time (`apmode.dsl.priors::_VALID_FAMILIES`). I
 ### Provenance and FDA alignment
 
 Every `PriorSpec` carries a `source ∈ {uninformative, weakly_informative,
-historical_data, expert_elicitation, meta_analysis}`. Sources other than
-`uninformative` / `weakly_informative` require a non-empty `justification` string
-(validator-enforced); `historical_data` additionally requires `historical_refs` listing
-source datasets. This aligns with FDA draft guidance FDA-2025-D-3217 (January 2026) on
-Bayesian methodology — the resulting `prior_manifest.json` in the bundle is the
-artifact Gate 2 consumes for prior-justification review.
+historical_data, expert_elicitation, meta_analysis, fixed_external}`. The
+informative sources (`historical_data`, `expert_elicitation`, `meta_analysis`) require
+a non-empty `justification` string (validator-enforced); `historical_data` additionally
+requires `historical_refs` listing source datasets. `fixed_external` marks externally
+fixed parameter values used by the SumIG disposition-fixed gate. This aligns with FDA
+draft guidance FDA-2025-D-3217 (January 2026) on Bayesian methodology — the resulting
+`prior_manifest.json` in the bundle is the artifact Gate 2 consumes for
+prior-justification review.
 
 ---
 
@@ -515,9 +517,10 @@ def rhs(t, y, theta):
 
 The emitters are in `nlmixr2_emitter.py`, `stan_emitter.py`, and the NODE harness in
 `backends/node_*.py`. Any spec that passes `validate_dsl` for the target lane will
-lower cleanly in nlmixr2; Stan additionally requires that BLQ M3/M4 and IOV are
-absent (Phase 3 work) and that NODE modules are not present (Stan has no neural-ODE
-support).
+lower cleanly in nlmixr2. Stan supports the core mechanistic forms and BLQ M3/M4
+censored likelihoods; it still rejects IOV, maturation covariate links, NODE modules,
+and the v0.7 absorption preview forms (`Erlang`, `ParallelFirstOrder`, `SumIG`) pending
+follow-on lowering work.
 
 ---
 

@@ -88,6 +88,28 @@ class TestSearchGraphModels:
         assert len(rebuilt.edges) == 1
         assert rebuilt.nodes[1].bic == 318.7
 
+    def test_duplicate_candidate_ids_rejected(self) -> None:
+        with pytest.raises(Exception):  # noqa: B017
+            SearchGraph(
+                nodes=[
+                    SearchGraphNode(candidate_id="dup", backend="nlmixr2"),
+                    SearchGraphNode(candidate_id="dup", backend="jax_node"),
+                ],
+            )
+
+    def test_edge_to_unknown_candidate_rejected(self) -> None:
+        with pytest.raises(Exception):  # noqa: B017
+            SearchGraph(
+                nodes=[SearchGraphNode(candidate_id="root", backend="nlmixr2")],
+                edges=[
+                    SearchGraphEdge(
+                        parent_id="root",
+                        child_id="missing",
+                        transform="swap_module(elimination, MichaelisMenten)",
+                    )
+                ],
+            )
+
     def test_node_backend_literal(self) -> None:
         """Backend must be one of the allowed literals."""
         with pytest.raises(Exception):  # noqa: B017 — Pydantic validation
@@ -383,6 +405,51 @@ class TestTraceCommand:
         assert detail.exit_code == 0
         assert json.loads(detail.output)["input"]["candidate_id"] == marker
 
+    def test_trace_json_skips_corrupt_rows_without_polluting_stdout(self, tmp_path: Path) -> None:
+        bundle = _make_agentic_bundle(tmp_path)
+        trace_dir = bundle / "agentic_trace"
+        (trace_dir / "agentic_iterations.jsonl").write_text(
+            "{not-json}\n" + json.dumps({"iteration": 1, "spec_before": "cand_001"}) + "\n"
+        )
+
+        result = runner.invoke(app, ["trace", str(bundle), "--json"])
+        assert result.exit_code == 0
+        payload = json.loads(result.stdout)
+        assert payload["default"][0]["spec_before"] == "cand_001"
+
+    def test_trace_summary_skips_invalid_typed_rows(self, tmp_path: Path) -> None:
+        bundle = _make_agentic_bundle(tmp_path)
+        trace_dir = bundle / "agentic_trace"
+        (trace_dir / "agentic_iterations.jsonl").write_text(
+            json.dumps({"iteration": 1, "spec_before": "cand_001", "transforms_proposed": 123})
+            + "\n"
+        )
+
+        result = runner.invoke(app, ["trace", str(bundle)])
+        assert result.exit_code == 0
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+        assert "No iterations recorded" in result.output
+
+    def test_trace_cost_handles_malformed_meta_numbers(self, tmp_path: Path) -> None:
+        bundle = _make_agentic_bundle(tmp_path)
+        trace_dir = bundle / "agentic_trace"
+        (trace_dir / "iter_001_meta.json").write_text(
+            json.dumps(
+                {
+                    "input_tokens": "not-an-int",
+                    "output_tokens": 200,
+                    "cost_usd": "not-a-float",
+                    "wall_time_seconds": 2.3,
+                }
+            )
+        )
+
+        result = runner.invoke(app, ["trace", str(bundle), "--cost", "--json"])
+        assert result.exit_code == 0
+        payload = json.loads(result.stdout)
+        assert payload["total"]["input_tokens"] == 2000
+        assert payload["total"]["cost_usd"] == 0.1
+
 
 # ---------------------------------------------------------------------------
 # CLI: apmode lineage (Task 4)
@@ -542,6 +609,12 @@ class TestGraphCommand:
         assert "digraph" in content
         assert "root_001" in content
 
+    def test_graph_dot_stdout_is_plain_text_not_rich_markup(self, tmp_path: Path) -> None:
+        bundle = _make_graph_bundle(tmp_path)
+        result = runner.invoke(app, ["graph", str(bundle), "--format", "dot"])
+        assert result.exit_code == 0
+        assert "node [shape=box, fontsize=10];" in result.output
+
     def test_graph_json_export(self, tmp_path: Path) -> None:
         bundle = _make_graph_bundle(tmp_path)
         result = runner.invoke(app, ["graph", str(bundle), "--format", "json"])
@@ -571,6 +644,26 @@ class TestGraphCommand:
         result = runner.invoke(app, ["graph", str(bundle), "--format", "json"])
         assert result.exit_code == 0
         assert json.loads(result.output)["nodes"][0]["candidate_id"] == marker
+
+    def test_graph_mermaid_ids_do_not_collide_after_sanitization(self, tmp_path: Path) -> None:
+        bundle = tmp_path / "run_graph_mermaid_collision"
+        bundle.mkdir()
+        (bundle / "search_graph.json").write_text(
+            json.dumps(
+                {
+                    "nodes": [
+                        {"candidate_id": "a-b", "backend": "nlmixr2", "converged": True},
+                        {"candidate_id": "a_b", "backend": "nlmixr2", "converged": True},
+                    ],
+                    "edges": [{"parent_id": "a-b", "child_id": "a_b", "transform": "x"}],
+                }
+            )
+        )
+        result = runner.invoke(app, ["graph", str(bundle), "--format", "mermaid"])
+        assert result.exit_code == 0
+        assert 'n0["a-b"]' in result.output
+        assert 'n1["a_b"]' in result.output
+        assert 'n0 -->|"x"| n1' in result.output
 
     def test_graph_converged_filter(self, tmp_path: Path) -> None:
         bundle = _make_graph_bundle(tmp_path)

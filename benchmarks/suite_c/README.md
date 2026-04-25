@@ -3,10 +3,10 @@
 > APMODE plan Tasks 38–43, blueprint in `docs/plans/2026-04-24-apmode-v0.6-completion.md`.
 
 Phase-1 of Suite C compares APMODE's PK fits against published, peer-reviewed
-reference parameterizations on real clinical datasets. Each fixture pairs a
+reference parameterizations and selected ground-truth reference datasets. Each fixture pairs a
 NONMEM-style CSV (resolved via `dataset_id` against
 `benchmarks/datasets/registry.yaml`) with a `DSLSpec` JSON and a
-`LiteratureFixture` YAML capturing the published parameter values plus the
+`LiteratureFixture` YAML capturing the reference parameter values plus the
 parameterization mapping needed to translate published symbol names
 (e.g. `TVCL`) into APMODE's DSL-canonical names (e.g. `CL`).
 
@@ -16,8 +16,10 @@ parameterization mapping needed to translate published symbol names
 |------------|-------|--------------|---------------|
 | `theophylline_boeckmann_1992` | oral | 1-cmt + FO ka | [10.1002/psp4.12471](https://doi.org/10.1002/psp4.12471) (Schoemaker et al. 2019, nlmixr SAEM/FOCEI grid which contains the Theoph fit) |
 | `warfarin_funaki_2018` | oral | 1-cmt + lagged-FO ka | [10.1002/psp4.12445](https://doi.org/10.1002/psp4.12445) (Fidler et al. 2019, nlmixr documentation including Holford warfarin) |
-| `mavoglurant_wendling_2015` | oral | 2-cmt + FO ka | [10.1007/s11095-014-1574-1](https://doi.org/10.1007/s11095-014-1574-1) (Wendling et al. 2015, mavoglurant population PK; APMODE uses the simpler 2-cmt approximation since the published sum-of-inverse-Gaussian input function is outside DSL scope) |
-| `gentamicin_germovsek_2017` | iv_bolus | 1-cmt | [10.1128/AAC.00481-17](https://doi.org/10.1128/AAC.00481-17) (Germovsek et al. 2017, gentamicin IOV neonates) |
+| `mavoglurant_wendling_2015` | oral | 2-cmt + FO ka | [10.1007/s11095-014-1574-1](https://doi.org/10.1007/s11095-014-1574-1) (Wendling et al. 2015, mavoglurant population PK; the Phase-1 fixture uses the simpler 2-cmt approximation, while SumIG absorption remains a v0.7 preview path) |
+| `phenobarbital_grasela_1985` | iv_bolus | 1-cmt | [10.1159/000457062](https://doi.org/10.1159/000457062) (Grasela & Donn 1985, phenobarbital neonatal PK) |
+| `oral_1cpt_acop_2016` | oral | 1-cmt + FO ka | [10.32614/CRAN.package.nlmixr2data](https://doi.org/10.32614/CRAN.package.nlmixr2data) (ACOP 2016 / `nlmixr2data::Oral_1CPT` ground-truth recovery fixture) |
+| `gentamicin_germovsek_2017` | iv_bolus | 1-cmt | [10.1128/AAC.02659-16](https://doi.org/10.1128/AAC.02659-16) (Germovsek et al. 2017, gentamicin IOV neonates) |
 | `schoemaker_nlmixr2_tutorial` | iv_bolus | 1-cmt | [10.1002/psp4.12471](https://doi.org/10.1002/psp4.12471) (Schoemaker et al. 2019, `pkBolus1cmt` reference values) |
 
 ## Why the names changed from the original plan draft

@@ -14,7 +14,9 @@ IIV is modeled via log-normal random effects:
   theta_i = theta * exp(eta_i), eta_i ~ N(0, omega^2)
 
 NODE modules are not supported (Stan has no neural ODE support).
-BLQ M3/M4 and IOV are not yet implemented (marked as Phase 3).
+BLQ M3/M4 left-censored likelihoods are implemented; IOV, maturation
+covariate links, and the v0.7 absorption preview forms still raise
+``NotImplementedError``.
 """
 
 from __future__ import annotations
@@ -81,7 +83,8 @@ def emit_stan(
         A Stan program string.
 
     Raises:
-        NotImplementedError: For NODE modules, BLQ M3/M4, or IOV.
+        NotImplementedError: For NODE modules, IOV, maturation covariates,
+            or v0.7 absorption preview forms.
     """
     if spec.has_node_modules():
         raise NotImplementedError(

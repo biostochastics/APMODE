@@ -32,7 +32,6 @@ import contextlib
 import enum
 import ipaddress
 import json
-import re
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any
@@ -3224,7 +3223,10 @@ def trace(
 def _show_trace_summary_multi(mode_dirs: dict[str, Path], as_json: bool) -> None:
     """Show summary table(s) across one or more agentic modes."""
     if as_json:
-        payload = {mode: _read_iterations_jsonl(mode_dir) for mode, mode_dir in mode_dirs.items()}
+        payload = {
+            mode: _read_iterations_jsonl(mode_dir, emit_warnings=False)
+            for mode, mode_dir in mode_dirs.items()
+        }
         print(json.dumps(payload, indent=2))
         return
 
@@ -3234,11 +3236,13 @@ def _show_trace_summary_multi(mode_dirs: dict[str, Path], as_json: bool) -> None
         _show_trace_summary(mode_dir, as_json=False)
 
 
-def _read_iterations_jsonl(trace_dir: Path) -> list[dict[str, Any]]:
-    """Parse agentic_iterations.jsonl, skipping corrupt or non-dict lines."""
+def _read_iterations_jsonl(trace_dir: Path, *, emit_warnings: bool = True) -> list[dict[str, Any]]:
+    """Parse agentic_iterations.jsonl, skipping corrupt or invalid lines."""
     iters_path = trace_dir / "agentic_iterations.jsonl"
     if not iters_path.exists():
         return []
+    from apmode.bundle.models import AgenticIterationEntry
+
     entries: list[dict[str, Any]] = []
     text = iters_path.read_text().strip()
     if not text:
@@ -3248,13 +3252,52 @@ def _read_iterations_jsonl(trace_dir: Path) -> list[dict[str, Any]]:
             continue
         row = _parse_json_dict_row(line)
         if row is None:
-            console.print(
-                f"  [yellow]Warning:[/] corrupt or non-object line {i} in "
-                f"{escape(str(iters_path))}"
+            _trace_warning(
+                f"corrupt or non-object line {i} in {iters_path}",
+                emit=emit_warnings,
             )
             continue
-        entries.append(row)
+        try:
+            entry = AgenticIterationEntry.model_validate(row)
+        except Exception as exc:
+            _trace_warning(
+                f"invalid agentic iteration row {i} in {iters_path}: {exc}",
+                emit=emit_warnings,
+            )
+            continue
+        entries.append(entry.model_dump())
     return entries
+
+
+def _trace_warning(message: str, *, emit: bool) -> None:
+    """Emit trace-read warnings on stderr so JSON stdout stays parseable."""
+    if emit:
+        err_console.print(f"  [yellow]Warning:[/] {escape(message)}")
+
+
+def _trace_int(meta: dict[str, Any], key: str, *, source: str, emit_warnings: bool) -> int:
+    value = meta.get(key, 0)
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        _trace_warning(
+            f"{source}: {key} is not an integer ({value!r}); using 0",
+            emit=emit_warnings,
+        )
+        return 0
+
+
+def _trace_float(meta: dict[str, Any], key: str, *, source: str, emit_warnings: bool) -> float:
+    value = meta.get(key, 0.0)
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError):
+        _trace_warning(f"{source}: {key} is not numeric ({value!r}); using 0", emit=emit_warnings)
+        return 0.0
+
+
+def _string_list(value: object) -> list[str]:
+    return [str(item) for item in value] if isinstance(value, list) else []
 
 
 def _show_trace_summary(trace_dir: Path, as_json: bool) -> None:
@@ -3264,7 +3307,7 @@ def _show_trace_summary(trace_dir: Path, as_json: bool) -> None:
         console.print("[dim]No agentic_iterations.jsonl found.[/]")
         return
 
-    entries = _read_iterations_jsonl(trace_dir)
+    entries = _read_iterations_jsonl(trace_dir, emit_warnings=not as_json)
 
     if not entries:
         console.print("[dim]No iterations recorded.[/]")
@@ -3349,10 +3392,10 @@ def _show_trace_iteration(trace_dir: Path, iteration: int, as_json: bool) -> Non
     console.print(Panel(t, title="[bold]Input[/]", border_style="blue"))
 
     # Output panel
-    transforms = out.get("parsed_transforms", [])
-    rejected = out.get("transforms_rejected", [])
+    transforms = _string_list(out.get("parsed_transforms", []))
+    rejected = _string_list(out.get("transforms_rejected", []))
     valid = "[green]PASS[/]" if out.get("validation_passed") else "[red]FAIL[/]"
-    errors = out.get("validation_errors", [])
+    errors = _string_list(out.get("validation_errors", []))
 
     t2 = Table(show_header=False, box=None, padding=(0, 2))
     t2.add_column(style="dim", min_width=20)
@@ -3366,7 +3409,8 @@ def _show_trace_iteration(trace_dir: Path, iteration: int, as_json: bool) -> Non
         t2.add_row("Errors", "\n".join(errors))
 
     # Show reasoning (truncated)
-    raw = out.get("raw_output", "")
+    raw_obj = out.get("raw_output", "")
+    raw = raw_obj if isinstance(raw_obj, str) else str(raw_obj)
     if raw:
         display = raw[:500]
         if len(raw) > 500:
@@ -3382,12 +3426,18 @@ def _show_trace_iteration(trace_dir: Path, iteration: int, as_json: bool) -> Non
         t3.add_column()
         t3.add_row("Model", meta.get("model_id", "?"))
         t3.add_row("Version", meta.get("model_version", "?"))
-        in_tok = meta.get("input_tokens", 0)
-        out_tok = meta.get("output_tokens", 0)
+        in_tok = _trace_int(meta, "input_tokens", source=meta_path.name, emit_warnings=True)
+        out_tok = _trace_int(meta, "output_tokens", source=meta_path.name, emit_warnings=True)
         t3.add_row("Tokens", f"{in_tok} in / {out_tok} out")
-        cost_val = meta.get("cost_usd", 0)
+        cost_val = _trace_float(meta, "cost_usd", source=meta_path.name, emit_warnings=True)
         t3.add_row("Cost", f"${cost_val:.4f}")
-        t3.add_row("Wall Time", f"{meta.get('wall_time_seconds', 0):.1f}s")
+        wall_time = _trace_float(
+            meta,
+            "wall_time_seconds",
+            source=meta_path.name,
+            emit_warnings=True,
+        )
+        t3.add_row("Wall Time", f"{wall_time:.1f}s")
         console.print(Panel(t3, title="[bold]Meta[/]", border_style="magenta"))
 
     console.print()
@@ -3406,10 +3456,15 @@ def _show_trace_cost_multi(mode_dirs: dict[str, Path], as_json: bool) -> None:
             meta = _load_json(f, f.name)
             if meta is None:
                 continue
-            tot_in += int(meta.get("input_tokens", 0) or 0)
-            tot_out += int(meta.get("output_tokens", 0) or 0)
-            tot_cost += float(meta.get("cost_usd", 0.0) or 0.0)
-            tot_time += float(meta.get("wall_time_seconds", 0.0) or 0.0)
+            tot_in += _trace_int(meta, "input_tokens", source=f.name, emit_warnings=not as_json)
+            tot_out += _trace_int(meta, "output_tokens", source=f.name, emit_warnings=not as_json)
+            tot_cost += _trace_float(meta, "cost_usd", source=f.name, emit_warnings=not as_json)
+            tot_time += _trace_float(
+                meta,
+                "wall_time_seconds",
+                source=f.name,
+                emit_warnings=not as_json,
+            )
         per_mode[mode] = {
             "iterations": len(meta_files),
             "input_tokens": tot_in,
@@ -4518,7 +4573,10 @@ def graph(
     ] = None,
     backend: Annotated[
         str | None,
-        typer.Option("--backend", help="Filter by backend (nlmixr2, jax_node, agentic_llm)."),
+        typer.Option(
+            "--backend",
+            help="Filter by backend (nlmixr2, jax_node, agentic_llm, bayesian_stan).",
+        ),
     ] = None,
     converged: Annotated[
         bool,
@@ -4613,7 +4671,7 @@ def graph(
         if output:
             _write(text, "DOT")
         else:
-            console.print(text)
+            print(text)
         return
 
     if fmt == "mermaid":
@@ -4621,7 +4679,7 @@ def graph(
         if output:
             _write(text, "Mermaid")
         else:
-            console.print(text)
+            print(text)
         return
 
     # Default: tree view
@@ -4756,17 +4814,15 @@ def _graph_to_mermaid(nodes: list[dict[str, Any]], edges: list[dict[str, Any]]) 
     """Convert search graph to Mermaid flowchart format."""
     lines = ["flowchart TD"]
 
-    def _mermaid_id(s: str) -> str:
-        """Sanitize a string for use as a Mermaid node ID."""
-        return re.sub(r"[^a-zA-Z0-9_]", "_", s)
-
     def _mermaid_label(s: str) -> str:
         """Escape a string for Mermaid labels."""
         return s.replace('"', "'").replace("|", "/")
 
+    node_ids = {str(n["candidate_id"]): f"n{i}" for i, n in enumerate(nodes)}
+
     for n in nodes:
-        cid = n["candidate_id"]
-        mid = _mermaid_id(cid)
+        cid = str(n["candidate_id"])
+        mid = node_ids[cid]
         bic = n.get("bic")
         label = cid
         if bic is not None:
@@ -4778,8 +4834,8 @@ def _graph_to_mermaid(nodes: list[dict[str, Any]], edges: list[dict[str, Any]]) 
 
     for e in edges:
         transform = _mermaid_label(e.get("transform", ""))
-        pid = _mermaid_id(e["parent_id"])
-        cid = _mermaid_id(e["child_id"])
+        pid = node_ids[str(e["parent_id"])]
+        cid = node_ids[str(e["child_id"])]
         lines.append(f'  {pid} -->|"{transform}"| {cid}')
 
     return "\n".join(lines)
@@ -4926,11 +4982,12 @@ def serve(
     Examples:
       apmode serve                                 # localhost:8765
       apmode serve --port 9000 --runs-dir ./out
-      apmode serve --host 0.0.0.0 --allow-public   # behind a reverse proxy
+      APMODE_API_KEY=... apmode serve --host 0.0.0.0 --allow-public --dataset-root ./data
 
-    Requires the ``[api]`` extra (``uv sync --extra api``). Refuses to
-    bind a non-loopback host without --allow-public; the API has no
-    auth and bundles may contain patient data.
+    Requires API extras (``uv sync --extra api``). Refuses to
+    bind a non-loopback host without --allow-public, APMODE_API_KEY, and
+    --dataset-root; run-management endpoints enforce X-API-Key whenever
+    the env var is set.
     """
     # Friendly extras-not-installed path. Importing build_app pulls in
     # FastAPI + uvicorn; surface a single helpful line instead of a
