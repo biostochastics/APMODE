@@ -10,7 +10,7 @@
   [![Version](https://img.shields.io/badge/version-v0.5.0--rc2-blue)]()
   <!-- apmode:/AUTO:badge_version -->
   <!-- apmode:AUTO:badge_tests -->
-  [![Tests](https://img.shields.io/badge/tests-2135%20collected-success)]()
+  [![Tests](https://img.shields.io/badge/tests-2157%20collected-success)]()
   <!-- apmode:/AUTO:badge_tests -->
   [![License](https://img.shields.io/badge/license-GPL--2.0--or--later-green)](LICENSE)
   [![Python](https://img.shields.io/badge/python-3.12%E2%80%933.14-yellow)]()
@@ -33,7 +33,7 @@ APMODE is a **governed meta-system** that composes five population PK modeling p
 
 **Formular — a typed PK DSL — is the control surface.** Models are specified in [Formular](docs/FORMULAR.md), a five-block grammar (`Absorption × Distribution × Elimination × Variability × Observation`) plus a sixth semantic axis — `priors` — populated via the `SetPrior` transform rather than grammar text. Specs compile to a typed AST, are validated against pharmacometric constraints, and lower to backend-specific code (nlmixr2 R, Stan/Torsten, JAX/Diffrax). The agentic LLM backend (Phase 3) operates exclusively through the 7 typed Formular transforms — including `SetPrior` for Bayesian workflows — it cannot emit raw code.
 
-> **Status**: **<!-- apmode:AUTO:version_tag -->v0.5.0-rc2<!-- apmode:/AUTO:version_tag -->** (2026-04-17) — 0.5 release candidate. <!-- apmode:AUTO:tests_nonlive -->2118<!-- apmode:/AUTO:tests_nonlive --> tests passing (`-m "not live"`); `mypy --strict` clean; `ruff` clean. Supports Python 3.12–3.14. Gate policy schema <!-- apmode:AUTO:policy_gate -->0.6.0<!-- apmode:/AUTO:policy_gate -->; profiler policy <!-- apmode:AUTO:policy_profiler -->2.1.0<!-- apmode:/AUTO:policy_profiler --> (manifest_schema_version = <!-- apmode:AUTO:profiler_manifest -->2<!-- apmode:/AUTO:profiler_manifest -->). Reproducibility bundles now carry a `_COMPLETE` sentinel with a SHA-256 digest; `apmode validate` refuses unsealed bundles. Stan emitter handles IV bolus and sanitizes covariate identifiers. LLM providers enforce a 120s default timeout. See [CHANGELOG.md](CHANGELOG.md) for the full 0.5.0 release-candidate changes.
+> **Status**: **<!-- apmode:AUTO:version_tag -->v0.5.0-rc2<!-- apmode:/AUTO:version_tag -->** (2026-04-17) — 0.5 release candidate. <!-- apmode:AUTO:tests_nonlive -->2140<!-- apmode:/AUTO:tests_nonlive --> tests passing (`-m "not live"`); `mypy --strict` clean; `ruff` clean. Supports Python 3.12–3.14. Gate policy schema <!-- apmode:AUTO:policy_gate -->0.6.0<!-- apmode:/AUTO:policy_gate -->; profiler policy <!-- apmode:AUTO:policy_profiler -->2.1.0<!-- apmode:/AUTO:policy_profiler --> (manifest_schema_version = <!-- apmode:AUTO:profiler_manifest -->2<!-- apmode:/AUTO:profiler_manifest -->). Reproducibility bundles now carry a `_COMPLETE` sentinel with a SHA-256 digest; `apmode validate` refuses unsealed bundles. Stan emitter handles IV bolus and sanitizes covariate identifiers. LLM providers enforce a 120s default timeout. See [CHANGELOG.md](CHANGELOG.md) for the full 0.5.0 release-candidate changes.
 
 All numeric badges + status counts are rewritten from the source tree by `scripts/sync_readme.py` — see [Keeping the README honest](#keeping-the-readme-honest).
 
@@ -147,8 +147,8 @@ uv run apmode policies --validate       # CI-grade schema + constraint check
 ### Test + typecheck + lint
 
 ```bash
-uv run pytest tests/ -q                         # <!-- apmode:AUTO:tests -->2135<!-- apmode:/AUTO:tests --> collected
-uv run pytest tests/ -q -m "not live"           # <!-- apmode:AUTO:tests_nonlive -->2118<!-- apmode:/AUTO:tests_nonlive --> skip live LLM tests
+uv run pytest tests/ -q                         # <!-- apmode:AUTO:tests -->2157<!-- apmode:/AUTO:tests --> collected
+uv run pytest tests/ -q -m "not live"           # <!-- apmode:AUTO:tests_nonlive -->2140<!-- apmode:/AUTO:tests_nonlive --> skip live LLM tests
 uv run mypy src/apmode/ --strict                # type checking
 uv run ruff check src/apmode/ tests/            # linting
 uv run python scripts/sync_readme.py --check    # README ↔ codebase drift guard
@@ -448,6 +448,7 @@ Formular text ──→ Lark parser ──→ AST ──→     Search Engine
 | Report generator | `src/apmode/report/` | HTML + Markdown regulatory report with credibility framing |
 | Dataset registry | `src/apmode/data/datasets.py` | <!-- apmode:AUTO:datasets -->14<!-- apmode:/AUTO:datasets --> public PK datasets from nlmixr2data with auto-fetch |
 | Suite C literature loader | `src/apmode/benchmarks/literature_loader.py` | YAML → `LiteratureFixture` → `DSLSpec` traversal for the Phase-1 MLE + Bayesian benchmark roster |
+| Suite C Phase-1 scoring | `src/apmode/benchmarks/suite_c_phase1_scoring.py` + `suite_c_phase1_cli.py` | Pure-Python `score_fixture` + `aggregate_phase1_scorecard` (`fraction_beats_literature_median ≥ 60%` gate, `δ = 0.02` win margin); standalone `python -m` CLI driver consumed by the weekly `.github/workflows/suite_c_phase1.yml` |
 | HTTP API persistence | `src/apmode/api/store.py` | `RunStore` Protocol + `SQLiteRunStore` (WAL mode, `BEGIN IMMEDIATE` writes, idempotent startup-sweep of `RUNNING` rows) — backbone for the FastAPI surface |
 | HTTP API surface | `src/apmode/api/{app,routes,runs}.py` | `build_app()` factory + Starlette lifespan; POST/GET/DELETE `/runs` + `/runs/{id}/{status,bundle,rocrate}` endpoints; `execute_run` background-task wrapper that catches `CancelledError` and writes `RunStatus.CANCELLED` |
 | Subprocess termination | `src/apmode/backends/process_lifecycle.py` | `terminate_process_group(proc, grace_seconds=5)` shared by `Nlmixr2Runner` + `BayesianRunner` — SIGTERM → wait → SIGKILL on the child process group, called from the runners' `asyncio.CancelledError` paths |
@@ -589,7 +590,7 @@ reason, vote). `apmode inspect <bundle>` renders the per-signal table;
 
 ## Test Suite
 
-**<!-- apmode:AUTO:tests -->2135<!-- apmode:/AUTO:tests --> tests collected** (<!-- apmode:AUTO:tests_nonlive -->2118<!-- apmode:/AUTO:tests_nonlive --> non-live) across multiple strategies — all counts auto-synced by `scripts/sync_readme.py`:
+**<!-- apmode:AUTO:tests -->2157<!-- apmode:/AUTO:tests --> tests collected** (<!-- apmode:AUTO:tests_nonlive -->2140<!-- apmode:/AUTO:tests_nonlive --> non-live) across multiple strategies — all counts auto-synced by `scripts/sync_readme.py`:
 
 ```bash
 uv run pytest tests/unit/ -q               # unit tests
@@ -1020,7 +1021,7 @@ Every CI run and every tagged release ships a [CycloneDX](https://cyclonedx.org/
 This README's numeric claims (version, test count, transform count, CLI-command count, dataset count, policy versions, profiler manifest version) are rewritten from the codebase by [`scripts/sync_readme.py`](scripts/sync_readme.py). Each auto-synced value sits between HTML comment markers like:
 
 ```
-<!-- apmode:AUTO:tests -->2135<!-- apmode:/AUTO:tests -->
+<!-- apmode:AUTO:tests -->2157<!-- apmode:/AUTO:tests -->
 ```
 
 Running the script:

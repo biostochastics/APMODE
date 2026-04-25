@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — v0.6-rc1 Suite C Phase-1 scoring + weekly CI (plan Task 41)
+
+The Phase-1 Suite C contract from PRD §4 / plan Task 41: score APMODE
+against each Phase-1 MLE fixture under subject-level 5-fold CV, report
+per-dataset NPE_median, aggregate via
+`fraction_beats_literature_median = Σ(NPE_APMODE ≤ NPE_lit·(1-δ))/|D|`
+with `δ = 0.02`. The v0.6 CI gate is `fraction_beats >= 0.60` (3 of 5
+fixtures must beat the literature NPE by at least 2%). A miss opens a
+GitHub issue but is **not** a release block — it is a methodology-drift
+signal, owned by `.github/workflows/ci.yml` for release semantics.
+
+- **`apmode.benchmarks.suite_c_phase1_scoring`** — pure-Python scoring
+  helper (`score_fixture`, `aggregate_phase1_scorecard`,
+  `phase1_roster_dois`, `FixtureScore`, `SuiteCPhase1Scorecard`).
+  Aggregate returns `fraction_beats_literature_median = None` and
+  `passes_gate = False` whenever the score list has fewer than
+  `PHASE1_MIN_FIXTURES_FOR_AGGREGATE = 3` entries (matches the
+  legacy `MIN_LITERATURE_COUNT` floor — a 1-of-1 = 100% must not look
+  like a green Phase-1 run).
+- **`apmode.benchmarks.suite_c_phase1_cli`** — `python -m
+  apmode.benchmarks.suite_c_phase1_cli --inputs <file.json> --out
+  scorecard.json [--markdown-summary scorecard.md]` driver invoked by
+  the weekly workflow. Standalone `python -m` entry point (rather
+  than a Typer subcommand on `apmode.cli`) keeps the dependency
+  surface to vanilla `uv sync --extra dev` — no R, no cmdstan
+  required for the scoring math itself. Documented exit codes:
+  `0` (scorecard written), `2` (usage / parse error), `3` (fixture
+  NPE validation failure).
+- **`.github/workflows/suite_c_phase1.yml`** — weekly cron (Mon 03:17
+  UTC, off-peak), workflow_dispatch with `open_issue_on_failure`
+  input, uploads the scorecard JSON + Markdown as a build artifact,
+  appends the Markdown to `$GITHUB_STEP_SUMMARY`, opens a labelled
+  GitHub issue (`suite-c,phase-1-regression`) on a missed gate.
+  Skips silently with a workflow `::warning::` annotation when
+  `benchmarks/suite_c/phase1_npe_inputs.json` is absent — keeps the
+  weekly cadence green during the bootstrap window before plan Task
+  44's live-fit loop lands. Security note: no `${{ github.event.X }}`
+  interpolation inside any `run:` block (per workflow-injection
+  guidance).
+- **22 new unit tests** (`tests/unit/test_suite_c_phase1_scoring.py` +
+  `tests/unit/test_suite_c_phase1_cli.py`): score boundary inclusivity,
+  custom delta/min-fixtures overrides, deterministic input ordering,
+  every CLI exit-code branch, Markdown rendering for both pass and
+  fail headlines, and a cross-link guard that
+  `PHASE1_MIN_FIXTURES_FOR_AGGREGATE` matches `MIN_LITERATURE_COUNT`.
+
 ### Added — v0.6-rc1 HTTP API surface (plan Tasks 32, 33, 34)
 
 The FastAPI app stack landed on top of the Task 31 SQLite RunStore.
