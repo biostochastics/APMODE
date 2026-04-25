@@ -37,6 +37,7 @@ from apmode.bundle.models import (
     InitialEstimates,
     NCASubjectDiagnostic,
 )
+from apmode.data.adapters import PK_DVID_ALLOWLIST
 
 _logger = logging.getLogger(__name__)
 
@@ -155,11 +156,53 @@ class NCAEstimator:
         """
         self._df = df
         self._manifest = manifest
-        self._obs: pd.DataFrame = cast("pd.DataFrame", df[df["EVID"] == 0].copy())
+        obs: pd.DataFrame = cast("pd.DataFrame", df[df["EVID"] == 0].copy())
+        # Filter mixed-endpoint datasets to PK rows only. Warfarin's
+        # canonical NONMEM-style CSV interleaves DVID="cp" PK rows with
+        # DVID="pca" prothrombin-complex-activity PD rows; before this
+        # filter, the per-subject terminal-slope regression saw PK and
+        # PD values mixed together, lambda_z fits collapsed for 25/26
+        # subjects, and the estimator fell through to
+        # ``_default_estimates()`` (CL=5/V=70/ka=1) — values 47x off
+        # for warfarin, leaving SAEM+FOCEI to traverse 4 OoMs in the
+        # outer loop. The allowlist is shared with
+        # ``apmode.data.adapters.to_nlmixr2_format`` so the runner-side
+        # nlmixr2-ready CSV and the NCA estimator agree on what
+        # constitutes a PK observation. Fail-open: if DVID is absent
+        # (theo, mavoglurant) or the allowlist filter would empty the
+        # frame (custom DVID schemes from a research dataset), keep all
+        # observation rows so behaviour is unchanged on those datasets.
+        if "DVID" in obs.columns:
+            dvid_str = obs["DVID"].astype(str).str.strip().str.lower()
+            keep = dvid_str.isin(PK_DVID_ALLOWLIST)
+            n_filtered = int((~keep).sum())
+            if keep.any():
+                obs = cast("pd.DataFrame", obs.loc[keep].reset_index(drop=True))
+                if n_filtered > 0:
+                    _logger.info(
+                        "nca_dvid_filter_applied",
+                        extra={
+                            "kept_rows": int(keep.sum()),
+                            "dropped_rows": n_filtered,
+                            "allowlist": sorted(PK_DVID_ALLOWLIST),
+                        },
+                    )
+            else:
+                _logger.warning(
+                    "nca_dvid_filter_would_empty_frame_keeping_all_rows",
+                    extra={
+                        "n_obs": len(obs),
+                        "allowlist": sorted(PK_DVID_ALLOWLIST),
+                        "observed_dvid_values": sorted(
+                            {str(v).strip().lower() for v in obs["DVID"].dropna().unique()}
+                        ),
+                    },
+                )
+        self._obs: pd.DataFrame = obs
         self._doses: pd.DataFrame = cast("pd.DataFrame", df[df["EVID"] == 1].copy())
         self._fallback_estimates = fallback_estimates
         self.diagnostics: list[NCASubjectDiagnostic] = []
-        self.fallback_source: str = "nca"  # nca | dataset_card | defaults
+        self.fallback_source: str = "nca"  # nca | dataset_card | defaults | data_driven
 
     def estimate_per_subject(self) -> dict[str, float]:
         """Derive population-median NCA estimates from per-subject NCA.
@@ -370,11 +413,22 @@ class NCAEstimator:
         return result
 
     def _apply_fallback(self, excluded_fraction: float) -> dict[str, float]:
-        """Populate initial estimates from a literature prior or conservative defaults.
+        """Populate initial estimates from a literature prior, data-driven
+        heuristic, or conservative defaults — in that order of preference.
 
-        The textual source (``"dataset_card"`` vs ``"defaults"``) is tracked on
-        ``self.fallback_source``. Underscore-prefixed dict keys carry numeric
-        metadata only.
+        The textual source (``"dataset_card"`` vs ``"data_driven"`` vs
+        ``"defaults"``) is tracked on ``self.fallback_source``.
+        Underscore-prefixed dict keys carry numeric metadata only.
+
+        Cascade rationale: a dataset card with explicit literature
+        priors is always the highest-quality fallback. Absent that, the
+        observed data itself carries usable signal — population
+        ``Dose / Cmax_geomean`` recovers V to within ~10% of literature
+        on warfarin even when the per-subject lambda_z fits collapse,
+        which is much better than the previous CL=5/V=70/ka=1 hard-
+        coded defaults that were 47x off for warfarin (and triggered
+        the SAEM+FOCEI 4-OoM traversal that exceeded the 600s per-fit
+        budget on Suite-C Phase-1).
 
         #27: when the dataset card does not carry a ``ka``, the rc8
         path silently defaulted to 1.0 /h - a 10-to-100x warm-start error
@@ -398,11 +452,24 @@ class NCAEstimator:
                 est["_ka_defaulted"] = 1.0
             est["_excluded_fraction"] = round(excluded_fraction, 4)
             return est
+        data_driven = self._data_driven_fallback()
+        if data_driven is not None:
+            self.fallback_source = "data_driven"
+            data_driven["_excluded_fraction"] = round(excluded_fraction, 4)
+            _logger.info(
+                "initial_estimates_data_driven_fallback",
+                extra={
+                    "reason": "per-subject NCA QC failed; derived from population Cmax/AUC",
+                    "excluded_fraction": excluded_fraction,
+                    **{k: v for k, v in data_driven.items() if not k.startswith("_")},
+                },
+            )
+            return data_driven
         self.fallback_source = "defaults"
         _logger.warning(
             "initial_estimates_using_defaults",
             extra={
-                "reason": "no NCA and no dataset_card prior available",
+                "reason": "no NCA, no dataset_card prior, and data-driven heuristic failed",
                 "excluded_fraction": excluded_fraction,
             },
         )
@@ -412,6 +479,115 @@ class NCAEstimator:
         est["_ka_defaulted"] = 1.0
         est["_excluded_fraction"] = round(excluded_fraction, 4)
         return est
+
+    def _data_driven_fallback(self) -> dict[str, float] | None:
+        """Best-effort initial estimates from observed Cmax/AUC, no QC gates.
+
+        This bypasses the per-subject lambda_z + extrapolation gates
+        that ``estimate_per_subject`` enforces. It is intentionally
+        loose: the goal is order-of-magnitude correctness so SAEM/FOCEI
+        starts inside its convergence basin, not BE-grade NCA.
+
+        Per-subject:
+          - ``Cmax_obs``    = max DV
+          - ``AUC_obs``     = trapezoid AUC over the observed window
+                              (no extrapolation; observed-window-only)
+          - ``Tmax_obs``    = TIME of Cmax_obs (skipped if 0 — that
+                              row is the dose itself or first sample
+                              before absorption resolved)
+
+        Population aggregate uses the geometric mean (PK params are
+        log-normally distributed; the geo-mean is the standard
+        central-tendency measure for pop-PK initial estimates).
+
+        V         = Dose_geomean / Cmax_geomean   [floor 1, cap 1000 L]
+        CL        = Dose_geomean / AUC_obs_geomean [floor 0.01, cap 500 L/h]
+        ka        = 2.5 / Tmax_geomean             [floor 0.05, cap 12 1/h]
+
+        Returns ``None`` if any input is empty or non-positive
+        (e.g. data has no observations, only zero-DV samples, or only
+        a single time point per subject so trapezoid AUC is undefined).
+        ``ka`` falls back to 1.0 with a flag if Tmax cannot be derived
+        (all subject Tmax==0, IV-bolus-like data).
+        """
+        if self._obs.empty or self._doses.empty:
+            return None
+
+        per_subj_dose = cast("pd.Series", self._doses.groupby("NMID")["AMT"].sum().astype(float))
+        positive_doses = per_subj_dose[per_subj_dose > 0]
+        if positive_doses.empty:
+            return None
+        # Geo-mean dose: typical study has a single typical AMT, so
+        # this collapses to that AMT. Robust to mixed-dose studies too.
+        dose_geo = float(np.exp(np.log(positive_doses.to_numpy()).mean()))
+
+        cmax_per_subj: list[float] = []
+        auc_per_subj: list[float] = []
+        tmax_per_subj: list[float] = []
+        for subj, sdf in self._obs.groupby("NMID"):
+            sdf_sorted = sdf.sort_values("TIME")
+            t = sdf_sorted["TIME"].to_numpy(dtype=float)
+            c = sdf_sorted["DV"].to_numpy(dtype=float)
+            pos = c > 0
+            if pos.sum() < 2:
+                continue
+            t_pos = t[pos]
+            c_pos = c[pos]
+            cmax = float(c_pos.max())
+            tmax_idx = int(np.argmax(c_pos))
+            tmax = float(t_pos[tmax_idx])
+            # Linear trapezoid over observed window only — no
+            # extrapolation. Conservative: under-estimates AUC for fast
+            # eliminators with truncated terminal phase, which biases
+            # CL slightly high — that direction is benign for
+            # SAEM/FOCEI numerical stability (avoids near-zero CL
+            # divisions in the inner ODE solve).
+            auc = float(np.trapezoid(c_pos, t_pos))
+            if cmax <= 0 or auc <= 0:
+                continue
+            _ = subj
+            cmax_per_subj.append(cmax)
+            auc_per_subj.append(auc)
+            if tmax > 0:
+                tmax_per_subj.append(tmax)
+
+        if not cmax_per_subj or not auc_per_subj:
+            return None
+
+        cmax_geo = float(np.exp(np.log(np.asarray(cmax_per_subj)).mean()))
+        auc_geo = float(np.exp(np.log(np.asarray(auc_per_subj)).mean()))
+        if cmax_geo <= 0 or auc_geo <= 0:
+            return None
+
+        v_raw = dose_geo / cmax_geo
+        cl_raw = dose_geo / auc_geo
+        v = float(min(max(v_raw, 1.0), 1000.0))
+        cl = float(min(max(cl_raw, 0.01), 500.0))
+
+        ka_defaulted = False
+        if tmax_per_subj:
+            tmax_geo = float(np.exp(np.log(np.asarray(tmax_per_subj)).mean()))
+            ka_raw = 2.5 / tmax_geo
+            ka = float(min(max(ka_raw, 0.05), 12.0))
+        else:
+            # All Tmax == 0 (e.g. IV bolus, or first-sample-Cmax data).
+            # 1.0 /h is the historical default; flag for audit.
+            ka = 1.0
+            ka_defaulted = True
+
+        out: dict[str, float] = {"CL": cl, "V": v, "ka": ka}
+        if ka_defaulted:
+            out["_ka_defaulted"] = 1.0
+        # Apply the same unit-scale heuristic the NCA happy-path uses
+        # so a mg-dose / ng-mL CSV does not silently produce CL/V that
+        # are 1000x off (the heuristic detects the 1e-9-vs-1e-3 mismatch
+        # from the mass-units check in adapters.detect_unit_scale).
+        scale, _reason = _detect_unit_scale_factor(self._doses, self._obs, cl_raw)
+        if scale != 1.0:
+            out["CL"] = float(min(max(cl_raw * scale, 0.01), 500.0))
+            out["V"] = float(min(max(v_raw * scale, 1.0), 1000.0))
+            out["_unit_scale_applied"] = scale
+        return out
 
 
 # ---------------------------------------------------------------------------

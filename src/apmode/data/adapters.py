@@ -24,7 +24,19 @@ _CANONICAL_TO_NLMIXR2: dict[str, str] = {
 # PK concentration. Mirrors ``apmode.data.profiler._PK_DVIDS`` but is kept
 # in-sync manually because ``adapters`` must not import from ``profiler``
 # (profiler depends on adapters transitively via bundle artifacts).
-_PK_DVID_ALLOWLIST: frozenset[str] = frozenset({"1", "conc", "concentration", "cp"})
+#
+# Exported (no leading underscore) so ``apmode.data.initial_estimates``
+# can apply the same PK-row filter inside its NCA estimator. Without the
+# shared filter, NCA on mixed-endpoint datasets (e.g. warfarin's
+# ``DVID="cp"`` PK + ``DVID="pca"`` PD rows) sees PD concentrations as
+# PK noise, the per-subject lambda_z fits collapse for >50% of subjects,
+# and the estimator falls all the way to ``_default_estimates()``.
+PK_DVID_ALLOWLIST: frozenset[str] = frozenset({"1", "conc", "concentration", "cp"})
+
+# Backwards-compatible alias for any in-tree consumer that grew an
+# import on the underscored name before it was promoted. New call sites
+# should use the public name.
+_PK_DVID_ALLOWLIST = PK_DVID_ALLOWLIST
 
 # Canonical PK columns — never remap these even if their dtype looks
 # categorical. Everything else is treated as a candidate covariate.

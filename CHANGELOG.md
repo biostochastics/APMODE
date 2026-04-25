@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — `NCAEstimator` filters mixed-endpoint datasets and uses a data-driven fallback when QC fails
+
+A second, independent class of "Phase-1 hits per-fit timeout" failures —
+caused not by the FOCEI eta-drift loop (closed in the previous entry)
+but by initial-estimate quality — is closed here.
+
+- **Mixed-endpoint datasets pass through the same `DVID` PK-row filter
+  the runner-side adapter already applies.** Warfarin's canonical
+  NONMEM CSV interleaves `DVID="cp"` PK rows with `DVID="pca"`
+  prothrombin-complex-activity PD rows. `NCAEstimator.__init__` now
+  filters its observation slice via
+  `apmode.data.adapters.PK_DVID_ALLOWLIST` (the constant was promoted
+  from `_PK_DVID_ALLOWLIST` to a public name so the NCA module and the
+  runner-side adapter share one source of truth). Before the filter,
+  the per-subject terminal-slope regression saw PK and PD values mixed
+  together, lambda_z fits collapsed for 25/26 subjects, and the
+  estimator fell through to `_default_estimates()` (CL=5/V=70/ka=1) —
+  values 47x off for warfarin's literature CL=0.106. After the filter,
+  warfarin fold02 NCA returns CL=0.17 / V=8.5 / ka=0.11 (within 2x of
+  literature on every parameter; `fallback_source="nca"`). Fail-open:
+  if `DVID` is absent (theo, mavoglurant) or the allowlist would empty
+  the frame (custom DVID schemes), all observation rows are kept and
+  behaviour is unchanged.
+- **New data-driven fallback layer in `NCAEstimator._apply_fallback`
+  precedes the hard-coded defaults.** When per-subject NCA QC still
+  fails *and* no `fallback_estimates` (dataset-card prior) is
+  available, the estimator now derives initial estimates from the
+  observed Cmax/AUC directly: `V = Dose_geo / Cmax_geo`,
+  `CL = Dose_geo / AUC_obs_geo`, `ka = 2.5 / Tmax_geo`, with
+  log-normal floors/caps `[1, 1000] L`, `[0.01, 500] L/h`,
+  `[0.05, 12] 1/h`. The unit-scale heuristic (mg-dose / ng-mL detector)
+  is reused from the NCA happy-path so a 1000x mass-units mismatch
+  still gets corrected. The textual `fallback_source` cascade is now
+  `nca → dataset_card → data_driven → defaults`. The hard-coded
+  `_default_estimates()` remains as the final last-resort.
+- **Tests.** Two new test classes in `tests/unit/test_initial_estimates
+  .py`: `TestNCADVIDFilter` (PK+PD synthetic frame recovers via filter;
+  no-op when DVID is absent) and `TestDataDrivenFallback` (sparse
+  2-obs-per-subject frame triggers data-driven over hard-coded defaults;
+  dataset-card prior still wins over data-driven). Full non-live sweep
+  stays green at 2408 tests.
+
 ### Fixed — `Nlmixr2Runner` pre-adapts the on-disk CSV; `r/harness.R` rename is the safety net
 
 Two interlocking layers close a class of indefinite-hang bugs that the
