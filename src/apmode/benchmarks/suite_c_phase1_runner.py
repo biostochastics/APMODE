@@ -122,6 +122,8 @@ _FIXTURE_TO_REGISTRY_KEY: dict[str, str] = {
     "nlmixr2data_theophylline": "theo_sd",
     "nlmixr2data_warfarin": "warfarin",
     "nlmixr2data_mavoglurant": "mavoglurant",
+    "nlmixr2data_phenobarbital": "pheno_sd",
+    "nlmixr2data_oral_1cpt": "Oral_1CPT",
 }
 
 # Exit codes mirror the CLI scorer (suite_c_phase1_cli.py) for operator

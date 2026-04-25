@@ -315,13 +315,18 @@ class Nlmixr2Runner:
             on_stderr_line=self.progress_callback,
         )
 
-        # Parse response + optionally enrich with simulation-based diagnostics
+        # Parse response + optionally enrich with simulation-based diagnostics.
+        # ``spec`` is forwarded so that ``build_predictive_diagnostics`` can
+        # derive the matching NPE residual scaling from ``spec.observation``;
+        # without it the NPE defaults to additive raw-MedAE which inflates
+        # by ~3 OoMs on ng/mL-scaled fixtures vs mg/L fixtures.
         result = self._parse_response(
             response_path,
             exit_code,
             spec.model_id,
             gate3_policy=gate3_policy,
             nca_diagnostics=nca_diagnostics,
+            spec=spec,
         )
         from apmode.bundle.scoring_contract import attach_scoring_contract
 
@@ -429,6 +434,7 @@ class Nlmixr2Runner:
         *,
         gate3_policy: Gate3Config | None = None,
         nca_diagnostics: list[NCASubjectDiagnostic] | None = None,
+        spec: DSLSpec | None = None,
     ) -> BackendResult:
         """Parse response.json and map to BackendResult or raise error.
 
@@ -519,7 +525,13 @@ class Nlmixr2Runner:
         if not subject_sims:
             return backend_result
 
-        predictive = build_predictive_diagnostics(subject_sims, policy=gate3_policy)
+        # Pass the DSL spec so build_predictive_diagnostics can derive
+        # the matching NPE residual scaling from spec.observation. Without
+        # this hint the rc8 raw-MedAE path inflates NPE by ~3 OoMs on
+        # ng/mL-scaled fixtures (mavoglurant) vs mg/L fixtures (theo)
+        # even when the model fit quality is comparable; the
+        # dimensionless rescaling collapses the cross-fixture skew.
+        predictive = build_predictive_diagnostics(subject_sims, policy=gate3_policy, spec=spec)
         backend_result.diagnostics = backend_result.diagnostics.model_copy(
             update={
                 "vpc": predictive.vpc,

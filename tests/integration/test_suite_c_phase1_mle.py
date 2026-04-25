@@ -54,12 +54,27 @@ def _registry_dataset_ids() -> set[str]:
 
 
 @pytest.mark.integration
-def test_phase1_roster_has_five_fixtures() -> None:
-    """The plan calls for exactly five Phase-1 MLE fixtures."""
-    assert len(PHASE1_MLE_FIXTURE_IDS) == 5
+def test_phase1_roster_has_seven_fixtures() -> None:
+    """Phase-1 v0.6.1 grew from 5 to 7 fixtures.
+
+    The original plan was 5 fixtures (theo / warfarin / mavoglurant /
+    gentamicin / schoemaker). v0.6.1 adds two open / no-credentialed
+    fixtures so the weekly CI workflow can produce a complete
+    scorecard without manual DDMoRe / MIMIC-IV fetches:
+
+    * ``phenobarbital_grasela_1985`` — real, public, peer-reviewed
+      neonatal phenobarbital data shipped via ``nlmixr2data::pheno_sd``.
+    * ``oral_1cpt_acop_2016`` — simulated ground-truth-recovery
+      reference, ``nlmixr2data::Oral_1CPT``.
+
+    The CI-credentialed fixtures (``gentamicin_germovsek_2017``,
+    ``schoemaker_nlmixr2_tutorial``) are kept in the roster for
+    operator-driven runs that pass ``--dataset-csv`` overrides.
+    """
+    assert len(PHASE1_MLE_FIXTURE_IDS) == 7
     # No duplicates — duplicates would silently double-count in the
     # fraction-beats-literature-median scoring (Task 41).
-    assert len(set(PHASE1_MLE_FIXTURE_IDS)) == 5
+    assert len(set(PHASE1_MLE_FIXTURE_IDS)) == 7
 
 
 # ---------------------------------------------------------------------------

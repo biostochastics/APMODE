@@ -53,3 +53,35 @@ parameterization_mapping:
   TVV2: V2
   TVQ: Q
   TVKa: ka
+
+# Phase-1 NPE interpretation note (v0.6.1 honest-mode harness +
+# observation-model NPE wire).
+#
+# Pre-v0.6.1 (no observation-model wire) both sides produced LARGE
+# per-fold NPE values on this fixture (APMODE NPE ≈ 31, literature
+# NPE ≈ 86 — both ~30x what theophylline / warfarin produced). The
+# inflation came from two compounding causes:
+#
+#  1. **Absorption-model simplification.** As the docstring above
+#     describes, Wendling fit sumIG absorption; the DSL collapses
+#     this to first-order ``ka``. On the nlmixr2data IR cohort the
+#     simplification is workable but it leaves systematic residual
+#     between predicted and observed concentrations.
+#
+#  2. **Unit-scale skew.** The dataset's ``AMT`` is dosed in mg
+#     (25–50) while ``DV`` is in ng/mL (median 89, max 1730). The
+#     rc8 NPE was raw MedAE (additive default), which scales linearly
+#     with the DV magnitude, so any ng/mL-scaled fixture saw a ~3-OoM
+#     inflation vs the mg/L-scaled fixtures (theo / warfarin) even
+#     when the residual *pattern* was comparable.
+#
+# v0.6.1 fixes (2): the observation-model wire in
+# ``apmode.backends.predictive_summary._observation_error_model``
+# routes proportional / combined / BLQ-wrapped specs to the
+# dimensionless ``compute_npe(error_model="proportional")`` path so
+# the NPE is invariant under unit changes. The mavoglurant DSL spec
+# carries ``Proportional(sigma_prop=0.2)``, so the NPE values are
+# now on the same dimensionless scale as theo / warfarin and
+# directly comparable across fixtures. Cause (1) is intrinsic — a
+# future DSL that admits sumIG / Erlang absorption is the proper
+# fix and this fixture is its canonical regression target.

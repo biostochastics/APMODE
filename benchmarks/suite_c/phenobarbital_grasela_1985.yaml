@@ -1,0 +1,51 @@
+# Suite C Phase-1 fixture — Phenobarbital neonatal (1-cmt IV bolus).
+#
+# The Grasela & Donn 1985 phenobarbital dataset (`pheno_sd` in
+# nlmixr2data) is the canonical NONMEM-Users-Guide pediatric example —
+# 59 neonates, sparse PK after IV anticonvulsant doses (loading +
+# maintenance). Pinheiro & Bates and Davidian & Giltinan reuse it as a
+# textbook example. The dataset is shipped under GPL (>= 3) by
+# nlmixr2data so no credentialed access is required.
+#
+# Reference parameters below come from Pharmpy's pheno tutorial which
+# replicates the Grasela 1985 NONMEM fit on this dataset:
+# `POP_CL=0.0047 L/h/kg, POP_VC=1.0 L/kg` (apparent population typical
+# values) — see https://pharmpy.github.io/latest/tutorials/pheno.html.
+# Translating to whole-body units for a typical 1.4 kg neonate:
+#   CL_typical = 0.0047 × 1.4 ≈ 0.0066 L/h
+#   V_typical  = 1.0   × 1.4 ≈ 1.4   L
+# We carry the per-kg-typical CL (0.0047) directly because the dataset
+# AMT is in ug/kg and the DV is in ug/mL, so the per-kg form is the
+# unit-consistent one. The DSL spec elimination CL=0.0047 is therefore
+# already on the dataset's natural scale.
+
+dataset_id: nlmixr2data_phenobarbital
+
+reference:
+  citation: >
+    Grasela TH, Donn SM. (1985) Neonatal population pharmacokinetics
+    of phenobarbital derived from routine clinical data. Developmental
+    Pharmacology and Therapeutics 8(6):374-383.
+  doi: "10.1159/000457062"
+  population_description: >
+    59 neonatal infants (gestational ages 24-42 weeks, birthweights
+    600-3620 g) treated with anticonvulsant phenobarbital. Loading
+    dose 20 mg/kg IV, maintenance 2.5 mg/kg every 12h. Sparse TDM:
+    serum PB measured 2 hours after loading and on days 3 and 6.
+    Routine clinical data (n_obs ≈ 155 across 59 subjects).
+
+dsl_spec_path: phenobarbital_grasela_1985.dsl.json
+
+# Population-typical disposition values (per-kg, as the dataset AMT is
+# already weight-normalised):
+reference_params:
+  V: 1.4         # apparent volume of distribution (L per typical neonate)
+  CL: 0.0047     # apparent clearance (L/h, per-kg-typical, scaled to typical neonate)
+
+# Pharmpy's pheno example uses POP_CL/POP_VC naming for the typical
+# population estimates; map both Pharmpy and Boeckmann naming:
+parameterization_mapping:
+  POP_CL: CL
+  POP_VC: V
+  TVCL: CL
+  TVV: V

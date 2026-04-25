@@ -1,0 +1,49 @@
+# Suite C Phase-1 fixture — Oral_1CPT (1-cmt oral, simulated, ACOP 2016).
+#
+# `Oral_1CPT` is one of the simulated nlmixr2data ACOP-2016 reference
+# datasets. 120 simulated subjects, oral first-order absorption, linear
+# elimination, ~66 observations per subject. Because the data are
+# simulated from a known generative model, the per-row columns
+# (`V`, `CL`, `KA`) carry the TRUE per-subject parameter values that
+# the dataset was generated from — so the population-typical reference
+# values are exact (not literature estimates).
+#
+# This makes Oral_1CPT a *ground-truth-recovery* fixture rather than a
+# methodology-vs-literature comparator: APMODE's free fit on the train
+# fold should recover the typical CL/V/ka to within sampling noise,
+# and the literature side (with ``fixed_parameter=True``) is
+# fitting to the simulator's exact typical values. A small
+# fraction-beats-literature gap is therefore the expected shape, and
+# absolute NPE on both sides should be small (the residual is
+# dominated by the simulated proportional error sigma=0.2 plus IIV
+# log-normal noise on CL/V/ka).
+#
+# License: GPL (>= 3) via nlmixr2data, no credentialed access.
+
+dataset_id: nlmixr2data_oral_1cpt
+
+reference:
+  citation: >
+    nlmixr2data Oral_1CPT (ACOP 2016 simulation). 1-compartment oral
+    first-order absorption, linear elimination, simulated from typical
+    values CL=4 L/h, V=70 L, ka=1 /h with proportional sigma=0.2 and
+    diagonal IIV.
+  doi: "10.32614/CRAN.package.nlmixr2data"
+  population_description: >
+    120 simulated subjects, oral dosing, ~66 observations per subject
+    over 0.5-72h post-dose. Generated from the known parameters above;
+    the per-row CL/V/KA columns carry the exact true values.
+
+dsl_spec_path: oral_1cpt_acop_2016.dsl.json
+
+# Exact ACOP 2016 simulator typical values (these ARE the ground truth
+# the data were generated from; not a literature estimate):
+reference_params:
+  ka: 1.0
+  V: 70.0
+  CL: 4.0
+
+parameterization_mapping:
+  TVCL: CL
+  TVV: V
+  TVKA: ka

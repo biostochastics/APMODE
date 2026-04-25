@@ -61,7 +61,54 @@ _trapz = getattr(np, "trapezoid", None) or np.trapz  # type: ignore[attr-defined
 
 if TYPE_CHECKING:
     from apmode.bundle.models import NCASubjectDiagnostic
+    from apmode.dsl.ast_models import DSLSpec
     from apmode.governance.policy import Gate3Config
+
+NPEErrorModel = Literal["additive", "proportional", "combined"]
+
+
+def _observation_error_model(spec: DSLSpec | None) -> NPEErrorModel:
+    """Map a DSL ``ObservationModule`` to the matching NPE residual scaling.
+
+    ``compute_npe`` divides residuals by the matching denominator
+    (observed value for proportional, ``sqrt(obs**2 + floor**2)`` for
+    combined) so the returned MedAE is dimensionless on proportional /
+    combined models. Without this hint, the rc8 raw-MedAE path bites
+    on datasets like mavoglurant whose DV scale (ng/mL, median 89,
+    max 1730) inflates the absolute residual by ~3 OoMs vs theo's
+    mg/L scale even when the model fits equally well in residual-
+    pattern terms. The dimensionless rescaling collapses the
+    cross-fixture inflation.
+
+    Returns ``"additive"`` when ``spec`` is ``None`` (legacy callers
+    that have not threaded the spec through), preserving rc8 behaviour.
+    """
+    if spec is None:
+        return "additive"
+    # Defer the import to runtime so this module's top-level import
+    # graph stays lightweight (used by Gate 3 ranker init paths).
+    from apmode.dsl.ast_models import (
+        BLQM3,
+        BLQM4,
+        Additive,
+        Combined,
+        Proportional,
+    )
+
+    obs = spec.observation
+    if isinstance(obs, Proportional):
+        return "proportional"
+    if isinstance(obs, Additive):
+        return "additive"
+    if isinstance(obs, Combined):
+        return "combined"
+    if isinstance(obs, (BLQM3, BLQM4)):
+        # BLQ wraps an underlying error model; the active scaling is
+        # the same as the wrapped form. ``error_model`` is already
+        # constrained to "proportional" | "additive" | "combined" by
+        # the dataclass `Literal`, so the cast is structurally sound.
+        return obs.error_model
+    return "additive"
 
 
 logger = logging.getLogger(__name__)
@@ -450,6 +497,7 @@ def build_predictive_diagnostics(
     policy: Gate3Config,
     vpc_percentiles: tuple[float, ...] = (5.0, 50.0, 95.0),
     vpc_coverage_target: float = 0.90,
+    spec: DSLSpec | None = None,
 ) -> PredictiveSummaryBundle:
     """Assemble VPC + NPE + AUC/Cmax BE from per-subject simulations.
 
@@ -513,18 +561,24 @@ def build_predictive_diagnostics(
             )
             raise ValueError(msg)
 
-    # NPE — aggregation controlled by policy.
+    # NPE — aggregation controlled by policy. Pass the DSL-derived
+    # error model so the residual scaling matches the observation
+    # likelihood (proportional / combined → dimensionless MedAE; the
+    # additive default preserves rc8 behaviour for callers that have
+    # not yet threaded the spec through).
+    npe_error_model: NPEErrorModel = _observation_error_model(spec)
     if policy.npe_aggregation == "flatten":
         # Legacy rc8 path: pool all (obs, sim-median) pairs, then median
         # absolute error. Well-sampled subjects weight more heavily.
         obs_flat = np.concatenate([s.observed_dv for s in per_subject_sims])
         sims_flat = np.concatenate([s.sims_at_observed for s in per_subject_sims], axis=1)
-        npe_score = compute_npe(obs_flat, sims_flat)
+        npe_score = compute_npe(obs_flat, sims_flat, error_model=npe_error_model)
     else:
         # "per_subject_median": compute NPE per subject then median across
         # subjects. Equal weight regardless of observation count.
         per_subject_npes = [
-            compute_npe(s.observed_dv, s.sims_at_observed) for s in per_subject_sims
+            compute_npe(s.observed_dv, s.sims_at_observed, error_model=npe_error_model)
+            for s in per_subject_sims
         ]
         npe_score = float(np.median(np.asarray(per_subject_npes, dtype=float)))
 

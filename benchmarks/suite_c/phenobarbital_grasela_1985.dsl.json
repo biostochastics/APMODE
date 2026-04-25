@@ -1,0 +1,30 @@
+{
+  "model_id": "phenobarbital_grasela_1985_1cmt_iv",
+  "absorption": {
+    "type": "IVBolus"
+  },
+  "distribution": {
+    "type": "OneCmt",
+    "V": 1.4
+  },
+  "elimination": {
+    "type": "Linear",
+    "CL": 0.0047
+  },
+  "variability": [
+    {
+      "type": "IIV",
+      "params": [
+        "V",
+        "CL"
+      ],
+      "structure": "diagonal"
+    }
+  ],
+  "observation": {
+    "type": "Proportional",
+    "sigma_prop": 0.13
+  },
+  "priors": [],
+  "source_meta": {}
+}

@@ -7,6 +7,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Two open public Phase-1 fixtures (`phenobarbital_grasela_1985`, `oral_1cpt_acop_2016`); roster grows from 5 to 7
+
+The original Phase-1 roster of 5 had 2 credentialed/manual-fetch
+fixtures (`gentamicin_germovsek_2017` requires DDMoRe browser
+download; `vancomycin_roberts_2011` is on the Bayesian roster but the
+sibling MIMIC-IV vancomycin fixture requires CITI training +
+PhysioNet credentials). The weekly CI workflow could therefore
+never produce a complete Phase-1 scorecard from the roster alone.
+
+Two new fixtures close that gap:
+
+- **`phenobarbital_grasela_1985`** — real, public, peer-reviewed
+  neonatal phenobarbital data shipped via `nlmixr2data::pheno_sd`
+  (GPL-2). 59 neonates, sparse TDM, 1-cmt IV bolus. Reference
+  parameters from the Pharmpy pheno tutorial which replicates the
+  Grasela 1985 NONMEM fit (CL=0.0047 L/h/kg, V=1.0 L/kg).
+- **`oral_1cpt_acop_2016`** — simulated ground-truth-recovery
+  reference, `nlmixr2data::Oral_1CPT` (GPL-2). 120 simulated
+  subjects, oral first-order absorption, linear elimination,
+  generated from typical CL=4 L/h, V=70 L, ka=1 /h with proportional
+  sigma=0.2. Because the data are simulated from a known generative
+  model, this fixture is a methodology *recovery* test rather than a
+  literature comparator — APMODE's free fit must recover the
+  typical values to within sampling noise.
+
+The 2 credentialed fixtures (`gentamicin_germovsek_2017`,
+`schoemaker_nlmixr2_tutorial`) stay in the roster for operator runs
+that pass `--dataset-csv` overrides; CI runs them with the open 5.
+`PHASE1_MLE_FIXTURE_IDS` length grew from 5 to 7; the integration
+test that pinned `len == 5` was updated to `len == 7` with rationale.
+
+### Fixed — `compute_npe` is now dimensionless when `spec.observation` is proportional / combined / BLQ-wrapped
+
+The `BackendResult.diagnostics.npe_score` was raw MedAE (additive
+default) regardless of the model's actual residual structure — so
+ng/mL-scaled fixtures (mavoglurant: AMT in mg, DV in ng/mL, median
+89, max 1730) inflated NPE by ~3 OoMs vs mg/L-scaled fixtures (theo,
+warfarin) even when the residual *pattern* was comparable. The
+inflation made cross-fixture NPE comparisons unit-bound rather than
+methodology-bound, which defeats the
+`fraction_beats_literature_median` Phase-1 gate.
+
+`apmode.backends.predictive_summary._observation_error_model`
+maps the DSL `ObservationModule` (Proportional / Additive / Combined
+/ BLQM3 / BLQM4) to the matching `compute_npe` `error_model` hint:
+proportional → divide by observed value; combined → divide by
+`sqrt(obs² + 1²)`; additive → raw residual (rc8 default).
+`build_predictive_diagnostics` now takes a `spec` kwarg and forwards
+the derived enum to every `compute_npe` call (both the `flatten` and
+`per_subject_median` aggregation paths). `Nlmixr2Runner.run` threads
+the spec through `_parse_response` so the wire is end-to-end.
+
+Backwards-compat: `spec` is keyword-only and defaults to `None`,
+which preserves the rc8 raw-MedAE behaviour for any caller that has
+not yet threaded the spec through.
+
+Tests: 4 new pins in `tests/unit/test_predictive_summary.py
+::TestNPEObservationErrorModelWire`:
+1. `test_proportional_npe_is_dimensionless` — same 50% under-
+   prediction at mg/L vs ng/mL scale (1000×) must produce the same
+   NPE within 5% noise.
+2. `test_additive_default_preserves_rc8_scale_dependence` — when
+   spec is omitted the NPE *does* scale 1000× (rc8 baseline).
+3. `test_combined_uses_combined_scaling` — Combined() dispatches to
+   the combined-denominator path.
+4. `test_blq_wraps_underlying_error_model` — BLQM3 with proportional
+   underlying model uses proportional scaling.
+
 ### Fixed — `NCAEstimator` filters mixed-endpoint datasets and uses a data-driven fallback when QC fails
 
 A second, independent class of "Phase-1 hits per-fit timeout" failures —

@@ -99,9 +99,15 @@ def load_dsl_spec(fixture: LiteratureFixture) -> DSLSpec:
 # dashboard's left-to-right column order — keep it stable so the
 # fraction-beats-literature-median plots are reviewable across releases.
 PHASE1_MLE_FIXTURE_IDS: tuple[str, ...] = (
+    # Real, public, no-credentialed-access fixtures from nlmixr2data:
     "theophylline_boeckmann_1992",
     "warfarin_funaki_2018",
     "mavoglurant_wendling_2015",
+    "phenobarbital_grasela_1985",
+    # Simulated ACOP-2016 ground-truth-recovery fixture:
+    "oral_1cpt_acop_2016",
+    # Credentialed/manual-download fixtures (kept for operator runs that
+    # set --dataset-csv overrides; CI can't reach them):
     "gentamicin_germovsek_2017",
     "schoemaker_nlmixr2_tutorial",
 )

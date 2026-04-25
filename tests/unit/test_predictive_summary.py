@@ -304,6 +304,137 @@ class TestBuildShapeValidation:
 
 
 # ---------------------------------------------------------------------------
+# spec -> compute_npe error_model wire (mavoglurant ng/mL inflation fix)
+# ---------------------------------------------------------------------------
+
+
+def _spec_with_obs(observation: object) -> object:
+    """Build a minimal one-cmt oral DSLSpec carrying the given observation."""
+    from apmode.dsl.ast_models import (
+        IIV,
+        DSLSpec,
+        FirstOrder,
+        LinearElim,
+        OneCmt,
+    )
+
+    return DSLSpec(
+        model_id="test_npe_spec_0001",
+        absorption=FirstOrder(ka=1.0),
+        distribution=OneCmt(V=10.0),
+        elimination=LinearElim(CL=1.0),
+        variability=[IIV(params=["CL", "V"], structure="diagonal")],
+        observation=observation,  # type: ignore[arg-type]
+    )
+
+
+class TestNPEObservationErrorModelWire:
+    """spec.observation must drive compute_npe's residual scaling.
+
+    Without this wire, the rc8 raw-MedAE path inflates NPE by ~3 OoMs
+    on ng/mL-scaled fixtures (mavoglurant: AMT in mg, DV in ng/mL,
+    median DV 89, max 1730) vs mg/L fixtures (theo / warfarin) even
+    when the underlying model fit quality is comparable. The
+    dimensionless rescaling collapses the cross-fixture skew so the
+    Phase-1 ``fraction_beats_literature_median`` gate compares
+    methodology, not units.
+    """
+
+    def _baseline_subjects(self, dv_scale: float) -> list[SubjectSimulation]:
+        """6 subjects, 5 obs each, 50% under-prediction (sim = obs / 2)."""
+        times = np.array([0.5, 1.0, 2.0, 4.0, 8.0])
+        rng = np.random.default_rng(42)
+        out: list[SubjectSimulation] = []
+        for sid in range(6):
+            obs = dv_scale * (5 + rng.uniform(0, 5, size=5))
+            sims = np.full((50, 5), 0.5) * obs[None, :]  # constant 50% under
+            out.append(
+                SubjectSimulation(
+                    subject_id=f"s{sid}",
+                    t_observed=times,
+                    observed_dv=obs,
+                    sims_at_observed=sims,
+                    nca_diagnostic=_eligible_diagnostic(f"s{sid}"),
+                )
+            )
+        return out
+
+    def test_proportional_npe_is_dimensionless(self) -> None:
+        from apmode.dsl.ast_models import Proportional
+
+        # Same shape of residuals, two different DV scales (mg/L vs
+        # ng/mL = 1000x). With proportional error_model the NPE values
+        # must agree to within numerical noise (geometric residual is
+        # invariant under units).
+        spec = _spec_with_obs(Proportional(sigma_prop=0.2))
+        npe_mg = build_predictive_diagnostics(
+            self._baseline_subjects(dv_scale=1.0),
+            policy=_policy_with_floors(),
+            spec=spec,
+        ).npe_score
+        npe_ng = build_predictive_diagnostics(
+            self._baseline_subjects(dv_scale=1000.0),
+            policy=_policy_with_floors(),
+            spec=spec,
+        ).npe_score
+        assert npe_mg == pytest.approx(npe_ng, rel=0.05), (
+            f"Proportional NPE must be dimensionless: mg-scale={npe_mg}, "
+            f"ng-scale={npe_ng}, ratio={npe_ng / npe_mg:.3f}"
+        )
+        # And the dimensionless value must be ~0.5 (the constant under-
+        # prediction fraction we built into the synthetic data).
+        assert 0.4 < npe_mg < 0.6
+
+    def test_additive_default_preserves_rc8_scale_dependence(self) -> None:
+        # When ``spec`` is omitted (or carries an Additive observation
+        # model), behaviour must remain bit-identical to the rc8
+        # raw-MedAE path. This pins backwards-compat for any caller that
+        # has not yet threaded the spec through.
+        npe_mg = build_predictive_diagnostics(
+            self._baseline_subjects(dv_scale=1.0),
+            policy=_policy_with_floors(),
+        ).npe_score
+        npe_ng = build_predictive_diagnostics(
+            self._baseline_subjects(dv_scale=1000.0),
+            policy=_policy_with_floors(),
+        ).npe_score
+        # Raw-MedAE on ng-scale data is ~1000x the mg-scale value (the
+        # SAME bug the proportional wire fixes).
+        assert npe_ng / npe_mg == pytest.approx(1000.0, rel=0.05)
+
+    def test_combined_uses_combined_scaling(self) -> None:
+        from apmode.dsl.ast_models import Combined
+
+        spec = _spec_with_obs(Combined(sigma_prop=0.1, sigma_add=0.5))
+        npe = build_predictive_diagnostics(
+            self._baseline_subjects(dv_scale=1.0),
+            policy=_policy_with_floors(),
+            spec=spec,
+        ).npe_score
+        # Combined denominator sqrt(obs² + 1²) ≈ obs for obs ≫ 1, so
+        # the NPE collapses to ~the proportional value (~0.5) on this
+        # mg-scale data; just pin it within a sane range to catch
+        # accidental wire-up to additive (which would be ~3.5).
+        assert 0.3 < npe < 0.7, f"combined-scale NPE outside expected band: {npe}"
+
+    def test_blq_wraps_underlying_error_model(self) -> None:
+        from apmode.dsl.ast_models import BLQM3
+
+        # BLQ_M3 with proportional underlying model must use the
+        # proportional residual scaling, not additive — otherwise the
+        # M3 likelihood and the predictive NPE scoring diverge.
+        spec = _spec_with_obs(BLQM3(loq_value=0.05, error_model="proportional"))
+        npe = build_predictive_diagnostics(
+            self._baseline_subjects(dv_scale=1.0),
+            policy=_policy_with_floors(),
+            spec=spec,
+        ).npe_score
+        assert 0.4 < npe < 0.6, (
+            f"BLQ-wrapped proportional must produce dimensionless NPE; got {npe}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Deterministic math
 # ---------------------------------------------------------------------------
 

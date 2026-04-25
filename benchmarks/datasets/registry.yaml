@@ -58,6 +58,32 @@ datasets:
     suites: [B, C]
     prepare: "prepare.R"
 
+  nlmixr2data_phenobarbital:
+    name: "Phenobarbital neonatal (Grasela & Donn 1985)"
+    source: "nlmixr2data::pheno_sd"
+    citation: "Grasela TH, Donn SM. (1985) Dev Pharmacol Ther 8(6):374-383"
+    license: "GPL-2"
+    access_tier: open
+    n_subjects: 59
+    n_observations: 155
+    route: iv_bolus
+    n_compartments: 1
+    suites: [C]
+    prepare: "prepare.R"
+
+  nlmixr2data_oral_1cpt:
+    name: "Oral_1CPT (ACOP 2016 simulation, ground-truth recovery)"
+    source: "nlmixr2data::Oral_1CPT"
+    citation: "ACOP 2016 / nlmixr2data CRAN package"
+    license: "GPL-2"
+    access_tier: open
+    n_subjects: 120
+    n_observations: 7920
+    route: oral
+    n_compartments: 1
+    suites: [C]
+    prepare: "prepare.R"
+
   # --- Tier 1: Scripted download ---
 
   ddmore_gentamicin:

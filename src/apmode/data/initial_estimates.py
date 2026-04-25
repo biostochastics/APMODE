@@ -39,6 +39,12 @@ from apmode.bundle.models import (
 )
 from apmode.data.adapters import PK_DVID_ALLOWLIST
 
+# Re-export so cross-module consistency tests can pin
+# `apmode.data.initial_estimates.PK_DVID_ALLOWLIST is
+# apmode.data.adapters.PK_DVID_ALLOWLIST` rather than asserting on a
+# string-equality copy.
+__all__ = ["PK_DVID_ALLOWLIST"]
+
 _logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
