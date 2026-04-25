@@ -95,18 +95,30 @@ model {
 
 | Module | Syntax | Parameters |
 |--------|--------|------------|
+| IV bolus | `IVBolus()` | dose enters central directly; no absorption phase |
 | First-order | `FirstOrder(ka=1.0)` | `ka`: absorption rate (h⁻¹) |
 | Zero-order | `ZeroOrder(dur=2.0)` | `dur`: infusion duration (h) |
 | Lagged first-order | `LaggedFirstOrder(ka=1.0, tlag=0.5)` | `ka`, `tlag` (h) |
 | Transit | `Transit(n=4, ktr=2.0, ka=1.0)` | `n`: compartments (≥1), `ktr` (h⁻¹), `ka` |
 | Mixed | `MixedFirstZero(ka=1.0, dur=2.0, frac=0.6)` | `frac ∈ (0, 1)` |
+| Erlang (v0.7) | `Erlang(n=3, ktr=1.5)` | integer `n` (1..7); chain with no terminal `ka` |
+| Parallel first-order (v0.7) | `ParallelFirstOrder(ka1=1.5, ka2=0.5, frac=0.6)` | two depots; `frac ∈ (0, 1)` |
+| SumIG (v0.7) | `SumIG(k=2, MT_1=2.0, MT_2=6.0, RD2_1=0.5, RD2_2=1.0, weight_1=0.6)` | closed-form IG sum; `MT_1 < MT_2`; Discovery+Optimization only |
 | NODE | `NODE_Absorption(dim=4, constraint_template=monotone_increasing)` | `dim`: hidden-layer width |
 
-> **Grammar gap — `IVBolus`.** The AST type `IVBolus` is admissible and produced by
-> transforms/emitters (see `ast_models.py:38` and `nlmixr2_emitter`/`stan_emitter`),
-> but there is no textual surface syntax for it in `pk_grammar.lark`. IV-bolus specs
-> are currently constructed programmatically or via `swap_module`. Adding grammar is
-> tracked as an open item.
+`Erlang` lowers as an explicit n-compartment ODE chain in the nlmixr2 emitter (not
+via `rxode2::transit()` — see ADR-0003 D2). `ParallelFirstOrder` lowers as two
+depot compartments feeding central simultaneously, distinct from `MixedFirstZero`
+(first-order + zero-order). `SumIG` lowers as a closed-form analytic input rate
+(`sqrt(RD2 / (2π·t³)) · exp(...)`) with the dose amount applied as scaling factor;
+single-dose only in v0.7. Stan/Torsten support for the three v0.7 forms is deferred
+to v0.7.1; the Stan emitter raises `NotImplementedError` and routes to nlmixr2.
+
+`SumIG.k >= 2` carries an identifiability gate: disposition parameters (CL/V/Q)
+must be externally fixed, either via the `EvidenceManifest.disposition_fixed`
+flag at dispatch or via priors with `source="fixed_external"` on each disposition
+param. Without the gate, sumIG-2 is non-identifiable on sparse data (Csajka 2005;
+Weiss 2022). `SumIG` is blocked from the Submission lane.
 
 ### Distribution
 
@@ -263,7 +275,7 @@ artifact Gate 2 consumes for prior-justification review.
 
 ---
 
-## Formular transforms — the 7 typed mutations
+## Formular transforms — the 10 typed mutations
 
 The set of admissible mutations to a `DSLSpec`. Each transform is a frozen Pydantic
 model with a `type` discriminator; the union `FormularTransform` is the agentic LLM
@@ -278,6 +290,9 @@ emit raw code.
 | `set_transit_n` | Change transit compartment count | `n` |
 | `toggle_lag` | Enable/disable absorption `tlag` | `enabled`, optional `tlag` |
 | `replace_with_node` | Swap an axis to a NODE module (Discovery/Optimization only) | `position`, `dim`, `constraint_template` |
+| `convert_transit_to_erlang` (v0.7) | Convert `Transit(n, ktr, ka)` → `Erlang(n, ktr)` | `n` (1..7) |
+| `add_parallel_route` (v0.7) | Convert `FirstOrder(ka)` → `ParallelFirstOrder(ka1=ka, ka2, frac)` | `ka2`, `frac` |
+| `set_sumig_components` (v0.7) | Update SumIG params in-place | `MT_1`, `MT_2`, `RD2_1`, `RD2_2`, `weight_1` |
 | `set_prior` | Declare or replace a prior (idempotent replace-or-append) | `target`, `family`, `source`, `justification`, `historical_refs` |
 
 **Semantics.** `apmode.dsl.transforms.apply_transform(spec, t)` returns a new

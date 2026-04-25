@@ -97,6 +97,65 @@ class MixedFirstZero(BaseModel):
     frac: float
 
 
+class Erlang(BaseModel):
+    """Erlang absorption: integer n transit compartments, shared ktr, no terminal ka.
+
+    Lowers to an explicit n-compartment ODE chain — *not* rxode2's
+    ``transit(n, mtt)`` (which uses gamma interpolation and a terminal ka).
+    See ADR-0003 D2. Validator caps ``n ≤ 7`` because longer chains add
+    little resolution and inflate state count quadratically.
+    """
+
+    model_config = ConfigDict(frozen=True)
+    type: Literal["Erlang"] = "Erlang"
+    n: int
+    ktr: float
+
+
+class ParallelFirstOrder(BaseModel):
+    """Two parallel first-order depots: fast (ka1) + slow (ka2), fraction frac to depot 1.
+
+    Distinct from :class:`MixedFirstZero` (which is first+zero-order); this
+    is two simultaneous first-order routes (Pumas PK43; Soufsaf 2021 PMX).
+    """
+
+    model_config = ConfigDict(frozen=True)
+    type: Literal["ParallelFirstOrder"] = "ParallelFirstOrder"
+    ka1: float
+    ka2: float
+    frac: float
+
+
+class SumIG(BaseModel):
+    """Sum of Inverse Gaussians absorption (Csajka 2005; Weiss & Wegner 2022).
+
+    v0.7 ships ``k=2`` only (validator restricts to k ∈ {1, 2}). The path to
+    k=3 is a validator-only change in a future release.
+
+    Per-component MT, RD2 are flattened scalar fields so existing IIV /
+    CovariateLink / Prior machinery resolves them as plain ``StanIdentifier``
+    strings (``MT_1``, ``MT_2``, ``RD2_1``, ``RD2_2``, ``w_1``).
+
+    Label switching is prevented by the validator constraint
+    ``MT_1 < MT_2`` (positive-difference parameterisation). The implicit
+    second weight is ``w_2 = 1 - weight_1``; not stored.
+
+    Identifiability: when ``k >= 2`` the disposition parameters (CL/V/Q)
+    must be fixed externally — enforced as a cross-module validator check
+    against the ``EvidenceManifest.disposition_fixed`` flag or fixed-prior
+    entries in ``DSLSpec.priors``. See ADR-0003 D5.
+    """
+
+    model_config = ConfigDict(frozen=True)
+    type: Literal["SumIG"] = "SumIG"
+    k: int
+    MT_1: float
+    MT_2: float
+    RD2_1: float
+    RD2_2: float
+    weight_1: float
+
+
 class NODEAbsorption(BaseModel):
     """Neural ODE absorption (Discovery/Optimization lanes only)."""
 
@@ -119,6 +178,9 @@ AbsorptionModule = Annotated[
     | LaggedFirstOrder
     | Transit
     | MixedFirstZero
+    | Erlang
+    | ParallelFirstOrder
+    | SumIG
     | NODEAbsorption,
     Field(discriminator="type"),
 ]
@@ -509,6 +571,18 @@ class DSLSpec(BaseModel):
             names.extend(["n", "ktr", "ka"])
         elif isinstance(abs_mod, MixedFirstZero):
             names.extend(["ka", "dur", "frac"])
+        elif isinstance(abs_mod, Erlang):
+            # n is structural-integer (set by transform, not estimated); ktr is the
+            # only parameter exposed for IIV/priors/covariates.
+            names.append("ktr")
+        elif isinstance(abs_mod, ParallelFirstOrder):
+            names.extend(["ka1", "ka2", "frac"])
+        elif isinstance(abs_mod, SumIG):
+            # v0.7 ships k=2 only; flattened per-component names so the
+            # validator/IIV/Prior machinery sees plain StanIdentifier strings.
+            # k itself is structural (validator restricts to {1, 2}); not
+            # exposed for variability.
+            names.extend(["MT_1", "MT_2", "RD2_1", "RD2_2", "weight_1"])
         elif isinstance(abs_mod, IVBolus):
             # IV bolus has no absorption parameters.
             pass

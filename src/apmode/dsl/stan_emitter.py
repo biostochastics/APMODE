@@ -31,6 +31,7 @@ from apmode.dsl.ast_models import (
     Combined,
     CovariateLink,
     DSLSpec,
+    Erlang,
     FirstOrder,
     IVBolus,
     LaggedFirstOrder,
@@ -38,8 +39,10 @@ from apmode.dsl.ast_models import (
     MichaelisMenten,
     MixedFirstZero,
     OneCmt,
+    ParallelFirstOrder,
     ParallelLinearMM,
     Proportional,
+    SumIG,
     ThreeCmt,
     TimeVaryingElim,
     TMDDCore,
@@ -93,8 +96,16 @@ def emit_stan(
             "IOV etas are declared but not applied to parameter back-transforms."
         )
 
-    # Unsupported absorption types in ODE mode
-    if _needs_ode(spec) and isinstance(spec.absorption, (ZeroOrder, MixedFirstZero)):
+    # Unsupported absorption types in ODE mode.
+    # v0.7 SOTA absorption forms (Erlang, ParallelFirstOrder, SumIG) ship
+    # with nlmixr2 lowering only — Stan/Torsten support is deferred to
+    # v0.7.1 because Torsten user-defined ODE RHS does not have access to
+    # arbitrary t-forcing without time-varying covariate plumbing
+    # (ADR-0003 D4). For now, route these to nlmixr2.
+    if _needs_ode(spec) and isinstance(
+        spec.absorption,
+        (ZeroOrder, MixedFirstZero, Erlang, ParallelFirstOrder, SumIG),
+    ):
         raise NotImplementedError(
             f"Stan ODE codegen does not support {spec.absorption.type} absorption. "
             f"Use the nlmixr2 backend."

@@ -27,6 +27,7 @@ from apmode.dsl.ast_models import (
     Combined,
     CovariateLink,
     DSLSpec,
+    Erlang,
     FirstOrder,
     IVBolus,
     LaggedFirstOrder,
@@ -36,8 +37,10 @@ from apmode.dsl.ast_models import (
     NODEAbsorption,
     NODEElimination,
     OneCmt,
+    ParallelFirstOrder,
     ParallelLinearMM,
     Proportional,
+    SumIG,
     ThreeCmt,
     TimeVaryingElim,
     TMDDCore,
@@ -63,6 +66,23 @@ _LANE_DIM_CEILING: dict[Lane, int | None] = {
     Lane.OPTIMIZATION: 4,
 }
 
+# v0.7 absorption-form lane admissibility (ADR-0003 D6)
+# True = admissible; False = rejected at Gate 2 with actionable error.
+# All forms not enumerated here are admissible in every lane.
+_LANE_ABSORPTION_INADMISSIBLE: dict[Lane, frozenset[str]] = {
+    Lane.SUBMISSION: frozenset({"SumIG"}),  # SumIG academic-grade; not regulatory practice
+    Lane.DISCOVERY: frozenset(),
+    Lane.OPTIMIZATION: frozenset(),
+}
+
+# Erlang chain length cap (ADR-0003 D2): longer chains add little resolution
+# and inflate state count quadratically in the explicit-chain emitter.
+_ERLANG_MAX_N: int = 7
+
+# SumIG component cap for v0.7 (ADR-0003 D1). Path to k=3 is a validator-only
+# change in a future release.
+_SUMIG_MAX_K_V0_7: int = 2
+
 
 @dataclass(frozen=True)
 class ValidationError:
@@ -87,7 +107,36 @@ def validate_dsl(spec: DSLSpec, *, lane: Lane) -> list[ValidationError]:
     _validate_variability(spec, errors)
     _validate_module_compatibility(spec, errors)
     _validate_node_constraints(spec, lane, errors)
+    _validate_lane_absorption_admissibility(spec, lane, errors)
     return errors
+
+
+def _validate_lane_absorption_admissibility(
+    spec: DSLSpec, lane: Lane, errors: list[ValidationError]
+) -> None:
+    """Reject lane-inadmissible absorption forms at Gate 2 (ADR-0003 D6).
+
+    SumIG is academic-grade and not yet standard regulatory practice;
+    Submission-lane bundles must use a regulatorily conventional form.
+    Discovery and Optimization admit every absorption variant.
+    """
+    inadmissible = _LANE_ABSORPTION_INADMISSIBLE.get(lane, frozenset())
+    abs_type = spec.absorption.type
+    if abs_type in inadmissible:
+        errors.append(
+            ValidationError(
+                module="absorption",
+                param="absorption.type",
+                constraint="lane_absorption_admissibility",
+                message=(
+                    f"Absorption form '{abs_type}' is not admissible in "
+                    f"{lane.value} lane (ADR-0003 D6). Use a regulatorily "
+                    "conventional form (FirstOrder / LaggedFirstOrder / "
+                    "Transit / Erlang / ParallelFirstOrder / MixedFirstZero) "
+                    "for Submission, or run in Discovery/Optimization."
+                ),
+            )
+        )
 
 
 def _positive(module: str, param_name: str, value: float, errors: list[ValidationError]) -> None:
@@ -165,6 +214,28 @@ def _validate_absorption(spec: DSLSpec, errors: list[ValidationError]) -> None:
         _positive(mod, "ka", m.ka, errors)
         _positive(mod, "dur", m.dur, errors)
         _unit_interval(mod, "frac", m.frac, errors)
+    elif isinstance(m, Erlang):
+        _positive_int(mod, "n", m.n, errors)
+        if m.n > _ERLANG_MAX_N:
+            errors.append(
+                ValidationError(
+                    module=mod,
+                    param=f"{mod}.n",
+                    constraint="erlang_max_n",
+                    message=(
+                        f"Erlang.n={m.n} exceeds cap of {_ERLANG_MAX_N}; "
+                        "longer chains add little resolution and inflate state "
+                        "count. Use Transit absorption for n>7."
+                    ),
+                )
+            )
+        _positive(mod, "ktr", m.ktr, errors)
+    elif isinstance(m, ParallelFirstOrder):
+        _positive(mod, "ka1", m.ka1, errors)
+        _positive(mod, "ka2", m.ka2, errors)
+        _unit_interval(mod, "frac", m.frac, errors)
+    elif isinstance(m, SumIG):
+        _validate_sumig(spec, m, mod, errors)
     elif isinstance(m, NODEAbsorption):
         _positive_int(mod, "dim", m.dim, errors)
     elif isinstance(m, IVBolus):
@@ -172,6 +243,99 @@ def _validate_absorption(spec: DSLSpec, errors: list[ValidationError]) -> None:
         # An explicit branch keeps the audit trail complete and prevents
         # silent fall-through if new IVBolus fields are added later.
         pass
+
+
+def _validate_sumig(
+    spec: DSLSpec,
+    m: SumIG,
+    mod: str,
+    errors: list[ValidationError],
+) -> None:
+    """SumIG-specific validation (ADR-0003 D1, D5).
+
+    - k restricted to {1, 2} for v0.7 (validator-only path to k=3 in future)
+    - All MT, RD2 strictly positive
+    - weight_1 strictly in (0, 1)
+    - MT_1 < MT_2 (positive-difference parameterisation; prevents label switching)
+    - For k >= 2: disposition (CL/V/Q) must be fixed externally — checked
+      against fixed-prior signal in spec.priors. Manifest-level
+      disposition_fixed flag is checked at dispatch time, not here.
+    """
+    # k in {1, 2} for v0.7
+    if m.k < 1 or m.k > _SUMIG_MAX_K_V0_7:
+        errors.append(
+            ValidationError(
+                module=mod,
+                param=f"{mod}.k",
+                constraint="sumig_k_range",
+                message=(
+                    f"SumIG.k={m.k} out of range; v0.7 supports k ∈ "
+                    f"[1, {_SUMIG_MAX_K_V0_7}]. Path to k=3 is gated behind "
+                    "the sumig_max_k policy knob (see ADR-0003 D1)."
+                ),
+            )
+        )
+
+    _positive(mod, "MT_1", m.MT_1, errors)
+    _positive(mod, "MT_2", m.MT_2, errors)
+    _positive(mod, "RD2_1", m.RD2_1, errors)
+    _positive(mod, "RD2_2", m.RD2_2, errors)
+    _unit_interval(mod, "weight_1", m.weight_1, errors)
+
+    # Label-switching guard: MT_1 < MT_2 enforces a canonical ordering.
+    # The emitter pairs MT_1 with weight_1 and MT_2 with (1-weight_1), so
+    # without this constraint the same density is reachable from two
+    # parameter combinations and the FOCEI gradient is ill-conditioned.
+    if m.k >= 2 and m.MT_1 >= m.MT_2:
+        errors.append(
+            ValidationError(
+                module=mod,
+                param=f"{mod}.MT_1,MT_2",
+                constraint="sumig_mt_ordering",
+                message=(
+                    f"SumIG MT_1={m.MT_1} must be < MT_2={m.MT_2} "
+                    "(positive-difference parameterisation; prevents label switching)"
+                ),
+            )
+        )
+
+    # Disposition-fixed cross-module check (ADR-0003 D5)
+    if m.k >= 2 and not _disposition_priors_fixed(spec):
+        errors.append(
+            ValidationError(
+                module=mod,
+                param=f"{mod}.k",
+                constraint="sumig_disposition_fixed",
+                message=(
+                    f"SumIG.k={m.k} requires disposition (CL/V/Q) to be fixed "
+                    "externally — either via IV reference data (manifest "
+                    "disposition_fixed flag, set at dispatch) or via "
+                    'priors with source="fixed_external" on all disposition '
+                    "params. See ADR-0003 D5 / Csajka 2005 §4 / Weiss 2022 §5."
+                ),
+            )
+        )
+
+
+def _disposition_priors_fixed(spec: DSLSpec) -> bool:
+    """Check whether all disposition parameters have fixed-external priors.
+
+    Returns True iff every disposition parameter present in the structural
+    spec has a corresponding ``PriorSpec`` whose ``source ==
+    "fixed_external"`` (or whose family is degenerate enough to imply
+    fixation, e.g. a Normal with sigma ≤ 1e-6 — handled conservatively
+    here as "explicit source tag only" so the gate is unambiguous).
+    """
+    disposition_params = {"CL", "V", "V1", "V2", "V3", "Q", "Q2", "Q3"}
+    structural = set(spec.structural_param_names())
+    required = disposition_params & structural
+    if not required:
+        return True  # nothing to fix
+    fixed: set[str] = set()
+    for prior in spec.priors:
+        if getattr(prior, "source", None) == "fixed_external" and prior.target in required:
+            fixed.add(prior.target)
+    return required.issubset(fixed)
 
 
 def _validate_distribution(spec: DSLSpec, errors: list[ValidationError]) -> None:

@@ -20,11 +20,14 @@ from apmode.dsl.ast_models import (
     DistributionModule,
     DSLSpec,
     EliminationModule,
+    Erlang,
     FirstOrder,
     LaggedFirstOrder,
     NODEAbsorption,
     NODEElimination,
     ObservationModule,
+    ParallelFirstOrder,
+    SumIG,
     Transit,
 )
 from apmode.dsl.normalize import normalize_param_name
@@ -99,6 +102,58 @@ class ReplaceWithNODE(BaseModel):
     dim: int = Field(ge=1, le=8)
 
 
+# v0.7 SOTA absorption transforms (ADR-0003 D2, D3, D5).
+# These are the *only* path the agent has to reach the new absorption
+# variants — initial placement of arbitrary new absorption modules still
+# happens via SwapModule, but each transform below is allowlisted as a
+# narrow agent move so search-space expansion is bounded.
+
+
+class ConvertTransitToErlang(BaseModel):
+    """Convert Transit → Erlang(n, ktr).
+
+    Drops the terminal first-order ka step and locks n to an integer.
+    Requires the current absorption to be Transit. The agent's only path
+    to Erlang (ADR-0003 D2 — keeps search-space expansion bounded).
+    """
+
+    model_config = ConfigDict(frozen=True)
+    type: Literal["convert_transit_to_erlang"] = "convert_transit_to_erlang"
+    n: int = Field(ge=1, le=7)
+
+
+class AddParallelRoute(BaseModel):
+    """Convert FirstOrder → ParallelFirstOrder(ka1, ka2, frac).
+
+    Splits a single first-order absorption into two parallel routes
+    (fast + slow). Requires current absorption to be FirstOrder.
+    """
+
+    model_config = ConfigDict(frozen=True)
+    type: Literal["add_parallel_route"] = "add_parallel_route"
+    ka2: float = Field(gt=0)
+    frac: float = Field(gt=0, lt=1)
+
+
+class SetSumIGComponents(BaseModel):
+    """Set/update SumIG component parameters.
+
+    Requires the current absorption to already be SumIG. v0.7 hard-codes
+    k=2; the path to k=3 is a future validator-only change.
+
+    The validator enforces MT_1 < MT_2 (label-switching guard) and the
+    cross-module disposition_fixed check (ADR-0003 D5).
+    """
+
+    model_config = ConfigDict(frozen=True)
+    type: Literal["set_sumig_components"] = "set_sumig_components"
+    MT_1: float = Field(gt=0)
+    MT_2: float = Field(gt=0)
+    RD2_1: float = Field(gt=0)
+    RD2_2: float = Field(gt=0)
+    weight_1: float = Field(gt=0, lt=1)
+
+
 FormularTransform = Annotated[
     SwapModule
     | AddCovariateLink
@@ -106,6 +161,9 @@ FormularTransform = Annotated[
     | SetTransitN
     | ToggleLag
     | ReplaceWithNODE
+    | ConvertTransitToErlang
+    | AddParallelRoute
+    | SetSumIGComponents
     | SetPrior,
     Field(discriminator="type"),
 ]
@@ -128,6 +186,9 @@ def _validate_swap_position(transform: SwapModule) -> str | None:
             m.LaggedFirstOrder,
             m.Transit,
             m.MixedFirstZero,
+            m.Erlang,
+            m.ParallelFirstOrder,
+            m.SumIG,
             m.NODEAbsorption,
         ),
         "distribution": (
@@ -215,6 +276,32 @@ def validate_transform(spec: DSLSpec, transform: FormularTransform) -> list[str]
                 f"got '{transform.position}'"
             )
 
+    elif isinstance(transform, ConvertTransitToErlang):
+        if not isinstance(spec.absorption, Transit):
+            errors.append(
+                "convert_transit_to_erlang requires Transit absorption "
+                f"(got {type(spec.absorption).__name__})"
+            )
+
+    elif isinstance(transform, AddParallelRoute):
+        if not isinstance(spec.absorption, FirstOrder):
+            errors.append(
+                "add_parallel_route requires FirstOrder absorption "
+                f"(got {type(spec.absorption).__name__})"
+            )
+
+    elif isinstance(transform, SetSumIGComponents):
+        if not isinstance(spec.absorption, SumIG):
+            errors.append(
+                "set_sumig_components requires SumIG absorption "
+                f"(got {type(spec.absorption).__name__})"
+            )
+        if transform.MT_1 >= transform.MT_2:
+            errors.append(
+                f"set_sumig_components: MT_1={transform.MT_1} must be < "
+                f"MT_2={transform.MT_2} (label-switching guard)"
+            )
+
     elif isinstance(transform, SetPrior):
         errors.extend(validate_set_prior(spec, transform))
 
@@ -289,6 +376,31 @@ def apply_transform(spec: DSLSpec, transform: FormularTransform) -> DSLSpec:
                 dim=transform.dim, constraint_template=transform.constraint_template
             )
 
+    elif isinstance(transform, ConvertTransitToErlang):
+        # Drop terminal ka, lock n to integer. ktr inherited from existing Transit.
+        prev = spec.absorption
+        if isinstance(prev, Transit):
+            absorption = Erlang(n=transform.n, ktr=prev.ktr)
+
+    elif isinstance(transform, AddParallelRoute):
+        # Convert FirstOrder(ka) → ParallelFirstOrder(ka1=ka, ka2, frac).
+        prev = spec.absorption
+        if isinstance(prev, FirstOrder):
+            absorption = ParallelFirstOrder(ka1=prev.ka, ka2=transform.ka2, frac=transform.frac)
+
+    elif isinstance(transform, SetSumIGComponents):
+        # Update SumIG params in-place; preserves k from current spec.
+        prev = spec.absorption
+        if isinstance(prev, SumIG):
+            absorption = SumIG(
+                k=prev.k,
+                MT_1=transform.MT_1,
+                MT_2=transform.MT_2,
+                RD2_1=transform.RD2_1,
+                RD2_2=transform.RD2_2,
+                weight_1=transform.weight_1,
+            )
+
     elif isinstance(transform, SetPrior):
         # Delegates to apply_set_prior which handles replace-or-append semantics.
         # Return early — SetPrior does not touch structural modules or variability.
@@ -308,8 +420,13 @@ def apply_transform(spec: DSLSpec, transform: FormularTransform) -> DSLSpec:
         priors=spec.priors,
     )
 
-    # Prune stale variability AND priors after structural module swaps
-    if isinstance(transform, (SwapModule, ReplaceWithNODE)):
+    # Prune stale variability AND priors after structural module swaps.
+    # ConvertTransitToErlang and AddParallelRoute also change the structural
+    # parameter set (drop ka / split into ka1+ka2), so they need pruning too.
+    if isinstance(
+        transform,
+        (SwapModule, ReplaceWithNODE, ConvertTransitToErlang, AddParallelRoute),
+    ):
         new_spec = _prune_stale_variability(new_spec)
 
     return new_spec

@@ -28,6 +28,7 @@ from apmode.dsl.ast_models import (
     Combined,
     CovariateLink,
     DSLSpec,
+    Erlang,
     FirstOrder,
     IVBolus,
     LaggedFirstOrder,
@@ -39,8 +40,10 @@ from apmode.dsl.ast_models import (
     OccasionByVisit,
     OccasionCustom,
     OneCmt,
+    ParallelFirstOrder,
     ParallelLinearMM,
     Proportional,
+    SumIG,
     ThreeCmt,
     TimeVaryingElim,
     TMDDCore,
@@ -178,6 +181,38 @@ def _emit_structural_ini(
                 f"to avoid singular logit (APMODE #14)"
             )
         lines.append(f"logit_frac <- log({frac_clamped} / (1 - {frac_clamped}))")
+    elif isinstance(abs_mod, Erlang):
+        # n is structural-integer (set by transform, not estimated). Only ktr
+        # is exposed for IIV/priors/covariates. See ADR-0003 D2.
+        lines.append(f"lktr <- log({ov.get('ktr', abs_mod.ktr)})")
+    elif isinstance(abs_mod, ParallelFirstOrder):
+        lines.append(f"lka1 <- log({ov.get('ka1', abs_mod.ka1)})")
+        lines.append(f"lka2 <- log({ov.get('ka2', abs_mod.ka2)})")
+        frac_raw = float(ov.get("frac", abs_mod.frac))
+        _frac_epsilon = 1e-4
+        frac_clamped = min(max(frac_raw, _frac_epsilon), 1.0 - _frac_epsilon)
+        if frac_clamped != frac_raw:
+            lines.append(
+                f"# frac clamped from {frac_raw} to {frac_clamped} to avoid singular logit"
+            )
+        lines.append(f"logit_frac <- log({frac_clamped} / (1 - {frac_clamped}))")
+    elif isinstance(abs_mod, SumIG):
+        # Per-component params on log scale; weight_1 on logit scale.
+        # Positive-difference parameterisation for MT_2 (delta = MT_2 - MT_1)
+        # prevents label switching during FOCEI.
+        lines.append(f"lMT_1 <- log({ov.get('MT_1', abs_mod.MT_1)})")
+        delta = float(ov.get("MT_2", abs_mod.MT_2)) - float(ov.get("MT_1", abs_mod.MT_1))
+        lines.append(f"ldelta_MT_2 <- log({max(delta, 1e-6)})  # MT_2 = MT_1 + exp(ldelta_MT_2)")
+        lines.append(f"lRD2_1 <- log({ov.get('RD2_1', abs_mod.RD2_1)})")
+        lines.append(f"lRD2_2 <- log({ov.get('RD2_2', abs_mod.RD2_2)})")
+        weight_raw = float(ov.get("weight_1", abs_mod.weight_1))
+        _weight_epsilon = 1e-4
+        weight_clamped = min(max(weight_raw, _weight_epsilon), 1.0 - _weight_epsilon)
+        if weight_clamped != weight_raw:
+            lines.append(
+                f"# weight_1 clamped from {weight_raw} to {weight_clamped} to avoid singular logit"
+            )
+        lines.append(f"logit_weight_1 <- log({weight_clamped} / (1 - {weight_clamped}))")
 
     # --- Distribution ---
     if isinstance(dist_mod, OneCmt):
@@ -468,6 +503,22 @@ def _emit_backtransform(spec: DSLSpec) -> list[str]:
         lines.append(_bt("ka", "lka"))
         lines.append(_bt("dur", "ldur"))
         lines.append(_bt_logit("frac", "logit_frac"))
+    elif isinstance(abs_mod, Erlang):
+        lines.append(_bt("ktr", "lktr"))
+    elif isinstance(abs_mod, ParallelFirstOrder):
+        lines.append(_bt("ka1", "lka1"))
+        lines.append(_bt("ka2", "lka2"))
+        lines.append(_bt_logit("frac", "logit_frac"))
+    elif isinstance(abs_mod, SumIG):
+        lines.append(_bt("MT_1", "lMT_1"))
+        # Positive-difference parameterisation: MT_2 = MT_1 + exp(ldelta_MT_2)
+        # ensures MT_2 > MT_1 by construction.
+        lines.append("delta_MT_2 <- exp(ldelta_MT_2)")
+        lines.append("MT_2 <- MT_1 + delta_MT_2")
+        lines.append(_bt("RD2_1", "lRD2_1"))
+        lines.append(_bt("RD2_2", "lRD2_2"))
+        lines.append(_bt_logit("weight_1", "logit_weight_1"))
+        lines.append("weight_2 <- 1 - weight_1  # implicit second weight")
 
     # Distribution
     if isinstance(dist_mod, OneCmt):
@@ -584,6 +635,49 @@ def _emit_ode_dynamics(spec: DSLSpec) -> list[str]:
         lines.append("f(depot_fo) <- frac")
         lines.append("f(depot_zo) <- 1 - frac")
         _abs_influx = "ka * depot_fo + depot_zo"
+    elif isinstance(abs_mod, Erlang):
+        # Explicit n-compartment chain (ADR-0003 D2). Dose enters E1; each
+        # transit step drains at rate ktr; the last compartment feeds the
+        # central compartment directly. No terminal first-order ka.
+        for i in range(1, abs_mod.n + 1):
+            if i == 1:
+                lines.append(f"d/dt(E{i}) <- -ktr * E{i}")
+            else:
+                lines.append(f"d/dt(E{i}) <- ktr * E{i - 1} - ktr * E{i}")
+        _abs_influx = f"ktr * E{abs_mod.n}"
+    elif isinstance(abs_mod, ParallelFirstOrder):
+        # Two parallel first-order depots: fast (ka1) at fraction frac,
+        # slow (ka2) at fraction 1-frac. Both feed central simultaneously.
+        lines.append("d/dt(depot_fast) <- -ka1 * depot_fast")
+        lines.append("d/dt(depot_slow) <- -ka2 * depot_slow")
+        lines.append("f(depot_fast) <- frac")
+        lines.append("f(depot_slow) <- 1 - frac")
+        _abs_influx = "ka1 * depot_fast + ka2 * depot_slow"
+    elif isinstance(abs_mod, SumIG):
+        # Closed-form analytical input rate (Csajka 2005; Weiss 2022).
+        # I(t) = D·F · Σᵢ wᵢ · sqrt(RD2ᵢ / (2π·t³)) · exp(-RD2ᵢ·(t-MTᵢ)² / (2·MTᵢ²·t))
+        # Single-dose only in v0.7 (multi-dose superposition deferred,
+        # ADR-0003 D4). Guard against t=0 with a small floor — rxode2's
+        # LSODA evaluates RHS at output-time grid; output at exactly t=0
+        # would force a 0^(-3/2) singularity. The `_t_safe` guard keeps
+        # the integrator stable; the contribution near t=0 is ~0 anyway
+        # because exp(-RD2·(t-MT)²/(2·MT²·t)) → 0 as t → 0⁺.
+        lines.append("# SumIG closed-form input rate (Csajka 2005; Weiss 2022)")
+        lines.append("_t_safe <- ifelse(t > 1e-6, t, 1e-6)")
+        lines.append(
+            "ig_1 <- sqrt(RD2_1 / (2 * 3.141592653589793 * _t_safe^3)) * "
+            "exp(-RD2_1 * (_t_safe - MT_1)^2 / (2 * MT_1^2 * _t_safe))"
+        )
+        lines.append(
+            "ig_2 <- sqrt(RD2_2 / (2 * 3.141592653589793 * _t_safe^3)) * "
+            "exp(-RD2_2 * (_t_safe - MT_2)^2 / (2 * MT_2^2 * _t_safe))"
+        )
+        lines.append("sumig_input <- weight_1 * ig_1 + weight_2 * ig_2  # ∫sumig_input dt = 1")
+        # The input rate above integrates to 1 over (0, ∞). Multiply by the
+        # dose amount so the central-compartment influx has units of
+        # [mass·time⁻¹]. rxode2 exposes the dose via `amt` in the model
+        # block (resolved per-event by the data adapter).
+        _abs_influx = "amt * sumig_input"
     else:
         _abs_influx = "0"
 

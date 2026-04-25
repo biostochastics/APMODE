@@ -10,18 +10,40 @@ model: "model" "{" absorption distribution elimination variability_block observa
 // --- Absorption Module ---
 absorption: "absorption:" absorption_type
 
-absorption_type: first_order
+absorption_type: iv_bolus
+              | first_order
               | zero_order
               | lagged_first_order
               | transit
               | mixed_first_zero
+              | erlang
+              | parallel_first_order
+              | sum_ig
               | node_absorption
 
+iv_bolus: "IVBolus" "(" ")"
 first_order: "FirstOrder" "(" "ka" "=" NUMBER ")"
 zero_order: "ZeroOrder" "(" "dur" "=" NUMBER ")"
 lagged_first_order: "LaggedFirstOrder" "(" "ka" "=" NUMBER "," "tlag" "=" NUMBER ")"
 transit: "Transit" "(" "n" "=" INT "," "ktr" "=" NUMBER "," "ka" "=" NUMBER ")"
 mixed_first_zero: "MixedFirstZero" "(" "ka" "=" NUMBER "," "dur" "=" NUMBER "," "frac" "=" NUMBER ")"
+
+// v0.7 SOTA absorption extensions (ADR-0003)
+// Erlang: integer n transit compartments, shared ktr, no terminal ka.
+// Lowers to explicit n-compartment ODE chain (not rxode2 transit() with
+// gamma interpolation — semantics differ, see ADR-0003 D2).
+erlang: "Erlang" "(" "n" "=" INT "," "ktr" "=" NUMBER ")"
+
+// ParallelFirstOrder: two parallel first-order depots (fast + slow);
+// fraction `frac` to depot 1. Pumas PK43 / Soufsaf 2021 PMX.
+parallel_first_order: "ParallelFirstOrder" "(" "ka1" "=" NUMBER "," "ka2" "=" NUMBER "," "frac" "=" NUMBER ")"
+
+// SumIG: sum of inverse Gaussian input rate functions
+// (Csajka, Drover, Verotta 2005; Weiss & Wegner 2022). v0.7 ships k=2;
+// MT_1 < MT_2 enforced at validator (positive-difference parameterisation).
+// weight_2 = 1 - weight_1 is implicit, not stored.
+sum_ig: "SumIG" "(" "k" "=" INT "," "MT_1" "=" NUMBER "," "MT_2" "=" NUMBER "," "RD2_1" "=" NUMBER "," "RD2_2" "=" NUMBER "," "weight_1" "=" NUMBER ")"
+
 node_absorption: "NODE_Absorption" "(" "dim" "=" INT "," "constraint_template" "=" CONSTRAINT_TEMPLATE ")"
 
 // --- Distribution Module ---

@@ -11,9 +11,12 @@ from typing import TYPE_CHECKING
 
 from apmode.dsl.ast_models import (
     TMDDQSS,
+    Erlang,
     MichaelisMenten,
     MixedFirstZero,
+    ParallelFirstOrder,
     ParallelLinearMM,
+    SumIG,
     TimeVaryingElim,
     TMDDCore,
     Transit,
@@ -36,4 +39,7 @@ def needs_ode(spec: DSLSpec) -> bool:
         return True
     if isinstance(spec.distribution, (TMDDCore, TMDDQSS)):
         return True
-    return isinstance(spec.absorption, (Transit, MixedFirstZero, ZeroOrder))
+    return isinstance(
+        spec.absorption,
+        (Transit, MixedFirstZero, ZeroOrder, Erlang, ParallelFirstOrder, SumIG),
+    )

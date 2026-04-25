@@ -36,7 +36,18 @@ PriorSource = Literal[
     "historical_data",
     "expert_elicitation",
     "meta_analysis",
+    "fixed_external",
 ]
+"""Prior source taxonomy.
+
+``fixed_external`` (added in v0.7 / ADR-0003) marks a prior that captures
+*externally fixed* parameter values — typically derived from an IV
+reference fit or a prior converged classical model. Used by the SumIG
+disposition-fixed cross-module check to certify CL/V/Q are not jointly
+estimated with the input function. This is the spec-side fallback when
+the dispatch-time ``EvidenceManifest.disposition_fixed`` flag is not
+available (e.g. during isolated validator runs).
+"""
 
 # ---------------------------------------------------------------------------
 # Target taxonomy

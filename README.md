@@ -7,10 +7,10 @@
   **Adaptive Pharmacokinetic Model Discovery Engine**
 
   <!-- apmode:AUTO:badge_version -->
-  [![Version](https://img.shields.io/badge/version-v0.6.0--rc1-blue)]()
+  [![Version](https://img.shields.io/badge/version-v0.6.1--rc1-blue)]()
   <!-- apmode:/AUTO:badge_version -->
   <!-- apmode:AUTO:badge_tests -->
-  [![Tests](https://img.shields.io/badge/tests-2509%20collected-success)]()
+  [![Tests](https://img.shields.io/badge/tests-2553%20collected-success)]()
   <!-- apmode:/AUTO:badge_tests -->
   [![License](https://img.shields.io/badge/license-GPL--2.0--or--later-green)](LICENSE)
   [![Python](https://img.shields.io/badge/python-3.12%E2%80%933.14-yellow)]()
@@ -35,7 +35,7 @@ APMODE is a **governed meta-system** that composes five population PK modeling p
 
 **Formular — a typed PK DSL — is the control surface.** Models are specified in [Formular](docs/FORMULAR.md), a five-block grammar (`Absorption × Distribution × Elimination × Variability × Observation`) plus a sixth semantic axis — `priors` — populated via the `SetPrior` transform rather than grammar text. Specs compile to a typed AST, are validated against pharmacometric constraints, and lower to backend-specific code (nlmixr2 R, Stan/Torsten, JAX/Diffrax). The agentic LLM backend (Phase 3) operates exclusively through the 7 typed Formular transforms — including `SetPrior` for Bayesian workflows — it cannot emit raw code.
 
-> **Status**: **<!-- apmode:AUTO:version_tag -->v0.6.0-rc1<!-- apmode:/AUTO:version_tag -->** (2026-04-24) — 0.6 release candidate. <!-- apmode:AUTO:tests_nonlive -->2492<!-- apmode:/AUTO:tests_nonlive --> tests passing (`-m "not live"`); `mypy --strict` clean; `ruff` clean. Supports Python 3.12–3.14. Gate policy schema <!-- apmode:AUTO:policy_gate -->0.6.0<!-- apmode:/AUTO:policy_gate -->; profiler policy <!-- apmode:AUTO:policy_profiler -->2.1.0<!-- apmode:/AUTO:policy_profiler --> (manifest_schema_version = <!-- apmode:AUTO:profiler_manifest -->2<!-- apmode:/AUTO:profiler_manifest -->). v0.6 ships the FastAPI HTTP API surface (`apmode serve`, `POST /runs`, cancellation lifecycle), Suite C Phase-1 MLE + Bayesian fixtures with weekly NPE scoring, and the v0.6 RO-Crate projector hardening pass. Reproducibility bundles continue to carry a `_COMPLETE` sentinel with a SHA-256 digest; `apmode validate` refuses unsealed bundles. See [CHANGELOG.md](CHANGELOG.md) for the full 0.6.0 release-candidate changes.
+> **Status**: **<!-- apmode:AUTO:version_tag -->v0.6.1-rc1<!-- apmode:/AUTO:version_tag -->** (2026-04-24) — 0.6 release candidate. <!-- apmode:AUTO:tests_nonlive -->2536<!-- apmode:/AUTO:tests_nonlive --> tests passing (`-m "not live"`); `mypy --strict` clean; `ruff` clean. Supports Python 3.12–3.14. Gate policy schema <!-- apmode:AUTO:policy_gate -->0.6.0<!-- apmode:/AUTO:policy_gate -->; profiler policy <!-- apmode:AUTO:policy_profiler -->2.1.0<!-- apmode:/AUTO:policy_profiler --> (manifest_schema_version = <!-- apmode:AUTO:profiler_manifest -->2<!-- apmode:/AUTO:profiler_manifest -->). v0.6 ships the FastAPI HTTP API surface (`apmode serve`, `POST /runs`, cancellation lifecycle), Suite C Phase-1 MLE + Bayesian fixtures with weekly NPE scoring, and the v0.6 RO-Crate projector hardening pass. Reproducibility bundles continue to carry a `_COMPLETE` sentinel with a SHA-256 digest; `apmode validate` refuses unsealed bundles. See [CHANGELOG.md](CHANGELOG.md) for the full 0.6.0 release-candidate changes.
 
 ### Capability status
 
@@ -224,8 +224,8 @@ continues to point the policy loader at an alternative directory.
 ### Test + typecheck + lint
 
 ```bash
-uv run pytest tests/ -q                         # <!-- apmode:AUTO:tests -->2509<!-- apmode:/AUTO:tests --> collected
-uv run pytest tests/ -q -m "not live"           # <!-- apmode:AUTO:tests_nonlive -->2492<!-- apmode:/AUTO:tests_nonlive --> skip live LLM tests
+uv run pytest tests/ -q                         # <!-- apmode:AUTO:tests -->2553<!-- apmode:/AUTO:tests --> collected
+uv run pytest tests/ -q -m "not live"           # <!-- apmode:AUTO:tests_nonlive -->2536<!-- apmode:/AUTO:tests_nonlive --> skip live LLM tests
 uv run mypy src/apmode/ --strict                # type checking
 uv run ruff check src/apmode/ tests/            # linting
 uv run python scripts/sync_readme.py --check    # README ↔ codebase drift guard
@@ -272,7 +272,7 @@ model {
 
 **NODE constraint templates:** `monotone_increasing`, `monotone_decreasing`, `bounded_positive`, `saturable`, `unconstrained_smooth` — with lane-dependent dim ceilings (≤8 Discovery, ≤4 Optimization, excluded from Submission).
 
-**Formular transforms** (agentic LLM admissible operations): <!-- apmode:AUTO:transforms -->7<!-- apmode:/AUTO:transforms --> typed transforms produce new `DSLSpec` instances — `swap_module`, `add_covariate_link`, `adjust_variability`, `set_transit_n`, `toggle_lag`, `replace_with_node`, **`set_prior`**. `set_prior` is parameterization-schema validated: only HalfNormal/HalfCauchy/Gamma/InvGamma families are admissible on IIV ω and residual σ targets; only Normal/LogNormal/Mixture/HistoricalBorrowing on log-scale structural params; LKJ only on correlation matrices. Invalid pairs are rejected at compile time so the LLM cannot propose nonsense priors. The transform count badge above is auto-synced from `src/apmode/dsl/transforms.py` + `src/apmode/dsl/prior_transforms.py` — if the number drifts, `scripts/sync_readme.py --check` fails CI.
+**Formular transforms** (agentic LLM admissible operations): <!-- apmode:AUTO:transforms -->10<!-- apmode:/AUTO:transforms --> typed transforms produce new `DSLSpec` instances — `swap_module`, `add_covariate_link`, `adjust_variability`, `set_transit_n`, `toggle_lag`, `replace_with_node`, **`set_prior`**. `set_prior` is parameterization-schema validated: only HalfNormal/HalfCauchy/Gamma/InvGamma families are admissible on IIV ω and residual σ targets; only Normal/LogNormal/Mixture/HistoricalBorrowing on log-scale structural params; LKJ only on correlation matrices. Invalid pairs are rejected at compile time so the LLM cannot propose nonsense priors. The transform count badge above is auto-synced from `src/apmode/dsl/transforms.py` + `src/apmode/dsl/prior_transforms.py` — if the number drifts, `scripts/sync_readme.py --check` fails CI.
 
 ---
 
@@ -505,7 +505,7 @@ Formular text ──→ Lark parser ──→ AST ──→     Search Engine
 | PK DSL grammar | `src/apmode/dsl/pk_grammar.lark` | Full Lark EBNF for PK model specs |
 | AST models | `src/apmode/dsl/ast_models.py` | Typed Pydantic nodes for all DSL axes |
 | Semantic validator | `src/apmode/dsl/validator.py` | Constraint table enforcement (PRD §4.2.5) |
-| Transforms | `src/apmode/dsl/transforms.py` + `prior_transforms.py` | The <!-- apmode:AUTO:transforms -->7<!-- apmode:/AUTO:transforms --> typed `FormularTransform`s — agentic-safe DSL operations |
+| Transforms | `src/apmode/dsl/transforms.py` + `prior_transforms.py` | The <!-- apmode:AUTO:transforms -->10<!-- apmode:/AUTO:transforms --> typed `FormularTransform`s — agentic-safe DSL operations |
 | nlmixr2 emitter | `src/apmode/dsl/nlmixr2_emitter.py` | DSL AST → R code for nlmixr2/rxode2 |
 | Stan emitter | `src/apmode/dsl/stan_emitter.py` | DSL AST → Stan program (Phase 2+; Bayesian backend) |
 | FREM emitter | `src/apmode/dsl/frem_emitter.py` | Joint-Ω FREM code for covariate-missingness workflows |
@@ -636,7 +636,7 @@ Full `apmode run` pipeline on all Suite A fixtures plus three real
 public datasets. Driver: `scripts/run_full_benchmark.sh`; bundles land
 in `benchmarks/runs/full-<timestamp>/`.
 
-**Provenance** — APMODE `<!-- apmode:AUTO:version_tag -->v0.6.0-rc1<!-- apmode:/AUTO:version_tag -->`, macOS 14 / Linux x86_64, Python 3.12, R 4.4.1 (`nlmixr2` 4.0.1, `rxode2` 4.0.0), CmdStan 2.36 where applicable. Reproduce with:
+**Provenance** — APMODE `<!-- apmode:AUTO:version_tag -->v0.6.1-rc1<!-- apmode:/AUTO:version_tag -->`, macOS 14 / Linux x86_64, Python 3.12, R 4.4.1 (`nlmixr2` 4.0.1, `rxode2` 4.0.0), CmdStan 2.36 where applicable. Reproduce with:
 
 ```bash
 bash scripts/run_full_benchmark.sh ./benchmarks/runs/full-$(date -u +%Y%m%dT%H%M%SZ)
@@ -675,7 +675,7 @@ reason, vote). `apmode inspect <bundle>` renders the per-signal table;
 
 ## Test Suite
 
-**<!-- apmode:AUTO:tests -->2509<!-- apmode:/AUTO:tests --> tests collected** (<!-- apmode:AUTO:tests_nonlive -->2492<!-- apmode:/AUTO:tests_nonlive --> non-live) across multiple strategies — all counts auto-synced by `scripts/sync_readme.py`:
+**<!-- apmode:AUTO:tests -->2553<!-- apmode:/AUTO:tests --> tests collected** (<!-- apmode:AUTO:tests_nonlive -->2536<!-- apmode:/AUTO:tests_nonlive --> non-live) across multiple strategies — all counts auto-synced by `scripts/sync_readme.py`:
 
 ```bash
 uv run pytest tests/unit/ -q               # unit tests
@@ -1017,7 +1017,7 @@ AgenticRunner.run(initial_spec, data)
 
 ### Available Transforms
 
-The LLM cannot write raw code — it can only propose these <!-- apmode:AUTO:transforms -->7<!-- apmode:/AUTO:transforms --> typed operations (auto-synced from `dsl/transforms.py` + `dsl/prior_transforms.py`):
+The LLM cannot write raw code — it can only propose these <!-- apmode:AUTO:transforms -->10<!-- apmode:/AUTO:transforms --> typed operations (auto-synced from `dsl/transforms.py` + `dsl/prior_transforms.py`):
 
 | Transform | Purpose | Example |
 |-----------|---------|---------|
@@ -1092,7 +1092,7 @@ The canonical scientific workflow — `ssh -L 8765:127.0.0.1:8765 lab-gpu-box` t
 | `/runs/{id}/rocrate` | `GET` | Workflow Run RO-Crate projection as a ZIP (provenance-run-crate-0.5) |
 | `/runs/{id}` | `DELETE` | Cancellation: SIGTERM the child R/cmdstan process group, 5 s grace, then SIGKILL — terminal-status rows return 409 |
 
-**Persistence + lifecycle.** The Starlette lifespan calls `SQLiteRunStore.initialize()`, which idempotently sweeps `RUNNING` rows from a crashed prior process to `INTERRUPTED`, and cancels every active task on shutdown. Writes use `BEGIN IMMEDIATE` in WAL mode for safe concurrent access. Subprocess termination is shared between `Nlmixr2Runner` and `BayesianRunner` via `apmode.backends.process_lifecycle.terminate_process_group(proc, grace_seconds=5)`, called from each runner's `asyncio.CancelledError` path. The default `--timeout-graceful-shutdown` of 30 s covers the 5 s SIGTERM-to-SIGKILL window plus headroom for the cancellation handler to seal the partial bundle.
+**Persistence + lifecycle.** The Starlette lifespan calls `SQLiteRunStore.initialize()`, which idempotently sweeps `RUNNING` rows from a crashed prior process to `INTERRUPTED`, and cancels every active task on shutdown. Writes use `BEGIN IMMEDIATE` in WAL mode for safe concurrent access. Subprocess termination is shared between `Nlmixr2Runner` and `BayesianRunner` via `apmode.backends.process_lifecycle.terminate_process_group(proc, grace_seconds=5)`, called from each runner's `asyncio.CancelledError` path; the SIGTERM → grace → SIGKILL → reap sequence runs inside `asyncio.shield` so a second cancellation (lifespan shutdown racing a `DELETE`) cannot orphan the inner `wait_for` or skip the SIGKILL escalation. The CANCELLED / FAILED status writes and the post-terminal `on_complete` callback in `apmode.api.runs.execute_run` are likewise shielded so the 429 capacity slot is always released even under double-cancel. The default `--timeout-graceful-shutdown` of 30 s covers the 5 s SIGTERM-to-SIGKILL window plus headroom for the cancellation handler to seal the partial bundle.
 
 **Hardening guidance.** The `apmode serve` CLI is intended for single-user local + lab-network use; it ships **no auth**. To expose the API beyond loopback, run it under a reverse proxy that handles authentication (Caddy with `basicauth`, nginx + an OIDC sidecar, or a Tailscale-restricted port). Patient-data CSV files referenced from a bundle are served via the bundle ZIP endpoint — apply per-bundle access control at the proxy layer.
 
@@ -1125,7 +1125,7 @@ uv run apmode inspect runs/<run_id> --rocrate-view --crate runs/<run_id>.crate
 
 **Graph shape (WRROC action triad)** — each candidate fit is a `CreateAction` whose `instrument` is the backend-engine `SoftwareApplication` (one of `#engine-nlmixr2` / `#engine-bayesian-stan` / `#engine-node` / `#engine-agentic`, with `softwareVersion` from `backend_versions.json`) and whose `object` carries the candidate DSL spec (`apmode:dslSpec` → compiled-spec File) plus the data manifest. Each backend that emitted a result registers a `#step-backend-<engine>` `HowToStep` on the lane workflow. Each gate decision is a `ControlAction` (`instrument = HowToStep`, `object = CreateAction`, `result = gate-decision File`, `apmode:gateRationale` → the same file). The lane run is wrapped in an `OrganizeAction` whose `startTime` / `endTime` are derived from `_COMPLETE.sealed_at`, so a given bundle yields a stable `datePublished` regardless of host. The `_COMPLETE` sentinel is a `File` with `additionalType = "apmode:completeSentinel"` and `identifier = "sha256:<hex>"` for host-independent integrity checks. The root Dataset declares `conformsTo` against Provenance / Workflow / Process Run Crate v0.5 plus the base `workflow-ro-crate/1.0` and `ro-crate/1.1` profiles.
 
-**Security** — ZIP import performs per-entry validation before extraction: entries whose resolved paths escape the staging root, absolute paths, Windows drive-letter prefixes, and non-regular file types (symlinks, sockets, block devices) are rejected. Directory-form import also rejects symlinks encountered anywhere under the source. The synthetic workflow stub at `workflows/<lane>-lane.apmode` is identified by reading `mainEntity.@id` from the crate metadata (with a `..` / absolute-path / null-byte sanity guard), so user-authored files under `workflows/` round-trip unmodified. The digest-exclusion check is case-insensitive and stays in lock-step with `apmode.bundle.emitter._DIGEST_EXCLUDED_NAMES` (`_COMPLETE`, `bom.cdx.json`, `sbc_manifest.json`). A `_COMPLETE` digest mismatch aborts the import with a non-zero exit.
+**Security** — ZIP import performs per-entry validation before extraction: entries whose resolved paths escape the staging root, absolute paths, Windows drive-letter prefixes, and non-regular file types (symlinks, sockets, block devices) are rejected. Directory-form import also rejects symlinks encountered anywhere under the source. The synthetic workflow stub at `workflows/<lane>-lane.apmode` is identified by reading `mainEntity.@id` from the crate metadata (with a `..` / absolute-path / null-byte sanity guard), so user-authored files under `workflows/` round-trip unmodified. The digest-exclusion check is case-insensitive, **bundle-relative** (matched against `p.relative_to(bundle).as_posix()` rather than the basename so a same-named artefact in a nested subdir is *not* silently exempted), and stays in lock-step with `apmode.bundle.emitter._DIGEST_EXCLUDED_RELATIVE_PATHS` (`_COMPLETE` and `bom.cdx.json` at the bundle root; the SBC manifest at the full relative path `artifacts/sbc/sbc_manifest.json`). A `_COMPLETE` digest mismatch aborts the import with a non-zero exit.
 
 **Scope** — read-only export, directory and ZIP forms, round-trip import, and `apmode validate --rocrate` / `apmode inspect --rocrate-view` wiring. Lane detection reads `policy_file.json.lane` (Submission, Discovery, Optimization) and the corresponding `HowTo` / `HowToStep` graph is emitted per WRROC; the Submission-lane ranking guardrail (NODE/agentic never `recommended`) is an APMODE governance rule, not an RO-Crate constraint. Agentic-trace iterations are projected by default; PROV-AGENT typing (`provagent:AIModelInvocation`, canonical class per Souza et al., *eScience 2025*, arXiv:2508.02866 v3) is opt-in via `--include-provagent`. `apmode:regulatoryContext` is no longer auto-stamped to `pccp-ai-dsf` whenever `regulatory/` is present — operators must pass `--regulatory-context {research-only|pccp-ai-dsf|mdr|ai-act-article-12}` explicitly. Discovery-lane tiering for ≥ 10³-candidate runs and live WorkflowHub / Zenodo uploads are planned follow-ons; the `apmode bundle publish` CLI ships the argument surface today and validates the bundle path. Design rationale: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) § RO-Crate.
 
@@ -1147,7 +1147,7 @@ Every CI run and every tagged release ships a [CycloneDX](https://cyclonedx.org/
 This README's numeric claims (version, test count, transform count, CLI-command count, dataset count, policy versions, profiler manifest version) are rewritten from the codebase by [`scripts/sync_readme.py`](scripts/sync_readme.py). Each auto-synced value sits between HTML comment markers like:
 
 ```
-<!-- apmode:AUTO:tests -->2509<!-- apmode:/AUTO:tests -->
+<!-- apmode:AUTO:tests -->2553<!-- apmode:/AUTO:tests -->
 ```
 
 Running the script:
@@ -1176,7 +1176,7 @@ Wire `scripts/sync_readme.py --check` into pre-commit or CI to block PRs that le
 
 ## Known Limitations
 
-User-facing constraints in `<!-- apmode:AUTO:version_tag -->v0.6.0-rc1<!-- apmode:/AUTO:version_tag -->`. Status descriptors: **partial** = behaviour available with caveats; **planned** = scoped follow-on; **deferred** = explicit ADR-documented out-of-scope. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and the `docs/adr/` series for the full design rationale.
+User-facing constraints in `<!-- apmode:AUTO:version_tag -->v0.6.1-rc1<!-- apmode:/AUTO:version_tag -->`. Status descriptors: **partial** = behaviour available with caveats; **planned** = scoped follow-on; **deferred** = explicit ADR-documented out-of-scope. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and the `docs/adr/` series for the full design rationale.
 
 - **Multi-dose steady state** *(partial)* — `ADDL` / `II` dose expansion is supported across all backends; `SS != 0` is supported in the nlmixr2 lane only. Stan and NODE backends hard-reject `SS != 0` at Gate 1 ([`docs/adr/0003-stan-ss-scope.md`](docs/adr/0003-stan-ss-scope.md)).
 - **NODE infusions** *(deferred)* — the NODE backend is oral-only; infusion data (`RATE > 0`) is rejected with `InvalidSpecError`. Piecewise-JAX-solver follow-on scoped in [`docs/adr/0004-node-infusions.md`](docs/adr/0004-node-infusions.md).
@@ -1202,7 +1202,7 @@ If you use APMODE in your research, please cite:
   year         = {2026},
   url          = {https://github.com/biostochastics/apmode},
   license      = {GPL-2.0-or-later},
-  version      = {0.6.0-rc1}
+  version      = {0.6.1-rc1}
 }
 ```
 

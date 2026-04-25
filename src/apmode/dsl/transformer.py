@@ -20,7 +20,9 @@ from apmode.dsl.ast_models import (
     Combined,
     CovariateLink,
     DSLSpec,
+    Erlang,
     FirstOrder,
+    IVBolus,
     LaggedFirstOrder,
     LinearElim,
     MichaelisMenten,
@@ -32,8 +34,10 @@ from apmode.dsl.ast_models import (
     OccasionByVisit,
     OccasionCustom,
     OneCmt,
+    ParallelFirstOrder,
     ParallelLinearMM,
     Proportional,
+    SumIG,
     ThreeCmt,
     TimeVaryingElim,
     TMDDCore,
@@ -95,6 +99,26 @@ class DSLTransformer(Transformer):  # type: ignore[type-arg]
 
     def mixed_first_zero(self, ka: float, dur: float, frac: float) -> MixedFirstZero:
         return MixedFirstZero(ka=ka, dur=dur, frac=frac)
+
+    def iv_bolus(self) -> IVBolus:
+        return IVBolus()
+
+    def erlang(self, n: int, ktr: float) -> Erlang:
+        return Erlang(n=n, ktr=ktr)
+
+    def parallel_first_order(self, ka1: float, ka2: float, frac: float) -> ParallelFirstOrder:
+        return ParallelFirstOrder(ka1=ka1, ka2=ka2, frac=frac)
+
+    def sum_ig(
+        self,
+        k: int,
+        mt_1: float,
+        mt_2: float,
+        rd2_1: float,
+        rd2_2: float,
+        weight_1: float,
+    ) -> SumIG:
+        return SumIG(k=k, MT_1=mt_1, MT_2=mt_2, RD2_1=rd2_1, RD2_2=rd2_2, weight_1=weight_1)
 
     def node_absorption(self, dim: int, ct: str) -> NODEAbsorption:
         return NODEAbsorption(dim=dim, constraint_template=ct)

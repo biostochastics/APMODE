@@ -7,6 +7,179 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1-rc1] — 2026-04-25
+
+### Added — SOTA absorption preview (ADR-0003): Erlang, ParallelFirstOrder, SumIG(k=2)
+
+Three new absorption variants land in the typed PK DSL ahead of the v0.7 milestone.
+This is the first material extension of the absorption module since v0.1; design
+authority is `docs/adr/0003-sota-absorption-extension.md`.
+
+**`Erlang(n: int 1..7, ktr: float)`** — integer transit chain with no terminal
+first-order step. Lowers as an explicit n-compartment ODE chain in nlmixr2 (not via
+`rxode2::transit()`'s gamma interpolation, whose semantics differ — see ADR-0003 D2).
+Admissible in all three lanes. The agent reaches Erlang only via the new
+`convert_transit_to_erlang(n)` transform; `swap_module` accepts `Erlang` for direct
+placement. Validator caps `n ≤ 7` because longer chains add little resolution and
+inflate state count quadratically.
+
+**`ParallelFirstOrder(ka1, ka2, frac)`** — two parallel first-order depots
+(fast + slow GI, sublingual + GI per Pumas PK43; Soufsaf 2021 PMX). Genuinely
+distinct from `MixedFirstZero(ka, dur, frac)`, which is first-order + zero-order.
+Lowers as two depot compartments with `f(depot_fast)=frac`, `f(depot_slow)=1-frac`,
+both feeding central simultaneously. Admissible in all lanes. New transform
+`add_parallel_route(ka2, frac)` converts an existing `FirstOrder(ka)` into
+`ParallelFirstOrder(ka1=ka, ka2, frac)`.
+
+**`SumIG(k=2, MT_1, MT_2, RD2_1, RD2_2, weight_1)`** — sum of inverse Gaussians
+input rate (Csajka, Drover, Verotta 2005, *Pharm Res*; Weiss & Wegner 2022,
+*Pharm Res*). Captures double peaks, prolonged release, formulation/food effects
+(Wagner 2014 mavoglurant; Weiss 2022 talinolol+rifampicin). Lowers as a
+**closed-form analytic input rate** (`sqrt(RD2/(2π·t³))·exp(...)`), not via
+deconvolution macros, so the producer-side digest contract stays untouched.
+Single-dose only in v0.7; multi-dose superposition deferred (ADR-0003 D4).
+
+  - Validator hard-caps `k ∈ {1, 2}` for v0.7 — path to k=3 is a future
+    validator-only change behind the `sumig_max_k` policy knob (ADR-0003 D1).
+  - Label-switching guard: `MT_1 < MT_2` enforced via positive-difference
+    parameterisation (`MT_2 = MT_1 + exp(ldelta_MT_2)` in the emitter).
+  - Cross-module identifiability gate: `SumIG.k >= 2` requires disposition
+    (CL/V/Q) to be fixed externally — either via the dispatch-time
+    `EvidenceManifest.disposition_fixed` flag or via priors with
+    `source="fixed_external"` on every disposition param. Without that gate,
+    sumIG-2 is non-identifiable on sparse data (Csajka 2005 §4; Weiss 2022 §5).
+  - Lane admissibility: `SumIG` blocked from Submission via the new
+    `_LANE_ABSORPTION_INADMISSIBLE` table — academic-grade, not yet standard
+    regulatory practice. Discovery and Optimization admit it.
+
+**New transforms** added to the `FormularTransform` allowlist (now 10 total, was 7):
+`convert_transit_to_erlang`, `add_parallel_route`, `set_sumig_components`. All are
+narrow, single-purpose, and compose with existing transforms via
+`SwapModule`/`apply_transform`'s `_prune_stale_variability` hook (orphaned IIV /
+priors on dropped parameters are pruned automatically — e.g., IIV on `ka` after
+Transit→Erlang conversion).
+
+**Refused outright in v0.7:** F.A.T./PBFTPK absorption (Macheras 2024). Regulatorily
+unblessed by FDA/EMA; shipping it as a first-class DSL form would undermine
+Submission-lane credibility (ADR-0003 D1).
+
+**Deferred to v0.8+:** Weibull absorption (`nlmixr2lib::addWeibullAbs` already covers
+this; not urgent). SumIG with k=3 (gated behind `sumig_max_k` policy knob; unlocks
+when Discovery/Optimization datasets demonstrate Gate 3 NLPD floor pass at k=3
+vs k=2 in held-out folds).
+
+**Stan/Torsten support deferred to v0.7.1.** The Stan emitter currently rejects
+the new variants with `NotImplementedError` (matching the existing
+ZeroOrder/MixedFirstZero pattern), routing users to the nlmixr2 backend. Closed-form
+input rate inside Torsten's user-defined ODE RHS requires time-varying covariate
+plumbing for arbitrary t-forcing; that ships in a follow-up release.
+
+**Closed v0.6.0 grammar gap.** `IVBolus()` is now first-class in the Lark grammar
+(it was previously AST-only and only reachable via `swap_module`). Programmatic
+construction is unaffected.
+
+**New prior source value: `fixed_external`.** Added to the `PriorSource` literal
+to mark priors derived from IV-reference fits or prior converged classical models —
+used by the SumIG disposition-fixed cross-module check as the spec-side fallback
+when the dispatch-time manifest flag is unavailable.
+
+**Tests.** 44 new unit tests in `tests/unit/test_dsl_v07_absorption.py` cover AST
+construction, grammar parsing, validator constraints (Erlang n cap, MT ordering,
+disposition gate, lane admissibility, k cap), transform validation + apply, nlmixr2
+emitter content, Stan emitter rejection, and a property test verifying that the
+SumIG closed-form input rate integrates to ≈1 over (0, ∞).
+
+### Fixed — Multi-CLI code review hardening pass: cancellation, durability, digest scoping, harness diagnostics
+
+A multi-model code review (droid, crush=glm-5, gemini-3-pro, opencode=minimax-m2.7) of the
+`api/`, `bundle/`, `backends/`, and `bayes/` surfaces produced 9 actionable findings, all
+addressed in this set of patches. No public API change; existing bundles remain loadable.
+
+**API run-state cancellation contract — slot leak on double-cancel closed.**
+`apmode.api.runs.execute_run` now wraps the `on_complete` callback and the `FAILED`
+status write in `asyncio.shield`, mirroring the existing shield around the `CANCELLED`
+write. Without these, a second `CancelledError` (lifespan shutdown racing a `DELETE`)
+could pre-empt `active_tasks.pop` mid-flight and permanently leak a 429 capacity slot
+under repeated cancellations. The 4-link cancellation contract (`DELETE` → `task.cancel`
+→ `terminate_process_group` → status update under shield) now extends to the
+post-terminal callback. Symmetric 4-link semantics are preserved end-to-end.
+
+**Subprocess group cleanup — grace window preserved on double-cancel, no leaked
+`wait_for`.** `apmode.backends.process_lifecycle.terminate_process_group` is rewritten
+around an `asyncio.ensure_future(...)` + `while: await asyncio.shield(inner_task)`
+loop. The old form sent SIGKILL early and orphaned the inner `wait_for` if a second
+cancellation arrived during the SIGTERM grace window; the new form keeps awaiting the
+shielded task until it completes (clean exit or post-SIGKILL reap), captures the
+cancellation, and re-raises after the child is reaped. The
+`SIGTERM → grace → SIGKILL → reap` contract is now atomic under N concurrent cancels.
+
+**HTTP API key check — no 500 on non-ASCII headers.** `apmode.api.routes` previously
+called `hmac.compare_digest(api_key, expected)` directly; a header value containing
+non-ASCII raised `TypeError`, which FastAPI surfaced as a 500 with a distinguishing
+log line (a tiny side-channel: malformed key vs. wrong key). Both sides are now
+encoded as UTF-8 bytes inside a `try/except UnicodeEncodeError`, so a malformed
+header degrades cleanly to a 401. Confirmed against the existing `hmac.compare_digest`
+timing-safe contract.
+
+**Bundle write durability — `os.fsync` before `os.replace`, with short-write loop.**
+`BundleEmitter._write_text` and the `_COMPLETE` sentinel write now go through a new
+`_atomic_durable_write` helper that opens the tmp file via `os.open(O_WRONLY|O_CREAT|
+O_TRUNC)`, writes in a loop that handles POSIX short-write (`os.write` may return
+fewer bytes than requested on NFS / pipe-backed paths), `os.fsync(fd)`, and only
+*then* `os.replace`s the destination. A new `_fsync_dir` then fsyncs the parent
+directory entry so the rename is durable across power loss, not just process death.
+Without these, a SIGKILL between `Path.write_text` returning and `os.replace`
+committing could leave a successfully-renamed sentinel with stale page-cache contents
+on filesystems that reorder data and metadata writes. Linux ext4 with `auto_da_alloc`
+hides most of this; the durability is now explicit so the contract survives an admin
+disabling the heuristic or the bundle living on NFS / overlayfs.
+
+**Digest exclusion is bundle-relative, not basename.** `_DIGEST_EXCLUDED_NAMES` was
+matched by `p.name`, which would silently exempt any nested file with a same-named
+artefact (e.g. a future `compiled_specs/<id>/bom.cdx.json`) from the seal digest.
+The producer (`apmode.bundle.emitter._DIGEST_EXCLUDED_RELATIVE_PATHS`) and the
+importer (`apmode.bundle.rocrate.importer._DIGEST_EXCLUDED_RELPATHS_LOWER`) now
+match against `p.relative_to(run_dir).as_posix()`. The SBC manifest, which lives at
+`artifacts/sbc/sbc_manifest.json`, is excluded by its full relative path
+(`_SBC_MANIFEST_RELPATH`); the SBOM and `_COMPLETE` sentinels remain at the bundle
+root and so match by their basename alone. Sealed digests of existing bundles are
+unchanged because the exclusion *set* is identical; only the matching rule is
+tightened.
+
+**`emitter.seal()` runs in a worker thread.** `Orchestrator.run` now `await
+asyncio.to_thread(emitter.seal)` so the multi-second `_compute_bundle_digest` walk
+(1 MiB-chunked SHA-256 over hundreds of posterior parquets in a discovery-lane
+bundle) does not block the FastAPI event loop. The process-wide `threading.RLock`
+(`_DIGEST_LOCK`) keeps the worker thread safe against concurrent emitter writes;
+the lock is reentrant so `seal()` re-acquiring it inside `_compute_bundle_digest`
+does not deadlock.
+
+**Bayesian harness surfaces diagnostic-computation failures.**
+`apmode.bayes.harness._compute_diagnostics` previously swallowed any `Exception` from
+`az.bfmi` / `az.loo(pointwise=True)` with `pass`, leaving `pareto_k_max=None` /
+`ebfmi_min=NaN` indistinguishable from "model has no `log_lik` group" or "energy
+diagnostic unavailable". The harness now records each failure as a structured
+`"<metric>_failed: <ExceptionType>: <message>"` entry on the new
+`PosteriorDiagnostics.diagnostics_warnings: list[str]` field (default empty for
+backwards compat with older bundles), prints it to stderr for live visibility, and
+Gate 1 Bayesian (`apmode.governance.gates.evaluate_gate1_bayesian`) appends each
+entry to `warning_reasons` and raises a `bayesian_diagnostics_complete` check.
+Operators can now trace why a Bayesian fit's reliability metrics were not computed.
+
+**CLAUDE.md — bundle-digest invariant prose corrected.** The "snapshot-then-hash"
+description was wrong: the implementation streams 1 MiB chunks under
+`_DIGEST_LOCK`. The TOCTOU guarantee is upheld by the lock spanning the whole
+`rglob` + chunked-read sequence, not by buffering the snapshot. The architectural
+note now says "locked-stream-hash" and references `_DIGEST_EXCLUDED_RELATIVE_PATHS`
+rather than the renamed `_DIGEST_EXCLUDED_NAMES`.
+
+**Suite B cross-seed CV excludes zero-variance parameters.**
+`_compute_cross_seed_stability` previously included `CV=0.0` rows for parameters that
+came back identical across every seed. These contribute nothing to the headline
+`cross_seed_cv_max` metric and pollute the per-param map; the function now skips any
+parameter with `sd < 1e-12`. Pinned by
+`tests/unit/test_suite_b_runner.py::TestComputeCrossSeedStability::test_cv_calc_against_known_values`.
+
 ### Added — Two open public Phase-1 fixtures (`phenobarbital_grasela_1985`, `oral_1cpt_acop_2016`); roster grows from 5 to 7
 
 The original Phase-1 roster of 5 had 2 credentialed/manual-fetch
