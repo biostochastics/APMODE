@@ -83,12 +83,27 @@ MIN_EXPERT_COUNT: int = MIN_LITERATURE_COUNT
 # ---------------------------------------------------------------------------
 
 MAVOGLURANT_PUBLISHED = PublishedModel(
-    citation="nlmixr2data package / Novartis",
+    citation=(
+        "Wendling T, Ogungbenro K, Pigeolet E, Dumitras S, Woessner R, "
+        "Aarons L. (2015) Pharm Res 32(5):1764-1778. "
+        "doi:10.1007/s11095-014-1574-1"
+    ),
+    # Wendling fit sumIG absorption; the DSL collapses to first-order ka and
+    # the simplified IR-cohort fit is the comparison the Phase-1 fixture
+    # uses (see benchmarks/suite_c/mavoglurant_wendling_2015.yaml). Sourced
+    # directly from that fixture's ``reference_params`` so the
+    # PublishedModel record stays in lockstep with the live runner anchor.
     structure="2-CMT oral, first-order absorption, linear elimination",
     n_parameters=7,
     estimation_method="SAEM",
     tool="nlmixr2 3.0.0",
-    key_estimates={},  # To be populated from nlmixr2 fitting
+    key_estimates={
+        "ka": 0.5,
+        "V1": 25.0,
+        "V2": 80.0,
+        "Q": 5.0,
+        "CL": 4.0,
+    },
 )
 
 CASE_C1_MAVOGLURANT = BenchmarkCase(

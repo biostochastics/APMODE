@@ -417,6 +417,15 @@ class PosteriorDiagnostics(BaseModel):
     ess_bulk_min_by_class: dict[str, float] = Field(default_factory=dict)
     ess_tail_min_by_class: dict[str, float] = Field(default_factory=dict)
 
+    # Diagnostic computations that crashed (e.g. ``az.loo`` without a
+    # ``log_lik`` group, ``az.bfmi`` on a degenerate posterior). Empty
+    # for healthy fits; populated by the harness with one
+    # ``"<metric>_failed: <ExceptionType>: <message>"`` entry per
+    # failure. Gate 1 Bayesian and the report layer should treat a
+    # non-empty list as "diagnostics incomplete" rather than "all
+    # green". Default to empty so existing bundles remain loadable.
+    diagnostics_warnings: list[str] = Field(default_factory=list)
+
 
 class SamplerConfig(BaseModel):
     """NUTS sampler configuration and environment — captured for reproducibility.
@@ -1425,7 +1434,7 @@ class SBCManifest(BaseModel):
     3-scenario set (1-cmt, 2-cmt, 2-cmt with IIV correlation).
 
     The file lives under ``artifacts/sbc/manifest.json`` — outside the
-    sealed-digest scope (added to ``_DIGEST_EXCLUDED_NAMES``) so the
+    sealed-digest scope (added to ``_DIGEST_EXCLUDED_RELATIVE_PATHS``) so the
     nightly runner can rewrite it without invalidating ``_COMPLETE``.
     """
 

@@ -520,12 +520,21 @@ def _compute_diagnostics(fit: Any) -> dict[str, Any]:
     mtd_arr = getattr(fit, "max_treedepths", None)
     n_max_treedepth = int(np.asarray(mtd_arr).sum()) if mtd_arr is not None else 0
 
+    # Track diagnostic computations that fell over so Gate 1 Bayesian
+    # can downgrade a candidate that lost coverage rather than treat the
+    # NaN / None as "not flagged". Surfaced in the response payload
+    # alongside the headline diagnostics.
+    diagnostics_warnings: list[str] = []
+
     # E-BFMI
     try:
         ebfmi = az.bfmi(idata)
         ebfmi_min = float(min(ebfmi))
-    except Exception:
+    except Exception as exc:
         ebfmi_min = float("nan")
+        warning = f"ebfmi_failed: {type(exc).__name__}: {exc}"
+        diagnostics_warnings.append(warning)
+        sys.stderr.write(f"harness: {warning}\n")
 
     # Pareto-k via LOO (if log_lik present). arviz can emit non-finite
     # entries for observations where PSIS smoothing fails — those are
@@ -542,8 +551,15 @@ def _compute_diagnostics(fit: Any) -> dict[str, Any]:
         labels = ["good", "ok", "bad", "very_bad"]
         for (lo, hi), label in zip(bins, labels, strict=True):
             pareto_k_counts[label] = int(((finite_k > lo) & (finite_k <= hi)).sum())
-    except Exception:
-        pass
+    except Exception as exc:
+        # LOO failure has historically been silent — Gate 1 Bayesian
+        # consumers cannot distinguish "no log_lik in the model" from
+        # "arviz crashed" without a structured warning. Carry the
+        # exception class + message through so the report layer can
+        # render a useful diagnostic.
+        warning = f"loo_failed: {type(exc).__name__}: {exc}"
+        diagnostics_warnings.append(warning)
+        sys.stderr.write(f"harness: {warning}\n")
 
     # MCSE for headline structural params (first few)
     mcse_ds = az.mcse(idata, method="mean")
@@ -572,6 +588,11 @@ def _compute_diagnostics(fit: Any) -> dict[str, Any]:
         "rhat_max_by_class": rhat_by_class,
         "ess_bulk_min_by_class": ess_bulk_by_class,
         "ess_tail_min_by_class": ess_tail_by_class,
+        # Optional list of diagnostic-computation failures. Empty for
+        # healthy fits; populated when LOO / E-BFMI / similar arviz
+        # calls crashed. Gate 1 Bayesian and the report layer should
+        # treat a non-empty list as "diagnostics incomplete".
+        "diagnostics_warnings": diagnostics_warnings,
     }
 
 

@@ -228,6 +228,7 @@ class PerturbationType(StrEnum):
     SPARSIFY = "sparsify"
     ADD_PROTOCOL_POOLING = "add_protocol_pooling"
     ADD_OCCASION_LABELS = "add_occasion_labels"
+    INJECT_COVARIATE_MISSINGNESS = "inject_covariate_missingness"
     SCALE_BSV_VARIANCES = "scale_bsv_variances"
     SATURATE_CLEARANCE = "saturate_clearance"
     TMDD = "tmdd"
@@ -268,6 +269,10 @@ class PerturbationRecipe(BaseModel):
     n_protocols: int = Field(default=2, ge=2, le=10)
     vary_sampling: bool = False  # Vary sampling schedules per protocol
     vary_lloq: bool = False  # Vary LLOQ per protocol
+
+    # Covariate missingness (PRD §5: 10/20/30% MCAR injection on covariate cols)
+    covariate_missingness_fraction: float | None = Field(default=None, ge=0.0, le=1.0)
+    covariate_missingness_columns: list[str] = Field(default_factory=list)
 
     # #26: stress-surface parameters. None when the corresponding
     # perturbation is not selected; the model_validator below enforces
@@ -319,6 +324,12 @@ class PerturbationRecipe(BaseModel):
             self.flip_flop_ka is None or self.flip_flop_ke_ratio is None
         ):
             msg = "flip_flop_ka and flip_flop_ke_ratio required for FLIP_FLOP"
+            raise ValueError(msg)
+        if (
+            t == PerturbationType.INJECT_COVARIATE_MISSINGNESS
+            and self.covariate_missingness_fraction is None
+        ):
+            msg = "covariate_missingness_fraction required for INJECT_COVARIATE_MISSINGNESS"
             raise ValueError(msg)
         return self
 

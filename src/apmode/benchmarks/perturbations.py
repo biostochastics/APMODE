@@ -58,13 +58,13 @@ def apply_perturbation(
         PerturbationType.SPARSIFY: _sparsify,
         PerturbationType.ADD_PROTOCOL_POOLING: _add_protocol_pooling,
         PerturbationType.ADD_OCCASION_LABELS: _add_occasion_labels,
-        # #26: the four stress-surface perturbations are declared on
-        # the enum so Suite C recipes can request them today. The
-        # concrete simulators wrap the canonical dataset with new
-        # structural dynamics and therefore require coupling to the
-        # DSL/forward-solve path — tracked in PRD §10 / Suite C.
-        # Until they land the dispatch raises NotImplementedError so a
-        # request to stress-test is never silently replaced by a no-op.
+        PerturbationType.INJECT_COVARIATE_MISSINGNESS: _inject_covariate_missingness,
+        # The four stress-surface perturbations below are *data-side*
+        # transforms that imprint a structural-misspecification
+        # signature onto observed DV without re-running the forward
+        # solve. The manifest documents each transform so a reviewer
+        # can attribute the resulting fit shift to the perturbation
+        # rather than to genuine dataset behaviour.
         PerturbationType.SCALE_BSV_VARIANCES: _scale_bsv_variances,
         PerturbationType.SATURATE_CLEARANCE: _saturate_clearance,
         PerturbationType.TMDD: _tmdd_perturbation,
@@ -100,59 +100,253 @@ def apply_perturbations(
 
 
 def _scale_bsv_variances(
-    _df: pd.DataFrame,
-    _recipe: PerturbationRecipe,
-    _rng: np.random.Generator,
+    df: pd.DataFrame,
+    recipe: PerturbationRecipe,
+    rng: np.random.Generator,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
-    """#26 stress surface — inflate/contract subject-level DV variance."""
-    msg = (
-        "scale_bsv_variances is declared on PerturbationType but the "
-        "transform has not been implemented yet (PRD §10, Suite C). "
-        "Refusing to silently run a no-op on a requested stress test."
-    )
-    raise NotImplementedError(msg)
+    """#26 stress surface — inflate/contract subject-level DV variance.
+
+    Each subject's observed DV vector is multiplied by a single log-normal
+    scalar drawn with sigma = ``bsv_scale_factor``. This preserves the
+    geometric mean of DV across the population (the multiplier has zero
+    log-mean) but inflates between-subject variance — the structural
+    fingerprint of misspecified omega. Pure data-side transform: no
+    forward solve, no parameter fit, manifest documents the per-subject
+    multipliers for audit.
+    """
+    sigma = recipe.bsv_scale_factor
+    if sigma is None:
+        msg = "bsv_scale_factor required for SCALE_BSV_VARIANCES"
+        raise ValueError(msg)
+
+    obs = _obs_mask(df)
+    subject_ids = df["NMID"].unique()
+    log_multipliers = rng.normal(loc=0.0, scale=sigma, size=len(subject_ids))
+    multipliers = np.exp(log_multipliers)
+    subject_to_mult: dict[Any, float] = dict(zip(subject_ids, multipliers.tolist(), strict=True))
+    factor = df["NMID"].map(subject_to_mult).astype(float)
+    df.loc[obs, "DV"] = (df.loc[obs, "DV"].astype(float) * factor.loc[obs]).astype(float)
+
+    return df, {
+        "perturbation": "scale_bsv_variances",
+        "bsv_scale_factor": float(sigma),
+        "n_subjects": len(subject_ids),
+        "multiplier_geomean": float(np.exp(float(log_multipliers.mean()))),
+        "multiplier_geosd": (
+            float(np.exp(float(log_multipliers.std(ddof=1)))) if len(log_multipliers) > 1 else 1.0
+        ),
+    }
 
 
 def _saturate_clearance(
-    _df: pd.DataFrame,
-    _recipe: PerturbationRecipe,
+    df: pd.DataFrame,
+    recipe: PerturbationRecipe,
     _rng: np.random.Generator,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
-    """#26 stress surface — re-simulate DV with Michaelis-Menten clearance."""
-    msg = (
-        "saturate_clearance is declared on PerturbationType but the "
-        "transform has not been implemented yet (PRD §10, Suite C). "
-        "Refusing to silently run a no-op on a requested stress test."
-    )
-    raise NotImplementedError(msg)
+    """#26 stress surface — bend DV to look like Michaelis-Menten clearance.
+
+    Applies a saturable correction factor to observed DV so that high
+    concentrations are inflated relative to low concentrations — the
+    structural fingerprint a 1-cmt linear fit would miss when truth is
+    saturable elimination. The correction is the reciprocal of the
+    unitless saturation efficiency at the observed DV:
+
+        DV_perturbed = DV * (1 + DV / saturation_km)
+
+    capped at ``saturation_vmax`` (interpreted here as a concentration
+    ceiling, so the perturbation cannot drive observations beyond a
+    physiologically plausible level). This is a data-side stress test
+    that produces an MM-shape signature without re-simulating; the
+    manifest records the parameters so reviewers can distinguish the
+    perturbation contribution from any genuine MM behaviour in the
+    underlying dataset.
+    """
+    km = recipe.saturation_km
+    vmax = recipe.saturation_vmax
+    if km is None or vmax is None:
+        msg = "saturation_km and saturation_vmax required for SATURATE_CLEARANCE"
+        raise ValueError(msg)
+
+    obs = _obs_mask(df)
+    dv = df.loc[obs, "DV"].astype(float)
+    perturbed = dv * (1.0 + dv / km)
+    perturbed = perturbed.clip(upper=vmax)
+    df.loc[obs, "DV"] = perturbed
+
+    return df, {
+        "perturbation": "saturate_clearance",
+        "saturation_km": float(km),
+        "saturation_vmax": float(vmax),
+        "n_observations_perturbed": int(obs.sum()),
+        "max_observed_perturbed_dv": float(perturbed.max()) if not perturbed.empty else 0.0,
+    }
 
 
 def _tmdd_perturbation(
-    _df: pd.DataFrame,
-    _recipe: PerturbationRecipe,
+    df: pd.DataFrame,
+    recipe: PerturbationRecipe,
     _rng: np.random.Generator,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
-    """#26 stress surface — introduce target-mediated disposition dynamics."""
-    msg = (
-        "tmdd perturbation is declared on PerturbationType but the "
-        "transform has not been implemented yet (PRD §10, Suite C). "
-        "Refusing to silently run a no-op on a requested stress test."
-    )
-    raise NotImplementedError(msg)
+    """#26 stress surface — depress low-DV samples to mimic TMDD QSS.
+
+    The QSS approximation of target-mediated drug disposition produces
+    nonlinear PK at low concentrations: target binding sequesters drug
+    and the observed (free) concentration is reduced. The signature on
+    a measured-total assay is the opposite — saturation at high
+    concentrations and depression at low concentrations relative to
+    linear PK. We approximate by subtracting a saturable target-binding
+    term:
+
+        DV_perturbed = max(0, DV - tmdd_r0 * DV / (DV + tmdd_kss))
+
+    so at DV ≪ tmdd_kss roughly ``tmdd_r0`` units of drug are bound and
+    removed; at DV ≫ tmdd_kss the binding saturates and the depression
+    becomes negligible. ``tmdd_r0`` should be set to a small fraction of
+    the baseline DV scale so the transform is a stress signature, not a
+    near-zero observation cliff. Pure data-side transform.
+    """
+    kss = recipe.tmdd_kss
+    r0 = recipe.tmdd_r0
+    if kss is None or r0 is None:
+        msg = "tmdd_kss and tmdd_r0 required for TMDD"
+        raise ValueError(msg)
+
+    obs = _obs_mask(df)
+    dv = df.loc[obs, "DV"].astype(float)
+    bound = r0 * dv / (dv + kss)
+    perturbed = (dv - bound).clip(lower=0.0)
+    df.loc[obs, "DV"] = perturbed
+
+    return df, {
+        "perturbation": "tmdd",
+        "tmdd_kss": float(kss),
+        "tmdd_r0": float(r0),
+        "n_observations_perturbed": int(obs.sum()),
+        "mean_bound_fraction": (
+            float((bound / dv.replace(0.0, np.nan)).mean()) if not dv.empty else 0.0
+        ),
+    }
 
 
 def _flip_flop_perturbation(
-    _df: pd.DataFrame,
-    _recipe: PerturbationRecipe,
+    df: pd.DataFrame,
+    recipe: PerturbationRecipe,
     _rng: np.random.Generator,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
-    """#26 stress surface — swap ka/ke roles to produce flip-flop kinetics."""
-    msg = (
-        "flip_flop perturbation is declared on PerturbationType but the "
-        "transform has not been implemented yet (PRD §10, Suite C). "
-        "Refusing to silently run a no-op on a requested stress test."
-    )
-    raise NotImplementedError(msg)
+    """#26 stress surface — apply a flip-flop time-decay signature.
+
+    True flip-flop kinetics arise when the absorption rate is slower
+    than elimination, causing the apparent terminal half-life to
+    reflect ``ka`` rather than ``ke``. Without re-simulating, we apply
+    a time-dependent multiplicative bias to DV that lengthens the
+    apparent terminal phase by a factor controlled by
+    ``flip_flop_ke_ratio``:
+
+        DV_perturbed(t) = DV(t) * exp(-(flip_flop_ke_ratio - 1)
+                                       * flip_flop_ka * max(0, t - 1/ka))
+
+    For ``flip_flop_ke_ratio < 1`` the terminal phase is stretched
+    (the flip-flop signature); for > 1 it is compressed. ``flip_flop_ka``
+    controls when the post-absorption regime begins. The early phase is
+    untouched (factor ≈ 1) so absorption-phase samples remain
+    informative for ka recovery. Pure data-side transform.
+    """
+    ka = recipe.flip_flop_ka
+    ratio = recipe.flip_flop_ke_ratio
+    if ka is None or ratio is None:
+        msg = "flip_flop_ka and flip_flop_ke_ratio required for FLIP_FLOP"
+        raise ValueError(msg)
+
+    obs = _obs_mask(df)
+    t = df.loc[obs, "TIME"].astype(float)
+    delay = 1.0 / ka
+    elapsed = (t - delay).clip(lower=0.0)
+    log_factor = -(ratio - 1.0) * ka * elapsed
+    factor = np.exp(log_factor)
+    df.loc[obs, "DV"] = df.loc[obs, "DV"].astype(float) * factor
+
+    return df, {
+        "perturbation": "flip_flop",
+        "flip_flop_ka": float(ka),
+        "flip_flop_ke_ratio": float(ratio),
+        "n_observations_perturbed": int(obs.sum()),
+        "post_absorption_threshold_h": float(delay),
+    }
+
+
+def _inject_covariate_missingness(
+    df: pd.DataFrame,
+    recipe: PerturbationRecipe,
+    rng: np.random.Generator,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """PRD §5 — inject MCAR covariate missingness at the subject level.
+
+    Drops a fraction of subject-level covariate values to NaN. Operates
+    one decision per subject (not per row) so the missingness pattern is
+    realistic for a population PK design where covariates are recorded
+    once at enrolment and then carried forward. ``covariate_missingness_columns``
+    selects which columns to perturb; if empty, all columns that are
+    constant within subject and not part of the canonical NONMEM schema
+    (``NMID``/``ID``/``TIME``/``DV``/``EVID``/``AMT``/``MDV``/``CENS``/
+    ``BLQ_FLAG``/``LLOQ``/``DVID``/``OCCASION``/``STUDY_ID``) are
+    treated as candidate covariates.
+    """
+    fraction = recipe.covariate_missingness_fraction
+    if fraction is None:
+        msg = "covariate_missingness_fraction required for INJECT_COVARIATE_MISSINGNESS"
+        raise ValueError(msg)
+
+    canonical_cols = {
+        "NMID",
+        "ID",
+        "TIME",
+        "DV",
+        "EVID",
+        "AMT",
+        "MDV",
+        "CENS",
+        "BLQ_FLAG",
+        "LLOQ",
+        "DVID",
+        "OCCASION",
+        "STUDY_ID",
+        "PROTOCOL_LLOQ",
+    }
+    if recipe.covariate_missingness_columns:
+        cov_columns: list[str] = [
+            c for c in recipe.covariate_missingness_columns if c in df.columns
+        ]
+    else:
+        cov_columns = []
+        for col in df.columns:
+            if col in canonical_cols:
+                continue
+            constant_within_subject = df.groupby("NMID")[col].nunique(dropna=False).max() <= 1
+            if bool(constant_within_subject):
+                cov_columns.append(col)
+
+    n_dropped_total = 0
+    per_column_drops: dict[str, int] = {}
+    subject_ids = df["NMID"].unique()
+    n_subjects = len(subject_ids)
+    n_drop = round(n_subjects * fraction)
+
+    for col in cov_columns:
+        drop_subjects = rng.choice(subject_ids, size=n_drop, replace=False)
+        mask = df["NMID"].isin(drop_subjects)
+        n_rows = int(mask.sum())
+        n_dropped_total += n_rows
+        per_column_drops[col] = n_rows
+        df.loc[mask, col] = np.nan
+
+    return df, {
+        "perturbation": "inject_covariate_missingness",
+        "covariate_missingness_fraction": float(fraction),
+        "covariate_columns": cov_columns,
+        "n_subjects_dropped_per_column": int(n_drop),
+        "n_rows_dropped_total": int(n_dropped_total),
+        "per_column_n_rows_dropped": per_column_drops,
+    }
 
 
 def _inject_blq(
@@ -389,21 +583,23 @@ def _add_protocol_pooling(
             per_protocol_lloq[protocol_id] = base_lloq * factor
         df["PROTOCOL_LLOQ"] = df["STUDY_ID"].map(per_protocol_lloq)
 
-    subjects_per_protocol: dict[int, int] = {}
-    for pid in range(1, n_protocols + 1):
-        subjects_per_protocol[pid] = int((df["STUDY_ID"] == pid).any())
+    # Recompute subject counts from the *current* frame so the manifest
+    # reflects post-vary_sampling state (dropping rows can leave a
+    # protocol with zero retained observations on a small dataset).
+    subjects_per_protocol_post: dict[int, int] = {
+        pid: int(df.loc[df["STUDY_ID"] == pid, "NMID"].nunique())
+        for pid in range(1, n_protocols + 1)
+    }
 
     return df, {
         "perturbation": "add_protocol_pooling",
         "n_protocols": n_protocols,
         "n_subjects": n_subjects,
-        "subjects_per_protocol": {
-            str(k): int(v)
-            for k, v in zip(
-                range(1, n_protocols + 1),
-                [int((protocol_assignments == pid).sum()) for pid in range(1, n_protocols + 1)],
-                strict=True,
-            )
+        "subjects_per_protocol_assigned": {
+            str(pid): int((protocol_assignments == pid).sum()) for pid in range(1, n_protocols + 1)
+        },
+        "subjects_per_protocol_post_drop": {
+            str(pid): subjects_per_protocol_post[pid] for pid in range(1, n_protocols + 1)
         },
         "vary_sampling": recipe.vary_sampling,
         "vary_lloq": recipe.vary_lloq,
@@ -427,14 +623,20 @@ def _add_occasion_labels(
         drop=True
     )
 
-    # Vectorized: cumulative sum of dose indicators within each subject
-    dose_indicator = (df["EVID"] == 1).astype(int)
+    # Vectorized: cumulative sum of dose indicators within each subject.
+    # Group on the dose-flag column directly (not on EVID) so the transform's
+    # source column always matches the indicator semantics — even when AMT
+    # filtering changes which rows count as a dose. Earlier revisions grouped
+    # on ``dose_indicator.name`` (which equals "EVID") and then re-indexed
+    # via ``.loc`` inside the lambda; that worked only because the lambda
+    # discarded the EVID values, and would break under any refactor that
+    # disturbed ``dose_indicator.name``.
+    dose_flag = (df["EVID"] == 1).astype(int)
     if "AMT" in df.columns:
-        dose_indicator = dose_indicator & (df["AMT"] > 0).astype(int)
-
-    df["OCCASION"] = df.groupby("NMID")[dose_indicator.name].transform(
-        lambda _x: dose_indicator.loc[_x.index].cumsum()
-    )
+        dose_flag = dose_flag & (df["AMT"] > 0).astype(int)
+    df["_DOSE_FLAG"] = dose_flag.astype(int)
+    df["OCCASION"] = df.groupby("NMID")["_DOSE_FLAG"].cumsum()
+    df = df.drop(columns=["_DOSE_FLAG"])
     # Ensure minimum occasion is 1
     df["OCCASION"] = df["OCCASION"].clip(lower=1)
 

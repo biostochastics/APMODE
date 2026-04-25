@@ -130,7 +130,18 @@ def _build_require_api_key() -> Callable[[str | None], None]:
             # Auth disabled — caller is on the trusted loopback bind
             # (the CLI guard prevents this state on non-loopback hosts).
             return
-        if not api_key or not hmac.compare_digest(api_key, expected):
+        # ``hmac.compare_digest`` requires both operands to be bytes or
+        # both ASCII-only str — a header value containing non-ASCII raises
+        # TypeError, which FastAPI surfaces as a 500 (and leaks a
+        # distinguishing log line). Encode both sides as UTF-8 bytes so a
+        # malformed header degrades to a clean 401 with no side-channel.
+        valid = False
+        if api_key:
+            try:
+                valid = hmac.compare_digest(api_key.encode("utf-8"), expected.encode("utf-8"))
+            except (UnicodeEncodeError, AttributeError):
+                valid = False
+        if not valid:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="missing or invalid X-API-Key",

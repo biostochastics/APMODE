@@ -176,9 +176,20 @@ async def execute_run(
         # Catch BaseException so SystemExit / KeyboardInterrupt also
         # update the row before propagating (a shutdown mid-run should
         # not leave a stale RUNNING). Re-raise non-Exception subclasses.
+        #
+        # ``asyncio.shield`` mirrors the CancelledError arm above: a
+        # second cancellation arriving mid-write (e.g. the lifespan
+        # shutdown firing while this handler is awaiting aiosqlite)
+        # otherwise pre-empts the FAILED commit and pins the row at
+        # RUNNING until the next startup sweep reconciles it.
         tb = traceback.format_exc()
         try:
-            await store.update_status(run_id, RunStatus.FAILED, error=tb)
+            await asyncio.shield(store.update_status(run_id, RunStatus.FAILED, error=tb))
+        except asyncio.CancelledError:
+            logger.warning(
+                "api_run_failed_status_write_interrupted",
+                extra={"run_id": run_id},
+            )
         except Exception:
             logger.exception(
                 "api_run_failed_status_update_failed",
@@ -198,8 +209,17 @@ async def execute_run(
 
     finally:
         if on_complete is not None:
+            # Shield the callback so a second CancelledError (lifespan
+            # shutdown racing a DELETE) cannot skip ``active_tasks.pop``
+            # and leak a 429 capacity slot. The callback itself is a
+            # bounded ``dict.pop`` — safe to shield.
             try:
-                await on_complete(run_id)
+                await asyncio.shield(on_complete(run_id))
+            except asyncio.CancelledError:
+                logger.warning(
+                    "api_run_on_complete_callback_interrupted",
+                    extra={"run_id": run_id},
+                )
             except Exception:
                 logger.exception(
                     "api_run_on_complete_callback_failed",

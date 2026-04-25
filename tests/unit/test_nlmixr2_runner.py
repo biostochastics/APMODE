@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Tests for Nlmixr2Runner subprocess backend (ARCHITECTURE.md S4.2)."""
 
+import asyncio
 import json
 import shutil
 from pathlib import Path
@@ -408,6 +409,74 @@ class TestNlmixr2RunnerRequestCreation:
                 data_path=Path("/data/test.csv"),
                 test_data_path=Path("relative/test.csv"),
             )
+
+    @pytest.mark.asyncio
+    async def test_grandchild_holding_pipe_does_not_hang_runner(self, tmp_path: Path) -> None:
+        """Reproducer for the macOS asyncio orphaned-pipe-FD class of hang.
+
+        When the immediate child (here a stand-in for ``Rscript``) exits
+        but a grandchild process inherits and keeps stdout/stderr open,
+        the asyncio ``StreamReader`` waiting on those FDs never sees
+        EOF — the parent runner would hang in ``_drain_pipe`` long
+        after ``proc.wait()`` could return. The defensive grace window
+        in ``_spawn_r`` (force-cancel drains 5 s after the immediate
+        child reaps) prevents the runner from dead-locking on the
+        next fit.
+
+        This test launches a shell script that:
+          1. backgrounds a sleeper that inherits stdout/stderr,
+          2. writes a valid response.json,
+          3. exits successfully — the sleeper outlives it.
+
+        Without the runner's grace-cancel, ``await runner.run()`` would
+        block forever; with it the call returns within a couple of
+        seconds and the sleeper is left orphaned (acceptable for a
+        single test; the OS reaps it after the test exits).
+        """
+        script = tmp_path / "exit_with_orphan.sh"
+        script.write_text(
+            "#!/bin/sh\n"
+            # Background a sleeper inheriting our stdout (FD 1) and
+            # stderr (FD 2). Even after this script's exec exits, the
+            # sleeper holds the pipe open.
+            "( sleep 30 ) &\n"
+            # Write a valid response.json so _parse_response succeeds
+            # and the runner returns normally — the test asserts
+            # *return*, not error.
+            "cat > \"$3\" << 'RESP'\n"
+            '{"schema_version":"1.0","status":"error",'
+            '"error_type":"convergence","result":null,'
+            '"r_session_info":{"r_version":"4.4.1",'
+            '"nlmixr2_version":"3.0.0","platform":"test",'
+            '"packages":{}},"random_seed_state":null}\n'
+            "RESP\n"
+            # Exit 0 — immediate child reaps; grandchild ``sleep`` is
+            # still alive and still owns the pipe FDs.
+            "exit 0\n"
+        )
+        script.chmod(0o755)
+        runner = Nlmixr2Runner(
+            work_dir=tmp_path / "work",
+            r_executable=str(script),
+            harness_path=Path("/dev/null"),
+        )
+        train_csv = tmp_path / "train.csv"
+        train_csv.write_text("NMID,TIME,DV,AMT,EVID,MDV,CMT\n1,0.0,0,1,1,1,1\n1,1.0,5,0,0,0,1\n")
+
+        # The grace window inside _spawn_r is 5 s; a 20 s budget gives
+        # us plenty of headroom while still being far below the 30 s
+        # sleeper that would otherwise hang the test.
+        async def _go() -> None:
+            with pytest.raises(ConvergenceError):
+                await runner.run(
+                    spec=_test_spec(),
+                    data_manifest=_test_manifest(),
+                    initial_estimates={"CL": 5.0, "V": 70.0},
+                    seed=42,
+                    data_path=train_csv,
+                )
+
+        await asyncio.wait_for(_go(), timeout=20.0)
 
 
 class TestParseResponseWithPredictedSimulations:

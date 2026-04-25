@@ -25,7 +25,7 @@ from typing import Any
 
 def _digest_bundle(run_dir: Path) -> str:
     digest = hashlib.sha256()
-    # Mirror ``apmode.bundle.emitter._DIGEST_EXCLUDED_NAMES``: sentinel
+    # Mirror ``apmode.bundle.emitter._DIGEST_EXCLUDED_RELATIVE_PATHS``: sentinel
     # itself + post-seal sidecars (CycloneDX SBOM, SBC manifest) that
     # are explicitly excluded so regenerating them never invalidates
     # ``_COMPLETE``.

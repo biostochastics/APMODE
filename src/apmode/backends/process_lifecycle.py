@@ -57,6 +57,16 @@ async def terminate_process_group(
     to exit between the ``returncode`` check and the ``killpg``
     syscall.
 
+    Cancellation semantics: the *entire* SIGTERM-grace-SIGKILL sequence
+    runs inside an :func:`asyncio.shield`, so a second
+    :class:`asyncio.CancelledError` (e.g. lifespan shutdown firing
+    while a DELETE handler is still awaiting this helper) cannot skip
+    the SIGKILL escalation, orphan the inner ``proc.wait()``, or
+    bypass the grace window. After the shielded sequence has either
+    cleanly exited the child or escalated to SIGKILL, any pending
+    cancellation is re-raised so the caller's
+    :class:`asyncio.CancelledError` propagation is preserved.
+
     Args:
         proc: The subprocess to terminate. Must have been spawned with
             a fresh process group (``preexec_fn=os.setsid`` or
@@ -72,35 +82,45 @@ async def terminate_process_group(
         # Child already gone — nothing to signal.
         return
 
-    with contextlib.suppress(ProcessLookupError):
-        os.killpg(pgid, signal.SIGTERM)
-    try:
-        # ``asyncio.shield`` keeps a *second* CancelledError (e.g. from a
-        # lifespan shutdown firing while a DELETE handler is still
-        # awaiting this grace window) from skipping the SIGKILL
-        # escalation and orphaning the child. The shield is per-await,
-        # so a cancel still propagates *after* the SIGKILL path runs.
-        await asyncio.shield(asyncio.wait_for(proc.wait(), timeout=grace_seconds))
-    except (TimeoutError, asyncio.CancelledError) as exc:
-        # Child did not exit in time, or this coroutine was cancelled
-        # mid-grace — either way escalate to SIGKILL on the process
-        # group. This also catches grandchildren the runner does not
-        # directly own (e.g. R worker subprocesses spawned by
-        # parallelisation libraries).
-        logger.warning(
-            "subprocess_terminate_grace_exceeded",
-            extra={
-                "pid": proc.pid,
-                "grace_seconds": grace_seconds,
-                "trigger": type(exc).__name__,
-            },
-        )
+    async def _run_grace_then_kill() -> None:
         with contextlib.suppress(ProcessLookupError):
-            os.killpg(pgid, signal.SIGKILL)
-        with contextlib.suppress(ProcessLookupError):
-            await proc.wait()
-        if isinstance(exc, asyncio.CancelledError):
-            raise
+            os.killpg(pgid, signal.SIGTERM)
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=grace_seconds)
+        except TimeoutError:
+            logger.warning(
+                "subprocess_terminate_grace_exceeded",
+                extra={
+                    "pid": proc.pid,
+                    "grace_seconds": grace_seconds,
+                    "trigger": "TimeoutError",
+                },
+            )
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(pgid, signal.SIGKILL)
+            with contextlib.suppress(ProcessLookupError):
+                await proc.wait()
+
+    # Run the SIGTERM/grace/SIGKILL sequence inside a shield so a
+    # second cancellation cannot bypass the escalation. The shielded
+    # task continues even if the awaiting frame is cancelled — we then
+    # re-raise the captured cancellation after the child is reaped, so
+    # the four-link cancellation contract documented in CLAUDE.md is
+    # preserved end-to-end.
+    inner_task = asyncio.ensure_future(_run_grace_then_kill())
+    cancelled_during_wait: asyncio.CancelledError | None = None
+    while True:
+        try:
+            await asyncio.shield(inner_task)
+            break
+        except asyncio.CancelledError as exc:
+            # Capture the cancellation but keep awaiting the shielded
+            # inner_task so the SIGKILL escalation actually runs to
+            # completion. Loop until inner_task is done.
+            cancelled_during_wait = exc
+
+    if cancelled_during_wait is not None:
+        raise cancelled_during_wait
 
 
 __all__ = ["DEFAULT_GRACE_SECONDS", "terminate_process_group"]

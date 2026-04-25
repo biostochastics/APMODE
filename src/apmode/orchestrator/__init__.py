@@ -942,7 +942,16 @@ class Orchestrator:
         # SHA-256 digest over all artifacts, making the bundle
         # distinguishable from a partial/crashed run. Only successful
         # completion paths reach this point.
-        emitter.seal()
+        #
+        # Offloaded to a worker thread because ``BundleEmitter.seal``
+        # walks every file in the bundle synchronously (1 MiB-chunked
+        # SHA-256) under the process-wide ``_DIGEST_LOCK``. On a
+        # discovery-lane bundle with hundreds of posterior parquets
+        # the digest is multi-second wall time; running it on the
+        # event-loop thread blocks every other API request (including
+        # ``/healthz``) for the duration. The lock makes the worker
+        # thread safe against concurrent emitter writes.
+        await asyncio.to_thread(emitter.seal)
 
         logger.info(
             "Run %s complete: %d candidates, %d recommended, %d ranked",

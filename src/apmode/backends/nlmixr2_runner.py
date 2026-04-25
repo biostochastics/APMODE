@@ -395,8 +395,103 @@ class Nlmixr2Runner:
                     _drain_pipe(stream_stderr, log_handle, on_stderr_line),
                     name=f"drain-stderr-{proc.pid}",
                 )
-                await asyncio.gather(drain_stdout, drain_stderr)
-                await proc.wait()
+
+                # Race a kill(0)-based watchdog against the drain
+                # gather. Background:
+                #
+                #   rxode2 invokes gcc/clang to compile the generated C
+                #   model code. Those grandchildren inherit R's stdout
+                #   and stderr FDs. If R exits while a grandchild is
+                #   still alive (it segfaulted, was SIGKILLed, or just
+                #   takes a long time to flush), the OS pipes stay
+                #   open. Both ``await proc.wait()`` and
+                #   ``await asyncio.gather(drains)`` then hang
+                #   indefinitely — asyncio's ``BaseSubprocessTransport.
+                #   _try_finish`` gates the wait future on ALL pipe
+                #   transports closing, so an orphaned grandchild can
+                #   block the immediate-child reap path forever. The
+                #   outer ``asyncio.timeout(timeout_seconds)`` would
+                #   eventually fire, but a per-fit timeout of 600 s
+                #   means a 600 s wall-clock penalty per orphaned fit.
+                #
+                # The watchdog uses ``os.kill(pid, 0)`` to detect when
+                # the *immediate* child is gone independent of pipe
+                # state (kill(0) checks process existence; the OS
+                # reaps the immediate child on exit even if pipes
+                # stay open). Once the immediate child is gone, we
+                # give the drains a short grace and then force-EOF
+                # the pipes so the StreamReader unblocks and the
+                # asyncio transport finally resolves proc.wait().
+                async def _await_drains() -> None:
+                    await asyncio.gather(drain_stdout, drain_stderr)
+
+                async def _wait_immediate_child() -> None:
+                    while True:
+                        try:
+                            os.kill(proc.pid, 0)
+                        except (ProcessLookupError, PermissionError):
+                            return
+                        await asyncio.sleep(0.5)
+
+                drains_task: asyncio.Task[None] = asyncio.create_task(
+                    _await_drains(),
+                    name=f"drains-await-{proc.pid}",
+                )
+                watchdog: asyncio.Task[None] = asyncio.create_task(
+                    _wait_immediate_child(),
+                    name=f"child-watchdog-{proc.pid}",
+                )
+                done, _pending = await asyncio.wait(
+                    {drains_task, watchdog},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if watchdog in done and drains_task not in done:
+                    # Immediate child gone but drains still draining
+                    # (orphaned grandchild holds the pipes). Give a
+                    # short grace for any tail of legitimate output
+                    # and then force-EOF the streams so the drain
+                    # coroutines complete and the asyncio transport
+                    # can resolve proc.wait().
+                    _drain_grace = 5.0
+                    try:
+                        await asyncio.wait_for(drains_task, timeout=_drain_grace)
+                    except TimeoutError:
+                        logger.warning(
+                            "drain_pipes_hung_after_proc_exit_force_eof",
+                            extra={
+                                "pid": proc.pid,
+                                "grace_seconds": _drain_grace,
+                            },
+                        )
+                        # feed_eof() makes StreamReader.readline()
+                        # return b"" and the drain loop exits cleanly.
+                        with contextlib.suppress(Exception):
+                            stream_stdout.feed_eof()
+                        with contextlib.suppress(Exception):
+                            stream_stderr.feed_eof()
+                        with contextlib.suppress(BaseException):
+                            await asyncio.gather(
+                                drain_stdout,
+                                drain_stderr,
+                                return_exceptions=True,
+                            )
+                else:
+                    # Drains completed normally — cancel the watchdog
+                    # so it doesn't leak.
+                    watchdog.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await watchdog
+
+                # By this point the immediate child has exited and the
+                # drains have finished (cleanly or via force-EOF). The
+                # transport can now resolve proc.wait() — but with a
+                # safety timeout in case the asyncio transport's
+                # _try_finish is still wedged on a pipe that we
+                # couldn't close. After this short wait, proceed with
+                # whatever returncode the OS already reaped (kill(0)
+                # confirmed the immediate child is gone).
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(proc.wait(), timeout=2.0)
         except TimeoutError:
             # Route the timeout path through ``terminate_process_group``
             # (SIGTERM, 5 s grace, then SIGKILL) just like the

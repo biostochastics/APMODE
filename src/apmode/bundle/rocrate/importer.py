@@ -31,12 +31,22 @@ from pathlib import Path
 # The names are repeated here (rather than imported from
 # ``apmode.bundle.emitter``) so the importer stays light-weight and
 # does not pull in Lark + the DSL stack. Keep in lock-step with
-# ``apmode.bundle.emitter._DIGEST_EXCLUDED_NAMES``.
+# ``apmode.bundle.emitter._DIGEST_EXCLUDED_RELATIVE_PATHS``.
 _COMPLETE_SENTINEL = "_COMPLETE"
 _SBOM_FILENAME = "bom.cdx.json"
-_SBC_MANIFEST_FILENAME = "sbc_manifest.json"
-_DIGEST_EXCLUDED_NAMES_LOWER: frozenset[str] = frozenset(
-    name.lower() for name in (_COMPLETE_SENTINEL, _SBOM_FILENAME, _SBC_MANIFEST_FILENAME)
+# SBC manifest lives at ``artifacts/sbc/sbc_manifest.json`` — exclude
+# by the full bundle-relative path so a same-named artefact in another
+# subdir is not silently exempted.
+_SBC_MANIFEST_RELPATH = "artifacts/sbc/sbc_manifest.json"
+# Bundle-relative POSIX paths excluded from the digest. Lowercased so
+# round-tripping through a case-insensitive filesystem (macOS APFS
+# default, Windows NTFS) cannot inadvertently miss the sentinel.
+# Compared against ``p.relative_to(bundle).as_posix().lower()`` rather
+# than the basename so a same-named artefact under a nested subdir
+# (e.g. ``compiled_specs/<id>/bom.cdx.json``) is *not* silently
+# exempted from the digest.
+_DIGEST_EXCLUDED_RELPATHS_LOWER: frozenset[str] = frozenset(
+    name.lower() for name in (_COMPLETE_SENTINEL, _SBOM_FILENAME, _SBC_MANIFEST_RELPATH)
 )
 _HASH_CHUNK_SIZE = 1024 * 1024
 
@@ -267,15 +277,18 @@ def _verify_sentinel(bundle: Path) -> None:
 
     digest = hashlib.sha256()
     for p in sorted(bundle.rglob("*"), key=lambda q: q.relative_to(bundle).as_posix()):
-        # The exclusion set mirrors ``apmode.bundle.emitter._DIGEST_EXCLUDED_NAMES``:
-        # the sentinel itself, the CycloneDX SBOM sidecar, and the SBC
-        # manifest stub. Names are compared case-insensitively so a
-        # round-trip through a case-insensitive filesystem (macOS APFS
-        # default, Windows NTFS) cannot mask a legitimate file or
-        # inadvertently exclude a lookalike.
-        if not p.is_file() or p.name.lower() in _DIGEST_EXCLUDED_NAMES_LOWER:
+        if not p.is_file():
             continue
-        digest.update(p.relative_to(bundle).as_posix().encode("utf-8"))
+        rel = p.relative_to(bundle).as_posix()
+        # The exclusion set mirrors ``apmode.bundle.emitter._DIGEST_EXCLUDED_RELATIVE_PATHS``:
+        # the sentinel itself, the CycloneDX SBOM sidecar, and the SBC
+        # manifest stub. Compared against the bundle-relative POSIX path
+        # (case-insensitively, to survive APFS/NTFS round-trips) so a
+        # same-named artefact in a nested subdir is not silently
+        # exempted from the digest.
+        if rel.lower() in _DIGEST_EXCLUDED_RELPATHS_LOWER:
+            continue
+        digest.update(rel.encode("utf-8"))
         digest.update(b"\0")
         with p.open("rb") as f:
             for chunk in iter(lambda: f.read(_HASH_CHUNK_SIZE), b""):
