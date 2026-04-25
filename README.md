@@ -7,15 +7,17 @@
   **Adaptive Pharmacokinetic Model Discovery Engine**
 
   <!-- apmode:AUTO:badge_version -->
-  [![Version](https://img.shields.io/badge/version-v0.5.0--rc2-blue)]()
+  [![Version](https://img.shields.io/badge/version-v0.6.0--rc1-blue)]()
   <!-- apmode:/AUTO:badge_version -->
   <!-- apmode:AUTO:badge_tests -->
-  [![Tests](https://img.shields.io/badge/tests-2193%20collected-success)]()
+  [![Tests](https://img.shields.io/badge/tests-2244%20collected-success)]()
   <!-- apmode:/AUTO:badge_tests -->
   [![License](https://img.shields.io/badge/license-GPL--2.0--or--later-green)](LICENSE)
   [![Python](https://img.shields.io/badge/python-3.12%E2%80%933.14-yellow)]()
   [![mypy](https://img.shields.io/badge/mypy-strict%20%E2%9C%93-blue)]()
   [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/biostochastics/APMODE)
+
+  <sub>**[What is APMODE?](#what-is-apmode)** &middot; **[Capability Status](#capability-status)** &middot; **[Quick Start](#quick-start)** &middot; **[Formular DSL](#formular--the-pk-dsl)** &middot; **[Architecture](#architecture)** &middot; **[Governance](#governance-funnel)** &middot; **[Benchmarks](#benchmark-suites)** &middot; **[CLI](#cli-reference)** &middot; **[HTTP API](#http-api)** &middot; **[Citation](#citation)**</sub>
 
 </div>
 
@@ -33,7 +35,22 @@ APMODE is a **governed meta-system** that composes five population PK modeling p
 
 **Formular — a typed PK DSL — is the control surface.** Models are specified in [Formular](docs/FORMULAR.md), a five-block grammar (`Absorption × Distribution × Elimination × Variability × Observation`) plus a sixth semantic axis — `priors` — populated via the `SetPrior` transform rather than grammar text. Specs compile to a typed AST, are validated against pharmacometric constraints, and lower to backend-specific code (nlmixr2 R, Stan/Torsten, JAX/Diffrax). The agentic LLM backend (Phase 3) operates exclusively through the 7 typed Formular transforms — including `SetPrior` for Bayesian workflows — it cannot emit raw code.
 
-> **Status**: **<!-- apmode:AUTO:version_tag -->v0.5.0-rc2<!-- apmode:/AUTO:version_tag -->** (2026-04-17) — 0.5 release candidate. <!-- apmode:AUTO:tests_nonlive -->2176<!-- apmode:/AUTO:tests_nonlive --> tests passing (`-m "not live"`); `mypy --strict` clean; `ruff` clean. Supports Python 3.12–3.14. Gate policy schema <!-- apmode:AUTO:policy_gate -->0.6.0<!-- apmode:/AUTO:policy_gate -->; profiler policy <!-- apmode:AUTO:policy_profiler -->2.1.0<!-- apmode:/AUTO:policy_profiler --> (manifest_schema_version = <!-- apmode:AUTO:profiler_manifest -->2<!-- apmode:/AUTO:profiler_manifest -->). Reproducibility bundles now carry a `_COMPLETE` sentinel with a SHA-256 digest; `apmode validate` refuses unsealed bundles. Stan emitter handles IV bolus and sanitizes covariate identifiers. LLM providers enforce a 120s default timeout. See [CHANGELOG.md](CHANGELOG.md) for the full 0.5.0 release-candidate changes.
+> **Status**: **<!-- apmode:AUTO:version_tag -->v0.6.0-rc1<!-- apmode:/AUTO:version_tag -->** (2026-04-24) — 0.6 release candidate. <!-- apmode:AUTO:tests_nonlive -->2227<!-- apmode:/AUTO:tests_nonlive --> tests passing (`-m "not live"`); `mypy --strict` clean; `ruff` clean. Supports Python 3.12–3.14. Gate policy schema <!-- apmode:AUTO:policy_gate -->0.6.0<!-- apmode:/AUTO:policy_gate -->; profiler policy <!-- apmode:AUTO:policy_profiler -->2.1.0<!-- apmode:/AUTO:policy_profiler --> (manifest_schema_version = <!-- apmode:AUTO:profiler_manifest -->2<!-- apmode:/AUTO:profiler_manifest -->). v0.6 ships the FastAPI HTTP API surface (`apmode serve`, `POST /runs`, cancellation lifecycle), Suite C Phase-1 MLE + Bayesian fixtures with weekly NPE scoring, and the v0.6 RO-Crate projector hardening pass. Reproducibility bundles continue to carry a `_COMPLETE` sentinel with a SHA-256 digest; `apmode validate` refuses unsealed bundles. See [CHANGELOG.md](CHANGELOG.md) for the full 0.6.0 release-candidate changes.
+
+### Capability status
+
+A reader-facing snapshot of what is runnable today vs. what is partial / planned. Project-internal phasing (Phase 1 / 2 / 3 from PRD §8) is preserved in [`docs/PRD_APMODE_v0.3.md`](docs/PRD_APMODE_v0.3.md); this table is the canonical *user*-facing version.
+
+| Component | Status | Notes |
+|---|---|---|
+| Classical NLME (nlmixr2 SAEM/FOCEi) | ✅ Stable | Submission-lane primary; Suite A + Suite C MLE roster |
+| Automated structural search | ✅ Stable | Evidence-driven, deterministic budget (≤ 30–50 candidates/run) |
+| Reproducibility bundle + RO-Crate projection | ✅ Stable | Sealed `_COMPLETE` SHA-256; WRROC v0.5 export + ZIP round-trip |
+| Bayesian PK (Stan/Torsten via cmdstanpy) | ✅ Available | MCMC Gate 1 thresholds shipped (R̂/ESS/divergences/E-BFMI/Pareto-k); Suite C Bayesian roster (vancomycin Roberts 2011) ships in v0.6 |
+| Hybrid mechanistic-NODE (JAX/Diffrax) | ⚠ Available, oral-only | Pooled-NLL training (no per-subject random effects yet); never submission-eligible (PRD §3 hard rule) |
+| Agentic LLM backend | ⚠ Available, opt-in | Off by default (`--agentic`); discovery / optimization lanes only; ≤ 25 typed-transform iterations per run |
+| Optimization lane (LORO-CV Gate 2) | ✅ Available | Gate 2 enforces LORO-CV folds, NPDE mean/variance bands, VPC concordance; `policies/optimization.json` is a versioned artefact; cross-paradigm scoring-contract ranker landed in rc2 |
+| HTTP API + `apmode serve` | ✅ Available | Loopback by default; refuses non-loopback without `--allow-public`; full endpoint contract under [HTTP API](#http-api). Long-poll status (`?wait=N`) is a documented future enhancement, not in 0.5 |
 
 All numeric badges + status counts are rewritten from the source tree by `scripts/sync_readme.py` — see [Keeping the README honest](#keeping-the-readme-honest).
 
@@ -48,7 +65,7 @@ All numeric badges + status counts are rewritten from the source tree by `script
 - **Optional (classical)**: R 4.4+ with `nlmixr2`, `rxode2`, `jsonlite`, `lotri`, `mice`, `missRanger` — mock R subprocess tests work without R
 - **Optional (Bayesian)**: CmdStan 2.36+ via `cmdstanpy.install_cmdstan()` for the Stan/Torsten backend
 - **Optional (agentic)**: An LLM API key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`) or a local Ollama install
-- **Optional (HTTP API)**: `uv sync --extra api` pulls FastAPI + Uvicorn + aiosqlite. `apmode.api.app.build_app(runs_dir=..., db_path=...)` returns a `FastAPI` ready for `uvicorn.run(..., timeout_graceful_shutdown=30)`. Endpoints: `POST /runs` (202 + `Retry-After: 5`), `GET /runs`, `GET /runs/{id}/status`, `GET /runs/{id}/bundle` (zip), `GET /runs/{id}/rocrate` (zip), `DELETE /runs/{id}` (cancellation that SIGTERMs the child R/cmdstan process group, 5 s grace, then SIGKILL). The Starlette lifespan calls `SQLiteRunStore.initialize()` (which sweeps `RUNNING` rows from a crashed prior process to `INTERRUPTED`) and cancels every active task on shutdown. The `apmode serve` CLI wrapper that binds to localhost is plan Task 35
+- **Optional (HTTP API)**: `uv sync --extra api` pulls FastAPI + Uvicorn + aiosqlite. See the [HTTP API](#http-api) section for the endpoint contract, run-store semantics, and cancellation lifecycle.
 
 ### Installation
 
@@ -62,9 +79,23 @@ uv sync --all-extras
 # Verify toolchain (R/nlmixr2, CmdStan, Python deps, LLM keys)
 uv run apmode doctor
 
+# Confirm everything is healthy in one line
+uv run apmode doctor --json | jq '.components[] | select(.status!="ok")'  # empty output = all green
+
 # Verify CLI entry point
 uv run apmode --help
 ```
+
+### Input CSV requirements
+
+APMODE ingests NONMEM-style CSV through a Pandera schema. To save first-run debugging:
+
+- **Required columns** — `ID` (subject), `TIME` (numeric), `DV` (observed concentration), `AMT` (dose amount; 0 for observation rows), `EVID` (0 = observation, 1 = dose, 2 = other event).
+- **Optional event fields** — `CMT` (compartment), `RATE` (infusion rate; 0 for bolus), `ADDL` / `II` (additional dose count + interdose interval), `SS` (steady-state flag), `MDV` (missing-DV flag), `BLQ` (below-LLOQ indicator), `DVID` (multi-analyte routing — used by FREM and DVID-multiplexed observations).
+- **Categorical covariates** — canonical encoding is `{0, 1}`; `{1, 2}`, `M`/`F`, `Yes`/`No`, `Pos`/`Neg`, `Case`/`Control`, etc. are auto-detected and remapped (full table in [Missing-Data Handling](#missing-data-handling-covariates--blq)). Multi-level categoricals must be one-hot encoded by the analyst.
+- **Units** — the NCA estimator is unit-aware for the common `mg → ng/mL` convention (see [Phase 2 — root candidates](#phase-2-generate-root-candidates)). No explicit unit column is required.
+
+Datasets in the public registry (`apmode datasets`) ship pre-conformed; use them as schema templates.
 
 ### A worked end-to-end walkthrough
 
@@ -81,6 +112,8 @@ uv run apmode datasets theo_sd -o ./data
 uv run apmode explore ./data/theo_sd.csv
 
 # 4. Full submission-lane pipeline (classical NLME, deterministic budget)
+#    theo_sd (12 subjects) ≈ 3-5 min wall time at -j 4
+#    mavoglurant (120 subjects) ≈ 60-90 min; 1000+ subjects scales to several hours
 uv run apmode run ./data/theo_sd.csv --lane submission --parallel-models 4 -o ./runs
 
 # 5. Inspect the best candidate, then trace the whole DAG
@@ -112,7 +145,7 @@ uv run apmode run ./data/theo_sd.csv --lane discovery \
 # Agentic LLM backend (discovery/optimization lanes only; OFF by default)
 uv run apmode run ./data/theo_sd.csv --lane discovery --agentic --provider anthropic
 
-# Optimization lane — adds LORO-CV Gate 2 (Phase 3)
+# Optimization lane — adds LORO-CV Gate 2
 uv run apmode run ./data/theo_sd.csv --lane optimization
 ```
 
@@ -191,8 +224,8 @@ continues to point the policy loader at an alternative directory.
 ### Test + typecheck + lint
 
 ```bash
-uv run pytest tests/ -q                         # <!-- apmode:AUTO:tests -->2193<!-- apmode:/AUTO:tests --> collected
-uv run pytest tests/ -q -m "not live"           # <!-- apmode:AUTO:tests_nonlive -->2176<!-- apmode:/AUTO:tests_nonlive --> skip live LLM tests
+uv run pytest tests/ -q                         # <!-- apmode:AUTO:tests -->2244<!-- apmode:/AUTO:tests --> collected
+uv run pytest tests/ -q -m "not live"           # <!-- apmode:AUTO:tests_nonlive -->2227<!-- apmode:/AUTO:tests_nonlive --> skip live LLM tests
 uv run mypy src/apmode/ --strict                # type checking
 uv run ruff check src/apmode/ tests/            # linting
 uv run python scripts/sync_readme.py --check    # README ↔ codebase drift guard
@@ -497,7 +530,7 @@ Formular text ──→ Lark parser ──→ AST ──→     Search Engine
 | HTTP API surface | `src/apmode/api/{app,routes,runs}.py` | `build_app()` factory + Starlette lifespan; POST/GET/DELETE `/runs` + `/runs/{id}/{status,bundle,rocrate}` endpoints; `execute_run` background-task wrapper that catches `CancelledError` and writes `RunStatus.CANCELLED` |
 | Subprocess termination | `src/apmode/backends/process_lifecycle.py` | `terminate_process_group(proc, grace_seconds=5)` shared by `Nlmixr2Runner` + `BayesianRunner` — SIGTERM → wait → SIGKILL on the child process group, called from the runners' `asyncio.CancelledError` paths |
 | Path resolver | `src/apmode/paths.py` | `APMODE_POLICIES_DIR` env override + pyproject-walk fallback for CLI/orchestrator |
-| CLI | `src/apmode/cli.py` | Typer CLI with <!-- apmode:AUTO:cli_cmds -->15<!-- apmode:/AUTO:cli_cmds --> commands (see [CLI Reference](#cli-reference)) |
+| CLI | `src/apmode/cli.py` | Typer CLI with <!-- apmode:AUTO:cli_cmds -->16<!-- apmode:/AUTO:cli_cmds --> commands (see [CLI Reference](#cli-reference)) |
 
 ---
 
@@ -593,13 +626,19 @@ Suite C anchors APMODE against published, peer-reviewed reference parameterisati
 
 The integration tests (`tests/integration/test_suite_c_phase1_mle.py`, `tests/integration/test_suite_c_bayesian.py`) verify each fixture loads, validates against its target lane, lowers cleanly to nlmixr2 R or Stan code, and carries a Crossref-canonical DOI. The full short-fit recovery test (warmup=200, sampling=200, chains=2 vs 8-subject shrink data) is gated behind `@pytest.mark.slow` for the weekly CI workflow.
 
-The scoring harness — `fraction-beats-literature-median ≥ 60%` with δ=0.02 win margin and 5-fold subject-level CV — lands in the next plan task (weekly CI dashboard).
+The scoring harness — `fraction-beats-literature-median ≥ 60%` with δ=0.02 win margin and 5-fold subject-level CV — is under development; the weekly CI workflow at `.github/workflows/suite_c_phase1.yml` runs the Phase-1 scorer once the dashboard is in place.
 
 ### End-to-End Benchmark Results
 
 Full `apmode run` pipeline on all Suite A fixtures plus three real
 public datasets. Driver: `scripts/run_full_benchmark.sh`; bundles land
 in `benchmarks/runs/full-<timestamp>/`.
+
+**Provenance** — APMODE `<!-- apmode:AUTO:version_tag -->v0.6.0-rc1<!-- apmode:/AUTO:version_tag -->`, macOS 14 / Linux x86_64, Python 3.12, R 4.4.1 (`nlmixr2` 4.0.1, `rxode2` 4.0.0), CmdStan 2.36 where applicable. Reproduce with:
+
+```bash
+bash scripts/run_full_benchmark.sh ./benchmarks/runs/full-$(date -u +%Y%m%dT%H%M%SZ)
+```
 
 **Gate funnel — 10/10 scenarios produced a recommended candidate.**
 
@@ -634,7 +673,7 @@ reason, vote). `apmode inspect <bundle>` renders the per-signal table;
 
 ## Test Suite
 
-**<!-- apmode:AUTO:tests -->2193<!-- apmode:/AUTO:tests --> tests collected** (<!-- apmode:AUTO:tests_nonlive -->2176<!-- apmode:/AUTO:tests_nonlive --> non-live) across multiple strategies — all counts auto-synced by `scripts/sync_readme.py`:
+**<!-- apmode:AUTO:tests -->2244<!-- apmode:/AUTO:tests --> tests collected** (<!-- apmode:AUTO:tests_nonlive -->2227<!-- apmode:/AUTO:tests_nonlive --> non-live) across multiple strategies — all counts auto-synced by `scripts/sync_readme.py`:
 
 ```bash
 uv run pytest tests/unit/ -q               # unit tests
@@ -868,7 +907,7 @@ Please cite the individual papers listed under *Pharmacometric References* when 
 
 ## CLI Reference
 
-<!-- apmode:AUTO:cli_cmds -->15<!-- apmode:/AUTO:cli_cmds --> commands exposed by `apmode --help` (count auto-synced from `src/apmode/cli.py`):
+<!-- apmode:AUTO:cli_cmds -->16<!-- apmode:/AUTO:cli_cmds --> commands exposed by `apmode --help` (count auto-synced from `src/apmode/cli.py`):
 
 | Command | Description |
 |---------|-------------|
@@ -883,9 +922,10 @@ Please cite the individual papers listed under *Pharmacometric References* when 
 | `apmode lineage <bundle> <candidate>` | Transform chain from root to candidate with per-gate status |
 | `apmode report <bundle>` | Open HTML (browser) or `--format md` regulatory report in pager |
 | `apmode doctor` | Check R/nlmixr2/CmdStan/Python deps + LLM provider keys |
-| `apmode ls [--sort bic\|time\|--limit N]` | List run bundles under `./runs` with summary table |
+| `apmode ls [--sort bic\|time] [--limit N] [--format {table,path,json}]` | List run bundles under `./runs`; `--format path` emits absolute paths for shell scripting (`BUNDLE=$(apmode ls --sort bic --limit 1 --format path)`) |
 | `apmode policies [lane] [--validate]` | List/inspect gate policies; `--validate` runs the CI schema hook |
 | `apmode graph <bundle>` | Search DAG visualization: `--format tree/dot/mermaid/json`, `--converged`, `--backend` |
+| `apmode serve` | HTTP API behind uvicorn; loopback default (refuses non-loopback without `--allow-public`); 30 s graceful-shutdown budget; full endpoint contract under [HTTP API](#http-api) |
 
 ### Key Options for `apmode run`
 
@@ -1018,6 +1058,44 @@ uv run pytest tests/integration/test_llm_providers_live.py -m live -v
 
 ---
 
+## HTTP API
+
+`uv sync --extra api` pulls FastAPI + Uvicorn + aiosqlite. The CLI wrapper `apmode serve` binds the API to loopback by default; the factory `apmode.api.app.build_app(runs_dir=..., db_path=...)` is also available for direct embedding (custom auth middleware, mounting under a parent ASGI app, etc.).
+
+```bash
+# Default: loopback + port 8765, runs in ./runs, SQLite registry alongside
+uv run apmode serve
+
+# Custom paths and port
+uv run apmode serve --port 9000 --runs-dir /scratch/apmode-runs --db-path /scratch/apmode-runs/registry.sqlite3
+
+# Bind to all interfaces (refused without --allow-public; front with an authenticating reverse proxy)
+uv run apmode serve --host 0.0.0.0 --allow-public
+
+# Allow Bayesian backend in POST /runs body (off by default until the runner is fully wired)
+uv run apmode serve --allow-bayesian
+```
+
+The canonical scientific workflow — `ssh -L 8765:127.0.0.1:8765 lab-gpu-box` then `apmode serve` on the remote — needs no extra flags; the loopback default is the right thing for a tunnelled session. Passing `--host 0.0.0.0` (or any non-loopback address) without `--allow-public` exits with code 2 and a message naming the risk: bundle artefacts may contain patient data. `--allow-public` itself now requires **all three** of: `APMODE_API_KEY` set in the environment (verified per-request via `hmac.compare_digest`), `--dataset-root <DIR>` (so a remote caller cannot request `dataset_path: /etc/passwd` — the path is resolved as `joinpath(root, user_input).resolve()` and rejected if it escapes the root), and a TLS-terminating reverse proxy in front. `/healthz` stays open without a key for liveness probes; every other endpoint requires the `X-API-Key` header.
+
+| Endpoint | Method | Behaviour |
+|---|---|---|
+| `/healthz` | `GET` | `{ "status": "ok", "apmode_version": "<v>" }` — readiness probe |
+| `/runs` | `POST` | 202 Accepted + `Retry-After: 5`; spawns the run as an `asyncio` task tracked in `app.state.active_tasks` |
+| `/runs` | `GET` | List run summaries from the SQLite store |
+| `/runs/{id}/status` | `GET` | Current `RunStatus` (`PENDING` / `RUNNING` / `COMPLETED` / `CANCELLED` / `FAILED` / `INTERRUPTED`) |
+| `/runs/{id}/bundle` | `GET` | Sealed reproducibility bundle as a ZIP; **425 Too Early** while the bundle is unsealed |
+| `/runs/{id}/rocrate` | `GET` | Workflow Run RO-Crate projection as a ZIP (provenance-run-crate-0.5) |
+| `/runs/{id}` | `DELETE` | Cancellation: SIGTERM the child R/cmdstan process group, 5 s grace, then SIGKILL — terminal-status rows return 409 |
+
+**Persistence + lifecycle.** The Starlette lifespan calls `SQLiteRunStore.initialize()`, which idempotently sweeps `RUNNING` rows from a crashed prior process to `INTERRUPTED`, and cancels every active task on shutdown. Writes use `BEGIN IMMEDIATE` in WAL mode for safe concurrent access. Subprocess termination is shared between `Nlmixr2Runner` and `BayesianRunner` via `apmode.backends.process_lifecycle.terminate_process_group(proc, grace_seconds=5)`, called from each runner's `asyncio.CancelledError` path. The default `--timeout-graceful-shutdown` of 30 s covers the 5 s SIGTERM-to-SIGKILL window plus headroom for the cancellation handler to seal the partial bundle.
+
+**Hardening guidance.** The `apmode serve` CLI is intended for single-user local + lab-network use; it ships **no auth**. To expose the API beyond loopback, run it under a reverse proxy that handles authentication (Caddy with `basicauth`, nginx + an OIDC sidecar, or a Tailscale-restricted port). Patient-data CSV files referenced from a bundle are served via the bundle ZIP endpoint — apply per-bundle access control at the proxy layer.
+
+**Future enhancement** *(not shipped in 0.6.0-rc1)*: a `?wait=N` long-poll on `GET /runs/{id}/status` would let interactive clients wait up to 60 s for a status transition without the 5 s polling round-trip. The implementation path is a per-`run_id` `asyncio.Event` registry on `app.state` (set by the `update_status` write path, awaited by the route handler) capped by uvicorn's `--limit-concurrency`. Deferred until usage telemetry shows polling pain — current scientific clients run minutes-to-hours per fit, so 5 s polling is well within the tolerable budget.
+
+---
+
 ## FAIR packaging — RO-Crate (Workflow Run / Provenance Run Crate v0.5)
 
 A sealed bundle can be projected onto a [Workflow Run RO-Crate — Provenance Run Crate v0.5](https://w3id.org/ro/wfrun/provenance/0.5) for FAIR packaging, WorkflowHub / Zenodo-ready archives, and regulatory crosswalk (FDA PCCP, EU AI Act Article 12). The Pydantic bundle remains producer-side truth; the RO-Crate is a read-only external projection — the source directory is never mutated by export.
@@ -1041,11 +1119,11 @@ uv run apmode inspect runs/<run_id> --rocrate-view --crate runs/<run_id>.crate
 
 **What the export writes** — every file under the bundle directory is copied verbatim into the crate. The `ro-crate-metadata.json` graph registers the core artifacts (data / split / evidence / seed / backend-versions / initial-estimates / policy / missing-data-directive manifests, compiled specs, backend results, gate decisions, candidate + run lineage, search trajectory / failed candidates / search graph, ranking, credibility reports, report provenance, Bayesian artefacts, agentic-trace iterations, regulatory PCCP files, and the `_COMPLETE` sentinel) as graph entities. A few diagnostic artefacts (e.g. `nca_diagnostics.jsonl`, `imputation_stability.json`, `categorical_encoding_provenance.json`, `loro_cv/`, `diagnostics/nca_plots/`, seed-stability `_seed_N_result.json`) are present as files in the crate but are not registered as named `File` entities — consumers can still read them by bundle-relative path.
 
-**Graph shape (WRROC action triad)** — each candidate fit is a `CreateAction` whose `instrument` is the **backend engine** `SoftwareApplication` (one of `#engine-nlmixr2` / `#engine-bayesian-stan` / `#engine-node` / `#engine-agentic`, populated with `softwareVersion` from `backend_versions.json`); the candidate DSL `SoftwareApplication` (with `apmode:dslSpec` → compiled-spec File) is carried as one of the action's `object` inputs alongside the data manifest. Each backend that produced a result also gets a `#step-backend-<engine>` `HowToStep` registered on the lane workflow with `workExample` pointing at the engine. Each gate decision is a `ControlAction` with `instrument=HowToStep`, `object=CreateAction`, `result=gate-decision File`, and `apmode:gateRationale` pointing at the same file. The lane run is wrapped in an `OrganizeAction` carrying `startTime`/`endTime` from `_COMPLETE.sealed_at` (so the same bundle yields the same `datePublished` regardless of which host runs the export). The `_COMPLETE` sentinel is a `File` with `additionalType="apmode:completeSentinel"` and `identifier="sha256:<hex>"` so external verifiers can re-check bundle integrity without reading the JSON payload. The root Dataset declares `conformsTo` against Provenance / Workflow / Process Run Crate v0.5 plus the base `workflow-ro-crate/1.0` and `ro-crate/1.1` profiles.
+**Graph shape (WRROC action triad)** — each candidate fit is a `CreateAction` whose `instrument` is the backend-engine `SoftwareApplication` (one of `#engine-nlmixr2` / `#engine-bayesian-stan` / `#engine-node` / `#engine-agentic`, with `softwareVersion` from `backend_versions.json`) and whose `object` carries the candidate DSL spec (`apmode:dslSpec` → compiled-spec File) plus the data manifest. Each backend that emitted a result registers a `#step-backend-<engine>` `HowToStep` on the lane workflow. Each gate decision is a `ControlAction` (`instrument = HowToStep`, `object = CreateAction`, `result = gate-decision File`, `apmode:gateRationale` → the same file). The lane run is wrapped in an `OrganizeAction` whose `startTime` / `endTime` are derived from `_COMPLETE.sealed_at`, so a given bundle yields a stable `datePublished` regardless of host. The `_COMPLETE` sentinel is a `File` with `additionalType = "apmode:completeSentinel"` and `identifier = "sha256:<hex>"` for host-independent integrity checks. The root Dataset declares `conformsTo` against Provenance / Workflow / Process Run Crate v0.5 plus the base `workflow-ro-crate/1.0` and `ro-crate/1.1` profiles.
 
 **Security** — ZIP import performs per-entry validation before extraction: entries whose resolved paths escape the staging root, absolute paths, Windows drive-letter prefixes, and non-regular file types (symlinks, sockets, block devices) are rejected. Directory-form import also rejects symlinks encountered anywhere under the source. The synthetic workflow stub at `workflows/<lane>-lane.apmode` is identified by reading `mainEntity.@id` from the crate metadata (with a `..` / absolute-path / null-byte sanity guard), so user-authored files under `workflows/` round-trip unmodified. The digest-exclusion check is case-insensitive and stays in lock-step with `apmode.bundle.emitter._DIGEST_EXCLUDED_NAMES` (`_COMPLETE`, `bom.cdx.json`, `sbc_manifest.json`). A `_COMPLETE` digest mismatch aborts the import with a non-zero exit.
 
-**Scope (v0.6)** — read-only export, directory and ZIP forms, round-trip import, and `apmode validate --rocrate` / `apmode inspect --rocrate-view` wiring. Lane detection reads `policy_file.json.lane` (Submission, Discovery, Optimization) and the corresponding `HowTo` / `HowToStep` graph is emitted per WRROC — the "Submission-lane ranking" guardrail (NODE/agentic never `recommended`) is an APMODE-side governance rule, not an RO-Crate constraint. Agentic-trace iterations are projected by default; the PROV-AGENT namespace + `provagent:AIModelInvocation` typing (canonical class per Souza et al., eScience 2025, arXiv:2508.02866 v3) is opt-in via `--include-provagent` for v0.9 alignment. `apmode:regulatoryContext` is no longer auto-stamped to `pccp-ai-dsf` whenever `regulatory/` is present — operators MUST pass `--regulatory-context {research-only|pccp-ai-dsf|mdr|ai-act-article-12}` explicitly. Discovery-lane tiering (capping `ro-crate-metadata.json` size on 10³-candidate runs) and live WorkflowHub / Zenodo uploads are v0.7 / v0.8 roadmap items — a CLI stub for `apmode bundle publish` ships the argument surface today and validates that the bundle path exists. Design authority: `_research/ROCRATE_INTEGRATION_PLAN.md`.
+**Scope** — read-only export, directory and ZIP forms, round-trip import, and `apmode validate --rocrate` / `apmode inspect --rocrate-view` wiring. Lane detection reads `policy_file.json.lane` (Submission, Discovery, Optimization) and the corresponding `HowTo` / `HowToStep` graph is emitted per WRROC; the Submission-lane ranking guardrail (NODE/agentic never `recommended`) is an APMODE governance rule, not an RO-Crate constraint. Agentic-trace iterations are projected by default; PROV-AGENT typing (`provagent:AIModelInvocation`, canonical class per Souza et al., *eScience 2025*, arXiv:2508.02866 v3) is opt-in via `--include-provagent`. `apmode:regulatoryContext` is no longer auto-stamped to `pccp-ai-dsf` whenever `regulatory/` is present — operators must pass `--regulatory-context {research-only|pccp-ai-dsf|mdr|ai-act-article-12}` explicitly. Discovery-lane tiering for ≥ 10³-candidate runs and live WorkflowHub / Zenodo uploads are planned follow-ons; the `apmode bundle publish` CLI ships the argument surface today and validates the bundle path. Design rationale: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) § RO-Crate.
 
 ---
 
@@ -1065,7 +1143,7 @@ Every CI run and every tagged release ships a [CycloneDX](https://cyclonedx.org/
 This README's numeric claims (version, test count, transform count, CLI-command count, dataset count, policy versions, profiler manifest version) are rewritten from the codebase by [`scripts/sync_readme.py`](scripts/sync_readme.py). Each auto-synced value sits between HTML comment markers like:
 
 ```
-<!-- apmode:AUTO:tests -->2193<!-- apmode:/AUTO:tests -->
+<!-- apmode:AUTO:tests -->2244<!-- apmode:/AUTO:tests -->
 ```
 
 Running the script:
@@ -1094,24 +1172,18 @@ Wire `scripts/sync_readme.py --check` into pre-commit or CI to block PRs that le
 
 ## Known Limitations
 
-v0.5.0 closure plan: [`.plans/v0.5.0_limitations_closure.md`](.plans/v0.5.0_limitations_closure.md).
-M0 landed in rc2; M1+ milestones in progress. Items below are tagged by
-milestone — `[M*]` means "addressed by milestone M*" and `[defer]` means
-"deferred with ADR disclosure".
+User-facing constraints in `<!-- apmode:AUTO:version_tag -->v0.6.0-rc1<!-- apmode:/AUTO:version_tag -->`. Status descriptors: **partial** = behaviour available with caveats; **planned** = scoped follow-on; **deferred** = explicit ADR-documented out-of-scope. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and the `docs/adr/` series for the full design rationale.
 
-- **Multi-dose SS [M2a]**: ADDL/II expansion supported across all backends; SS (steady-state) supported in nlmixr2 lane only. Stan and NODE backends hard-reject `SS!=0` at Gate 1 (`docs/adr/0003-stan-ss-scope.md`).
-- **NODE infusions [defer]**: NODE backend is oral-only in v0.5.0 — infusion data (RATE>0) is rejected with `InvalidSpecError`. `docs/adr/0004-node-infusions.md` scopes the piecewise-JAX-solver follow-on.
-- **NODE RE / Laplace [M3]**: Current NODE training is pooled population NLL (no per-subject RE). M3 lands Laplace approximation on a ≤16×16 block of latent/input-layer parameters (block-diagonal Hessian primary, L-BFGS + single ridge fallback). Full-NN-weight RE is deferred to v0.5.1.
-- **NODE scaling [M2b]**: Python-list subject loop scales to ~50 subjects. M2b replaces it with `jax.lax.map` per subject plus a `jax.vmap` fastpath for uniform time grids; memory ceiling on A100-40G is ~2000 subjects for a 4-compartment NODE.
-- **NODE posterior-predictive simulation [M4]**: `sample_posterior_predictive` is an inert stub returning `None` with `UserWarning`. M4 draws RE from the Laplace posterior and routes per-subject simulations through the canonical `build_predictive_diagnostics`.
-- **Stan maturation + IOV / BLQ M3 [M2a]**: `NotImplementedError` on Emax maturation today; BLQ M3 + IOV eta back-transform land together in M2a.
-- **TMDD QSS [M1.5]**: Suite A5 bench currently scores 0/34 Gate 1 passes — TMDD QSS has no search-space entry, and the profiler has no TMDD signal. M1.5 adds the late-slope-steepening (LSS) profiler signal, wires `tmdd_qss` into the enumerator, and defaults to pure-MM (3 params) with parallel-linear+MM only when the profiler detects a linear clearance component. `KSS = KD + kint/kon` canonicalization deferred to v0.5.1.
-- **TimeVaryingElim decay forms**: nlmixr2 emitter supports all three `decay_fn ∈ {exponential, half_life, linear}` as of 0.5.0. Stan-side lowering is exponential-only pending Phase 3 follow-on.
-- **Context of use [M1]**: Orchestrator auto-generates COU for Gate 2.5; M1 adds `--context-of-use "<str>"` CLI override.
-- **Agentic LLM backend**: Requires funded API keys (Anthropic/OpenAI) or local Ollama with a chat-capable model (≥4B params recommended).
-- **Gate 3 cross-contract ranking [M0 ✅]**: **Landed in rc2.** Every `DiagnosticBundle` carries a `ScoringContract` (nlpd_kind / re_treatment / nlpd_integrator / blq_method / observation_model / float_precision). `rank_by_scoring_contract` groups survivors by exact-equality and emits one leaderboard per contract class — no mixed-contract composites. The **Submission-lane dominance rule** restricts `recommended_candidate_id` to contracts with `re_treatment == "integrated"` AND `nlpd_kind == "marginal"`, otherwise returning `None` with an explicit disclosure warning.
-
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design rationale.
+- **Multi-dose steady state** *(partial)* — `ADDL` / `II` dose expansion is supported across all backends; `SS != 0` is supported in the nlmixr2 lane only. Stan and NODE backends hard-reject `SS != 0` at Gate 1 ([`docs/adr/0003-stan-ss-scope.md`](docs/adr/0003-stan-ss-scope.md)).
+- **NODE infusions** *(deferred)* — the NODE backend is oral-only; infusion data (`RATE > 0`) is rejected with `InvalidSpecError`. Piecewise-JAX-solver follow-on scoped in [`docs/adr/0004-node-infusions.md`](docs/adr/0004-node-infusions.md).
+- **NODE random effects** *(planned)* — current NODE training is pooled-population NLL (no per-subject random effects). Laplace approximation on a ≤16×16 block of latent/input-layer parameters (block-diagonal Hessian primary; L-BFGS + ridge fallback) is the next milestone; full-NN-weight RE remains research-branch.
+- **NODE scaling** *(planned)* — the Python-list subject loop scales to ~50 subjects. The next release replaces it with `jax.lax.map` per subject plus a `jax.vmap` fastpath for uniform time grids (target memory ceiling on A100-40G ≈ 2000 subjects for a 4-compartment NODE).
+- **NODE posterior-predictive simulation** *(planned)* — `sample_posterior_predictive` is currently an inert stub returning `None` with `UserWarning`. The Laplace-RE landing draws random effects from the posterior and routes per-subject simulations through the canonical `build_predictive_diagnostics`.
+- **Stan maturation + IOV + BLQ M3** *(planned)* — `NotImplementedError` on Emax maturation today; BLQ M3 + IOV eta back-transform land together in the same Stan-emitter follow-on.
+- **TMDD QSS coverage** *(planned)* — Suite A5 currently scores 0/34 Gate 1 passes because `tmdd_qss` is not enumerated and the profiler has no TMDD signal. Planned: late-slope-steepening (LSS) profiler signal, `tmdd_qss` enumerator wiring, default to pure-MM (3 params) with `parallel-linear + MM` only when the profiler detects a linear clearance component. `KSS = KD + kint / kon` canonicalisation remains research-branch.
+- **TimeVaryingElim decay forms**: the nlmixr2 emitter supports all three `decay_fn ∈ {exponential, half_life, linear}`. Stan-side lowering is exponential-only pending the same Stan-emitter follow-on.
+- **Context of use** *(partial)* — the orchestrator auto-generates a COU statement for Gate 2.5; a `--context-of-use "<str>"` CLI override is planned.
+- **Agentic LLM backend**: requires funded API keys (Anthropic / OpenAI / Gemini / OpenRouter) or a local Ollama install with a chat-capable model (≥ 4B parameters recommended).
 
 ---
 
@@ -1126,7 +1198,7 @@ If you use APMODE in your research, please cite:
   year         = {2026},
   url          = {https://github.com/biostochastics/apmode},
   license      = {GPL-2.0-or-later},
-  version      = {0.5.0-rc2}
+  version      = {0.6.0-rc1}
 }
 ```
 
@@ -1144,10 +1216,13 @@ The primary engine is nlmixr2 (R), which is GPL-2 licensed. This license choice 
 
 <div align="center">
 
+**[Capability Status](#capability-status)** &bull;
 **[Quick Start](#quick-start)** &bull;
 **[Formular DSL](#formular--the-pk-dsl)** &bull;
 **[Architecture](#architecture)** &bull;
 **[Governance](#governance-funnel)** &bull;
-**[CLI](#cli-reference)**
+**[Benchmarks](#benchmark-suites)** &bull;
+**[CLI](#cli-reference)** &bull;
+**[HTTP API](#http-api)**
 
 </div>

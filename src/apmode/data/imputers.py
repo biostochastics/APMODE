@@ -68,7 +68,8 @@ async def _spawn_rscript(
         preexec_fn=os.setsid,
     )
     try:
-        await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
+        async with asyncio.timeout(timeout_seconds):
+            await proc.communicate()
     except TimeoutError:
         with contextlib.suppress(ProcessLookupError):
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)

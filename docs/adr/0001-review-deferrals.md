@@ -7,9 +7,9 @@ April 2026 APMODE audit (report at session start). Each item documents the
 reason for deferral and the condition under which it should be
 re-evaluated.
 
-This ADR exists so future reviewers (human or agentic) don't re-file the
-same finding and don't waste cycles "fixing" something that was a
-conscious engineering choice.
+This ADR exists so future reviewers don't re-file the same finding and
+don't waste cycles "fixing" something that was a conscious engineering
+choice.
 
 ---
 

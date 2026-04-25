@@ -52,6 +52,7 @@ uvicorn force-closes the worker.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -63,7 +64,6 @@ from apmode.api.routes import build_router
 from apmode.api.store import SQLiteRunStore
 
 if TYPE_CHECKING:
-    import asyncio
     from collections.abc import AsyncIterator
 
     from apmode.api.runs import RunnerFactory
@@ -96,6 +96,7 @@ def build_app(
     allow_backends: tuple[str, ...] = DEFAULT_ALLOW_BACKENDS,
     runner_factory: RunnerFactory | None = None,
     store: RunStore | None = None,
+    dataset_root: Path | None = None,
 ) -> FastAPI:
     """Wire the APMODE HTTP API together.
 
@@ -117,6 +118,14 @@ def build_app(
             lifespan hook still calls ``initialize()`` / ``close()`` so
             the same store object can be reused across test invocations
             without leaking connections.
+        dataset_root: When set, every ``POST /runs`` ``dataset_path`` is
+            confined to this directory (resolved via
+            ``joinpath(...).resolve()`` and then a ``relative_to`` check),
+            defending the API against arbitrary file-read via
+            ``dataset_path="/etc/passwd"``. Leaving it ``None`` preserves
+            the prior expanduser-only behaviour for trusted-loopback dev
+            usage; ``apmode serve`` exposes a ``--dataset-root`` flag and
+            requires it whenever ``--allow-public`` is used.
 
     Returns:
         A configured :class:`FastAPI` instance ready for
@@ -126,6 +135,7 @@ def build_app(
     db_path = Path(db_path).resolve()
     runs_dir.mkdir(parents=True, exist_ok=True)
     db_path.parent.mkdir(parents=True, exist_ok=True)
+    resolved_dataset_root = dataset_root.resolve() if dataset_root is not None else None
 
     factory: RunnerFactory = runner_factory or _default_runner_factory  # type: ignore[assignment]
     backing_store: RunStore = store or SQLiteRunStore(db_path)
@@ -142,14 +152,26 @@ def build_app(
         try:
             yield
         finally:
-            # Cancel every still-running task. We do *not* wait for
-            # completion here — uvicorn's ``timeout_graceful_shutdown``
-            # owns the wait budget, and the task wrapper updates the
-            # store row on cancellation regardless.
+            # Cancel every still-running task, then wait briefly for
+            # their CancelledError handlers to flush the terminal
+            # ``CANCELLED`` status row through the store. Without this
+            # wait the store is closed before the aiosqlite worker
+            # thread can run the handler's ``update_status`` await,
+            # leaving rows pinned in ``RUNNING`` until the next startup
+            # sweep reconciles them. The 10 s budget pairs with uvicorn's
+            # ``timeout_graceful_shutdown=30`` and the 5 s SIGTERM grace
+            # in :func:`process_lifecycle.terminate_process_group`.
             tasks: dict[str, asyncio.Task[None]] = app.state.active_tasks
-            for task in tasks.values():
-                if not task.done():
-                    task.cancel()
+            pending = [t for t in tasks.values() if not t.done()]
+            for task in pending:
+                task.cancel()
+            if pending:
+                _, still_running = await asyncio.wait(pending, timeout=10.0)
+                for task in still_running:
+                    logger.warning(
+                        "lifespan_task_did_not_finish",
+                        extra={"task_name": task.get_name()},
+                    )
             await backing_store.close()
 
     app = FastAPI(
@@ -167,6 +189,7 @@ def build_app(
         runs_dir=runs_dir,
         runner_factory=factory,
         allow_backends=allow_backends,
+        dataset_root=resolved_dataset_root,
     )
     app.include_router(router)
     return app

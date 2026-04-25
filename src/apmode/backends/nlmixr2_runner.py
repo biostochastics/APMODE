@@ -18,7 +18,6 @@ import json
 import logging
 import os
 import shutil
-import signal
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -41,9 +40,87 @@ from apmode.ids import generate_run_id
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+    from typing import IO
+
     from apmode.bundle.models import BackendResult, DataManifest, NCASubjectDiagnostic
     from apmode.dsl.ast_models import DSLSpec
     from apmode.governance.policy import Gate3Config
+
+
+async def _drain_pipe(
+    stream: asyncio.StreamReader,
+    log_handle: IO[bytes] | None,
+    on_line: Callable[[bytes], None] | None,
+) -> bytes:
+    """Read ``stream`` line-by-line until EOF; tee to log + callback.
+
+    Returns the full body of bytes that crossed the pipe so callers
+    that previously relied on ``proc.communicate()`` can still inspect
+    it after the fact. The line-by-line drain is what enables PR4's
+    streaming SAEM progress: a parser sees iteration N as it is
+    emitted, not at process exit.
+
+    Robustness contract: a callback that raises **must not** stop the
+    drain. Stopping the drain would leave the OS pipe full and
+    deadlock R when its kernel buffer fills (default 64 KB on Linux,
+    typically larger on macOS but always finite). The callback's
+    exception is logged at WARNING and the drain continues.
+    """
+    buffer = bytearray()
+    # Tracks whether the last byte we wrote to the audit log was a
+    # newline. Because two drain coroutines (stdout + stderr) share the
+    # same handle, a stream that ends mid-line on one pipe could
+    # otherwise be glued to the next pipe's line. We append ``\n``
+    # before any non-newline-terminated chunk to guarantee stream
+    # boundaries are visible to a forensic reader.
+    last_byte_is_newline = True
+    while True:
+        try:
+            line = await stream.readline()
+        except (asyncio.LimitOverrunError, ValueError):
+            # Default StreamReader limit was bumped to 1 MiB at spawn
+            # time, so this branch is reached only for pathological
+            # output (single message > 1 MiB). Python 3.12+ re-raises
+            # the internal ``LimitOverrunError`` as ``ValueError`` from
+            # ``StreamReader.readline``, so we catch both. We then
+            # drain repeatedly until we hit a newline (or EOF) so a
+            # multi-MiB stack trace surfaces as one logical chunk
+            # rather than oscillating between exception and recovery
+            # for the rest of the stream.
+            chunks: list[bytes] = []
+            while True:
+                fragment = await stream.read(65536)
+                if not fragment:
+                    break
+                chunks.append(fragment)
+                if b"\n" in fragment:
+                    break
+            line = b"".join(chunks)
+        if not line:
+            break
+        buffer.extend(line)
+        if log_handle is not None:
+            try:
+                if not last_byte_is_newline and not line.startswith(b"\n"):
+                    # Sentinel newline so the audit log never glues two
+                    # streams' bytes together within a single line.
+                    log_handle.write(b"\n")
+                log_handle.write(line)
+                last_byte_is_newline = line.endswith(b"\n")
+            except (OSError, ValueError):
+                # ``ValueError`` covers the race where the surrounding
+                # ``finally`` closed the handle before the drain task
+                # finished its last iteration (cancellation path).
+                logger.warning("audit-log write failed; suppressing tee", exc_info=True)
+                log_handle = None
+        if on_line is not None:
+            try:
+                on_line(line)
+            except Exception:
+                logger.warning("on_line callback raised; continuing drain", exc_info=True)
+    return bytes(buffer)
+
 
 # Location of the R harness script, relative to this package
 _DEFAULT_HARNESS = Path(__file__).parent.parent / "r" / "harness.R"
@@ -62,6 +139,9 @@ class Nlmixr2Runner:
         r_executable: str = "Rscript",
         harness_path: Path | None = None,
         estimation: list[str] | None = None,
+        *,
+        progress_callback: Callable[[bytes], None] | None = None,
+        audit_log_dir: Path | None = None,
     ) -> None:
         self.work_dir = work_dir
         # #22: resolve the R executable to an absolute path via shutil.which
@@ -85,6 +165,13 @@ class Nlmixr2Runner:
             raise FileNotFoundError(msg)
         self.harness_path = harness
         self.estimation = estimation or ["saem", "focei"]
+        # PR4 streaming hooks. Both are optional; when unset, ``_spawn_r``
+        # behaves exactly like the pre-PR4 contract (silent stdout/stderr,
+        # exit code via response.json). When set, the operator gets a
+        # per-line callback for streaming UI / NDJSON emission, and a
+        # raw byte-for-byte audit log written under ``audit_log_dir``.
+        self.progress_callback = progress_callback
+        self.audit_log_dir = audit_log_dir
 
     async def run(
         self,
@@ -189,7 +276,18 @@ class Nlmixr2Runner:
 
         # Spawn R subprocess
         response_path = run_dir / "response.json"
-        exit_code = await self._spawn_r(request_path, response_path, timeout_seconds)
+        # Resolve the per-run audit-log path lazily so a missing
+        # ``audit_log_dir`` simply turns the streaming tee off.
+        audit_log_path: Path | None = None
+        if self.audit_log_dir is not None:
+            audit_log_path = self.audit_log_dir / f"{spec.model_id}.log"
+        exit_code = await self._spawn_r(
+            request_path,
+            response_path,
+            timeout_seconds,
+            audit_log_path=audit_log_path,
+            on_stderr_line=self.progress_callback,
+        )
 
         # Parse response + optionally enrich with simulation-based diagnostics
         result = self._parse_response(
@@ -208,11 +306,23 @@ class Nlmixr2Runner:
         request_path: Path,
         response_path: Path,
         timeout_seconds: int | None,
+        *,
+        audit_log_path: Path | None = None,
+        on_stderr_line: Callable[[bytes], None] | None = None,
     ) -> int:
         """Spawn Rscript subprocess. Returns exit code.
 
         Uses create_subprocess_exec (not shell) for security.
         Creates a new process group via os.setsid for clean timeout kill.
+
+        PR4 streaming additions (both default to ``None`` so existing
+        callers are unaffected):
+
+        * ``audit_log_path`` — when set, every byte of stdout AND
+          stderr is teed to this file in arrival order.
+        * ``on_stderr_line`` — when set, every full line on stderr is
+          passed to the callback. Callback exceptions are logged
+          and do not interrupt the drain.
         """
         proc = await asyncio.create_subprocess_exec(
             self.r_executable,
@@ -222,15 +332,47 @@ class Nlmixr2Runner:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             preexec_fn=os.setsid,
+            # asyncio's default StreamReader buffer is 64 KiB; a long
+            # nlmixr2 stack trace without internal newlines triggers
+            # ``LimitOverrunError`` and then loses the buffered bytes.
+            # 1 MiB is enough for every realistic R diagnostic message
+            # while still capping pathological memory growth.
+            limit=1_048_576,
         )
 
+        log_handle: IO[bytes] | None = None
+        if audit_log_path is not None:
+            audit_log_path.parent.mkdir(parents=True, exist_ok=True)
+            # Unbuffered so ``tail -f`` sees lines as they arrive.
+            log_handle = audit_log_path.open("wb", buffering=0)
+
         try:
-            _stdout, _stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
+            async with asyncio.timeout(timeout_seconds):
+                # Two concurrent drain coroutines so stdout cannot
+                # starve stderr (the iteration progress lives on
+                # stderr; if stdout outran it without a separate
+                # reader, the OS pipe could fill).
+                stream_stdout = proc.stdout
+                stream_stderr = proc.stderr
+                assert stream_stdout is not None  # PIPE was set above
+                assert stream_stderr is not None
+                drain_stdout = asyncio.create_task(
+                    _drain_pipe(stream_stdout, log_handle, None),
+                    name=f"drain-stdout-{proc.pid}",
+                )
+                drain_stderr = asyncio.create_task(
+                    _drain_pipe(stream_stderr, log_handle, on_stderr_line),
+                    name=f"drain-stderr-{proc.pid}",
+                )
+                await asyncio.gather(drain_stdout, drain_stderr)
+                await proc.wait()
         except TimeoutError:
-            # Kill the entire process group
-            with contextlib.suppress(ProcessLookupError):
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            await proc.wait()
+            # Route the timeout path through ``terminate_process_group``
+            # (SIGTERM, 5 s grace, then SIGKILL) just like the
+            # cancellation path below. Going straight to SIGKILL leaves
+            # nlmixr2's intermediate ``~/.cache/R/...`` artefacts behind;
+            # the SIGTERM pass lets R clean up before we escalate.
+            await terminate_process_group(proc)
             raise BackendTimeoutError(
                 f"R subprocess timed out after {timeout_seconds}s",
                 timeout_seconds=timeout_seconds,
@@ -246,6 +388,10 @@ class Nlmixr2Runner:
             # raising and us looking at the PID.
             await terminate_process_group(proc)
             raise
+        finally:
+            if log_handle is not None:
+                with contextlib.suppress(OSError):
+                    log_handle.close()
 
         return proc.returncode or 0
 

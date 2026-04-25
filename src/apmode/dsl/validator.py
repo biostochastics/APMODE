@@ -233,12 +233,11 @@ def _validate_elimination(spec: DSLSpec, errors: list[ValidationError]) -> None:
         # implies the zero-crossing falls within the typical observation
         # window (1/kdecay < t_obs_max), the emitter still runs — but
         # operators should expect reduced convergence reliability in the
-        # Stan backend. A t_max-aware Gate 1 warning is tracked as a
-        # follow-on in the plan's Open Questions (M3+ infrastructure
-        # needs the manifest's t_obs_max threaded through to the
-        # validator). The math itself is correct — negative CL would be
-        # worse than a kink — so we accept the adjoint limitation and
-        # document it loudly. See .plans/v0.5.0_limitations_closure.md.
+        # Stan backend. A t_max-aware Gate 1 warning is a tracked
+        # follow-on (M3+ infrastructure needs the manifest's t_obs_max
+        # threaded through to the validator). The math itself is
+        # correct — negative CL would be worse than a kink — so we
+        # accept the adjoint limitation.
     elif isinstance(m, NODEElimination):
         _positive_int(mod, "dim", m.dim, errors)
 

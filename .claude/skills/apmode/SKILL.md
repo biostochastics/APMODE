@@ -24,13 +24,15 @@ APMODE (Adaptive Pharmacokinetic Model Discovery Engine) composes **five** popPK
 
 **First-response reflexes.** On environment trouble → `apmode doctor`. On an unfamiliar bundle → `apmode inspect BUNDLE`. On a mysterious rejection → `apmode log BUNDLE --failed` then `apmode lineage BUNDLE <id>`.
 
-## Commands (14 total)
+**Machine-readable outputs.** Every read command (`validate`, `inspect`, `log`, `diff`, `datasets`, `doctor`, `policies`, `report`, `trace`, `lineage`) accepts `--json` and emits a stable `{"ok": bool, ...}` envelope on stdout (Rich output suppressed); errors travel through the envelope (e.g. `{"ok": false, "error": "not_a_directory"}`) rather than stderr. `apmode ls` and `apmode graph` use `--format` instead because they offer multiple text formats (`table|path|json` and `tree|dot|mermaid|json`).
+
+## Commands (16 total)
 
 | Command | Purpose |
 |---|---|
 | `apmode run DATASET` | Full pipeline: ingest → profile → NCA → search → gates → bundle → report |
-| `apmode validate BUNDLE` | Structural completeness + JSONL integrity check |
-| `apmode inspect BUNDLE` | Summary: data manifest, evidence profile, search trajectory, gate decisions. **First thing to run on an unfamiliar bundle.** |
+| `apmode validate BUNDLE` | Structural completeness + JSONL integrity check; `--rocrate --crate <crate>` runs roc-validator at REQUIRED |
+| `apmode inspect BUNDLE` | Summary: data manifest, evidence profile, search trajectory, gate decisions. **First thing to run on an unfamiliar bundle.** `--rocrate-view --crate <crate>` summarises an exported crate. |
 | `apmode datasets [NAME]` | Registry of 14 public PK datasets (5 real + 9 simulated) |
 | `apmode explore DATASET` | Interactive wizard (profile + NCA + search-space preview); `DATASET` can be a registry name or a local CSV |
 | `apmode diff BUNDLE_A BUNDLE_B` | Side-by-side comparison (evidence, rankings, gate pass rates) |
@@ -41,7 +43,9 @@ APMODE (Adaptive Pharmacokinetic Model Discovery Engine) composes **five** popPK
 | `apmode graph BUNDLE` | Search DAG visualization — `tree` / `dot` / `mermaid` / `json` formats |
 | `apmode policies [LANE]` | List/inspect gate policies; `--validate` runs the CI schema hook |
 | `apmode doctor` | Check R/nlmixr2/CmdStan/Python deps + LLM provider keys |
-| `apmode ls` | List bundles under `./runs` with a summary table; `--sort bic/time`, `--limit N` |
+| `apmode ls` | List bundles under `./runs` with a summary table; `--sort bic/time`, `--limit N`, `--format table|path|json` |
+| `apmode serve` | FastAPI HTTP API behind uvicorn (loopback default; refuses non-loopback without `--allow-public`). `POST/GET/DELETE /runs` + `GET /runs/{id}/{status,bundle,rocrate}`. Requires `uv sync --extra api`. |
+| `apmode bundle` | RO-Crate + SBOM operations on a sealed bundle: `bundle rocrate export\|import\|publish`, `bundle import` (round-trip with digest verify), `bundle sbom` (CycloneDX sidecar; digest-exempt). |
 
 ### `apmode run DATASET` — the pipeline
 
@@ -166,6 +170,45 @@ apmode run data.csv --lane discovery  --policy policies/discovery.json  -o runs/
 apmode diff runs/a/run_<hash> runs/b/run_<hash>
 ```
 
+### Serve the HTTP API (single-user / lab-network)
+```
+uv sync --extra api
+uv run apmode serve                              # 127.0.0.1:8765, runs in ./runs
+uv run apmode serve --port 9000 --runs-dir /scratch/apmode-runs
+uv run apmode serve --host 0.0.0.0 --allow-public   # only behind an authenticating reverse proxy
+uv run apmode serve --allow-bayesian             # extends POST /runs allowlist
+```
+Endpoints: `POST /runs` → 202 + `Retry-After: 5`; `GET /runs/{id}/status`; `GET /runs/{id}/bundle` (425 *Too Early* until sealed); `GET /runs/{id}/rocrate`; `DELETE /runs/{id}` (cancels asyncio task → SIGTERM child process group → 5 s grace → SIGKILL → writes `RunStatus.CANCELLED`). The `apmode serve` CLI ships **no auth** — loopback is the security gate.
+
+### Project a sealed bundle to RO-Crate / attach SBOM
+```
+apmode bundle rocrate export runs/run_<hash> --out runs/run_<hash>.crate.zip
+apmode bundle import runs/run_<hash>.crate.zip --out runs/run_<hash>-imported   # SHA-256 round-trip
+apmode validate runs/run_<hash> --rocrate --crate runs/run_<hash>.crate.zip      # roc-validator REQUIRED
+apmode bundle sbom runs/run_<hash>                                                # bom.cdx.json sidecar
+```
+
+## Environment variables (`apmode run`)
+
+The following env-vars bind to `apmode run` flags when the matching CLI flag is omitted (each shows up in `apmode run --help` under `[env var: …]`):
+
+| Variable | Flag bound |
+|---|---|
+| `APMODE_LANE` | `--lane` |
+| `APMODE_BACKEND` | `--backend` |
+| `APMODE_SEED` | `--seed` |
+| `APMODE_TIMEOUT` | `--timeout` |
+| `APMODE_OUTPUT_DIR` | `-o` / `--output-dir` |
+| `APMODE_PROVIDER` | `--provider` |
+| `APMODE_MODEL` | `--model` |
+| `APMODE_AGENTIC` | `--agentic` / `--no-agentic` |
+| `APMODE_AGENTIC_MAX_ITER` | `--max-iterations` |
+| `APMODE_PARALLEL_MODELS` | `-j` / `--parallel-models` |
+| `APMODE_POLICY` | `--policy` |
+| `APMODE_POLICIES_DIR` | (resolved separately in `paths.py` — directory override for policy lookup) |
+
+LLM provider auth: `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY` / `GOOGLE_API_KEY` / `OPENROUTER_API_KEY`; non-default Ollama via `OLLAMA_HOST`.
+
 ## Gotchas
 
 - **Don't conflate lane with provider.** `--lane` picks the pipeline and gate policy; `--provider` only matters if `--agentic` is passed.
@@ -181,7 +224,11 @@ apmode diff runs/a/run_<hash> runs/b/run_<hash>
 - **Run `apmode run` with `-o` to an ephemeral dir in CI** to avoid polluting `./runs/`.
 - **Bundle paths are the API.** Every post-run command takes `BUNDLE_DIR`, not the CSV. If someone passes the dataset to `inspect` / `log` / `trace`, they've confused the layers.
 - **`--binary-encode` overrides auto-detection.** Only needed when the profiler's categorical remap has the wrong polarity (e.g. you want `SEX=F:0,M:1` instead of the detected order).
-- **`APMODE_POLICIES_DIR` env var** overrides policy file resolution (see `src/apmode/paths.py`). Useful when testing alternate policy sets without mutating `./policies/`.
+- **`APMODE_POLICIES_DIR` env var** overrides policy file resolution (see `src/apmode/paths.py`). Useful when testing alternate policy sets without mutating `./policies/`. The full `APMODE_*` env-var family for `apmode run` is documented above.
+- **`apmode serve` ships no auth.** The loopback default *is* the security gate. Non-loopback binds (`0.0.0.0`, RFC 1918, public IPs, hostnames) exit code 2 unless `--allow-public` is passed; DNS-resolved hostnames are rejected on principle. To expose the API beyond loopback, front it with an authenticating reverse proxy (Caddy `basicauth`, nginx + OIDC sidecar, Tailscale).
+- **`DELETE /runs/{id}` is a four-link cancellation.** Cancel the asyncio task → runner's `asyncio.CancelledError` handler invokes `terminate_process_group` (SIGTERM → 5 s grace → SIGKILL on the child process group) → `execute_run` writes `RunStatus.CANCELLED` → uvicorn `--timeout-graceful-shutdown 30` covers the SIGTERM-to-SIGKILL window. If you ever change the runner cancellation path, also update the helper in `src/apmode/backends/process_lifecycle.py` and the lifespan tests in `tests/integration/test_api_runs.py`.
+- **HTTP API extras gate.** `apmode serve` raises a typed friendly error (exit 1) when `[api]` extras aren't installed: `Error: the HTTP API extras are not installed. Run uv sync --extra api …`. `--allow-bayesian` extends the `POST /runs` backend allowlist beyond the default `("nlmixr2",)`.
+- **GET /runs/{id}/bundle returns 425 Too Early** while the bundle is unsealed (RFC 8470). Don't treat 425 as a failure — back off and re-poll the status endpoint.
 
 ## Quick reference: bundle contents (from `apmode run`)
 
@@ -198,11 +245,13 @@ apmode diff runs/a/run_<hash> runs/b/run_<hash>
 - `categorical_encoding_provenance.json` — per-column binary-remap audit trail
 - `gate_decisions/` — per-gate JSON (`gate1_*`, `gate2_*`, `gate25_*`, `gate3_*`)
 - `compiled_specs/` — DSL → backend-specific model code (`.json` AST + `.R` lowering)
-- `bayesian/` — only if `--backend bayesian_stan` ran: `prior_manifest.json`, `simulation_protocol.json`, `mcmc_diagnostics.json` (R̂ / ESS / E-BFMI / Pareto-k), `posterior_draws/*.parquet`
+- `bayesian/` — only if `--backend bayesian_stan` ran: `prior_manifest.json`, `simulation_protocol.json`, `mcmc_diagnostics.json` (R̂ / ESS / E-BFMI / Pareto-k), `sampler_config.json`, `posterior_summary.json`, `posterior_draws/*.parquet`, plus per-candidate `{cid}_loo_summary.json` (Pareto-k bands), `{cid}_prior_data_conflict.json` (Box 1980 / Evans–Moshonov 2006 conflict fraction), `{cid}_prior_sensitivity.json` (Roos 2015 / Kallioinen 2024 power-scaling), and `{cid}_reparameterization_recommendation.json` (Betancourt–Girolami 2015) — all consumed by Gate 1 Bayesian and Gate 2 prior-justification
 - `loro_cv/` — only on `--lane optimization`
 - `credibility/` — Gate 2.5 per-candidate ICH M15 credibility reports
 - `agentic_trace/` + `classical_checkpoint.json` — only if `--agentic` ran; `classical_checkpoint.json` is read by `--resume-agentic`
 - `report.html` + `report.md` — regulatory report at run root (source for `apmode report`)
+- `bom.cdx.json` — CycloneDX SBOM sidecar (only if `apmode bundle sbom <bundle>` ran or CI/release workflows attached one). **Digest-exempt**: in `_DIGEST_EXCLUDED_NAMES` alongside `_COMPLETE` and `sbc_manifest.json`, so adding/regenerating it never invalidates the seal.
+- `sbc_manifest.json` — Talts 2018 Simulation-Based Calibration roll-up. Producer emits a stub (`priors=[]`) so its presence signals the Bayesian path executed end-to-end; nightly runner repopulates. Also digest-exempt.
 
 Prefer `apmode inspect` / `log` / `lineage` / `graph` / `report` over reading these directly — use direct access only for a field the CLI doesn't surface.
 

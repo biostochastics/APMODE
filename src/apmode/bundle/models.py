@@ -551,8 +551,7 @@ class BackendResult(BaseModel):
                 f"for backend={self.backend!r}. Allowed: {sorted(valid)}. "
                 f"Runner likely forgot to call "
                 f"apmode.bundle.scoring_contract.attach_scoring_contract "
-                f"before emitting the result. See plan §3 "
-                f"(.plans/v0.5.0_limitations_closure.md)."
+                f"before emitting the result."
             )
             raise ValueError(msg)
         return self
@@ -1485,9 +1484,9 @@ class ReparameterizationRecommendation(BaseModel):
     """Diagnostic-driven reparameterization suggestion (advisory, not automatic).
 
     APMODE never switches a sampler's parameterization silently — per PRD
-    §4.3.2 and consensus during multi-model review, auto-switching between
-    centered and non-centered parameterizations masks model pathology and
-    desynchronises the audit trail from the run. Instead the harness
+    §4.3.2, auto-switching between centered and non-centered parameter-
+    izations masks model pathology and desynchronises the audit trail
+    from the run. Instead the harness
     inspects the post-warmup divergence and tree-depth counts and emits
     this artifact when Gate 1 Bayesian would flag the fit.
 

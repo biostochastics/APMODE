@@ -11,11 +11,9 @@ subprocess with SIGKILL on process-group timeout, no shell.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import os
 import shutil
-import signal
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -209,11 +207,15 @@ class BayesianRunner:
         )
 
         try:
-            _stdout, _stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
+            async with asyncio.timeout(timeout_seconds):
+                _stdout, _stderr = await proc.communicate()
         except TimeoutError:
-            with contextlib.suppress(ProcessLookupError):
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            await proc.wait()
+            # Route through ``terminate_process_group`` so cmdstan gets
+            # the SIGTERM grace window before SIGKILL. cmdstan partially
+            # written CSVs are interpretable on SIGTERM but truncated on
+            # SIGKILL — preserve the operator's chance to inspect them
+            # post-timeout.
+            await terminate_process_group(proc)
             raise BackendTimeoutError(
                 f"Bayesian harness timed out after {timeout_seconds}s",
                 timeout_seconds=timeout_seconds,

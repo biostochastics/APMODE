@@ -18,6 +18,7 @@ import hashlib
 import json
 import os
 import re
+import threading
 from pathlib import Path  # noqa: TC003 — used at runtime in __init__
 from typing import Any, Literal
 
@@ -82,9 +83,32 @@ _SBOM_FILENAME = "bom.cdx.json"
 # Excluded from the sealed digest so a nightly rewrite does not invalidate
 # ``_COMPLETE`` (same logic as the SBOM sidecar).
 _SBC_MANIFEST_FILENAME = "sbc_manifest.json"
+# The seal step writes ``_COMPLETE.tmp`` first and atomically renames it
+# to ``_COMPLETE``; including the temp file in the digest would taint
+# bundles whose seal happened to be retried after a partial rename, so
+# it joins the exclusion set alongside the sidecars.
+_COMPLETE_SENTINEL_TMP = _COMPLETE_SENTINEL + ".tmp"
 _DIGEST_EXCLUDED_NAMES: frozenset[str] = frozenset(
-    {_COMPLETE_SENTINEL, _SBOM_FILENAME, _SBC_MANIFEST_FILENAME}
+    {
+        _COMPLETE_SENTINEL,
+        _COMPLETE_SENTINEL_TMP,
+        _SBOM_FILENAME,
+        _SBC_MANIFEST_FILENAME,
+    }
 )
+# Module-level lock that serialises ``_compute_bundle_digest`` against
+# any concurrent caller of ``BundleEmitter.append_*`` on the same run
+# directory. The asyncio-only invariant in production already prevents
+# concurrent mutation, but the lock turns the latent TOCTOU window —
+# between ``rglob`` listing the files and ``read_bytes()`` consuming
+# each one — into a structural guard that survives any future caller
+# offloading writes to ``asyncio.to_thread``.
+#
+# ``RLock`` is required (not plain ``Lock``) because ``BundleEmitter.seal``
+# acquires the lock and then calls ``_compute_bundle_digest`` which
+# acquires it again on the same thread. A non-reentrant lock would
+# deadlock every successful run at the seal step.
+_DIGEST_LOCK = threading.RLock()
 # Schema v2 (v0.5.0): adds per-candidate ``scoring_contract`` on
 # :class:`~apmode.bundle.models.DiagnosticBundle`. Bundles produced before
 # this version do not carry the field; they can be migrated at read time by
@@ -203,17 +227,33 @@ def _validate_path_component(value: str, label: str) -> None:
 def _compute_bundle_digest(run_dir: Path) -> str:
     """Compute a stable SHA-256 digest over all files in ``run_dir``.
 
-    The sentinel file itself is excluded. Files are hashed in sorted order
-    by POSIX-relative path, with path + null byte + bytes, so the digest is
+    The sentinel file (and its ``.tmp`` mid-write twin) plus the SBOM /
+    SBC sidecars are excluded. Files are hashed in sorted order by
+    POSIX-relative path, with path + null byte + bytes, so the digest is
     reproducible across filesystems that differ in readdir order.
+
+    To eliminate the latent TOCTOU window between ``rglob`` listing the
+    files and ``read_bytes()`` consuming each one, the helper takes a
+    process-wide lock and reads every file's bytes into memory *before*
+    streaming them into the SHA-256 incremental digest. Concurrent
+    appends or post-seal sidecar writes therefore see a consistent
+    snapshot or are serialised behind the lock; the cost (a transient
+    in-memory copy of the bundle) is bounded by typical bundle sizes
+    (low-tens of MB) and pays for the structural guarantee that the
+    sealed digest fingerprints exactly one consistent state.
     """
+    with _DIGEST_LOCK:
+        snapshot: list[tuple[str, bytes]] = []
+        for p in sorted(run_dir.rglob("*"), key=lambda q: q.relative_to(run_dir).as_posix()):
+            if not p.is_file() or p.name in _DIGEST_EXCLUDED_NAMES:
+                continue
+            rel = p.relative_to(run_dir).as_posix()
+            snapshot.append((rel, p.read_bytes()))
     digest = hashlib.sha256()
-    for p in sorted(run_dir.rglob("*"), key=lambda q: q.relative_to(run_dir).as_posix()):
-        if not p.is_file() or p.name in _DIGEST_EXCLUDED_NAMES:
-            continue
-        digest.update(p.relative_to(run_dir).as_posix().encode("utf-8"))
+    for rel, payload in snapshot:
+        digest.update(rel.encode("utf-8"))
         digest.update(b"\0")
-        digest.update(p.read_bytes())
+        digest.update(payload)
     return digest.hexdigest()
 
 
@@ -263,27 +303,34 @@ class BundleEmitter:
         partial bundles (PRD §4.3.2).
 
         Idempotent: calling on an already-sealed bundle returns the path
-        without rewriting.
+        without rewriting. The whole digest-then-rename sequence runs
+        under the module-level ``_DIGEST_LOCK`` so any concurrent
+        ``append_*`` that races with the seal is serialised and either
+        lands strictly before the snapshot or is rejected by the
+        ``is_sealed()`` guard *after* the rename.
         """
         sentinel_path = self.run_dir / _COMPLETE_SENTINEL
         if sentinel_path.exists():
             return self.run_dir
 
-        sentinel = {
-            "schema_version": _COMPLETE_SCHEMA_VERSION,
-            "run_id": self.run_id,
-            "sha256": _compute_bundle_digest(self.run_dir),
-        }
-        # #32 / #34: write the sentinel through a tmp + os.replace dance
-        # so a mid-write crash (SIGKILL, OOM) cannot leave a partially
-        # written _COMPLETE that a subsequent ``initialize()`` would
-        # treat as a valid seal. ``os.replace`` is atomic on the same
-        # filesystem on both POSIX and Windows; the tmp file is cleaned
-        # up before the rename so there is no orphan file after a
-        # successful call.
-        tmp_path = sentinel_path.with_suffix(".tmp")
-        tmp_path.write_text(json.dumps(sentinel, indent=2) + "\n")
-        os.replace(tmp_path, sentinel_path)
+        with _DIGEST_LOCK:
+            if sentinel_path.exists():  # pragma: no cover - racy double-call
+                return self.run_dir
+            sentinel = {
+                "schema_version": _COMPLETE_SCHEMA_VERSION,
+                "run_id": self.run_id,
+                "sha256": _compute_bundle_digest(self.run_dir),
+            }
+            # #32 / #34: write the sentinel through a tmp + os.replace
+            # dance so a mid-write crash (SIGKILL, OOM) cannot leave a
+            # partially written _COMPLETE that a subsequent
+            # ``initialize()`` would treat as a valid seal. ``os.replace``
+            # is atomic on the same filesystem on both POSIX and Windows;
+            # the tmp file is cleaned up before the rename so there is
+            # no orphan file after a successful call.
+            tmp_path = sentinel_path.with_suffix(".tmp")
+            tmp_path.write_text(json.dumps(sentinel, indent=2) + "\n")
+            os.replace(tmp_path, sentinel_path)
         return self.run_dir
 
     def is_sealed(self) -> bool:
@@ -431,10 +478,21 @@ class BundleEmitter:
 
     # --- Gate decisions ---
 
-    def write_gate_decision(self, gate_result: GateResult, gate_number: int) -> Path:
-        """Write gate_decisions/gate{n}_{candidate_id}.json."""
+    def write_gate_decision(self, gate_result: GateResult, gate_number: int | str) -> Path:
+        """Write gate_decisions/gate{n}_{candidate_id}.json.
+
+        ``gate_number`` accepts ``int | str`` so callers can use ``"1b"`` for
+        the Bayesian Gate 1 extension (avoiding overwriting the classical
+        ``gate1_<id>.json``) and ``"2_5"`` for Gate 2.5 credibility (matching
+        the ``gate2_5_*.json`` glob the inspect/diff CLIs already use).
+        Numeric tokens are coerced via ``str(...)``; the value is fed
+        through ``_validate_path_component`` so injection-via-tag is
+        impossible.
+        """
         _validate_path_component(gate_result.candidate_id, "candidate_id")
-        filename = f"gate{gate_number}_{gate_result.candidate_id}.json"
+        gate_token = str(gate_number)
+        _validate_path_component(gate_token, "gate_number")
+        filename = f"gate{gate_token}_{gate_result.candidate_id}.json"
         path = self._gate_decisions_dir / filename
         path.write_text(gate_result.model_dump_json(indent=2))
         return path
@@ -442,31 +500,48 @@ class BundleEmitter:
     # --- Search artifacts ---
 
     def append_search_trajectory(self, entry: SearchTrajectoryEntry) -> Path:
-        """Append one line to search_trajectory.jsonl."""
-        # Post-seal appends would silently desync the bundle from the
-        # _COMPLETE digest. Refuse so the footgun becomes a loud error.
-        if self.is_sealed():
-            msg = (
-                f"cannot append to search_trajectory.jsonl: bundle {self.run_dir} "
-                "is sealed (would invalidate _COMPLETE digest)"
-            )
-            raise BundleAlreadySealedError(msg)
+        """Append one line to search_trajectory.jsonl.
+
+        The whole append happens under ``_DIGEST_LOCK`` so a concurrent
+        ``seal()`` cannot snapshot the digest mid-write, and the post-
+        write ``flush()``+``fsync()`` keeps the line on disk through a
+        SIGKILL/OOM mid-pipeline (otherwise the buffered tail vanishes).
+        """
         path = self.run_dir / "search_trajectory.jsonl"
-        with path.open("a") as f:
-            f.write(entry.model_dump_json() + "\n")
+        with _DIGEST_LOCK:
+            # Post-seal appends would silently desync the bundle from the
+            # _COMPLETE digest. Refuse so the footgun becomes a loud
+            # error. The check lives under the lock to close the
+            # is-sealed/append race window.
+            if self.is_sealed():
+                msg = (
+                    f"cannot append to search_trajectory.jsonl: bundle {self.run_dir} "
+                    "is sealed (would invalidate _COMPLETE digest)"
+                )
+                raise BundleAlreadySealedError(msg)
+            with path.open("a") as f:
+                f.write(entry.model_dump_json() + "\n")
+                f.flush()
+                os.fsync(f.fileno())
         return path
 
     def append_failed_candidate(self, entry: FailedCandidate) -> Path:
-        """Append one line to failed_candidates.jsonl."""
-        if self.is_sealed():
-            msg = (
-                f"cannot append to failed_candidates.jsonl: bundle {self.run_dir} "
-                "is sealed (would invalidate _COMPLETE digest)"
-            )
-            raise BundleAlreadySealedError(msg)
+        """Append a line to failed_candidates.jsonl (locked + fsync'd).
+
+        See :meth:`append_search_trajectory` for the lock / fsync rationale.
+        """
         path = self.run_dir / "failed_candidates.jsonl"
-        with path.open("a") as f:
-            f.write(entry.model_dump_json() + "\n")
+        with _DIGEST_LOCK:
+            if self.is_sealed():
+                msg = (
+                    f"cannot append to failed_candidates.jsonl: bundle {self.run_dir} "
+                    "is sealed (would invalidate _COMPLETE digest)"
+                )
+                raise BundleAlreadySealedError(msg)
+            with path.open("a") as f:
+                f.write(entry.model_dump_json() + "\n")
+                f.flush()
+                os.fsync(f.fileno())
         return path
 
     def write_candidate_lineage(self, lineage: CandidateLineage) -> Path:

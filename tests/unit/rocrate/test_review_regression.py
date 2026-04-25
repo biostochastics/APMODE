@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Regression tests that lock in the multi-model-review fixes.
+"""Regression tests that lock in RO-Crate projector fixes.
 
 Each test is labelled with the original finding tag (B1 / H-series /
-M-series / L1) so future reviewers can trace a failure back to the
-decision that motivated it. Do **not** collapse these with the existing
-suite — they exist to prevent silent reintroduction of the original
-bug, which passing unit tests alone did not catch before.
+M-series / L1) so a failure can be traced back to the decision that
+motivated it. Do **not** collapse these with the existing suite — they
+exist to prevent silent reintroduction of the original bug, which
+passing unit tests alone did not catch before.
 """
 
 from __future__ import annotations
@@ -318,7 +318,7 @@ class TestL1_WorkflowRoCrateBaseProfile:
 
 
 class TestRereviewPolish:
-    """Polish fixes from the second-pass review (gemini/droid/glm-5)."""
+    """Polish fixes from the second-pass review."""
 
     def test_h4_invalid_sealed_at_falls_back(self, tmp_path: Path) -> None:
         """A garbage ``sealed_at`` must not silently corrupt datePublished."""

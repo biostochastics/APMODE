@@ -540,7 +540,7 @@ class TestBordaCompositeAggregation:
 
 
 class TestRankerNaNSanitization:
-    """Non-finite metric inputs must not poison ranking (droid/gemini review)."""
+    """Non-finite metric inputs must not poison ranking."""
 
     _BORDA_VPC_NPE_BIC = Gate3Config(
         composite_method="borda",

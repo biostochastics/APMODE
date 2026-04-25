@@ -33,16 +33,21 @@ class LLMTimeoutError(TimeoutError):
 
 
 async def _await_llm[T](awaitable: Awaitable[T], timeout: float) -> T:
-    """Wrap an LLM provider coroutine with an outer ``asyncio.wait_for`` cap.
+    """Wrap an LLM provider coroutine with an outer deadline.
 
-    The native SDK timeout (where supported) closes the underlying HTTP
-    socket cleanly; this outer wrapper additionally guarantees the
-    coroutine itself cannot block the agentic loop past the policy limit,
-    even if the SDK retries internally (litellm, openai) or ignores its
-    own kwarg (older ollama builds).
+    Uses :func:`asyncio.timeout` (3.11+) instead of
+    :func:`asyncio.wait_for` so the helper composes cleanly inside an
+    enclosing :class:`asyncio.TaskGroup` (the timeout deadline is local
+    to this scope; an outer cancellation propagates as a plain
+    :class:`asyncio.CancelledError` rather than being misclassified as a
+    timeout). The native SDK timeout (where supported) still closes the
+    HTTP socket; this wrapper additionally guarantees the coroutine
+    cannot block the agentic loop past the policy limit, even if the
+    SDK retries internally or ignores its own kwarg.
     """
     try:
-        return await asyncio.wait_for(awaitable, timeout=timeout)
+        async with asyncio.timeout(timeout):
+            return await awaitable
     except TimeoutError as exc:
         msg = f"LLM request timed out after {timeout}s"
         raise LLMTimeoutError(msg) from exc
@@ -110,19 +115,28 @@ class LLMClient:
         """Send a completion request and return a traced response."""
         import litellm
 
+        # Split the SDK per-attempt timeout from the outer wall-clock
+        # cap so litellm's internal retry has a chance to land within
+        # budget rather than being silently aborted by the outer
+        # deadline. Half the outer cap leaves headroom for one retry.
+        sdk_timeout = max(1.0, self._config.timeout_seconds / 2)
         payload: dict[str, Any] = {
             "model": self._config.model,
             "messages": messages,
             "temperature": self._config.temperature,
             "max_tokens": self._config.max_tokens,
-            "timeout": self._config.timeout_seconds,
+            "timeout": sdk_timeout,
+            # Keep the retry budget deterministic; the outer
+            # ``asyncio.timeout`` is the wall-clock backstop.
+            "num_retries": 1,
         }
         if self._config.api_base:
             payload["api_base"] = self._config.api_base
 
         payload_hash = hashlib.sha256(
             json.dumps(
-                {k: v for k, v in payload.items() if k != "timeout"}, sort_keys=True
+                {k: v for k, v in payload.items() if k not in {"timeout", "num_retries"}},
+                sort_keys=True,
             ).encode()
         ).hexdigest()
 
@@ -136,17 +150,20 @@ class LLMClient:
         raw_text = response.choices[0].message.content or ""
         usage = response.usage
 
+        # Cost estimation was previously routed through a litellm-side
+        # rate table that duplicated the per-provider tables in
+        # ``llm_providers.py``. The litellm fallback path is only hit
+        # when no direct provider is registered; in that situation we
+        # have no reliable per-model rate (any number we picked would
+        # be misleading), so we return 0.0 and surface the truth in
+        # ``input_tokens``/``output_tokens`` for the audit trail.
         return LLMResponse(
             raw_text=raw_text,
             model_id=response.model or self._config.model,
             model_version=getattr(response, "system_fingerprint", "") or response.model or "",
             input_tokens=usage.prompt_tokens if usage else 0,
             output_tokens=usage.completion_tokens if usage else 0,
-            cost_usd=_estimate_cost(
-                self._config.model,
-                usage.prompt_tokens if usage else 0,
-                usage.completion_tokens if usage else 0,
-            ),
+            cost_usd=0.0,
             wall_time_seconds=round(elapsed, 3),
             request_payload_hash=payload_hash,
         )
@@ -175,15 +192,3 @@ class ReplayClient:
 
         data: dict[str, Any] = json.loads(cache_file.read_text())
         return LLMResponse(**data)
-
-
-def _estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
-    """Rough cost estimation per 1M tokens. Conservative defaults."""
-    # Rates per 1M tokens (approximate, mid-2026)
-    rates: dict[str, tuple[float, float]] = {
-        "claude-sonnet-4-20250514": (3.0, 15.0),
-        "claude-haiku-4-5-20251001": (0.80, 4.0),
-        "gpt-4o": (2.50, 10.0),
-    }
-    in_rate, out_rate = rates.get(model, (5.0, 15.0))
-    return round((input_tokens * in_rate + output_tokens * out_rate) / 1_000_000, 6)

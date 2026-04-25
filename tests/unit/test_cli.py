@@ -205,6 +205,7 @@ class TestHelp:
             ["doctor"],
             ["ls"],
             ["policies"],
+            ["serve"],
         ],
     )
     def test_help_renders(self, cmd: list[str]) -> None:

@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Derive per-candidate :class:`ScoringContract` from spec + backend + BLQ method.
 
-Plan §3 (:file:`.plans/v0.5.0_limitations_closure.md`) defines the contract.
 Every backend runner calls :func:`derive_scoring_contract` with its
 finished :class:`BackendResult` and the source :class:`DSLSpec`; the
 helper attaches the contract onto the nested
@@ -13,7 +12,7 @@ semantics of each field matter — see :mod:`apmode.governance.ranking`.
 The helper is intentionally defensive: NODE candidates without random
 effects land with ``re_treatment="pooled"`` + ``nlpd_integrator="none"``,
 which makes them incomparable (by design) with nlmixr2's FOCEI-integrated
-or Stan's HMC-marginal survivors. This is the behaviour §3 requires.
+or Stan's HMC-marginal survivors.
 """
 
 from __future__ import annotations
@@ -37,11 +36,11 @@ def _obs_from_spec(spec: DSLSpec) -> ObservationModelValue:
     the residual family, not the BLQ wrapper.
 
     Raises ``ValueError`` on an unrecognized observation type — silent
-    defaulting to ``"combined"`` was a consensus-flagged misclassification
-    risk (adding e.g. a future BLQM7+ wrapper without updating this helper
-    would otherwise silently tag it as ``combined`` and change Gate-3
-    grouping). Fail loud here so the contract-derivation site is fixed
-    the moment a new observation type lands.
+    defaulting to ``"combined"`` is a misclassification risk (adding e.g.
+    a future BLQM7+ wrapper without updating this helper would otherwise
+    silently tag it as ``combined`` and change Gate-3 grouping). Fail
+    loud here so the contract-derivation site is fixed the moment a new
+    observation type lands.
     """
     from apmode.dsl.ast_models import BLQM3, BLQM4, Additive, Combined, Proportional
 

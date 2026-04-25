@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Tests for ``apmode.bayes.harness._build_stan_data`` guardrails.
 
-Covers defence-in-depth validations added during the v0.6 multi-model
-review pass:
+Covers defence-in-depth validations:
 
 * ``data_path`` must point to an existing regular file (CWE-22 guard).
 * Non-positive ``DV`` rows with ``MDV=0`` must raise ``ValueError`` rather

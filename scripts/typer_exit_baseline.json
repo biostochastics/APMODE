@@ -1,0 +1,4 @@
+{
+  "raise_typer_exit_count": 57,
+  "rationale": "Locked by scripts/check_typer_exit_count.py. PR2 introduced typed-error infrastructure at apmode.cli_errors + an entrypoint catcher at apmode.__main__. Subsequent PRs migrate individual call sites and lower this count. Run `python scripts/check_typer_exit_count.py --update` after a migration."
+}

@@ -16,6 +16,7 @@ Commands:
   apmode ls [runs-dir] [--sort time|lane|candidates|bic] [--limit N] [--format table|path|json]
   apmode policies [lane] [--validate]
   apmode graph <bundle-dir> [--format tree|dot|mermaid|json] [--converged]
+  apmode serve [--host] [--port] [--runs-dir] [--db-path] [--allow-public]
 
 Exit codes:
   0  Success
@@ -27,7 +28,9 @@ Exit codes:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import enum
+import ipaddress
 import json
 import re
 import time
@@ -127,6 +130,12 @@ app = typer.Typer(
 from apmode.bundle.rocrate.cli_hooks import register_rocrate_commands  # noqa: E402
 
 register_rocrate_commands(app)
+
+# Shell-completion sub-app — ``apmode completion {install,show,uninstall}``.
+# Kept in its own module so the per-shell strategies don't bloat cli.py.
+from apmode.cli_completion import completion_app  # noqa: E402
+
+app.add_typer(completion_app, name="completion")
 
 # Default model per provider for the agentic backend
 _DEFAULT_MODELS: dict[str, str] = {
@@ -233,9 +242,20 @@ def _try_build_agentic_runner(
 
 def _version_callback(value: bool) -> None:
     if value:
-        from apmode import __version__
+        from apmode._version_drift import (
+            collect_declared_version,
+            collect_runtime_version,
+            format_version_line,
+        )
 
-        console.print(f"[bold]apmode[/bold] {__version__}")
+        runtime = collect_runtime_version()
+        declared = collect_declared_version()
+        line = format_version_line(declared=declared, runtime=runtime)
+        # Re-bold the leading ``apmode`` token; the rest of the line is
+        # plain so the runtime suffix in the drift case is not styled away.
+        if line.startswith("apmode "):
+            line = "[bold]apmode[/bold] " + line[len("apmode ") :]
+        console.print(line)
         console.print(f"[dim]{_COPYRIGHT}[/]")
         console.print(f"[dim]{_CITATION}[/]")
         raise typer.Exit()
@@ -4717,3 +4737,256 @@ def _graph_to_mermaid(nodes: list[dict[str, Any]], edges: list[dict[str, Any]]) 
         lines.append(f'  {pid} -->|"{transform}"| {cid}')
 
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# serve command — wrap the FastAPI app behind uvicorn (plan Task 35)
+# ---------------------------------------------------------------------------
+
+
+def _is_loopback_host(host: str) -> bool:
+    """True when ``host`` resolves to a loopback interface.
+
+    Accepts the literal strings ``"localhost"`` and (for symmetry with
+    uvicorn's behaviour) treats them as loopback. Numeric IPv4/IPv6
+    literals are routed through :func:`ipaddress.ip_address` so that
+    ``127.0.0.1`` / ``::1`` are recognised but ``0.0.0.0`` and any
+    routable address fall through to ``False``.
+    """
+    if host.lower() in {"localhost", "ip6-localhost", "ip6-loopback"}:
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        # Hostnames that aren't ``localhost`` are rejected here even if
+        # DNS would resolve them to 127.0.0.1 — we can't trust runtime
+        # resolution to enforce a security default.
+        return False
+
+
+@app.command()
+def serve(
+    host: Annotated[
+        str,
+        typer.Option(
+            "--host",
+            help=(
+                "Bind address. Defaults to loopback (127.0.0.1). Non-loopback "
+                "hosts are refused unless --allow-public is also passed."
+            ),
+            show_default=True,
+        ),
+    ] = "127.0.0.1",
+    port: Annotated[
+        int,
+        typer.Option("--port", help="TCP port to bind.", min=1, max=65535, show_default=True),
+    ] = 8765,
+    runs_dir: Annotated[
+        Path,
+        typer.Option(
+            "--runs-dir",
+            help="Directory under which per-run bundle output is written.",
+            show_default=True,
+        ),
+    ] = Path("runs"),
+    db_path: Annotated[
+        Path,
+        typer.Option(
+            "--db-path",
+            help="SQLite file path for the run registry.",
+            show_default=True,
+        ),
+    ] = Path("runs/.apmode_runs.sqlite3"),
+    allow_bayesian: Annotated[
+        bool,
+        typer.Option(
+            "--allow-bayesian",
+            help=(
+                "Permit POST /runs body with backend='bayesian_stan'. Off by "
+                "default until the Bayesian runner is wired through the "
+                "request resolver (plan Task 36)."
+            ),
+        ),
+    ] = False,
+    allow_public: Annotated[
+        bool,
+        typer.Option(
+            "--allow-public",
+            help=(
+                "Acknowledge that --host is non-loopback and bind anyway. "
+                "Requires the APMODE_API_KEY env var to be set so the static "
+                "API-key dependency rejects unauthenticated requests; the CLI "
+                "refuses to bind a public interface without it. Even with a "
+                "key set, front a public deployment with an authenticating, "
+                "TLS-terminating reverse proxy."
+            ),
+        ),
+    ] = False,
+    dataset_root: Annotated[
+        Path | None,
+        typer.Option(
+            "--dataset-root",
+            help=(
+                "Directory the API confines ``POST /runs`` ``dataset_path`` "
+                "values to. When set, every dataset path is resolved as "
+                "``<root>/<user_input>`` and a ``relative_to`` check rejects "
+                "any escape (including via symlinks). Required when "
+                "--allow-public is used. Loopback-only deployments may leave "
+                "it unset for backwards-compatible expanduser-only resolution."
+            ),
+        ),
+    ] = None,
+    timeout_graceful_shutdown: Annotated[
+        int,
+        typer.Option(
+            "--timeout-graceful-shutdown",
+            help=(
+                "Seconds uvicorn waits for in-flight tasks to finish on "
+                "shutdown. The default covers the 5 s SIGTERM-to-SIGKILL "
+                "window in DELETE /runs/{id} plus headroom for the "
+                "CancelledError handler to seal partial bundles."
+            ),
+            min=1,
+            max=600,
+            show_default=True,
+        ),
+    ] = 30,
+    log_level: Annotated[
+        str,
+        typer.Option(
+            "--log-level",
+            help="uvicorn log level (debug|info|warning|error|critical).",
+            show_default=True,
+        ),
+    ] = "info",
+) -> None:
+    """Serve the APMODE HTTP API behind uvicorn (plan Task 35).
+
+    Wraps :func:`apmode.api.app.build_app` in a programmatic uvicorn
+    server. Defaults bind to loopback so the canonical
+    ``ssh -L 8765:127.0.0.1:8765 box`` workflow Just Works.
+
+    \b
+    Endpoints (mounted at the root):
+      GET    /healthz
+      POST   /runs                     202 + Retry-After: 5
+      GET    /runs
+      GET    /runs/{id}/status
+      GET    /runs/{id}/bundle         (zip)
+      GET    /runs/{id}/rocrate        (zip)
+      DELETE /runs/{id}                (cancellation)
+
+    \b
+    Examples:
+      apmode serve                                 # localhost:8765
+      apmode serve --port 9000 --runs-dir ./out
+      apmode serve --host 0.0.0.0 --allow-public   # behind a reverse proxy
+
+    Requires the ``[api]`` extra (``uv sync --extra api``). Refuses to
+    bind a non-loopback host without --allow-public; the API has no
+    auth and bundles may contain patient data.
+    """
+    # Friendly extras-not-installed path. Importing build_app pulls in
+    # FastAPI + uvicorn; surface a single helpful line instead of a
+    # raw ImportError traceback.
+    try:
+        from apmode.api.app import build_app
+    except ImportError as exc:  # pragma: no cover - exercised in tests via stub
+        err_console.print(
+            "[red bold]Error:[/] the HTTP API extras are not installed. "
+            "Run [bold]uv sync --extra api[/] to pull FastAPI + uvicorn + "
+            f"aiosqlite.\n[dim]Underlying error: {exc}[/]"
+        )
+        raise typer.Exit(code=1) from exc
+    try:
+        import uvicorn
+    except ImportError as exc:  # pragma: no cover - exercised in tests via stub
+        err_console.print(
+            "[red bold]Error:[/] uvicorn is not installed. "
+            "Run [bold]uv sync --extra api[/] to install it.\n"
+            f"[dim]Underlying error: {exc}[/]"
+        )
+        raise typer.Exit(code=1) from exc
+
+    import os as _os
+
+    if not _is_loopback_host(host):
+        if not allow_public:
+            err_console.print(
+                "[red bold]Error:[/] refusing to bind a non-loopback host "
+                f"({escape(host)}) without --allow-public. The HTTP API serves "
+                "bundle artefacts that may contain patient data. Re-run with "
+                "[bold]--allow-public[/] (and APMODE_API_KEY set + a TLS "
+                "reverse proxy in front) to override."
+            )
+            raise typer.Exit(code=2)
+        if not _os.environ.get("APMODE_API_KEY"):
+            err_console.print(
+                "[red bold]Error:[/] --allow-public requires APMODE_API_KEY to "
+                "be set so the API-key dependency rejects unauthenticated "
+                "requests. Generate a 32-byte URL-safe token (e.g. "
+                "[bold]python -c 'import secrets; print(secrets.token_urlsafe(32))'[/]) "
+                "and export it before re-running."
+            )
+            raise typer.Exit(code=2)
+        if dataset_root is None:
+            err_console.print(
+                "[red bold]Error:[/] --allow-public requires --dataset-root to "
+                "confine POST /runs dataset_path values to a known directory. "
+                "Without it, a remote caller can request arbitrary files."
+            )
+            raise typer.Exit(code=2)
+
+        # Single-line audit hint so the operator sees the override took
+        # effect even on quiet log levels. Sent to stderr so it does not
+        # clobber a JSON-emitting wrapper script.
+        err_console.print(
+            f"[yellow]warning:[/] binding {escape(host)}:{port} on a "
+            "non-loopback interface with --allow-public; ensure an "
+            "authenticating, TLS-terminating reverse proxy is in front."
+        )
+
+    runs_dir = runs_dir.resolve()
+    db_path = db_path.resolve()
+    resolved_dataset_root = dataset_root.resolve() if dataset_root is not None else None
+
+    allow_backends: tuple[str, ...] = (
+        ("nlmixr2", "bayesian_stan") if allow_bayesian else ("nlmixr2",)
+    )
+
+    fastapi_app = build_app(
+        runs_dir=runs_dir,
+        db_path=db_path,
+        allow_backends=allow_backends,
+        dataset_root=resolved_dataset_root,
+    )
+
+    console.print(
+        Panel.fit(
+            (
+                f"[bold]APMODE HTTP API[/]\n"
+                f"  bind:        [bold]http://{escape(host)}:{port}[/]\n"
+                f"  runs-dir:    {escape(str(runs_dir))}\n"
+                f"  db-path:     {escape(str(db_path))}\n"
+                f"  backends:    {', '.join(allow_backends)}\n"
+                f"  graceful:    {timeout_graceful_shutdown}s shutdown budget"
+            ),
+            title="apmode serve",
+            border_style="cyan",
+        )
+    )
+
+    config = uvicorn.Config(
+        fastapi_app,
+        host=host,
+        port=port,
+        log_level=log_level,
+        timeout_graceful_shutdown=timeout_graceful_shutdown,
+    )
+    server = uvicorn.Server(config)
+
+    # uvicorn already handles SIGINT cleanly via its own signal handlers;
+    # suppressing KeyboardInterrupt here just avoids a traceback if the
+    # user mashes Ctrl-C twice in a row before uvicorn finishes shutdown.
+    with contextlib.suppress(KeyboardInterrupt):  # pragma: no cover
+        server.run()

@@ -715,7 +715,10 @@ class Orchestrator:
                 # backends so calling unconditionally keeps the audit
                 # trail uniform.
                 g1b = evaluate_gate1_bayesian(sr.result, policy)
-                emitter.write_gate_decision(g1b, gate_number=1)
+                # Gate 1 Bayesian writes to ``gate1b_<id>.json`` so it does
+                # not clobber the classical ``gate1_<id>.json`` audit
+                # artifact for Bayesian survivors (PRD §4.3.2).
+                emitter.write_gate_decision(g1b, gate_number="1b")
 
                 if not g1.passed:
                     emitter.append_failed_candidate(
@@ -829,7 +832,9 @@ class Orchestrator:
                     ),
                 )
                 g25 = evaluate_gate2_5(sr_result, policy, credibility_context=cred_ctx)
-                emitter.write_gate_decision(g25, gate_number=25)
+                # Gate 2.5 writes ``gate2_5_<id>.json`` to match the
+                # ``gate2_5_*.json`` glob the inspect / diff CLIs use.
+                emitter.write_gate_decision(g25, gate_number="2_5")
 
                 if not g25.passed:
                     emitter.append_failed_candidate(

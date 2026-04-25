@@ -75,19 +75,32 @@ async def terminate_process_group(
     with contextlib.suppress(ProcessLookupError):
         os.killpg(pgid, signal.SIGTERM)
     try:
-        await asyncio.wait_for(proc.wait(), timeout=grace_seconds)
-    except TimeoutError:
-        # Child did not exit in time — escalate to SIGKILL on the
-        # process group. This also catches grandchildren the runner
-        # does not directly own (e.g. R worker subprocesses spawned by
+        # ``asyncio.shield`` keeps a *second* CancelledError (e.g. from a
+        # lifespan shutdown firing while a DELETE handler is still
+        # awaiting this grace window) from skipping the SIGKILL
+        # escalation and orphaning the child. The shield is per-await,
+        # so a cancel still propagates *after* the SIGKILL path runs.
+        await asyncio.shield(asyncio.wait_for(proc.wait(), timeout=grace_seconds))
+    except (TimeoutError, asyncio.CancelledError) as exc:
+        # Child did not exit in time, or this coroutine was cancelled
+        # mid-grace — either way escalate to SIGKILL on the process
+        # group. This also catches grandchildren the runner does not
+        # directly own (e.g. R worker subprocesses spawned by
         # parallelisation libraries).
         logger.warning(
             "subprocess_terminate_grace_exceeded",
-            extra={"pid": proc.pid, "grace_seconds": grace_seconds},
+            extra={
+                "pid": proc.pid,
+                "grace_seconds": grace_seconds,
+                "trigger": type(exc).__name__,
+            },
         )
         with contextlib.suppress(ProcessLookupError):
             os.killpg(pgid, signal.SIGKILL)
-        await proc.wait()
+        with contextlib.suppress(ProcessLookupError):
+            await proc.wait()
+        if isinstance(exc, asyncio.CancelledError):
+            raise
 
 
 __all__ = ["DEFAULT_GRACE_SECONDS", "terminate_process_group"]

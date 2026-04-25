@@ -65,6 +65,7 @@ async def execute_run(
     runner_factory: RunnerFactory,
     store: RunStore,
     on_complete: Callable[[str], Awaitable[None]] | None = None,
+    dataset_root: Path | None = None,
 ) -> None:
     """Run the orchestrator and update the :class:`RunStore` along the way.
 
@@ -90,7 +91,27 @@ async def execute_run(
     try:
         await store.update_status(run_id, RunStatus.RUNNING)
 
-        dataset_path = Path(request.dataset_path).expanduser().resolve()
+        # Resolve and (when an allow-list is configured) confine the
+        # caller-supplied dataset path to a known root. The
+        # ``joinpath -> resolve -> relative_to`` sequence defeats
+        # both naive ``../`` traversal and symlink-escape (resolve()
+        # canonicalises through symlinks before the prefix check).
+        # When ``dataset_root`` is ``None`` (legacy embedders / tests),
+        # fall back to the prior expanduser-only behaviour.
+        if dataset_root is not None:
+            allow_root = dataset_root.resolve()
+            candidate = allow_root.joinpath(request.dataset_path).resolve()
+            try:
+                candidate.relative_to(allow_root)
+            except ValueError as exc:
+                msg = (
+                    f"dataset_path resolves outside the allow-listed root "
+                    f"{allow_root}: {request.dataset_path!r}"
+                )
+                raise PermissionError(msg) from exc
+            dataset_path = candidate
+        else:
+            dataset_path = Path(request.dataset_path).expanduser().resolve()
         if not dataset_path.is_file():
             msg = f"dataset_path does not exist or is not a file: {dataset_path}"
             raise FileNotFoundError(msg)
@@ -128,11 +149,26 @@ async def execute_run(
         # cancellation propagates up through any awaiting code (and so
         # the asyncio default handler does not log a spurious "task
         # exception was never retrieved" warning).
-        await store.update_status(
-            run_id,
-            RunStatus.CANCELLED,
-            error="run cancelled via DELETE /runs/{id}",
-        )
+        #
+        # ``asyncio.shield`` protects the status-update commit from a
+        # *second* cancellation (e.g. lifespan shutdown firing while
+        # this handler is mid-await). Without the shield, a double
+        # cancel on the same task can pre-empt the aiosqlite write and
+        # leave the row pinned in ``RUNNING`` until the next startup
+        # sweep reconciles it.
+        try:
+            await asyncio.shield(
+                store.update_status(
+                    run_id,
+                    RunStatus.CANCELLED,
+                    error="run cancelled via DELETE /runs/{id}",
+                )
+            )
+        except asyncio.CancelledError:
+            logger.warning(
+                "api_run_cancel_status_write_interrupted",
+                extra={"run_id": run_id},
+            )
         logger.info("api_run_cancelled", extra={"run_id": run_id})
         raise
 

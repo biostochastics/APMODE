@@ -47,6 +47,7 @@ async def _fake_execute_success(
     runner_factory,
     store,
     on_complete=None,
+    dataset_root: Path | None = None,
 ) -> None:
     """Stand-in for the real orchestrator: write a tiny sealed bundle.
 
@@ -76,6 +77,7 @@ async def _fake_execute_slow_then_cancel(
     runner_factory,
     store,
     on_complete=None,
+    dataset_root: Path | None = None,
 ) -> None:
     """Hold RUNNING long enough for the test to assert the live status."""
     try:

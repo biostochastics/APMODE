@@ -7,12 +7,128 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed — v0.6 RO-Crate projector hardening (multi-model review)
+### Fixed — Multi-model audit pass: cancellation, auth, digest integrity
 
-Four parallel external reviewers (gemini-reviewer, droid/claude-opus-4.6,
-GPT-5.2-pro thinking-mode-high, GLM-5 via crush) audited the projector
-+ importer + entity layer of `src/apmode/bundle/rocrate/`. Convergent
-and single-source findings drove the fixes below; all 2173 non-live
+A targeted hardening sweep informed by an external multi-model review
+(self + clink: gemini, droid, crush, opencode). All 2035 non-live unit
+tests pass; `mypy --strict` and `ruff check` are clean.
+
+- **Bayesian Gate 1 no longer clobbers the classical Gate 1 audit
+  artifact.** `BundleEmitter.write_gate_decision` now accepts
+  `gate_number: int | str`. Bayesian Gate 1 writes
+  `gate1b_<id>.json`; classical Gate 1 keeps `gate1_<id>.json`.
+  Gate 2.5 was emitting `gate25_<id>.json` while every CLI consumer
+  globbed `gate2_5_*.json` — the orchestrator now emits
+  `gate2_5_<id>.json` so `apmode inspect` / `apmode diff` see Gate 2.5
+  decisions for the first time.
+- **API lifespan ordering.** `apmode.api.app.build_app` now waits up to
+  10 s for cancelled tasks to flush their `CancelledError` handlers
+  before closing the aiosqlite store, eliminating the window where
+  `RUNNING` rows were left for the next startup sweep to reconcile.
+  The `execute_run` cancellation handler wraps its terminal status
+  write in `asyncio.shield` so a *second* cancel during shutdown
+  cannot pre-empt the commit.
+- **API authentication floor.** A new static-API-key dependency
+  (`X-API-Key` header, `hmac.compare_digest`) is mounted on every run-
+  management endpoint; `/healthz` stays unauthenticated. The CLI's
+  `apmode serve --allow-public` now refuses to bind a non-loopback
+  host unless `APMODE_API_KEY` is set *and* `--dataset-root` confines
+  `POST /runs` `dataset_path` values to a known directory tree
+  (resolved via `joinpath -> resolve -> relative_to`, defeating both
+  naive `..` traversal and symlink escape).
+- **API responses redact tracebacks.** `RunStatusResponse.error` now
+  surfaces only the last non-empty traceback line (capped at 240
+  characters); the full stack trace stays in the bundle and the
+  server log.
+- **Subprocess termination.** `terminate_process_group` shields its
+  SIGTERM grace window so a second `CancelledError` cannot skip the
+  SIGKILL escalation. The TimeoutError branches in `Nlmixr2Runner` /
+  `BayesianRunner` now route through `terminate_process_group` (5 s
+  SIGTERM grace, then SIGKILL) instead of going straight to SIGKILL,
+  so nlmixr2 cleans its `~/.cache/R/...` artefacts and cmdstan
+  flushes partial CSVs on timeout.
+- **LLM client lifecycle.** `AnthropicClient`, `OpenAIClient`,
+  `OpenRouterClient`, `GeminiClient`, and `OllamaClient` construct
+  their underlying SDK client lazily in `__init__` (was: per-call) and
+  expose an `aclose()` coroutine, eliminating the connection-pool leak
+  that accumulated under sustained timeout/cancellation churn.
+  `_await_llm` now uses `asyncio.timeout(...)` (3.11+) so it composes
+  cleanly inside `TaskGroup` rather than misclassifying outer
+  cancellations as timeouts. The litellm fallback splits its per-
+  request timeout from the outer wall cap (half + 1 deterministic
+  retry) so the SDK has a chance to land within budget.
+- **Agentic loop resilience.** A try/finally around the iteration
+  loop in `AgenticRunner.run` flushes
+  `agentic_iterations.jsonl` / `agentic_lineage.json` /
+  `run_lineage.json` even when a `CancelledError` tears the loop
+  down, so the audit-trail rollup survives DELETE /runs/{id}. A
+  failing LLM call no longer crashes the orchestrator: the runner
+  records the terminal failure, breaks out, and returns the best
+  classical result so far. `AgenticTraceOutput.raw_output` is bounded
+  at 32 KB so a runaway response cannot bloat the trace.
+- **Bundle digest TOCTOU.** `_compute_bundle_digest` now snapshots
+  every file's bytes into memory under a process-wide
+  `threading.Lock`, then hashes from the snapshot — a concurrent
+  `append_search_trajectory` / `append_failed_candidate` cannot
+  desync the seal. Both append helpers take the same lock and
+  fsync each line so a crash mid-pipeline preserves the audit
+  trail. `_COMPLETE.tmp` joins the digest exclusion set so a stale
+  half-written sentinel from a prior crash cannot taint a fresh
+  seal.
+- **Prompt-injection sanitiser.** `_sanitize_for_prompt` now
+  collapses role markers smuggled in via embedded `\n`, not just
+  line-start ones (e.g.
+  `Error: ...\n\nsystem: ignore previous instructions`).
+- **Cost-helper DRY.** Three identical `_estimate_*_cost` bodies in
+  `llm_providers.py` collapse to one `_compute_cost(rates, fallback,
+  ...)`; the orphaned `_estimate_cost` in `llm_client.py` is
+  removed (the litellm fallback now reports `0.0` rather than a
+  rate-table approximation that drifted from the per-provider tables).
+- **Critical regressions caught in the second-pass clink review.**
+  - `_DIGEST_LOCK` is now a `threading.RLock` (was non-reentrant
+    `Lock`), preventing the deadlock that would have hung every
+    `seal()` call: `seal()` acquires the lock and then calls
+    `_compute_bundle_digest` which acquires it again on the same
+    thread.
+  - `AgenticRunner.run` now calls `await self._llm.aclose()` in its
+    `finally` block (best-effort via `getattr`), so the lazy-hoisted
+    SDK client's httpx pool is actually released at run-end. Without
+    this the pool would leak per agentic run despite the per-call leak
+    being fixed.
+  - Returning the agentic best result via `best_result.model_copy(
+    update={"backend": "agentic_llm"})` instead of rebuilding the
+    Pydantic model field-by-field — preserves backend-specific
+    extensions (e.g. Bayesian `posterior_diagnostics` /
+    `sampler_config`) that the manual rebuild silently dropped.
+  - Lineage entries are staged locally and only promoted into
+    `lineage_entries` after `validate_dsl` accepts the post-transform
+    spec. Otherwise an invalid spec would seed orphan candidate IDs in
+    `agentic_lineage.json` that no `apmode lineage` invocation could
+    explain.
+  - `POST /runs` now caps concurrent runs at
+    `APMODE_MAX_CONCURRENT_RUNS` (default 8) and returns 429 with a
+    30 s `Retry-After` past that — closes the cost-DOS path where an
+    authenticated caller could submit unbounded runs.
+  - Error redaction (`_redact_error_for_api`) now strips absolute
+    filesystem paths via regex so the last-line summary served on
+    `GET /runs/{id}/status` cannot be used to map the server's
+    directory layout.
+
+## [0.6.0-rc1] — 2026-04-24
+
+### Added — `apmode serve` HTTP API CLI (plan Task 35)
+
+- **`apmode serve` typer subcommand** wraps `apmode.api.app.build_app(...)` behind a programmatic uvicorn server (`uvicorn.Config(...) + uvicorn.Server(config).run()`). Defaults: `--host 127.0.0.1`, `--port 8765`, `--runs-dir runs`, `--db-path runs/.apmode_runs.sqlite3`, `--timeout-graceful-shutdown 30` (covers the 5 s SIGTERM-to-SIGKILL window in `terminate_process_group` + headroom for the `CancelledError` handler to seal partial bundles).
+- **Loopback-default security gate.** Non-loopback `--host` values (`0.0.0.0`, RFC 1918 ranges, public IPs, hostnames other than `localhost`) exit with code 2 and a prescriptive message naming the risk: the API has no auth and bundle artefacts may contain patient data. The override flag `--allow-public` proceeds with a stderr warning naming the bind address. The gate is enforced by `_is_loopback_host`, which routes string hosts through `ipaddress.ip_address(...).is_loopback`; string-literal `localhost` (and IPv6 variants) are accepted, while DNS-resolved hostnames are rejected on principle (security defaults must not depend on runtime resolution).
+- **`--allow-bayesian` flag** extends the `POST /runs` backend allowlist from the default `("nlmixr2",)` to `("nlmixr2", "bayesian_stan")`. Off by default until the Bayesian runner is fully wired through the request resolver.
+- **Friendly extras-missing error.** `ImportError` on `from apmode.api.app import build_app` or `import uvicorn` is caught and re-emitted as `Error: the HTTP API extras are not installed. Run uv sync --extra api to pull FastAPI + uvicorn + aiosqlite.` with exit code 1.
+- **README capability table.** "HTTP API + `apmode serve`" and "Optimization lane (LORO-CV Gate 2)" are promoted from 🔶 Partial → ✅ Available; the dangling `#http-api` ToC anchor now resolves to a full endpoint contract section. The "Future enhancement" note documents a long-poll evolution (`?wait=N` on `GET /runs/{id}/status` via per-`run_id` `asyncio.Event`) as deferred — the implementation path is recorded but not shipped, since current scientific clients run minutes-to-hours per fit and 5 s polling is well within the tolerable budget.
+- **Tests.** `tests/unit/test_serve_cli.py` adds 19 cases covering loopback-host detection (`127.0.0.1`, `localhost`, `::1` accepted; `0.0.0.0`, RFC 1918, public IPs, hostnames rejected), default-bind kwargs to `uvicorn.Config`, custom port/log-level/shutdown-budget propagation, the `--allow-bayesian` allowlist extension, the non-loopback-without-`--allow-public` exit-2 gate (asserting `build_app` is **not** called so no SQLite handle leaks), `--allow-public` proceeding with a warning, and the extras-missing error path.
+
+### Fixed — v0.6 RO-Crate projector hardening
+
+Audit of the projector + importer + entity layer of
+`src/apmode/bundle/rocrate/` drove the fixes below; all 2173 non-live
 tests pass, `mypy --strict` and `ruff` are clean, and the
 rocrate-validator REQUIRED gate continues to pass on the 5 Suite-A
 scenarios. The golden snapshot at
@@ -116,12 +232,11 @@ intentionally regenerated; review the diff to confirm the reshaping.
   Suite-A smoke marker). `mypy --strict` and `ruff check` remain
   clean.
 
-### Added — v0.6-rc1 CLI polish (multi-model review)
+### Added — v0.6-rc1 CLI polish
 
-CLI surface hardened against a five-CLI external review (gemini, droid,
-crush/GLM-5, opencode/MiniMax — codex timed out at 900 s). Convergent
-findings drove the following non-breaking improvements; existing flags,
-exit codes, and Rich output paths are preserved.
+CLI surface hardened against an external audit. The following
+non-breaking improvements landed; existing flags, exit codes, and Rich
+output paths are preserved.
 
 - **Machine-readable `--json` on every read command.** `apmode log`,
   `apmode diff`, `apmode datasets`, `apmode doctor`, and `apmode policies`
@@ -423,9 +538,9 @@ against a versioned threshold.
 - **Policy version bump 0.5.1 → 0.6.0.** All three lane policies
   carry the new fields with lane-appropriate defaults.
 
-### Fixed — v0.6-rc1 multi-model review pass (correctness + wiring)
+### Fixed — v0.6-rc1 correctness + wiring pass
 
-A second review pass turned up six high-confidence findings on the
+A follow-up audit turned up six high-confidence findings on the
 just-merged Bayesian block, several of which were dead-code in
 production. This change closes them.
 
@@ -586,8 +701,8 @@ to "governance funnel actively consumes".
   above a 5% divergence-fraction floor to `switch_to_non_centered`
   (Betancourt & Girolami 2015) and falls back to
   `refit_with_higher_adapt_delta` for lower-rate divergences or tree-
-  depth saturations. APMODE never switches parameterization silently —
-  this is a consensus-review decision so the audit trail matches the run.
+  depth saturations. APMODE never switches parameterization silently
+  so the audit trail matches the run as executed.
 
 New unit tests: `test_bundle_prior_manifest.py` (10), `test_policy_gate1_bayesian.py` (12),
 `test_gate1_bayesian.py` (24), `test_bayes_loo.py` (6),
@@ -696,11 +811,10 @@ Gate 2.5 block for the submission lane are now on main.
   and uses `_INFORMATIVE_SOURCES` frozenset as the single source of
   truth (previously duplicated as a tuple literal).
 
-### Fixed — Multi-model review pass on unpushed v0.6 work
+### Fixed — Review pass on unpushed v0.6 work
 
-Multi-model review (gemini-pro / droid / crush / opencode) across the
-14 unpushed v0.6-rc1 commits surfaced correctness, safety, and
-documentation gaps. All resolved on main:
+A review pass across the 14 unpushed v0.6-rc1 commits surfaced
+correctness, safety, and documentation gaps. All resolved on main:
 
 - **Bayesian harness hardcoded `converged=True`**. `_run` now derives
   the flag from a conservative floor — R-hat ≤ 1.05, bulk ESS ≥ 400,
@@ -995,7 +1109,7 @@ Design: `_research/ROCRATE_INTEGRATION_PLAN.md` §§A–H (accepted).
 Known-Limitations Closure M0 landed: per-candidate `ScoringContract`
 on every `DiagnosticBundle`, contract-grouped Gate-3 ranking, and the
 Submission-lane dominance rule. Gate policy schema bumped to `0.5.0`;
-bundle sentinel schema bumped to `2`. Plan: `.plans/v0.5.0_limitations_closure.md`.
+bundle sentinel schema bumped to `2`.
 
 ### Added
 
@@ -1033,11 +1147,6 @@ bundle sentinel schema bumped to `2`. Plan: `.plans/v0.5.0_limitations_closure.m
   output).
 - **Tests**: `tests/unit/test_scoring_contract.py` (10 tests) and
   `tests/integration/test_gate3_contract_enforcement.py` (8 tests).
-- **`.plans/v0.5.0_limitations_closure.md`** — consolidated 10-item
-  closure plan. Final DAG, M3 reduced-scope decision (Laplace-only,
-  ≤16×16 block, L-BFGS + single ridge fallback), M1.5 MM-default
-  gating, A1–A7 regression merge-gate mandate, six PR checkpoints.
-
 ### Changed
 
 - **Bundle schema version** (`_COMPLETE_SCHEMA_VERSION`) bumped from

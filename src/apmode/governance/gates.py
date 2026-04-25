@@ -167,21 +167,27 @@ def _check_parameter_plausibility(result: BackendResult, g1: Gate1Config) -> Gat
     rse_max = g1.param_rse_max
 
     issues: list[str] = []
-    for name, pe in result.parameter_estimates.items():
-        if pe.category != "structural":
-            continue
-        is_log = len(name) >= 2 and name[0] == "l" and name[1].isalpha()
-        value = float(np.exp(pe.estimate)) if is_log else pe.estimate
-        label = f"exp({name})" if is_log else name
+    # Pathological fits can return log-space estimates >710, which
+    # overflow ``np.exp`` to ``inf`` with a noisy RuntimeWarning. The
+    # plausibility check below already rejects ``inf`` (it lands above
+    # ``upper_bound``), so we only need to silence the warning so it
+    # does not pollute pipeline stderr.
+    with np.errstate(over="ignore"):
+        for name, pe in result.parameter_estimates.items():
+            if pe.category != "structural":
+                continue
+            is_log = len(name) >= 2 and name[0] == "l" and name[1].isalpha()
+            value = float(np.exp(pe.estimate)) if is_log else pe.estimate
+            label = f"exp({name})" if is_log else name
 
-        if value <= 0:
-            issues.append(f"{label}={value:.4g} (non-positive)")
-        elif value <= lower_bound:
-            issues.append(f"{label}={value:.4g} (at lower bound)")
-        elif value >= upper_bound:
-            issues.append(f"{label}={value:.4g} (at upper bound)")
-        if pe.rse is not None and pe.rse > rse_max:
-            issues.append(f"{name} RSE={pe.rse:.1f}% (>{rse_max:g}%)")
+            if value <= 0:
+                issues.append(f"{label}={value:.4g} (non-positive)")
+            elif value <= lower_bound:
+                issues.append(f"{label}={value:.4g} (at lower bound)")
+            elif value >= upper_bound:
+                issues.append(f"{label}={value:.4g} (at upper bound)")
+            if pe.rse is not None and pe.rse > rse_max:
+                issues.append(f"{name} RSE={pe.rse:.1f}% (>{rse_max:g}%)")
 
     passed = len(issues) == 0
     return GateCheckResult(
