@@ -35,6 +35,7 @@ dependencies = [
     "rich>=13.0",
     "scipy>=1.11",
     "rocrate>=0.13",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
@@ -69,6 +70,11 @@ bayesian = [
     "cmdstanpy>=1.2",
     "arviz>=0.17",
     "pyarrow>=15.0",
+]
+api = [
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.30",
+    "aiosqlite>=0.19",
 ]
 dev = [
     "ruff>=0.4",
@@ -133,7 +139,7 @@ warn_unused_configs = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["sparkid.*", "pandera.*", "lark.*", "jax.*", "jaxlib.*", "diffrax.*", "equinox.*", "optax.*", "jaxtyping.*", "pandas.*", "cmdstanpy.*", "arviz.*", "pyarrow.*", "scipy.*"]
+module = ["sparkid.*", "pandera.*", "lark.*", "jax.*", "jaxlib.*", "diffrax.*", "equinox.*", "optax.*", "jaxtyping.*", "pandas.*", "cmdstanpy.*", "arviz.*", "pyarrow.*", "scipy.*", "aiosqlite.*", "yaml.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

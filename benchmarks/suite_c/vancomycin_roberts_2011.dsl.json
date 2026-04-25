@@ -1,0 +1,100 @@
+{
+  "model_id": "vancomycin_roberts_2011_1cmt_iv",
+  "absorption": {
+    "type": "IVBolus"
+  },
+  "distribution": {
+    "type": "OneCmt",
+    "V": 105.0
+  },
+  "elimination": {
+    "type": "Linear",
+    "CL": 4.6
+  },
+  "variability": [
+    {
+      "type": "IIV",
+      "params": [
+        "V",
+        "CL"
+      ],
+      "structure": "diagonal"
+    }
+  ],
+  "observation": {
+    "type": "Combined",
+    "sigma_prop": 0.15,
+    "sigma_add": 2.0
+  },
+  "priors": [
+    {
+      "target": "CL",
+      "family": {
+        "type": "Normal",
+        "mu": 1.5260563034950492,
+        "sigma": 0.5
+      },
+      "source": "weakly_informative",
+      "justification": "Weakly-informative log-Normal centred on Roberts 2011 typical vancomycin clearance (4.6 L/h) for septic ICU adults; sigma=0.5 on log scale allows ±65% CV around the prior mean.",
+      "doi": null,
+      "historical_refs": []
+    },
+    {
+      "target": "V",
+      "family": {
+        "type": "Normal",
+        "mu": 4.653960350157523,
+        "sigma": 0.5
+      },
+      "source": "weakly_informative",
+      "justification": "Weakly-informative log-Normal centred on 105 L (Roberts 2011 typical V = 1.5 L/kg × 70 kg adult).",
+      "doi": null,
+      "historical_refs": []
+    },
+    {
+      "target": "omega_CL",
+      "family": {
+        "type": "HalfNormal",
+        "sigma": 0.5
+      },
+      "source": "weakly_informative",
+      "justification": "",
+      "doi": null,
+      "historical_refs": []
+    },
+    {
+      "target": "omega_V",
+      "family": {
+        "type": "HalfNormal",
+        "sigma": 0.5
+      },
+      "source": "weakly_informative",
+      "justification": "",
+      "doi": null,
+      "historical_refs": []
+    },
+    {
+      "target": "sigma_prop",
+      "family": {
+        "type": "HalfNormal",
+        "sigma": 0.3
+      },
+      "source": "weakly_informative",
+      "justification": "",
+      "doi": null,
+      "historical_refs": []
+    },
+    {
+      "target": "sigma_add",
+      "family": {
+        "type": "HalfNormal",
+        "sigma": 2.0
+      },
+      "source": "weakly_informative",
+      "justification": "",
+      "doi": null,
+      "historical_refs": []
+    }
+  ],
+  "source_meta": {}
+}

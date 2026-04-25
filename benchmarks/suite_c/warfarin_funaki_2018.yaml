@@ -1,0 +1,44 @@
+# Suite C Phase-1 fixture — Warfarin (1-cmt oral, lagged first-order absorption).
+#
+# The warfarin dataset is the Holford-curated subset of O'Reilly's classical
+# warfarin PK/PD study, packaged with nlmixr2data and used as the canonical
+# nlmixr2 PK/PD tutorial dataset. Funaki/Holford/Fujita (PAGE Japan 2018)
+# present a transit-compartment fit; Fidler et al. 2019 (DOI below)
+# document the broader nlmixr2 fitting machinery used in that tutorial.
+#
+# APMODE's DSL does not yet support `Transit(n=1, ktr, ka)` with a
+# fractional-n fit — the closest representable approximation is a
+# lagged first-order model, so the fixture is parameterised that way.
+# When transit-compartment support lands the fixture should be
+# regenerated to the n=1 transit form for closer parity with the
+# Holford/Funaki tutorial.
+
+dataset_id: nlmixr2data_warfarin
+
+reference:
+  citation: >
+    Fidler M, Wilkins JJ, Hooijmaijers R, Post TM, Schoemaker R, Trame MN,
+    Xiong Y, Wang W. (2019) Nonlinear Mixed-Effects Model Development and
+    Simulation Using nlmixr and Related R Open-Source Packages. CPT
+    Pharmacometrics Syst Pharmacol 8(9):621-633.
+  doi: "10.1002/psp4.12445"
+  population_description: >
+    32 patients receiving single oral warfarin doses with PK observations
+    over multiple days; covariates include weight and age. Original PK
+    study by O'Reilly (1968), curated for nlmixr2 by Holford and used as
+    the standard nlmixr2 PK/PD tutorial dataset.
+
+dsl_spec_path: warfarin_funaki_2018.dsl.json
+
+reference_params:
+  ka: 0.888    # first-order absorption rate (1/h), back-transformed from tka
+  tlag: 0.5    # absorption lag (h), proxy for the transit-chain mean transit time
+  V: 10.9      # apparent volume of distribution (L)
+  CL: 0.106    # apparent oral clearance (L/h), back-transformed from tcl
+
+# Holford / nlmixr2 tutorial uses tcl/tv/tka/tlag in the rxode2 ini() block.
+parameterization_mapping:
+  tka: ka
+  tv: V
+  tcl: CL
+  tlag: tlag

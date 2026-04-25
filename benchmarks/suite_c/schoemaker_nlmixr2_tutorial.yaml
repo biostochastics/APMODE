@@ -1,0 +1,42 @@
+# Suite C Phase-1 fixture — Schoemaker 2019 nlmixr2 grid 1-cmt IV bolus.
+#
+# The Schoemaker 2019 paper (DOI below) benchmarks nlmixr's SAEM and FOCEI
+# implementations against industry standards (NONMEM and Monolix) on a
+# grid of 12 reference scenarios. The simplest scenario in the grid —
+# `pkBolus1cmt` — is a 1-compartment IV bolus model with known typical
+# values (CL = 4 L/h, V = 70 L) used to verify that nlmixr's SAEM/FOCEI
+# match NONMEM's output to within a few percent on a clean known-truth
+# dataset.
+#
+# This fixture mirrors the `pkBolus1cmt` scenario so APMODE's MLE
+# pipeline is anchored against the same reference. Unlike the other
+# Phase-1 fixtures (which compare against published clinical fits on
+# real datasets) this one validates that APMODE recovers the
+# *known-truth* typical values from a clean simulated grid — it is the
+# Phase-1 sanity anchor and should track tightly across releases.
+
+dataset_id: nlmixr2data_schoemaker
+
+reference:
+  citation: >
+    Schoemaker R, Fidler M, Laveille C, Wilkins JJ, Hooijmaijers R,
+    Post TM, Trame MN, Xiong Y, Wang W. (2019) Performance of the
+    SAEM and FOCEI Algorithms in the Open-Source, Nonlinear Mixed
+    Effect Modeling Tool nlmixr. CPT Pharmacometrics Syst Pharmacol
+    8(12):923-930.
+  doi: "10.1002/psp4.12471"
+  population_description: >
+    Simulated 1-compartment IV bolus dataset (`pkBolus1cmt` from the
+    nlmixr2data grid), 120 subjects, single bolus dose, sparsely sampled.
+    Known-truth typical values (CL = 4 L/h, V = 70 L) used to verify
+    estimator parity across NONMEM, Monolix, and nlmixr2.
+
+dsl_spec_path: schoemaker_nlmixr2_tutorial.dsl.json
+
+reference_params:
+  V: 70.0      # central volume (L), known-truth value from the simulator
+  CL: 4.0      # clearance (L/h), known-truth value from the simulator
+
+parameterization_mapping:
+  tvCL: CL
+  tvV: V

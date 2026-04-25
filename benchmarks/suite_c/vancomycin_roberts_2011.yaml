@@ -1,0 +1,67 @@
+# Suite C Phase-1 Bayesian fixture — Vancomycin Roberts 2011 (1-cmt IV).
+#
+# Roberts et al. 2011 (DOI below) is the canonical population-PK
+# parameterisation for vancomycin in critically-ill adult patients
+# receiving continuous-infusion regimens. It reports a 1-compartment
+# linear model with combined proportional + additive residual error
+# and the following typical-population disposition values (Table 2):
+#
+#   TVCL = 4.6 L/h  (95% CI 4.1 – 5.2)
+#   TVV  = 1.5 L/kg (95% CI 1.3 – 1.7)
+#
+# For a 70-kg adult the typical V is therefore 1.5 × 70 = 105 L.
+#
+# Phase-1 prior strategy (per plan Block 4B): weakly-informative
+# log-Normal priors on log-structural parameters centred on the
+# Roberts 2011 typical values, half-Normal priors on the BSV SDs and
+# residual-error SDs. The DSL spec at ``vancomycin_roberts_2011.dsl.json``
+# attaches the PriorSpec list directly so the Stan emitter can compile
+# it without further configuration.
+#
+# Why ``backend: bayesian_stan`` and not ``nlmixr2``: the Phase-1
+# Bayesian benchmark validates that APMODE's Bayesian path recovers
+# literature-anchored parameters under a short fit (warmup=200,
+# sampling=200, chains=2). The MLE benchmarks (Tasks 39-41) cover the
+# nlmixr2 path on the same dataset class.
+#
+# Dataset note: the registered ``mimic_vancomycin`` dataset card is
+# credentialed (PhysioNet) and explicitly marked ``ci_policy: never``.
+# The integration test for this fixture therefore generates an
+# 8-subject *shrink dataset* simulated from the literature parameters
+# rather than reading MIMIC. This keeps the per-PR + weekly-CI Bayesian
+# regression tractable and reproducible without credentialed data.
+# When MIMIC access is provisioned in a downstream environment, the
+# same fixture can be re-pointed at the real CSV without YAML edits.
+
+dataset_id: mimic_vancomycin
+
+reference:
+  citation: >
+    Roberts JA, Taccone FS, Udy AA, Vincent JL, Jacobs F, Lipman J.
+    (2011) Vancomycin Dosing in Critically Ill Patients: Robust
+    Methods for Improved Continuous-Infusion Regimens. Antimicrob
+    Agents Chemother 55(6):2704-2709.
+  doi: "10.1128/AAC.01708-10"
+  population_description: >
+    206 adult septic critically-ill patients receiving vancomycin as
+    a loading dose followed by continuous infusion; 1-compartment
+    linear PK model, combined proportional + additive residual error,
+    24-hour creatinine clearance covariate on CL, total body weight
+    covariate on V (covariates collapsed to typical values for the
+    Phase-1 fixture).
+
+dsl_spec_path: vancomycin_roberts_2011.dsl.json
+
+# Backend for this fixture is Bayesian Stan (cmdstanpy). The integration
+# test will skip if cmdstanpy is not installed.
+backend: bayesian_stan
+
+reference_params:
+  CL: 4.6      # vancomycin clearance (L/h), Roberts 2011 typical value
+  V: 105.0     # central volume (L), 1.5 L/kg × 70 kg typical adult
+
+# Roberts 2011 NONMEM uses TVCL/TVV typical-value naming; the DSL
+# canonicalises both to bare CL/V.
+parameterization_mapping:
+  TVCL: CL
+  TVV: V

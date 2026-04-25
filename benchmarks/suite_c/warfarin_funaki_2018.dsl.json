@@ -1,0 +1,34 @@
+{
+  "model_id": "warfarin_funaki_2018_1cmt_lagged_oral",
+  "absorption": {
+    "type": "LaggedFirstOrder",
+    "ka": 0.888,
+    "tlag": 0.5
+  },
+  "distribution": {
+    "type": "OneCmt",
+    "V": 10.9
+  },
+  "elimination": {
+    "type": "Linear",
+    "CL": 0.106
+  },
+  "variability": [
+    {
+      "type": "IIV",
+      "params": [
+        "ka",
+        "V",
+        "CL"
+      ],
+      "structure": "diagonal"
+    }
+  ],
+  "observation": {
+    "type": "Combined",
+    "sigma_prop": 0.349,
+    "sigma_add": 0.19
+  },
+  "priors": [],
+  "source_meta": {}
+}

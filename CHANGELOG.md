@@ -7,6 +7,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — v0.6-rc1 RunStore + Suite C Phase-1 fixtures (plan Tasks 31, 40, 43)
+
+Three independent slices of the v0.6 work landed together: the SQLite
+backbone for the upcoming HTTP API (Task 31), the Phase-1 MLE literature
+fixtures the Suite C scoring harness will iterate over (Task 40), and the
+Phase-1 Bayesian fixture for vancomycin (Task 43; Eleveld remains NO-GO
+per Task 42's coverage assessment).
+
+- **`SQLiteRunStore` + `RunStore` Protocol (Task 31).** New optional
+  `[api]` extra ships `fastapi>=0.111`, `uvicorn[standard]>=0.30`, and
+  `aiosqlite>=0.19`. `src/apmode/api/store.py` implements an async
+  run registry: `RunRecord` Pydantic schema, `RunStatus` StrEnum
+  (`pending` / `running` / `completed` / `failed` / `cancelled` /
+  `interrupted`), and `SQLiteRunStore` with `PRAGMA journal_mode=WAL`,
+  `PRAGMA synchronous=NORMAL`, `PRAGMA busy_timeout=5000`, and a
+  single-connection-per-store concurrency model where writes serialise
+  through `asyncio.Lock` around `BEGIN IMMEDIATE` transactions
+  (sqlite.org/wal.html performance guidance). `initialize()` is
+  idempotent and runs `sweep_interrupted_on_startup()` before
+  returning so the API never serves a stale `RUNNING` row after a
+  process restart — invariant the Task 34 lifespan hook relies on.
+  18 new unit tests in `tests/unit/test_run_store_sqlite.py` cover the
+  PRAGMA invariants, idempotent init/close, sweep semantics on
+  RUNNING / non-RUNNING rows, duplicate-key INSERT, and Protocol
+  structural conformance.
+- **Suite C Phase-1 MLE fixtures (Task 40, five datasets).** New
+  `benchmarks/suite_c/` directory holds one `<dataset_id>.yaml`
+  fixture + sibling `<dataset_id>.dsl.json` per dataset:
+  `theophylline_boeckmann_1992` (1-cmt oral, Schoemaker 2019 anchor,
+  DOI 10.1002/psp4.12471), `warfarin_funaki_2018` (1-cmt lagged-FO
+  oral, Fidler 2019 nlmixr2 doc anchor, DOI 10.1002/psp4.12445),
+  `mavoglurant_wendling_2015` (2-cmt oral, Wendling 2015 simplified
+  fit, DOI 10.1007/s11095-014-1574-1; replaces the plan's
+  unverifiable `mavoglurant_wang_2007.yaml` placeholder),
+  `gentamicin_germovsek_2017` (1-cmt IV, Germovsek 2017 IOV neonate
+  model, DOI 10.1128/AAC.02659-16; cross-cited against De Cock 2014
+  for typical-CL agreement), and `schoemaker_nlmixr2_tutorial` (1-cmt
+  IV bolus known-truth from the Schoemaker 2019 grid). New
+  `apmode.benchmarks.literature_loader` exposes `load_fixture`,
+  `load_fixture_by_id`, `load_dsl_spec`, and the canonical roster
+  `PHASE1_MLE_FIXTURE_IDS`. 31 new integration tests in
+  `tests/integration/test_suite_c_phase1_mle.py` assert each fixture
+  loads, validates against the submission lane, references a known
+  `dataset_id` in `benchmarks/datasets/registry.yaml`, emits
+  nlmixr2 R code naming every reference parameter, has a
+  Crossref-canonical DOI, and respects the
+  `parameterization_mapping` invariant.
+- **Suite C Phase-1 Bayesian fixture — vancomycin Roberts 2011
+  (Task 43).** `benchmarks/suite_c/vancomycin_roberts_2011.{yaml,
+  dsl.json}` ships a 1-cmt IV bolus DSLSpec with a six-element
+  `PriorSpec` list: weakly-informative log-Normal priors on log-CL
+  (mu=log(4.6), sigma=0.5) and log-V (mu=log(105), sigma=0.5)
+  centred on Roberts 2011 typical values
+  (DOI 10.1128/AAC.01708-10), plus half-Normal priors on the BSV
+  SDs and residual-error SDs. Eleveld propofol is excluded per the
+  Task 42 NO-GO assessment (`docs/discovery/eleveld_propofol_coverage.md`).
+  `LiteratureFixture` extended with `backend: Literal["nlmixr2",
+  "bayesian_stan"] = "nlmixr2"` so MLE fixtures keep the silent
+  default and Bayesian fixtures opt in. 9 new tests in
+  `tests/integration/test_suite_c_bayesian.py` (8 always-on + 1
+  short-fit gated behind `@pytest.mark.slow` and a cmdstanpy-skip
+  guard) cover prior-list non-emptiness, prior validation against
+  the spec, half-Normal-on-omegas / Normal-on-log-structurals
+  contract, log-prior centre vs reference-value agreement, and Stan
+  emitter compatibility.
+- **Runtime dependency: `pyyaml>=6.0`.** Added explicitly to project
+  dependencies (was previously transitively available via dev/test
+  extras). The Suite C scoring path (Task 41 follow-up) will load
+  fixtures at runtime, not just in tests.
+- **Test count: 2057 → 2115** (`<!-- apmode:AUTO:tests -->` markers
+  re-synced; CLAUDE.md is gitignored).
+
 ### Added — v0.6-rc1 Gate 2 prior-data-conflict + prior-sensitivity hard-gates (plan Tasks 20 + 21)
 
 The Bayesian Gate 2 admissibility funnel now includes the two

@@ -1,0 +1,48 @@
+# Suite C Phase-1 fixture — Theophylline (1-cmt oral, first-order absorption).
+#
+# The Theophylline dataset originates from Upton's pharmacokinetic study and
+# became the canonical NONMEM teaching dataset via Boeckmann/Sheiner/Beal's
+# NONMEM Users Guide Part V. The reference parameter values below are the
+# standard 1-cmt oral fit values reproduced across the Pinheiro-Bates SSfol
+# example, the rxode2 / nlmixr2 Theoph tutorial, and the Schoemaker 2019
+# nlmixr SAEM/FOCEI grid (which contains the Theoph fit). The DOI cites
+# Schoemaker 2019 because that paper publishes the matching nlmixr fit on
+# the same dataset; the dataset itself is older than DOI registration.
+#
+# Why these numbers and not the back-transformed Pinheiro-Bates lKe/lKa/lCl
+# triple: Pinheiro-Bates's SSfol parameterisation reports Ke and Cl as
+# *individual-level* clearances divided by per-subject volume (i.e. lCl
+# is log(Cl/V) for that individual). The DSLSpec is a population
+# parameterisation, so reproducing the Pinheiro-Bates SSfol numbers
+# verbatim would mismatch APMODE's Cl-as-typical-CL contract. The values
+# here are the typical-population-PK NONMEM-style estimates the rxode2
+# `theo_sd` tutorial reports.
+
+dataset_id: nlmixr2data_theophylline
+
+reference:
+  citation: >
+    Schoemaker R, Fidler M, Laveille C, Wilkins JJ, Hooijmaijers R, Post TM,
+    Trame MN, Xiong Y, Wang W. (2019) Performance of the SAEM and FOCEI
+    Algorithms in the Open-Source, Nonlinear Mixed Effect Modeling Tool
+    nlmixr. CPT Pharmacometrics Syst Pharmacol 8(12):923-930.
+  doi: "10.1002/psp4.12471"
+  population_description: >
+    12 healthy adult male volunteers, single oral 320 mg theophylline dose,
+    serum concentration sampled at 11 time points over 25 hours
+    (Boeckmann/Sheiner/Beal NONMEM Users Guide Part V dataset).
+
+dsl_spec_path: theophylline_boeckmann_1992.dsl.json
+
+reference_params:
+  ka: 1.5      # first-order absorption rate (1/h)
+  V: 32.0      # apparent volume of distribution (L)
+  CL: 2.83     # apparent oral clearance (L/h)
+
+# Map the published-paper symbol names (left) to APMODE DSL-canonical
+# names (right). The Schoemaker / nlmixr tutorial uses ``tvKa/tvV/tvCl``
+# typical-value naming for the population estimates.
+parameterization_mapping:
+  tvKa: ka
+  tvV: V
+  tvCl: CL

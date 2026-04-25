@@ -107,8 +107,8 @@ class LiteratureReference(BaseModel):
 class LiteratureFixture(BaseModel):
     """One Phase-1 Suite C fixture — dataset + DSL spec + literature anchor.
 
-    Per plan Task 39 / Task 40: each fixture pairs a NONMEM-style CSV
-    dataset (resolved via ``dataset_id`` against the benchmark dataset
+    Per plan Task 39 / Task 40 / Task 43: each fixture pairs a NONMEM-style
+    CSV dataset (resolved via ``dataset_id`` against the benchmark dataset
     cards) with a DSL spec the literature anchor was originally fit to,
     plus the published reference parameter values and the
     parameterization mapping that converts published names (e.g.
@@ -121,6 +121,12 @@ class LiteratureFixture(BaseModel):
     when computing the cross-tool NPE so APMODE-reported ``CL`` is
     compared against the right published value, not a name-misaligned
     one.
+
+    The ``backend`` field selects which APMODE estimator the Suite C
+    scoring harness should dispatch (plan Task 43): MLE fixtures
+    (Tasks 39-41) use ``"nlmixr2"`` (the default when omitted); Bayesian
+    fixtures (Task 43) set ``"bayesian_stan"`` so the scoring loop
+    routes through ``BayesianRunner`` and the cmdstanpy compile path.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -130,6 +136,10 @@ class LiteratureFixture(BaseModel):
     dsl_spec_path: Path
     reference_params: dict[str, float] = Field(min_length=1)
     parameterization_mapping: dict[str, str] = Field(default_factory=dict)
+    # Optional — defaults to ``"nlmixr2"`` (MLE) so existing Phase-1 MLE
+    # fixtures don't need to declare a backend explicitly. Phase-1
+    # Bayesian fixtures (plan Task 43) set ``"bayesian_stan"``.
+    backend: Literal["nlmixr2", "bayesian_stan"] = "nlmixr2"
 
     @model_validator(mode="after")
     def mapping_values_resolve_to_known_params(self) -> LiteratureFixture:

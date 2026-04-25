@@ -1,0 +1,30 @@
+{
+  "model_id": "schoemaker_nlmixr2_tutorial_1cmt_iv",
+  "absorption": {
+    "type": "IVBolus"
+  },
+  "distribution": {
+    "type": "OneCmt",
+    "V": 70.0
+  },
+  "elimination": {
+    "type": "Linear",
+    "CL": 4.0
+  },
+  "variability": [
+    {
+      "type": "IIV",
+      "params": [
+        "V",
+        "CL"
+      ],
+      "structure": "diagonal"
+    }
+  ],
+  "observation": {
+    "type": "Proportional",
+    "sigma_prop": 0.1
+  },
+  "priors": [],
+  "source_meta": {}
+}

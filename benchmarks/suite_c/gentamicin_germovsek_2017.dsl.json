@@ -1,0 +1,31 @@
+{
+  "model_id": "gentamicin_germovsek_2017_1cmt_iv",
+  "absorption": {
+    "type": "IVBolus"
+  },
+  "distribution": {
+    "type": "OneCmt",
+    "V": 1.5
+  },
+  "elimination": {
+    "type": "Linear",
+    "CL": 0.21
+  },
+  "variability": [
+    {
+      "type": "IIV",
+      "params": [
+        "V",
+        "CL"
+      ],
+      "structure": "diagonal"
+    }
+  ],
+  "observation": {
+    "type": "Combined",
+    "sigma_prop": 0.15,
+    "sigma_add": 0.5
+  },
+  "priors": [],
+  "source_meta": {}
+}

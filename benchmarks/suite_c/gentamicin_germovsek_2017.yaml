@@ -1,0 +1,50 @@
+# Suite C Phase-1 fixture — Gentamicin neonatal IOV (1-cmt IV bolus).
+#
+# The DDMoRe gentamicin dataset (`ddmore_gentamicin`) was modelled by
+# Germovsek et al. 2017 (DOI below) using a 1-cmt IV bolus model with
+# IOV on CL plus allometric weight scaling on CL and V. The fixture's
+# `reference_params` capture the DSL-comparable typical-value
+# disposition (CL and V); the IOV / weight covariates the published
+# model uses are not yet expressed in this Phase-1 fixture because
+# APMODE's Phase-1 MLE benchmark is comparing *disposition agreement*,
+# not covariate-model recovery — adding allometric WT on CL would
+# require the dataset's WT column as a CovariateLink, which Phase 2 of
+# Suite C will introduce.
+#
+# Cross-citation: De Cock et al. 2014 (DOI 10.1007/s11095-014-1361-z)
+# co-models gentamicin/tobramycin/vancomycin and reports
+# population-typical CL = 0.21 L/h for a 4-kg full-term neonate, which
+# matches the value used here. Both Germovsek and De Cock use the
+# 4-kg term-neonate as the typical-value reference subject, so the
+# numbers below are directly comparable.
+
+dataset_id: ddmore_gentamicin
+
+reference:
+  citation: >
+    Germovsek E, Kent A, Metsvaht T, Lutsar I, Klein N, Standing JF.
+    (2017) Development and Evaluation of a Gentamicin Pharmacokinetic
+    Model That Facilitates Opportunistic Gentamicin Therapeutic Drug
+    Monitoring in Neonates and Infants. Antimicrob Agents Chemother
+    61(8):e02659-16.
+  doi: "10.1128/AAC.02659-16"
+  population_description: >
+    205 neonates (gestational age 24-42 weeks, post-natal age 0-30 days),
+    2788 gentamicin serum concentrations from a multi-centre opportunistic
+    therapeutic drug monitoring database, treated with intermittent IV
+    gentamicin doses for confirmed or suspected sepsis. Covariates
+    include gestational age, post-natal age, weight, and serum
+    creatinine (the latter two used for IOV/covariate modelling in the
+    published parameterisation).
+
+dsl_spec_path: gentamicin_germovsek_2017.dsl.json
+
+reference_params:
+  V: 1.5       # central volume (L) — approx 0.5 L/kg × 3 kg
+  CL: 0.21     # gentamicin clearance (L/h) for a 4-kg full-term neonate
+               # (De Cock et al. 2014 typical value, matched against the
+               # Germovsek 2017 1-cmt fit's typical-value CL).
+
+parameterization_mapping:
+  Cldrug: CL   # De Cock 2014 / Germovsek 2017 typical-value naming
+  Vc: V
