@@ -64,7 +64,10 @@ llm = [
     "openai>=1.50",
     "google-genai>=1.0",
     "ollama>=0.4",
-    "litellm>=1.50",
+    # 1.83.7 patches GHSA SQL-injection (critical) + SSTI (high) in
+    # /prompts/test. Lower bound is bumped to the patched release so any
+    # ``uv sync --extra llm`` resolves to a non-vulnerable wheel.
+    "litellm>=1.83.7",
 ]
 bayesian = [
     "cmdstanpy>=1.2",
@@ -130,6 +133,18 @@ ignore = [
 
 [tool.ruff.lint.isort]
 known-first-party = ["apmode"]
+
+[tool.uv]
+# litellm 1.83.7+ patches the GHSA SQL-injection (critical) and SSTI
+# (high) advisories but hard-pins ``click==8.1.8`` for its proxy CLI.
+# That collides with ``roc-validator>=0.8.1`` (needs ``click>=8.2``).
+# Click 8.2 is a backward-compatible release that litellm just hasn't
+# been re-tested against; override the constraint so the security fix
+# resolves cleanly. APMODE never invokes the litellm proxy CLI — it
+# only imports ``litellm.acompletion`` — so the override is safe.
+override-dependencies = [
+    "click>=8.2",
+]
 
 [tool.mypy]
 python_version = "3.12"
