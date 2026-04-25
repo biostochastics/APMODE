@@ -7,6 +7,104 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — CLI infrastructure: version drift, typed errors, completion, SAEM streaming
+
+Four interlocking slices land the CLI plumbing the v0.7 plan calls for —
+version-drift detection, typed CLI errors, shell-completion installer,
+and SAEM streaming progress.
+
+- **PR1 — Version drift detection (`src/apmode/_version_drift.py`).**
+  Surfaces drift between the CHANGELOG-declared milestone (most-recent
+  `## [X.Y.Z]` header) and the runtime artefact identity
+  (`importlib.metadata.version("apmode")`, written by `hatch-vcs`).
+  When the two disagree, `apmode --version` prints both:
+  `apmode 0.6.0-rc1 (runtime 0.3.0rc4.dev77+gHASH.dDATE)`. Comparison
+  uses `packaging.version.Version` with PEP-440 canonicalisation and
+  symmetric `+local` strip; the CHANGELOG header regex accepts both
+  `-rcN` and `.devN` / `.postN` separators (multi-segment pre-release
+  like `0.7.0-rc1.2` is accepted). 31 unit tests including PEP-440
+  corner cases and CliRunner snapshots of aligned + drifted output.
+- **PR2 — Typed CLI error infrastructure (`src/apmode/cli_errors.py`,
+  `src/apmode/_json_ctx.py`, `src/apmode/__main__.py`,
+  `scripts/check_typer_exit_count.py`).** Six error classes
+  (`BundleNotFoundError`, `BundleInvalidError`, `PolicyValidationError`,
+  `BackendUnavailableError`, `ConfigError`, `UserAbortError`) carry
+  class-level `kind` (snake_case identifier) and `code` (process exit
+  code: 10/11/12/13/14/130). New `python -m apmode` entrypoint runs
+  `app(args=argv, standalone_mode=False)` and translates exceptions to
+  either a Rich panel on stderr or a JSON envelope on stdout (chosen by
+  argv pre-scan for `--json`). Click 8.x semantics fully honoured:
+  `typer.Exit(N)` is converted to a return value (not re-raised), and
+  `ClickException.exit_code` is preserved (no longer flattened to 2).
+  CI ratchet at `scripts/check_typer_exit_count.py` locks the legacy
+  count at 57; subsequent PRs migrate call sites and lower the
+  baseline. Robustness details: `click.Abort` handler (Ctrl-C inside
+  a prompt now renders as `user_abort` rather than a raw traceback),
+  `--` argv-sentinel respect (positional `--json` after `--` is not
+  a flag), `exc.exit_code` propagation (preserves `ClickException`
+  subclasses with custom codes), parenthesised-raise regex match
+  (`raise (typer.Exit(...))` forms now counted by the ratchet). 60
+  unit tests across `test_cli_errors.py`,
+  `test_cli_main_entrypoint.py`, `test_typer_exit_baseline.py`.
+- **PR3 — Shell completion (`src/apmode/shells/{__init__,_rcfile,bash,
+  zsh,fish,powershell}.py` + `src/apmode/cli_completion.py`).**
+  `apmode completion {install,show,uninstall}` Typer sub-app wraps
+  per-shell strategies. bash → marker block in `~/.bashrc`; zsh →
+  vanilla marker block OR oh-my-zsh file-drop into
+  `${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/apmode-completion.zsh`; fish →
+  file-drop into `${XDG_CONFIG_HOME:-~/.config}/fish/completions/
+  apmode.fish` (uses `env VAR=value` for fish 3.x portability);
+  PowerShell 5/7 → marker block in `$PROFILE`. Atomic writes via
+  per-PID `<file>.tmp.<pid>` + `os.replace`; one-shot `.bak` per
+  process; idempotent install (`installed`/`already_installed`/
+  `updated`/`uninstalled`/`absent` actions); byte-stable round-trip
+  (one trailing newline budget). Robustness details: per-PID
+  `<file>.tmp.<pid>` suffix in `atomic_write` (concurrent-install
+  safety), `FileNotFoundError` TOCTOU handler in `backup_once` (file
+  vanishing between `exists()` and `copy2()` is no longer fatal),
+  fish `env VAR=value cmd` prefix (fish 3.x rejects bare
+  `VAR=value cmd`), stale-tmp cleanup on `atomic_write` exception
+  path. 56 unit tests including
+  install/uninstall byte-equality, oh-my-zsh detection, PS5/PS7 path
+  resolution, and JSON-envelope coverage.
+- **PR4 — SAEM streaming progress (`src/apmode/backends/
+  saem_progress.py` + `src/apmode/backends/nlmixr2_runner.py`).**
+  `SAEMLineParser` is pinned against a real captured `nlmixr2 5.0`
+  log (`tests/fixtures/saem/theo_sd_30b_30e.log`, 60 iterations,
+  30 burn-in + 30 EM): a `params:` header followed by
+  `001: <tab-separated floats>` iteration lines. Parser is designed
+  to never raise on arbitrary input (Hypothesis property test).
+  `nlmixr2_runner._drain_pipe` runs alongside `_spawn_r` to drain
+  stdout + stderr concurrently with audit-log tee + per-line
+  callback; the asyncio `StreamReader` limit was bumped from 64 KiB
+  to 1 MiB so a long nlmixr2 stack trace no longer triggers
+  byte-loss on overrun. `Nlmixr2Runner` constructor exposes
+  `progress_callback` + `audit_log_dir` for the future CLI flag
+  wiring. Robustness details: `Inf`/`-Inf` tolerance in the regex
+  character class (divergent SAEM iterations no longer drop
+  silently), length-mismatch guard on emitted `SAEMState` (no hollow
+  `param_values=()` when header is set), drain-overrun loop continues
+  until newline (no per-line cycling on > 1 MiB stack traces),
+  closed-handle `ValueError` race caught alongside `OSError`,
+  cross-stream sentinel newline so stdout fragments cannot glue
+  onto stderr lines in the shared audit log. 49 unit tests
+  including 100k-line deadlock-prevention burst, end-to-end
+  drain→parser pipeline against the real fixture, and Hypothesis
+  property fuzz on text + bytes.
+- **Version bump.** `pyproject.toml` `fallback-version` 0.5.0-rc1 →
+  0.6.0-rc1; `src/apmode/__init__.py` fallback constant 0.2.0.dev0 →
+  0.6.0-rc1; CHANGELOG `[Unreleased]` cut to `[0.6.0-rc1] — 2026-04-24`
+  during the bump; README `## Status` line updated to v0.6 wording
+  and PR4 / PR1 streaming feature mentions; CITATION.cff version
+  pulled by `scripts/sync_readme.py`.
+- **WIP polish.** The pre-existing uncommitted `apmode serve` work
+  (Task 35) was tightened on the same commit: stdlib imports
+  (`contextlib`, `ipaddress`) hoisted to module scope; duplicated
+  `_is_loopback_host(host)` check deduplicated; `escape(host)!s`
+  no-op stripped; module docstring extended to list `serve`. The
+  `--allow-public` test was updated to satisfy the concurrent
+  `APMODE_API_KEY` + `--dataset-root` security gates.
+
 ### Fixed — Multi-model audit pass: cancellation, auth, digest integrity
 
 A targeted hardening sweep informed by an external multi-model review
