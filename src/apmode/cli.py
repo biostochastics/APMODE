@@ -1068,7 +1068,32 @@ def _validate_file(path: Path, filename: str) -> tuple[bool, str, str]:
         return False, _STATUS_BAD, str(e)
     if not isinstance(raw, dict):
         return False, _STATUS_BAD, f"expected JSON object, got {type(raw).__name__}"
+    schema_error = _validate_artifact_schema(filename, raw)
+    if schema_error is not None:
+        return False, _STATUS_BAD, schema_error
     return True, _STATUS_OK, ""
+
+
+def _validate_artifact_schema(filename: str, raw: dict[str, Any]) -> str | None:
+    """Validate artifacts whose CLI consumers rely on a concrete schema."""
+    model: type[Any] | None = None
+    if filename == "candidate_lineage.json":
+        from apmode.bundle.models import CandidateLineage
+
+        model = CandidateLineage
+    elif filename == "search_graph.json":
+        from apmode.bundle.models import SearchGraph
+
+        model = SearchGraph
+
+    if model is None:
+        return None
+
+    try:
+        model.model_validate(raw)
+    except Exception as exc:
+        return f"schema invalid: {exc}"
+    return None
 
 
 def _validate_sentinel(bundle_dir: Path) -> tuple[bool, str, str]:
@@ -1188,6 +1213,7 @@ def validate(
         "policy_file.json",
         "search_trajectory.jsonl",
         "failed_candidates.jsonl",
+        "search_graph.json",
         "ranking.json",
     ]
 
@@ -3159,6 +3185,9 @@ def trace(
 
     mode_dirs = _discover_agentic_mode_dirs(bundle_dir)
     if not mode_dirs:
+        if output_json:
+            print("{}")
+            return
         console.print("[dim]No agentic trace found in this bundle.[/]")
         return
 
@@ -3196,7 +3225,7 @@ def _show_trace_summary_multi(mode_dirs: dict[str, Path], as_json: bool) -> None
     """Show summary table(s) across one or more agentic modes."""
     if as_json:
         payload = {mode: _read_iterations_jsonl(mode_dir) for mode, mode_dir in mode_dirs.items()}
-        console.print(json.dumps(payload, indent=2))
+        print(json.dumps(payload, indent=2))
         return
 
     for mode, mode_dir in mode_dirs.items():
@@ -3242,7 +3271,7 @@ def _show_trace_summary(trace_dir: Path, as_json: bool) -> None:
         return
 
     if as_json:
-        console.print(json.dumps(entries, indent=2))
+        print(json.dumps(entries, indent=2))
         return
 
     console.print()
@@ -3301,7 +3330,7 @@ def _show_trace_iteration(trace_dir: Path, iteration: int, as_json: bool) -> Non
     )
 
     if as_json:
-        console.print(json.dumps({"input": inp, "output": out, "meta": meta}, indent=2))
+        print(json.dumps({"input": inp, "output": out, "meta": meta}, indent=2))
         return
 
     console.print()
@@ -3402,7 +3431,7 @@ def _show_trace_cost_multi(mode_dirs: dict[str, Path], as_json: bool) -> None:
     grand_total["total_tokens"] = grand_total["input_tokens"] + grand_total["output_tokens"]
 
     if as_json:
-        console.print(json.dumps({"per_mode": per_mode, "total": grand_total}, indent=2))
+        print(json.dumps({"per_mode": per_mode, "total": grand_total}, indent=2))
         return
 
     console.print()
@@ -3548,7 +3577,7 @@ def lineage(
                     if spec_data is not None:
                         step_data["spec"] = spec_data
             result_entries.append(step_data)
-        console.print(json.dumps(result_entries, indent=2))
+        print(json.dumps(result_entries, indent=2))
         return
 
     console.print()
@@ -4515,31 +4544,6 @@ def graph(
         err_console.print(f"[red bold]Error:[/] not a directory: {escape(str(bundle_dir))}")
         raise typer.Exit(code=1)
 
-    graph_path = bundle_dir / "search_graph.json"
-    if not graph_path.exists():
-        console.print("[dim]No search graph found in this bundle.[/]")
-        return
-
-    graph_data = _load_json(graph_path, "search_graph.json")
-    if not graph_data:
-        # File exists but is unreadable / corrupt / not a JSON object:
-        err_console.print("[red bold]Error:[/] search_graph.json is empty or malformed.")
-        raise typer.Exit(code=1)
-
-    nodes: list[dict[str, Any]] = graph_data.get("nodes", [])
-    edges: list[dict[str, Any]] = graph_data.get("edges", [])
-
-    # Apply filters
-    if backend:
-        nodes = [n for n in nodes if n.get("backend") == backend]
-        node_ids = {n["candidate_id"] for n in nodes}
-        edges = [e for e in edges if e["parent_id"] in node_ids and e["child_id"] in node_ids]
-
-    if converged:
-        nodes = [n for n in nodes if n.get("converged")]
-        node_ids = {n["candidate_id"] for n in nodes}
-        edges = [e for e in edges if e["parent_id"] in node_ids and e["child_id"] in node_ids]
-
     valid_formats = {"tree", "dot", "mermaid", "json"}
     if fmt not in valid_formats:
         err_console.print(
@@ -4554,12 +4558,54 @@ def graph(
         output.write_text(text)
         console.print(f"[green]{label} written to {escape(str(output))}[/]")
 
+    graph_path = bundle_dir / "search_graph.json"
+    if not graph_path.exists():
+        if fmt == "json":
+            text = json.dumps({"nodes": [], "edges": []}, indent=2)
+            if output:
+                _write(text, "JSON")
+            else:
+                print(text)
+            return
+        console.print("[dim]No search graph found in this bundle.[/]")
+        return
+
+    graph_data = _load_json(graph_path, "search_graph.json")
+    if not graph_data:
+        # File exists but is unreadable / corrupt / not a JSON object:
+        err_console.print("[red bold]Error:[/] search_graph.json is empty or malformed.")
+        raise typer.Exit(code=1)
+
+    try:
+        from apmode.bundle.models import SearchGraph
+
+        graph_model = SearchGraph.model_validate(graph_data)
+    except Exception as exc:
+        err_console.print(
+            f"[red bold]Error:[/] search_graph.json schema invalid: {escape(str(exc))}"
+        )
+        raise typer.Exit(code=1) from None
+
+    nodes: list[dict[str, Any]] = [n.model_dump() for n in graph_model.nodes]
+    edges: list[dict[str, Any]] = [e.model_dump() for e in graph_model.edges]
+
+    # Apply filters
+    if backend:
+        nodes = [n for n in nodes if n.get("backend") == backend]
+        node_ids = {n["candidate_id"] for n in nodes}
+        edges = [e for e in edges if e["parent_id"] in node_ids and e["child_id"] in node_ids]
+
+    if converged:
+        nodes = [n for n in nodes if n.get("converged")]
+        node_ids = {n["candidate_id"] for n in nodes}
+        edges = [e for e in edges if e["parent_id"] in node_ids and e["child_id"] in node_ids]
+
     if fmt == "json":
         text = json.dumps({"nodes": nodes, "edges": edges}, indent=2)
         if output:
             _write(text, "JSON")
         else:
-            console.print(text)
+            print(text)
         return
 
     if fmt == "dot":

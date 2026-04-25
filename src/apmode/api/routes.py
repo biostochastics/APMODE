@@ -135,11 +135,15 @@ def _build_require_api_key() -> Callable[[str | None], None]:
         # TypeError, which FastAPI surfaces as a 500 (and leaks a
         # distinguishing log line). Encode both sides as UTF-8 bytes so a
         # malformed header degrades to a clean 401 with no side-channel.
+        # ``UnicodeEncodeError`` covers surrogate pairs that the encode
+        # call itself rejects. We deliberately do *not* catch broader
+        # exception classes — a real bug in ``hmac.compare_digest``
+        # should crash 500, not silently authenticate.
         valid = False
         if api_key:
             try:
                 valid = hmac.compare_digest(api_key.encode("utf-8"), expected.encode("utf-8"))
-            except (UnicodeEncodeError, AttributeError):
+            except UnicodeEncodeError:
                 valid = False
         if not valid:
             raise HTTPException(

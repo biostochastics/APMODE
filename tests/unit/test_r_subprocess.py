@@ -283,3 +283,66 @@ class TestHarnessRRenamesNMID:
             "data path so rxode2 partitions the held-out events by subject "
             "id rather than treating the file as a single subject."
         )
+
+
+class TestPredictedSimulations1DCoercion:
+    """Defence-in-depth: PredictedSimulationsSubject must accept the 1D
+    shape that ``jsonlite::toJSON(..., auto_unbox = TRUE)`` emits for
+    single-observation subjects when an upstream caller forgets the
+    ``I()`` wrap inside ``r/harness.R::.simulate_posterior_predictive``.
+
+    The bug surfaces on sparse PK fixtures (``pheno_sd``: 155 obs across
+    59 subjects -> some subjects have a single observation): the
+    runner used to crash with 200 ``Input should be a valid list``
+    Pydantic errors per fit, aborting the entire fixture. The R-side
+    ``I()`` wrap is the primary fix; this coercion is defence in
+    depth so a future R-side regression cannot silently re-break
+    sparse-data Phase-1 runs.
+    """
+
+    def test_flat_list_of_floats_is_coerced_to_list_of_singletons(self) -> None:
+        from apmode.backends.r_schemas import PredictedSimulationsSubject
+
+        # 200 sims at a single observation, emitted by an
+        # auto_unbox-ing jsonlite call without the I() wrap.
+        flat_sims = [float(i) / 10.0 for i in range(200)]
+        subj = PredictedSimulationsSubject(
+            subject_id="s1",
+            t_observed=[1.5],
+            observed_dv=[8.0],
+            sims_at_observed=flat_sims,  # type: ignore[arg-type]
+        )
+        assert len(subj.sims_at_observed) == 200
+        assert all(len(row) == 1 for row in subj.sims_at_observed)
+        assert subj.sims_at_observed[0] == [0.0]
+        assert subj.sims_at_observed[10] == pytest.approx([1.0])
+
+    def test_well_formed_2d_input_is_unchanged(self) -> None:
+        from apmode.backends.r_schemas import PredictedSimulationsSubject
+
+        # Multi-obs subject — list[list[float]] verbatim.
+        sims = [[1.0, 2.0, 3.0], [1.5, 2.5, 3.5]]
+        subj = PredictedSimulationsSubject(
+            subject_id="s1",
+            t_observed=[0.5, 1.0, 2.0],
+            observed_dv=[5.0, 8.0, 6.0],
+            sims_at_observed=sims,
+        )
+        assert subj.sims_at_observed == sims
+
+    def test_harness_uses_I_wrap_for_sparse_subjects(self) -> None:
+        from pathlib import Path
+
+        import apmode
+
+        harness = (Path(apmode.__file__).parent / "r" / "harness.R").read_text()
+        # The R-side primary fix: each per-sim row gets ``I()``-wrapped
+        # so the n_obs == 1 case keeps its array shape under
+        # ``auto_unbox = TRUE``. Pin the literal so a refactor that
+        # drops the wrap re-introduces the sparse-data crash.
+        assert "I(as.numeric(mat[r, ]))" in harness, (
+            "r/harness.R must wrap each per-sim row in I() so jsonlite "
+            "preserves length-1 inner arrays (n_obs == 1 subjects). "
+            "Without the wrap the runner crashes on sparse PK fixtures "
+            "with ``Input should be a valid list`` Pydantic errors."
+        )

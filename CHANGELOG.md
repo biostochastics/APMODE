@@ -7,6 +7,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — Sparse-data harness: 1D `sims_at_observed` no longer crashes the runner
+
+When a subject has a single observation (the `pheno_sd` neonatal
+phenobarbital fixture: 155 obs across 59 subjects → some subjects
+hit 1 obs), the R harness's posterior-predictive simulator emitted
+`sims_at_observed` as a flat `list[float]` of length n_sims rather
+than `list[list[float]]` (n_sims × 1). `jsonlite::toJSON(...,
+auto_unbox = TRUE)` was unboxing each length-1 inner array to a
+scalar; the Pydantic model `PredictedSimulationsSubject` then
+rejected the response with one ValidationError per simulated row
+(200 errors at `--n-sims 200`), aborting the entire fixture.
+
+Two-layer fix:
+
+- **R-side primary**: `r/harness.R::.simulate_posterior_predictive`
+  wraps each per-sim row in `I(...)` so jsonlite preserves the
+  array shape under `auto_unbox = TRUE`.
+- **Pydantic-side defence in depth**: a new `field_validator
+  ("sims_at_observed", mode="before")` on `PredictedSimulationsSubject`
+  detects the flat `list[float]` shape and coerces it to
+  `[[x] for x in v]` before validation. Well-formed inputs are
+  unaffected. A future R-side regression fails the harness pin
+  (`tests/unit/test_r_subprocess.py
+  ::TestPredictedSimulations1DCoercion::
+  test_harness_uses_I_wrap_for_sparse_subjects`) instead of the
+  Phase-1 weekly run.
+
+Tests: 3 new pins in `TestPredictedSimulations1DCoercion`
+(flat-list-coerced, 2D-passthrough, harness-source-`I()`-wrap).
+
+### Fixed — Runner-resilience: orphaned grandchild pipe FDs no longer hang `Nlmixr2Runner`
+
+`Nlmixr2Runner._spawn_r` previously did
+`asyncio.gather(drain_stdout, drain_stderr)` followed by
+`await proc.wait()`. rxode2 invokes gcc/clang to compile the
+generated C model code; those grandchildren inherit R's stdout and
+stderr file descriptors via the `os.setsid`'d process group. If R
+exits while a grandchild is still alive (segfaulted, SIGKILLed, or
+just slow to flush), the OS pipes stay open. asyncio's
+`BaseSubprocessTransport._try_finish` gates the wait future on ALL
+pipe transports closing, so an orphaned grandchild blocks both the
+drain gather and `proc.wait()` indefinitely. The outer
+`asyncio.timeout` would eventually fire — at the cost of a 600 s
+per-fit penalty per orphaned fit. The Suite-C Phase-1 weekly run
+hit this on the mavoglurant fold04 fit and stalled overnight.
+
+Fix: race a `os.kill(pid, 0)`-based watchdog against the drain
+gather. Once the immediate child is gone (independent of pipe
+state), the runner gives the drains a 5 s grace and then
+`feed_eof()`s the StreamReaders so the drain coroutines complete
+and the asyncio transport finally resolves `proc.wait()`. The
+final `proc.wait()` gets a 2 s safety wrap in case the
+transport's internal `_try_finish` state machine is still wedged
+on a pipe we couldn't unblock.
+
+Regression test: `test_grandchild_holding_pipe_does_not_hang_runner`
+launches a shell script that backgrounds a 30 s sleeper inheriting
+stdout/stderr, writes a valid `response.json`, then exits 0.
+Without the fix, `runner.run()` blocks for the full 30 s sleep;
+with the fix it returns in ~6 s.
+
 ## [0.6.1-rc1] — 2026-04-25
 
 ### Added — SOTA absorption preview (ADR-0003): Erlang, ParallelFirstOrder, SumIG(k=2)

@@ -63,7 +63,7 @@ def _make_minimal_bundle(tmp_path: Path, name: str = "run_min") -> Path:
             "nonlinear_clearance_evidence_strength": "none",
         },
     )
-    _write_json(bundle / "candidate_lineage.json", {"nodes": [], "edges": []})
+    _write_json(bundle / "candidate_lineage.json", {"entries": []})
     # Write the ``_COMPLETE`` sentinel with a matching digest last.
     _write_json(
         bundle / "_COMPLETE",
@@ -362,6 +362,15 @@ class TestValidate:
         (bundle / "data_manifest.json").write_text("[]")
         result = runner.invoke(app, ["validate", str(bundle)])
         assert result.exit_code == 1
+
+    def test_candidate_lineage_schema_rejected(self, tmp_path: Path) -> None:
+        """Regression: validate used to accept object-shaped but wrong-schema lineage."""
+        bundle = _make_minimal_bundle(tmp_path)
+        (bundle / "candidate_lineage.json").write_text(json.dumps({"nodes": [], "edges": []}))
+        result = runner.invoke(app, ["validate", str(bundle)])
+        assert result.exit_code == 1
+        assert "candidate_lineage.json" in result.output
+        assert "schema invalid" in result.output
 
     def test_directory_instead_of_json_file_handled(self, tmp_path: Path) -> None:
         """Regression: a required path being a directory used to raise

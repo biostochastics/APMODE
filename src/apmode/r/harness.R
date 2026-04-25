@@ -153,7 +153,19 @@ response_path <- args[2]
     out <- vector("list", length(subjects))
     for (i in seq_along(subjects)) {
       mat <- per_subj_mats[[i]][valid_sims, , drop = FALSE]
-      sims_nested <- lapply(seq_len(nrow(mat)), function(r) as.numeric(mat[r, ]))
+      # I() wraps each row so jsonlite::toJSON preserves it as a JSON
+      # array even when ``auto_unbox = TRUE`` is set on the outer
+      # write_json call. Without I(), a subject with n_obs == 1 emits
+      # ``sims_at_observed: [1.5, 2.0, ...]`` (a flat list of n_sims
+      # scalars) instead of ``[[1.5], [2.0], ...]`` (a list of n_sims
+      # length-1 arrays), which Pydantic's ``list[list[float]]``
+      # rejects with 200 ``Input should be a valid list`` errors.
+      # The bug surfaces on sparse PK fixtures (pheno: 155 obs across
+      # 59 subjects → some subjects have a single observation).
+      sims_nested <- lapply(
+        seq_len(nrow(mat)),
+        function(r) I(as.numeric(mat[r, ]))
+      )
       out[[i]] <- c(per_subj_meta[[i]], list(sims_at_observed = sims_nested))
     }
     out

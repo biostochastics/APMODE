@@ -101,6 +101,28 @@ class PredictedSimulationsSubject(BaseModel):
     # reshapes into a numpy (n_sims, n_obs) array before validation.
     sims_at_observed: list[list[float]] = Field(min_length=1)
 
+    @field_validator("sims_at_observed", mode="before")
+    @classmethod
+    def _coerce_1d_to_2d(cls, v: object) -> object:
+        """Tolerate a flat ``list[float]`` for the n_obs == 1 case.
+
+        The R harness wraps each per-sim row with ``I(...)`` so
+        ``jsonlite::toJSON(..., auto_unbox = TRUE)`` keeps length-1
+        arrays as JSON arrays rather than unboxing them to scalars.
+        Older bundles + any future caller that forgets the ``I()`` wrap
+        would emit ``[1.5, 2.0, ...]`` instead of ``[[1.5], [2.0], ...]``
+        for sparse single-observation subjects, and the n_sims-long
+        list of scalars then fails the ``list[list[float]]`` check
+        with one ValidationError per simulated row (200 errors at
+        ``--n-sims 200``). Coerce that shape to ``[[x] for x in v]``
+        defensively so the runner does not crash on sparse PK fixtures
+        even if the upstream R fix regresses; the explicit check on
+        the inner type means well-formed inputs are unaffected.
+        """
+        if isinstance(v, list) and v and all(isinstance(x, (int, float)) for x in v):
+            return [[float(x)] for x in v]
+        return v
+
 
 class RSessionInfo(BaseModel):
     """R session info captured from the backend process."""

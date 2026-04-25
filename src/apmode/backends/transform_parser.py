@@ -39,9 +39,12 @@ from apmode.dsl.prior_transforms import SetPrior
 from apmode.dsl.priors import PriorFamily
 from apmode.dsl.transforms import (
     AddCovariateLink,
+    AddParallelRoute,
     AdjustVariability,
+    ConvertTransitToErlang,
     FormularTransform,
     ReplaceWithNODE,
+    SetSumIGComponents,
     SetTransitN,
     SwapModule,
     ToggleLag,
@@ -284,6 +287,41 @@ def _parse_set_prior(raw: dict[str, Any]) -> FormularTransform:
     )
 
 
+def _parse_convert_transit_to_erlang(raw: dict[str, Any]) -> ConvertTransitToErlang:
+    """Parse a ``convert_transit_to_erlang`` payload.
+
+    The transform takes a single integer ``n`` (1..7); validation of the
+    Transit-absorption precondition lives on the AST class itself.
+    """
+    return ConvertTransitToErlang(n=int(raw["n"]))
+
+
+def _parse_add_parallel_route(raw: dict[str, Any]) -> AddParallelRoute:
+    """Parse an ``add_parallel_route`` payload.
+
+    Splits a single first-order absorption into two parallel routes
+    (fast/slow) parameterised by ``ka2`` and the fast-route fraction
+    ``frac``.
+    """
+    return AddParallelRoute(ka2=float(raw["ka2"]), frac=float(raw["frac"]))
+
+
+def _parse_set_sumig_components(raw: dict[str, Any]) -> SetSumIGComponents:
+    """Parse a ``set_sumig_components`` payload.
+
+    Updates the SumIG component triple per route. The validator enforces
+    ``MT_1 < MT_2`` (label-switching guard) on the AST class itself, so
+    we only deserialise here.
+    """
+    return SetSumIGComponents(
+        MT_1=float(raw["MT_1"]),
+        MT_2=float(raw["MT_2"]),
+        RD2_1=float(raw["RD2_1"]),
+        RD2_2=float(raw["RD2_2"]),
+        weight_1=float(raw["weight_1"]),
+    )
+
+
 # Registration-map approach (H7): adding a new transform type requires a
 # new entry here and a new test in ``tests/unit/test_transform_parser.py``
 # (``test_parser_covers_all_transforms``) catches drift at test-collection
@@ -296,6 +334,9 @@ _TRANSFORM_PARSERS: dict[str, Callable[[dict[str, Any]], FormularTransform]] = {
     "toggle_lag": _parse_toggle_lag,
     "replace_with_node": _parse_replace_with_node,
     "set_prior": _parse_set_prior,
+    "convert_transit_to_erlang": _parse_convert_transit_to_erlang,
+    "add_parallel_route": _parse_add_parallel_route,
+    "set_sumig_components": _parse_set_sumig_components,
 }
 
 

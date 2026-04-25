@@ -349,6 +349,40 @@ class TestTraceCommand:
         assert result.exit_code == 0
         assert "No agentic trace" in result.output
 
+    def test_trace_no_agentic_json_is_parseable(self, tmp_path: Path) -> None:
+        bundle = tmp_path / "run_empty"
+        bundle.mkdir()
+        result = runner.invoke(app, ["trace", str(bundle), "--json"])
+        assert result.exit_code == 0
+        assert json.loads(result.output) == {}
+
+    def test_trace_json_preserves_markup_like_strings(self, tmp_path: Path) -> None:
+        bundle = _make_agentic_bundle(tmp_path)
+        trace_dir = bundle / "agentic_trace"
+        marker = "[cand_001]"
+        (trace_dir / "agentic_iterations.jsonl").write_text(
+            json.dumps(
+                {
+                    "iteration": 1,
+                    "spec_before": marker,
+                    "transforms_proposed": [marker],
+                    "converged": True,
+                }
+            )
+            + "\n"
+        )
+        (trace_dir / "iter_001_input.json").write_text(json.dumps({"candidate_id": marker}))
+
+        result = runner.invoke(app, ["trace", str(bundle), "--json"])
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["default"][0]["spec_before"] == marker
+        assert payload["default"][0]["transforms_proposed"] == [marker]
+
+        detail = runner.invoke(app, ["trace", str(bundle), "--iteration", "1", "--json"])
+        assert detail.exit_code == 0
+        assert json.loads(detail.output)["input"]["candidate_id"] == marker
+
 
 # ---------------------------------------------------------------------------
 # CLI: apmode lineage (Task 4)
@@ -414,6 +448,19 @@ class TestLineageCommand:
         result = runner.invoke(app, ["lineage", str(bundle), "root_001"])
         assert result.exit_code == 0
         assert "root_001" in result.output
+
+    def test_lineage_json_preserves_markup_like_ids(self, tmp_path: Path) -> None:
+        bundle = tmp_path / "run_lineage_markup"
+        bundle.mkdir()
+        marker = "[cand_001]"
+        (bundle / "candidate_lineage.json").write_text(
+            json.dumps(
+                {"entries": [{"candidate_id": marker, "parent_id": None, "transform": None}]}
+            )
+        )
+        result = runner.invoke(app, ["lineage", str(bundle), marker, "--json"])
+        assert result.exit_code == 0
+        assert json.loads(result.output)[0]["candidate_id"] == marker
 
 
 # ---------------------------------------------------------------------------
@@ -502,6 +549,29 @@ class TestGraphCommand:
         data = json.loads(result.output)
         assert len(data["nodes"]) == 3
 
+    def test_graph_json_no_artifact_is_parseable(self, tmp_path: Path) -> None:
+        bundle = tmp_path / "run_empty"
+        bundle.mkdir()
+        result = runner.invoke(app, ["graph", str(bundle), "--format", "json"])
+        assert result.exit_code == 0
+        assert json.loads(result.output) == {"nodes": [], "edges": []}
+
+    def test_graph_json_preserves_markup_like_ids(self, tmp_path: Path) -> None:
+        bundle = tmp_path / "run_graph_markup"
+        bundle.mkdir()
+        marker = "[cand_001]"
+        (bundle / "search_graph.json").write_text(
+            json.dumps(
+                {
+                    "nodes": [{"candidate_id": marker, "backend": "nlmixr2", "converged": True}],
+                    "edges": [],
+                }
+            )
+        )
+        result = runner.invoke(app, ["graph", str(bundle), "--format", "json"])
+        assert result.exit_code == 0
+        assert json.loads(result.output)["nodes"][0]["candidate_id"] == marker
+
     def test_graph_converged_filter(self, tmp_path: Path) -> None:
         bundle = _make_graph_bundle(tmp_path)
         result = runner.invoke(app, ["graph", str(bundle), "--converged"])
@@ -514,6 +584,15 @@ class TestGraphCommand:
         result = runner.invoke(app, ["graph", str(bundle)])
         assert result.exit_code == 0
         assert "No search graph" in result.output
+
+    def test_graph_malformed_node_exits_cleanly(self, tmp_path: Path) -> None:
+        bundle = tmp_path / "run_bad_graph"
+        bundle.mkdir()
+        (bundle / "search_graph.json").write_text(json.dumps({"nodes": [{"backend": "nlmixr2"}]}))
+        result = runner.invoke(app, ["graph", str(bundle)])
+        assert result.exit_code == 1
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+        assert "schema invalid" in result.output
 
     def test_graph_mermaid_export(self, tmp_path: Path) -> None:
         bundle = _make_graph_bundle(tmp_path)

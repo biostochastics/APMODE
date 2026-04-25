@@ -19,6 +19,8 @@ Key behaviours pinned here:
 from __future__ import annotations
 
 import json
+import tomllib
+from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
@@ -34,6 +36,8 @@ from apmode.cli_errors import (
     ConfigError,
     PolicyValidationError,
 )
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # ---------------------------------------------------------------------------
 # argv pre-scan
@@ -370,3 +374,9 @@ def test_main_defaults_to_sys_argv_when_argv_is_none(
     assert int(excinfo.value.code or 0) == 0
     # Confirm Click was given the right slice (everything past argv[0]).
     assert stub.calls[0]["kwargs"]["args"] == ["--json"]
+
+
+def test_packaged_console_script_points_at_typed_entrypoint() -> None:
+    """The installed `apmode` command must use the same catcher as `python -m apmode`."""
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert pyproject["project"]["scripts"]["apmode"] == "apmode.__main__:main"

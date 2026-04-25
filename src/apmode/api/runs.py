@@ -209,9 +209,15 @@ async def execute_run(
 
     finally:
         if on_complete is not None:
-            # Shield the callback so a second CancelledError (lifespan
-            # shutdown racing a DELETE) cannot skip ``active_tasks.pop``
-            # and leak a 429 capacity slot. The callback itself is a
+            # Shield the callback's coroutine so a second CancelledError
+            # (e.g. lifespan shutdown racing a DELETE) cannot interrupt
+            # ``active_tasks.pop`` mid-flight and leak a 429 capacity
+            # slot. The shield protects the *inner* coroutine from
+            # cancellation; the outer ``await asyncio.shield(...)`` may
+            # still raise CancelledError to signal the caller. If that
+            # happens we just log and let the cancellation propagate —
+            # the inner coroutine continues to run in the background
+            # and the dict.pop completes regardless. The callback is a
             # bounded ``dict.pop`` — safe to shield.
             try:
                 await asyncio.shield(on_complete(run_id))

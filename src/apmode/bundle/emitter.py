@@ -252,10 +252,24 @@ def _atomic_durable_write(tmp_path: Path, text: str) -> None:
     the fsync, a SIGKILL between the write returning and the rename
     can leave the renamed file with stale page-cache contents on
     filesystems that do not auto-flush data before a metadata commit.
+
+    POSIX permits ``os.write`` to return a short count on pipe-backed,
+    NFS, or low-memory paths, so we loop until every byte lands. A
+    return of 0 indicates ``EAGAIN`` on a non-blocking fd or a
+    terminated peer — neither should happen for a freshly opened
+    blocking regular file, but we treat it as an explicit ``OSError``
+    rather than spinning forever.
     """
+    data = text.encode("utf-8")
     fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
     try:
-        os.write(fd, text.encode("utf-8"))
+        offset = 0
+        while offset < len(data):
+            written = os.write(fd, data[offset:])
+            if written == 0:
+                msg = f"os.write returned 0 mid-buffer on {tmp_path}"
+                raise OSError(msg)
+            offset += written
         os.fsync(fd)
     finally:
         os.close(fd)

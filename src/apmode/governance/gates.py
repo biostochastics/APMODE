@@ -1802,6 +1802,26 @@ def evaluate_gate1_bayesian(
                 f"tree-depth warn: {td_fraction:.3f} ({diag.n_max_treedepth}/{total_iter})"
             )
 
+    # Surface harness-side diagnostic-computation failures (LOO without
+    # log_lik, az.bfmi on a degenerate posterior, etc.). These are
+    # *informational* — the corresponding scalar field is already
+    # NaN / None and gates above treat that as either a warn or a
+    # skipped check. Adding the harness's structured warning here gives
+    # the operator the actual exception class + message instead of
+    # leaving them to wonder why ``pareto_k_max`` was ``None``.
+    if diag.diagnostics_warnings:
+        checks.append(
+            GateCheckResult(
+                check_id="bayesian_diagnostics_complete",
+                passed=True,
+                observed=f"{len(diag.diagnostics_warnings)}_warnings",
+                threshold="0",
+                evidence_ref="; ".join(diag.diagnostics_warnings)[:500],
+            )
+        )
+        for entry in diag.diagnostics_warnings:
+            warning_reasons.append(f"diagnostic incomplete: {entry}")
+
     passed = not failure_reasons
     if passed and not warning_reasons:
         summary = "All Gate 1 Bayesian checks passed"
