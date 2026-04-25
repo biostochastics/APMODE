@@ -48,6 +48,7 @@ All numeric badges + status counts are rewritten from the source tree by `script
 - **Optional (classical)**: R 4.4+ with `nlmixr2`, `rxode2`, `jsonlite`, `lotri`, `mice`, `missRanger` — mock R subprocess tests work without R
 - **Optional (Bayesian)**: CmdStan 2.36+ via `cmdstanpy.install_cmdstan()` for the Stan/Torsten backend
 - **Optional (agentic)**: An LLM API key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`) or a local Ollama install
+- **Optional (HTTP API)**: `uv sync --extra api` pulls FastAPI + Uvicorn + aiosqlite. The `apmode.api.store.SQLiteRunStore` (WAL mode, async run registry) is the persistence backbone for the HTTP surface; the FastAPI app + endpoints land in v0.6 follow-up tasks
 
 ### Installation
 
@@ -446,6 +447,8 @@ Formular text ──→ Lark parser ──→ AST ──→     Search Engine
 | Bundle emitter | `src/apmode/bundle/` | All reproducibility bundle artifacts per PRD §5 |
 | Report generator | `src/apmode/report/` | HTML + Markdown regulatory report with credibility framing |
 | Dataset registry | `src/apmode/data/datasets.py` | <!-- apmode:AUTO:datasets -->14<!-- apmode:/AUTO:datasets --> public PK datasets from nlmixr2data with auto-fetch |
+| Suite C literature loader | `src/apmode/benchmarks/literature_loader.py` | YAML → `LiteratureFixture` → `DSLSpec` traversal for the Phase-1 MLE + Bayesian benchmark roster |
+| HTTP API persistence | `src/apmode/api/store.py` | `RunStore` Protocol + `SQLiteRunStore` (WAL mode, `BEGIN IMMEDIATE` writes, idempotent startup-sweep of `RUNNING` rows) — backbone for the upcoming FastAPI surface |
 | Path resolver | `src/apmode/paths.py` | `APMODE_POLICIES_DIR` env override + pyproject-walk fallback for CLI/orchestrator |
 | CLI | `src/apmode/cli.py` | Typer CLI with <!-- apmode:AUTO:cli_cmds -->15<!-- apmode:/AUTO:cli_cmds --> commands (see [CLI Reference](#cli-reference)) |
 
@@ -524,6 +527,26 @@ Rscript benchmarks/suite_a/simulate_all.R [output_dir]
 | B1 | NODE absorption recovery | Mock NODE fit passes Gate 1+2 Discovery |
 | B2 | Sparse data + NODE dispatch | Lane Router blocks NODE when data insufficient |
 | B3 | Cross-paradigm ranking | Gate 3 correctly ranks mixed nlmixr2 + jax_node candidates |
+
+### Suite C — Methodology Validation vs Published Literature (Phase 1)
+
+Suite C anchors APMODE against published, peer-reviewed reference parameterisations on real clinical datasets. Each fixture pairs a NONMEM-style CSV (resolved via `dataset_id` against `benchmarks/datasets/registry.yaml`) with a `DSLSpec` JSON and a `LiteratureFixture` YAML carrying the published parameter values, citation, DOI, and a parameterization mapping that translates published symbol names (e.g. `TVCL`) into APMODE's DSL-canonical names (e.g. `CL`).
+
+**Phase 1 MLE roster** (`apmode.benchmarks.literature_loader.PHASE1_MLE_FIXTURE_IDS`):
+
+| `dataset_id` | Route | DSL skeleton | Reference DOI |
+|--------------|-------|--------------|---------------|
+| `theophylline_boeckmann_1992` | oral | 1-cmt + FO ka | [10.1002/psp4.12471](https://doi.org/10.1002/psp4.12471) |
+| `warfarin_funaki_2018` | oral | 1-cmt + lagged-FO ka | [10.1002/psp4.12445](https://doi.org/10.1002/psp4.12445) |
+| `mavoglurant_wendling_2015` | oral | 2-cmt + FO ka | [10.1007/s11095-014-1574-1](https://doi.org/10.1007/s11095-014-1574-1) |
+| `gentamicin_germovsek_2017` | iv_bolus | 1-cmt | [10.1128/AAC.02659-16](https://doi.org/10.1128/AAC.02659-16) |
+| `schoemaker_nlmixr2_tutorial` | iv_bolus | 1-cmt | [10.1002/psp4.12471](https://doi.org/10.1002/psp4.12471) |
+
+**Phase 1 Bayesian roster** — vancomycin Roberts 2011 ([10.1128/AAC.01708-10](https://doi.org/10.1128/AAC.01708-10)) ships in v0.6 with weakly-informative log-Normal priors on log-CL/log-V centred on the published typical values (4.6 L/h, 105 L) and half-Normal priors on the BSV/residual SDs. Eleveld propofol is deferred per the [`docs/discovery/eleveld_propofol_coverage.md`](docs/discovery/eleveld_propofol_coverage.md) NO-GO assessment (DSL gaps: derived FFM covariate, Stan-side maturation, age-decay piecewise on CL).
+
+The integration tests (`tests/integration/test_suite_c_phase1_mle.py`, `tests/integration/test_suite_c_bayesian.py`) verify each fixture loads, validates against its target lane, lowers cleanly to nlmixr2 R or Stan code, and carries a Crossref-canonical DOI. The full short-fit recovery test (warmup=200, sampling=200, chains=2 vs 8-subject shrink data) is gated behind `@pytest.mark.slow` for the weekly CI workflow.
+
+The scoring harness — `fraction-beats-literature-median ≥ 60%` with δ=0.02 win margin and 5-fold subject-level CV — lands in the next plan task (weekly CI dashboard).
 
 ### End-to-End Benchmark Results
 
