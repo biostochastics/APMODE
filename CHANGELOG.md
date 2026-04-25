@@ -60,6 +60,15 @@ Task 44 docstring listed as v0.7 unblocks.
   fold train/test CSVs are emitted with disjoint subject IDs,
   literature side gets `fixed_parameter=True`, APMODE side does
   not). Full non-live sweep stays green at 2398 tests.
+- **Operator knob — `--estimation` flag on
+  `python -m apmode.benchmarks.suite_c_phase1_runner`.** Comma-
+  separated list of nlmixr2 estimation methods forwarded to
+  `Nlmixr2Runner.estimation` (e.g. `--estimation focei` for a
+  single-pass smoke; default still uses `Nlmixr2Runner`'s
+  `['saem','focei']` two-pass). Useful when the per-fit timeout
+  is too tight for the SAEM+FOCEI default on the first uncached
+  fixture, and for ad-hoc operator runs that want a single
+  estimator under a fixed wall-clock budget.
 
 ### Added — CLI infrastructure: version drift, typed errors, completion, SAEM streaming
 

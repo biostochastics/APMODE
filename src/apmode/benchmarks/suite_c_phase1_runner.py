@@ -621,6 +621,18 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
         default="Rscript",
         help="R executable name or absolute path (default: Rscript on PATH).",
     )
+    parser.add_argument(
+        "--estimation",
+        type=str,
+        default=None,
+        help=(
+            "Comma-separated nlmixr2 estimation methods (e.g. 'focei' or "
+            "'saem,focei'). Default uses Nlmixr2Runner's default "
+            "(['saem','focei']). Single-method overrides are useful for "
+            "the smoke / weekly cadence where SAEM+FOCEI can blow the "
+            "per-fit timeout on the first uncached run."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -655,8 +667,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         cache_dir = args.cache_dir or (tmp_root_path / "cache")
         work_dir = args.work_dir or (tmp_root_path / "work")
 
+        estimation_methods: list[str] | None = None
+        if args.estimation:
+            estimation_methods = [m.strip() for m in args.estimation.split(",") if m.strip()]
+            if not estimation_methods:
+                sys.stderr.write("error: --estimation resolved to an empty method list\n")
+                return _EXIT_USAGE
+
         try:
-            runner = Nlmixr2Runner(work_dir=work_dir, r_executable=args.rscript)
+            runner = Nlmixr2Runner(
+                work_dir=work_dir,
+                r_executable=args.rscript,
+                estimation=estimation_methods,
+            )
         except FileNotFoundError as exc:
             sys.stderr.write(f"error: cannot start Nlmixr2Runner: {exc}\n")
             return _EXIT_USAGE
