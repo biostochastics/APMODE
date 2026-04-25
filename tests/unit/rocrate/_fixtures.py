@@ -25,11 +25,13 @@ from typing import Any
 
 def _digest_bundle(run_dir: Path) -> str:
     digest = hashlib.sha256()
+    # Mirror ``apmode.bundle.emitter._DIGEST_EXCLUDED_NAMES``: sentinel
+    # itself + post-seal sidecars (CycloneDX SBOM, SBC manifest) that
+    # are explicitly excluded so regenerating them never invalidates
+    # ``_COMPLETE``.
+    excluded = {"_COMPLETE", "bom.cdx.json", "sbc_manifest.json"}
     for p in sorted(run_dir.rglob("*"), key=lambda q: q.relative_to(run_dir).as_posix()):
-        # Mirror ``apmode.bundle.emitter._compute_bundle_digest`` — skip
-        # the sentinel itself and the SBOM sidecar so fixtures that add
-        # bom.cdx.json after sealing still round-trip correctly.
-        if not p.is_file() or p.name in ("_COMPLETE", "bom.cdx.json"):
+        if not p.is_file() or p.name in excluded:
             continue
         digest.update(p.relative_to(run_dir).as_posix().encode("utf-8"))
         digest.update(b"\0")
@@ -357,9 +359,21 @@ def build_submission_bundle(
             "modification,md,mp,ia\nabs-lag,md.json,mp.json,ia.json\n"
         )
 
-    # Seal last
+    # Seal last. ``sealed_at`` is carried inside ``_COMPLETE`` so the
+    # RO-Crate projector can stamp a cross-host-stable
+    # ``datePublished`` without depending on the sentinel's filesystem
+    # mtime (which diverges when the bundle is copied between hosts).
     digest = _digest_bundle(bundle)
     (bundle / "_COMPLETE").write_text(
-        json.dumps({"schema_version": 2, "run_id": run_id, "sha256": digest}, indent=2) + "\n"
+        json.dumps(
+            {
+                "schema_version": 2,
+                "run_id": run_id,
+                "sha256": digest,
+                "sealed_at": "2026-04-17T10:00:00Z",
+            },
+            indent=2,
+        )
+        + "\n"
     )
     return bundle

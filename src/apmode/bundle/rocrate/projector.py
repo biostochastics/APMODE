@@ -71,6 +71,28 @@ from apmode.bundle.rocrate.entities._common import (
 # with ``apmode.bundle.emitter._COMPLETE_SENTINEL``.
 _COMPLETE_SENTINEL = "_COMPLETE"
 
+
+def _is_iso8601(value: str) -> bool:
+    """Return True when ``value`` parses as an ISO-8601 date or datetime.
+
+    ``datetime.fromisoformat`` accepts the modern (Python 3.11+) ISO-8601
+    spectrum including the ``Z`` suffix. We treat anything it rejects as
+    invalid so a malformed ``_COMPLETE.sealed_at`` cannot leak into
+    ``datePublished`` and silently fail downstream validation.
+    """
+    try:
+        # ``fromisoformat`` rejects bare dates without time on older
+        # Python; we accept either by trying date too.
+        _dt.datetime.fromisoformat(value)
+        return True
+    except ValueError:
+        try:
+            _dt.date.fromisoformat(value)
+            return True
+        except ValueError:
+            return False
+
+
 # Fixed epoch for ZIP timestamps to produce reproducible archives
 # regardless of wall-clock time during export.
 _ZIP_EPOCH = (1980, 1, 1, 0, 0, 0)
@@ -116,8 +138,11 @@ class RoCrateExportOptions:
     regulatory_context: str | None = None
     date_published: str | None = None
     """ISO-8601 timestamp injected into the root Dataset. When ``None``
-    the projector uses the ``_COMPLETE`` mtime so the crate is
-    reproducible from the same sealed bundle."""
+    the projector reads ``_COMPLETE.sealed_at`` (if present) so the
+    stamp travels with the bundle across hosts. The ``_COMPLETE``
+    mtime is only used as a legacy fallback for bundles sealed before
+    ``sealed_at`` landed; callers that copy bundles between machines
+    SHOULD pin this option or re-seal to avoid host-dependent output."""
     extra_conforms_to: list[str] = field(default_factory=list)
 
 
@@ -230,10 +255,19 @@ class RoCrateEmitter:
             root[vocab.LANE] = policy_lane
         ent_policy.add_missing_data_directive(graph, bundle_dir, root_id)
 
-        # 4. Candidate-level projection. Candidates are registered on
-        # the workflow's ``hasPart`` to satisfy the provenance-run-crate
-        # rule "ComputationalWorkflow MUST refer to orchestrated tools
-        # via hasPart". The candidate CreateActions are NOT added to the
+        # 4. Candidate-level projection. Backend engines
+        # (nlmixr2 / Stan / NODE) are the "orchestrated tools" that
+        # satisfy the provenance-run-crate MUST
+        # "ComputationalWorkflow MUST refer to orchestrated tools via
+        # hasPart" — each engine becomes a SoftwareApplication in the
+        # graph and is added to the workflow's ``hasPart`` by
+        # ``ent_backend.add_backend_create_action`` when the first
+        # candidate using that engine is projected. Candidate DSL
+        # SoftwareApplications are inputs to these tools, not tools
+        # themselves, so they are carried as ``CreateAction.object``
+        # entries rather than registered on the workflow.
+        #
+        # The candidate CreateActions are NOT added to the
         # OrganizeAction.object list — ControlActions own that slot.
         for candidate_id in self._select_candidates(bundle_dir, options):
             ent_backend.add_backend_create_action(
@@ -242,8 +276,13 @@ class RoCrateEmitter:
                 candidate_id,
                 data_manifest_id=data_id,
                 organize_action_id=None,  # keep OrganizeAction.object ControlAction-only
+                workflow_id=workflow_id,
             )
-            self._register_candidate_on_workflow(graph, workflow_id, candidate_id)
+            # Attach the backend engine tool to the workflow's hasPart
+            # so ``ProvRCToolRequired`` (every instrument tool must be
+            # hasPart of the workflow) is satisfied for every engine
+            # that actually produced a result.
+            self._register_engine_on_workflow(graph, workflow_id, bundle_dir, candidate_id)
 
         # 5. Gates (per-candidate ControlActions). Every ControlAction
         # is attached to the OrganizeAction.object list so the
@@ -330,6 +369,7 @@ class RoCrateEmitter:
             {"@id": ctx.WRROC_PROVENANCE_0_5},
             {"@id": ctx.WRROC_WORKFLOW_0_5},
             {"@id": ctx.WRROC_PROCESS_0_5},
+            {"@id": ctx.WORKFLOW_RO_CRATE_1_0},
             {"@id": ctx.ROCRATE_1_1},
         ]
         for extra in options.extra_conforms_to:
@@ -462,11 +502,12 @@ class RoCrateEmitter:
         # provenance-run-crate MUST Root Data Entity conformsTo rule
         # (must be a schema:CreativeWork whose @id matches the versioned
         # permalink). We add the three WRROC profiles + base RO-Crate 1.1.
-        for profile_uri, profile_name in (
-            (ctx.WRROC_PROVENANCE_0_5, "Workflow Run Provenance RO-Crate Profile v0.5"),
-            (ctx.WRROC_WORKFLOW_0_5, "Workflow Run RO-Crate Profile v0.5"),
-            (ctx.WRROC_PROCESS_0_5, "Process Run RO-Crate Profile v0.5"),
-            (ctx.ROCRATE_1_1, "RO-Crate 1.1 Specification"),
+        for profile_uri, profile_name, profile_version in (
+            (ctx.WRROC_PROVENANCE_0_5, "Workflow Run Provenance RO-Crate Profile v0.5", "0.5"),
+            (ctx.WRROC_WORKFLOW_0_5, "Workflow Run RO-Crate Profile v0.5", "0.5"),
+            (ctx.WRROC_PROCESS_0_5, "Process Run RO-Crate Profile v0.5", "0.5"),
+            (ctx.WORKFLOW_RO_CRATE_1_0, "Workflow RO-Crate Profile", "1.0"),
+            (ctx.ROCRATE_1_1, "RO-Crate 1.1 Specification", "1.1"),
         ):
             upsert(
                 graph,
@@ -474,7 +515,7 @@ class RoCrateEmitter:
                     "@id": profile_uri,
                     "@type": "CreativeWork",
                     "name": profile_name,
-                    "version": "0.5" if "/0.5" in profile_uri else "1.1",
+                    "version": profile_version,
                 },
             )
 
@@ -498,26 +539,31 @@ class RoCrateEmitter:
             return ids[:50]
         return ids
 
-    def _register_candidate_on_workflow(
+    def _register_engine_on_workflow(
         self,
         graph: list[dict[str, Any]],
         workflow_id: str,
+        bundle_dir: Path,
         candidate_id: str,
     ) -> None:
-        """Attach the candidate SoftwareApplication to the workflow's hasPart.
+        """Attach the backend engine SoftwareApplication to the workflow's hasPart.
 
-        The workflow entity was seeded with a single ``hasPart`` entry
-        (``#apmode-orchestrator``). Each candidate gets its
-        SoftwareApplication id appended so that the SHACL rule
-        "ComputationalWorkflow MUST refer to orchestrated tools via
-        hasPart" is satisfied regardless of how many candidates the
-        run produced.
+        Each engine is added at most once per run (``merge_list_property``
+        dedupes by ``@id``). The engine entity is upserted earlier by
+        :func:`apmode.bundle.rocrate.entities.backend.add_backend_create_action`
+        via ``_ensure_backend_engine``; this method just wires the
+        ``hasPart`` edge, which satisfies the provenance-run-crate
+        ``ProvRCToolRequired`` rule that every instrument tool must be
+        orchestrated by the workflow.
         """
-        app_id = f"#candidate-{candidate_id}"
+        result_path = bundle_dir / "results" / f"{candidate_id}_result.json"
+        result_payload = load_json_optional(result_path) or {}
+        backend_name = str(result_payload.get("backend", "unknown"))
+        engine_id = ent_backend.engine_id_for_backend(backend_name)
         workflow = next((e for e in graph if e.get("@id") == workflow_id), None)
         if workflow is None:
             return
-        merge_list_property(workflow, "hasPart", {"@id": app_id})
+        merge_list_property(workflow, "hasPart", {"@id": engine_id})
 
     def _attach_howtostep_workexamples(self, graph: list[dict[str, Any]]) -> None:
         """Ensure every HowToStep has a ``workExample`` to a tool.
@@ -565,9 +611,38 @@ class RoCrateEmitter:
         bundle_dir: Path,
         options: RoCrateExportOptions,
     ) -> str:
+        """Pick a deterministic ISO-8601 ``datePublished`` for the crate.
+
+        Precedence (most deterministic first):
+
+        1. Explicit ``options.date_published`` — always wins.
+        2. ``_COMPLETE.sealed_at`` — an ISO-8601 timestamp stored inside
+           the sentinel at seal time. Travels with the bundle, so it is
+           identical across hosts and filesystems.
+        3. ``_COMPLETE`` mtime (legacy fallback for bundles sealed before
+           the ``sealed_at`` field landed). Not cross-host-stable, so
+           callers that copy bundles between machines SHOULD pin
+           ``date_published`` or re-seal. A comment on
+           :class:`RoCrateExportOptions.date_published` records this
+           caveat.
+        4. The epoch (``1970-01-01T00:00:00Z``) as a last resort so we
+           never emit a wall-clock timestamp that depends on when the
+           export ran.
+        """
         if options.date_published:
             return options.date_published
         sentinel_path = bundle_dir / _COMPLETE_SENTINEL
+        payload = load_json_optional(sentinel_path) or {}
+        sealed_at = payload.get("sealed_at")
+        if isinstance(sealed_at, str) and sealed_at.strip():
+            stripped = sealed_at.strip()
+            # Validate the sealed_at value parses as ISO-8601 before
+            # passing it through. A garbage string would propagate into
+            # ``datePublished`` and only fail at validator time;
+            # falling back to mtime here surfaces the bad sentinel
+            # earlier and keeps the crate well-formed.
+            if _is_iso8601(stripped):
+                return stripped
         try:
             mtime = sentinel_path.stat().st_mtime
             return (
@@ -576,7 +651,7 @@ class RoCrateEmitter:
                 .replace("+00:00", "Z")
             )
         except OSError:
-            return "2026-01-01T00:00:00Z"
+            return "1970-01-01T00:00:00Z"
 
     def _apmode_version(self, bundle_dir: Path) -> str:
         versions = load_json_optional(bundle_dir / "backend_versions.json") or {}
@@ -591,11 +666,39 @@ class RoCrateEmitter:
         bundle_dir: Path,
         root_id: str,
     ) -> None:
+        """Project ``_COMPLETE`` as a File entity with the bundle digest.
+
+        Refuses to project a sentinel that is present-but-unparseable —
+        such a file is either a partial seal (crashed mid-write) or
+        deliberate tampering; in either case the crate would carry a
+        File entity without an ``identifier`` and consumers could not
+        verify the sealed digest externally. Better to fail fast.
+        """
         path = bundle_dir / _COMPLETE_SENTINEL
-        payload = load_json_optional(path) or {}
-        description = (
-            f"Bundle integrity sentinel (SHA-256 over {len(payload) and 'all'} bundle files)"
-        )
+        if not path.is_file():  # pragma: no cover — defended by _check_source
+            msg = f"_COMPLETE sentinel missing at {path}"
+            raise BundleNotSealedError(msg)
+        try:
+            payload = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+            # ``UnicodeDecodeError`` is a ``ValueError``, not an
+            # ``OSError`` — it would otherwise escape the handler and
+            # surface as an opaque traceback. Catch it explicitly so
+            # binary-corrupted sentinels produce the same diagnostic
+            # path as JSON-parse failures.
+            msg = (
+                f"_COMPLETE sentinel at {path} is unparseable: {exc}. "
+                "Bundle is not sealed; re-run the pipeline or restore the original "
+                "bundle before exporting."
+            )
+            raise BundleNotSealedError(msg) from exc
+        if not isinstance(payload, dict):
+            kind = type(payload).__name__
+            msg = f"_COMPLETE sentinel at {path} must be a JSON object; got {kind}"
+            raise BundleNotSealedError(msg)
+
+        digest = payload.get("sha256")
+        description = "Bundle integrity sentinel (SHA-256 over all non-sentinel bundle files)"
         entity = file_entity(
             bundle_dir,
             path,
@@ -605,11 +708,7 @@ class RoCrateEmitter:
                 "description": description,
             },
         )
-        # Expose the inner digest as a PropertyValue for easy external
-        # verification regardless of whether a consumer can read the
-        # sentinel JSON.
-        digest = payload.get("sha256")
-        if isinstance(digest, str):
+        if isinstance(digest, str) and digest:
             entity["identifier"] = f"sha256:{digest}"
         upsert(graph, entity)
         root = upsert(graph, {"@id": root_id, "@type": "Dataset"})
@@ -748,6 +847,13 @@ class RoCrateEmitter:
         crate. We materialise a declarative JSON listing the lane's
         ``HowToStep`` order — sufficient for validators, and cheap to
         reproduce.
+
+        The stub is ALWAYS (re)written from the graph; the previous
+        behaviour of short-circuiting on ``dst.exists()`` meant that a
+        pre-existing lookalike file at the same path (carried over from
+        the source bundle) would leave the ``ComputationalWorkflow``
+        entity without ``sha256``/``contentSize``. Overwriting guarantees
+        the graph hashes match what's on disk.
         """
         main_id: str | None = None
         for entity in metadata["@graph"]:
@@ -761,8 +867,6 @@ class RoCrateEmitter:
 
         dst = out_dir / main_id
         dst.parent.mkdir(parents=True, exist_ok=True)
-        if dst.exists():
-            return
 
         steps: list[str] = []
         workflow: dict[str, Any] | None = None
@@ -783,17 +887,15 @@ class RoCrateEmitter:
         }
         dst.write_text(json.dumps(body, indent=2) + "\n")
 
-        # Update File entity with sha256 + size now that the file exists.
-        try:
-            from apmode.bundle.rocrate.entities._common import _sha256_hex
+        # Always recompute sha256 + contentSize so the graph stays in
+        # lock-step with disk bytes, regardless of prior state.
+        from apmode.bundle.rocrate.entities._common import _sha256_hex
 
-            for entity in metadata["@graph"]:
-                if entity.get("@id") == main_id:
-                    entity["contentSize"] = dst.stat().st_size
-                    entity["sha256"] = _sha256_hex(dst)
-                    break
-        except OSError:  # pragma: no cover - defensive
-            return
+        for entity in metadata["@graph"]:
+            if entity.get("@id") == main_id:
+                entity["contentSize"] = str(dst.stat().st_size)
+                entity["sha256"] = _sha256_hex(dst)
+                break
 
         # Rewrite ro-crate-metadata.json with the updated hashes so
         # validators see a consistent SHA-256 / size pair.

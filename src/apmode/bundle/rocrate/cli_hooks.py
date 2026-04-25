@@ -380,11 +380,20 @@ def publish_command(
     if not (workflowhub or zenodo):
         err_console.print("[red bold]Error:[/] pass --workflowhub or --zenodo to select a target.")
         raise typer.Exit(code=1)
-    # The arguments are validated (bundle exists, target flags are
-    # set) so that when v0.8 adds the real uploader it only has to
-    # drop in the network calls — but today we stop short of making a
-    # request. See :mod:`apmode.bundle.rocrate.publish` for the
-    # signature layout and :class:`NotImplementedError` message.
+    # Validate inputs up-front so the v0.6 stub emits the same
+    # diagnostics the v0.8 real uploader will. A typo in ``bundle_dir``
+    # would otherwise be masked by the "Not implemented" message and
+    # the user wouldn't learn about the bad path until publishing is
+    # wired up.
+    if not bundle_dir.exists():
+        err_console.print(f"[red bold]Error:[/] bundle_dir not found: {escape(str(bundle_dir))}")
+        raise typer.Exit(code=1)
+    if not bundle_dir.is_dir():
+        err_console.print(
+            f"[red bold]Error:[/] bundle_dir is not a directory: {escape(str(bundle_dir))}"
+        )
+        raise typer.Exit(code=1)
+    # Inputs validated; fall through to the v0.8 stub message.
     err_console.print(
         "[yellow bold]Not implemented in v0.6:[/] publishing lands in v0.8. "
         "For now, use `apmode bundle rocrate export` to produce the crate "
@@ -394,6 +403,17 @@ def publish_command(
         f"bundle: {escape(str(bundle_dir))}"
     )
     raise typer.Exit(code=2)
+
+
+# --- Aliases under ``apmode bundle rocrate`` --------------------------------
+# The skill (`/.claude/skills/apmode/SKILL.md`) and `CLAUDE.md` both document
+# the canonical RO-Crate triad as ``apmode bundle rocrate export|import|publish``.
+# The actual implementations live at the ``bundle`` level (so unqualified
+# ``apmode bundle import`` / ``apmode bundle publish`` keep working), but we
+# also register them under the ``rocrate`` subgroup so the documented form
+# resolves. Implementation is shared via the underlying Typer callbacks.
+_rocrate_app.command("import", help=import_command.__doc__)(import_command)
+_rocrate_app.command("publish", help=publish_command.__doc__)(publish_command)
 
 
 def register_rocrate_commands(app: typer.Typer) -> None:

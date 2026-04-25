@@ -7,6 +7,163 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — v0.6 RO-Crate projector hardening (multi-model review)
+
+Four parallel external reviewers (gemini-reviewer, droid/claude-opus-4.6,
+GPT-5.2-pro thinking-mode-high, GLM-5 via crush) audited the projector
++ importer + entity layer of `src/apmode/bundle/rocrate/`. Convergent
+and single-source findings drove the fixes below; all 2173 non-live
+tests pass, `mypy --strict` and `ruff` are clean, and the
+rocrate-validator REQUIRED gate continues to pass on the 5 Suite-A
+scenarios. The golden snapshot at
+`tests/golden/rocrate/__snapshots__/test_rocrate_golden.ambr` was
+intentionally regenerated; review the diff to confirm the reshaping.
+
+- **B1 — Importer no longer drops user-owned `workflows/` subtree.**
+  `src/apmode/bundle/rocrate/importer.py` previously excluded the
+  whole top-level `workflows/` directory because the exporter
+  materialises a synthetic stub at `workflows/<lane>-lane.apmode`. A
+  bundle that legitimately carried user-authored files under
+  `workflows/` would have those silently dropped on round-trip. Fix:
+  read `ro-crate-metadata.json` to learn the exact synthetic path
+  from `mainEntity.@id` and exclude only that one entry. Added a
+  `mainEntity` sanity guard rejecting `..`, leading `/`, drive
+  prefixes, and null bytes; new regression tests cover both directory
+  and zip forms.
+- **H1 / H2 / L2 — Backend engines are first-class entities.** The
+  projector now emits `#step-backend-<engine>` `HowToStep` and
+  `#engine-<engine>` `SoftwareApplication` entities per backend that
+  produced a result, populated with `softwareVersion` from
+  `backend_versions.json`. `CreateAction.instrument` now points at
+  the engine (the actual tool) rather than the candidate DSL spec;
+  the candidate `SoftwareApplication` is carried as a
+  `CreateAction.object` input alongside the data manifest. Workflow
+  `hasPart` carries engines so `ProvRCToolRequired` ("every
+  instrument tool must be hasPart of the workflow") is satisfied.
+  `HowToStep.workExample` for backend steps resolves to the engine.
+- **H3 — `provagent:AIModelInvocation` (canonical PROV-AGENT class).**
+  `entities/agentic.py` flipped the `additionalType` from the obsolete
+  `provagent:ModelInvocation` to `provagent:AIModelInvocation` per
+  PROV-AGENT (Souza et al., eScience 2025, arXiv:2508.02866 v3).
+- **H4 — `datePublished` survives bundle relocation.**
+  `_resolve_date_published` reads `_COMPLETE.sealed_at` (an ISO-8601
+  timestamp written into the sentinel at seal time) so the stamp
+  travels with the bundle byte-for-byte. The mtime fallback is only
+  used for legacy bundles. The value is validated through
+  `datetime.fromisoformat` so a malformed `sealed_at` cannot leak
+  into the crate.
+- **H5 — Case-insensitive digest-exclusion + emitter sync.** The
+  importer's excluded set is now lowercase-normalised against
+  `{_COMPLETE, bom.cdx.json, sbc_manifest.json}`. The same audit
+  caught that the importer's excluded set was missing
+  `sbc_manifest.json` (third entry in
+  `apmode.bundle.emitter._DIGEST_EXCLUDED_NAMES`); both are now
+  identical.
+- **M1 — Credibility orphan guard.**
+  `entities/credibility.py` no longer emits a credibility `File`
+  entity when the corresponding `#backend-create-<id>` `CreateAction`
+  is absent.
+- **M2 — `apmode:regulatoryContext` is no longer auto-defaulted.**
+  `entities/pccp.py` previously stamped `pccp-ai-dsf` whenever any
+  `regulatory/` file was present, mislabelling AI-Act-only or MDR
+  bundles. Operators now MUST pass `--regulatory-context` explicitly;
+  otherwise the slot is left empty and the orchestrator's
+  `research-only` default applies.
+- **M3 — `contentSize` is a string of decimal bytes** (schema.org
+  Text range). `entities/_common.py::file_entity`.
+- **M4 — Parquet media type is `application/x-parquet`** (the de-facto
+  value used across Arrow/DuckDB tooling; Apache's IANA submission is
+  still pending).
+- **M5 — Synthetic workflow stub always rehashed.**
+  `_materialise_virtual_workflow` no longer short-circuits on
+  pre-existing files, so the `ComputationalWorkflow` entity's
+  `sha256` / `contentSize` match the bytes on disk regardless of
+  prior state.
+- **M6 — Sentinel parse failure is fatal.**
+  `_add_complete_sentinel` raises `BundleNotSealedError` on
+  `json.JSONDecodeError`, `UnicodeDecodeError`, or wrong-shape
+  payload, so a corrupted seal cannot produce a crate with a
+  non-verifiable integrity anchor. The cosmetic description-text bug
+  (`len(payload) and 'all'`) was cleaned up.
+- **M7 — `apmode bundle publish` validates the bundle path** (mirrors
+  `sbom_command`'s existence checks; was a stub-message dead-end
+  before).
+- **M8 — Agentic iteration ordering uses one global signal.**
+  `add_agentic_trace` previously sorted iterations by lexicographic
+  id (so `iter10` preceded `iter2`). The new logic picks one signal
+  per bundle: numeric `meta.sequence_number` if every iteration
+  carries one, else `meta.started_at` if every iteration carries one,
+  else lexicographic id. Mixed bundles therefore cannot interleave
+  signals.
+- **M9 — Real Suite-A smoke test (opt-in).**
+  `tests/integration/test_rocrate_suite_a_smoke.py` runs
+  `apmode run` against `benchmarks/suite_a/*.csv`, exports the
+  resulting bundle, and validates at REQUIRED severity. Gated by
+  `APMODE_SUITE_A_SMOKE=1` so default CI stays fast; environments
+  that have R / rxode2 / nlmixr2 can flip it on to close the
+  synthetic-fixture gap from plan §H acceptance criterion 1.
+- **L1 — `workflowhub/workflow-ro-crate/1.0` declared in `conformsTo`.**
+  WRROC v0.5 says the root Dataset SHOULD reference this base profile
+  in addition to the three WRROC profiles; doing so unlocks
+  WorkflowHub's workflow-aware rendering paths. Each `conformsTo`
+  profile entity now carries its own explicit `version` triple
+  (`0.5` / `1.0` / `1.1`) instead of a heuristic.
+- **Test additions.** New file
+  `tests/unit/rocrate/test_review_regression.py` (490 LOC, 18 tests)
+  pins each finding so a revert breaks the suite. Existing files
+  were extended for the H5 / B1 / M1 / M2 / M4 / M8 / L1 paths. Test
+  count rose from 2157 to 2193 (rocrate-only: 84 → 103, plus the
+  Suite-A smoke marker). `mypy --strict` and `ruff check` remain
+  clean.
+
+### Added — v0.6-rc1 CLI polish (multi-model review)
+
+CLI surface hardened against a five-CLI external review (gemini, droid,
+crush/GLM-5, opencode/MiniMax — codex timed out at 900 s). Convergent
+findings drove the following non-breaking improvements; existing flags,
+exit codes, and Rich output paths are preserved.
+
+- **Machine-readable `--json` on every read command.** `apmode log`,
+  `apmode diff`, `apmode datasets`, `apmode doctor`, and `apmode policies`
+  now accept `--json`, emitting a stable `{"ok": bool, ...}` envelope on
+  stdout and suppressing all Rich output. Errors travel through the
+  envelope (e.g. `{"ok": false, "error": "not_a_directory", ...}`) rather
+  than stderr when `--json` is set, so CI can branch on a single
+  `jq '.ok'` test. `validate`, `inspect`, `trace`, `lineage`, `report`
+  already supported `--json`; the read surface is now uniform. The
+  multi-format commands (`ls --format json`, `graph --format json`)
+  retain `--format` since they have multiple text formats.
+- **Environment-variable bindings on `apmode run`.**  Adds
+  `APMODE_LANE`, `APMODE_SEED`, `APMODE_TIMEOUT`, `APMODE_OUTPUT_DIR`,
+  `APMODE_BACKEND`, `APMODE_PROVIDER`, `APMODE_MODEL`, `APMODE_AGENTIC`,
+  `APMODE_AGENTIC_MAX_ITER`, `APMODE_PARALLEL_MODELS`, `APMODE_POLICY` —
+  rendered into `apmode run --help` so they are discoverable. Previously
+  zero `envvar=` bindings existed (only `APMODE_POLICIES_DIR` was
+  resolved manually in `paths.py`).
+- **`apmode run -o` / `--output-dir` aliases.**  Skill table and CLAUDE.md
+  document `--output-dir / -o`; the CLI exposed only `--output` with no
+  short flag. The flag now accepts `--output`, `--output-dir`, and `-o`
+  interchangeably (no breaking change to existing scripts).
+- **`apmode bundle rocrate {import,publish}` aliases.**  The skill and
+  CLAUDE.md document the canonical RO-Crate triad as
+  `apmode bundle rocrate export|import|publish`. The implementations live
+  at `bundle import` / `bundle publish` (top-level forms still work);
+  the documented sub-grouped form now resolves via shared callbacks in
+  `src/apmode/bundle/rocrate/cli_hooks.py`.
+- **`apmode run` Examples epilogue.**  The most complex command had no
+  `Examples:` block; every other major command did. Added a workflow
+  pattern block covering submission default, parallel discovery,
+  agentic opt-in, Bayesian backend, agentic resume, dry-run, and the
+  env-var driven invocation form.
+- **Test additions.**  `tests/unit/test_cli.py` extended with
+  `TestJsonOutputs` (10 tests for the new envelope contract on every
+  read command), `TestEnvVarBindings` (3 tests for env-var override +
+  help-text rendering), and `TestBundleRocrateAliases` (3 tests
+  pinning the rocrate-grouped import/publish wiring). Test count
+  raised from 86 to 101 in this file. Existing
+  `tests/integration/test_rocrate_export_validate.py` continues to pass
+  unchanged.
+
 ### Added — v0.6-rc1 Suite C Phase-1 scoring + weekly CI (plan Task 41)
 
 The Phase-1 Suite C contract from PRD §4 / plan Task 41: score APMODE

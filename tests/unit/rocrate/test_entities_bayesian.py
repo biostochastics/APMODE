@@ -84,7 +84,11 @@ def test_encoding_format_selects_parquet_mime(tmp_path: Path) -> None:
     file_entity = next(
         e for e in graph if e.get("@id") == "bayesian/cand001_posterior_draws.parquet"
     )
-    assert file_entity["encodingFormat"] == "application/vnd.apache.parquet"
+    # Parquet has no IANA-registered media type; use the de-facto
+    # ``application/x-parquet`` value adopted across the Arrow/DuckDB
+    # ecosystem. Track upstream IANA registration for when this can be
+    # updated.
+    assert file_entity["encodingFormat"] == "application/x-parquet"
 
 
 def test_absent_bayesian_dir_is_noop(tmp_path: Path) -> None:

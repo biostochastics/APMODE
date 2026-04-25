@@ -60,8 +60,22 @@ class TestBackendCreateAction:
         action = next(e for e in graph if e["@id"] == action_id)
         assert action["@type"] == "CreateAction"
         assert action["actionStatus"] == {"@id": "http://schema.org/CompletedActionStatus"}
-        # Object points to data manifest
-        assert action["object"] == [{"@id": "data_manifest.json"}]
+        # instrument points at the engine SoftwareApplication (WRROC
+        # semantics: the tool being invoked is the backend engine, not
+        # the candidate DSL spec).
+        assert action["instrument"] == {"@id": "#engine-nlmixr2"}
+        # object carries the inputs: the data manifest plus the
+        # candidate's DSL SoftwareApplication.
+        assert {"@id": "data_manifest.json"} in action["object"]
+        assert {"@id": "#candidate-c001"} in action["object"]
+        # Engine entity is registered with name + version.
+        engine = next(e for e in graph if e["@id"] == "#engine-nlmixr2")
+        assert engine["@type"] == "SoftwareApplication"
+        assert engine["softwareVersion"] == "3.0.0"
+        # Backend HowToStep is present with workExample → engine.
+        step = next(e for e in graph if e["@id"] == "#step-backend-nlmixr2")
+        assert step["@type"] == "HowToStep"
+        assert step["workExample"] == {"@id": "#engine-nlmixr2"}
 
     def test_organize_action_captures_create_action(self, tmp_path: Path) -> None:
         bundle = build_submission_bundle(tmp_path, candidate_ids=("c001",))

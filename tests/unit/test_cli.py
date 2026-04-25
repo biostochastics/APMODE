@@ -16,6 +16,7 @@ end-to-end behaviour elsewhere.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -453,6 +454,7 @@ class TestExplore:
         from apmode import cli as cli_mod
 
         def _boom(**_kwargs: Any) -> None:
+            del _kwargs  # accept any kwargs from the patched callsite, ignore them
             raise typer.Exit(code=2)
 
         with patch.object(cli_mod, "run", _boom):
@@ -471,6 +473,7 @@ class TestExplore:
         from apmode import cli as cli_mod
 
         def _boom(**_kwargs: Any) -> None:
+            del _kwargs
             raise SystemExit(2)
 
         with patch.object(cli_mod, "run", _boom):
@@ -488,6 +491,7 @@ class TestExplore:
         from apmode import cli as cli_mod
 
         def _ok(**_kwargs: Any) -> None:
+            del _kwargs
             raise typer.Exit(code=0)
 
         with patch.object(cli_mod, "run", _ok):
@@ -705,12 +709,17 @@ class TestRunWiring:
         captured: dict[str, Any] = {}
 
         class _FakeOrch:
-            def __init__(self, _runner: Any, _out: Path, config: Any, **kw: Any) -> None:
+            def __init__(self, _runner: Any, _out: Path, config: Any, **_kw: Any) -> None:
+                # ``_runner``/``_out``/``_kw`` mirror the real Orchestrator
+                # signature so isinstance/positional callers still bind; only
+                # ``config`` is interesting for this test.
+                del _runner, _out, _kw
                 captured["lane"] = config.lane
                 captured["seed"] = config.seed
                 captured["timeout"] = config.timeout_seconds
 
-            async def run(self, *args: Any, **kwargs: Any) -> Any:
+            async def run(self, *_args: Any, **_kwargs: Any) -> Any:
+                del _args, _kwargs
                 raise RuntimeError("stop-after-config")
 
         with (
@@ -754,7 +763,8 @@ class TestRunWiring:
             # Orchestrator.run is awaited — make it raise to halt after dispatch.
             inst = MagicMock()
 
-            async def _boom(*a: Any, **k: Any) -> Any:
+            async def _boom(*_a: Any, **_k: Any) -> Any:
+                del _a, _k
                 raise RuntimeError("stop")
 
             inst.run = _boom
@@ -1013,3 +1023,208 @@ class TestExplorePolicyForwarding:
         if captured:
             assert captured.get("policy") == policy, result.output
             assert captured.get("parallel_models") == 2
+
+
+# ---------------------------------------------------------------------------
+# Machine-readable `--json` outputs added in v0.6 polish
+# ---------------------------------------------------------------------------
+
+
+class TestJsonOutputs:
+    """Ensure every read command honors --json with a parseable envelope.
+
+    The contract: stdout is a single JSON object, ``ok`` is a bool, and Rich
+    output is suppressed. Errors travel through the JSON envelope, not stderr,
+    when --json is set.
+    """
+
+    def test_datasets_list_json(self) -> None:
+        result = runner.invoke(app, ["datasets", "--json"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert payload["ok"] is True
+        assert isinstance(payload["datasets"], list)
+        assert payload["count"] == len(payload["datasets"])
+
+    def test_datasets_unknown_json(self) -> None:
+        result = runner.invoke(app, ["datasets", "no_such_dataset_xyz", "--json"])
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout)
+        assert payload == {
+            "ok": False,
+            "error": "unknown_dataset",
+            "name": "no_such_dataset_xyz",
+            "available": payload["available"],
+        }
+        assert isinstance(payload["available"], list)
+
+    def test_doctor_json_envelope(self) -> None:
+        result = runner.invoke(app, ["doctor", "--json"])
+        # Exit code may be 0 or 1 depending on local env; both are valid as
+        # long as the envelope is well-formed.
+        assert result.exit_code in (0, 1)
+        payload = json.loads(result.stdout)
+        assert isinstance(payload["ok"], bool)
+        assert isinstance(payload["components"], list)
+        # Required taxonomy keys present on every component.
+        for c in payload["components"]:
+            assert {"name", "status", "detail", "required"} <= set(c.keys())
+
+    def test_policies_json(self) -> None:
+        result = runner.invoke(app, ["policies", "--json"])
+        # 0 or 1 depending on whether policies/ is on disk in CI.
+        assert result.exit_code in (0, 1)
+        payload = json.loads(result.stdout)
+        assert "ok" in payload
+        assert "policies" in payload or "error" in payload
+
+    def test_policies_single_lane_json_includes_raw(self) -> None:
+        result = runner.invoke(app, ["policies", "submission", "--json"])
+        if result.exit_code != 0:
+            pytest.skip("policies/submission.json not present in this checkout")
+        payload = json.loads(result.stdout)
+        assert payload["ok"] is True
+        assert len(payload["policies"]) == 1
+        # Single-lane mode embeds the raw policy doc for jq drill-downs.
+        assert "raw" in payload["policies"][0]
+
+    def test_log_missing_bundle_json(self, tmp_path: Path) -> None:
+        result = runner.invoke(app, ["log", str(tmp_path / "nope"), "--json"])
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout)
+        assert payload["ok"] is False
+        assert payload["error"] == "not_a_directory"
+
+    def test_diff_missing_bundle_json(self, tmp_path: Path) -> None:
+        result = runner.invoke(
+            app,
+            ["diff", str(tmp_path / "a"), str(tmp_path / "b"), "--json"],
+        )
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout)
+        assert payload["ok"] is False
+        assert payload["error"] == "bundle_not_found"
+        assert payload["missing"] == "A"
+
+    def test_log_overview_json_on_full_bundle(self, tmp_path: Path) -> None:
+        bundle = _make_full_bundle(tmp_path)
+        result = runner.invoke(app, ["log", str(bundle), "--json"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert payload["ok"] is True
+        assert payload["view"] == "overview"
+        assert payload["trajectory"]["n_total"] >= 0
+
+    def test_diff_full_bundles_json(self, tmp_path: Path) -> None:
+        a = _make_full_bundle(tmp_path, name="run_a")
+        b = _make_full_bundle(tmp_path, name="run_b")
+        result = runner.invoke(app, ["diff", str(a), str(b), "--json"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert payload["ok"] is True
+        assert "evidence_diff" in payload or "ranking_changes" in payload
+
+
+# ---------------------------------------------------------------------------
+# Environment-variable bindings on `apmode run` (added v0.6)
+# ---------------------------------------------------------------------------
+
+
+class TestEnvVarBindings:
+    """`apmode run` must respect APMODE_* env vars when CLI flags are omitted."""
+
+    def test_apmode_lane_envvar(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        csv = Path("tests/fixtures/suite_a/a4_1cmt_oral_mm.csv").resolve()
+        if not csv.exists():
+            pytest.skip("fixture CSV missing")
+
+        captured: dict[str, Any] = {}
+
+        class _FakeOrch:
+            def __init__(self, _runner: Any, _out: Path, config: Any, **_kw: Any) -> None:
+                del _runner, _out, _kw
+                captured["lane"] = config.lane
+                captured["seed"] = config.seed
+
+            async def run(self, *_args: Any, **_kwargs: Any) -> Any:
+                del _args, _kwargs
+                raise RuntimeError("stop-after-config")
+
+        monkeypatch.setenv("APMODE_LANE", "discovery")
+        monkeypatch.setenv("APMODE_SEED", "999")
+
+        with (
+            patch("apmode.backends.nlmixr2_runner.Nlmixr2Runner") as _fake_runner,
+            patch("apmode.orchestrator.Orchestrator", _FakeOrch),
+        ):
+            _fake_runner.return_value = MagicMock()
+            runner.invoke(app, ["run", str(csv), "--output", str(tmp_path / "runs")])
+
+        assert captured.get("lane") == "discovery"
+        assert captured.get("seed") == 999
+
+    def test_envvars_documented_in_help(self) -> None:
+        """Every documented APMODE_* var must show up in `run --help`.
+
+        Rich wraps and may ellipsis-truncate long identifiers inside option
+        panels, so we widen the rendering terminal and collapse whitespace
+        before checking. Truncation manifests as a trailing ``…`` so we also
+        accept a short prefix match for the longest identifier.
+        """
+        # Click's CliRunner exposes terminal width via env COLUMNS — Rich
+        # honors this when rendering tables, eliminating ellipsis truncation
+        # for our longer identifiers.
+        result = runner.invoke(app, ["run", "--help"], env={"COLUMNS": "240"})
+        # Strip box-drawing borders, then collapse all whitespace runs into a
+        # single space so "APMODE_PARALLEL_\nMODELS" still matches.
+        haystack = re.sub(r"\s+", " ", re.sub(r"[│╭╮╰╯─]", " ", result.output))
+        for var in (
+            "APMODE_LANE",
+            "APMODE_SEED",
+            "APMODE_TIMEOUT",
+            "APMODE_OUTPUT_DIR",
+            "APMODE_BACKEND",
+            "APMODE_PROVIDER",
+            "APMODE_MODEL",
+            "APMODE_AGENTIC_MAX_ITER",
+            "APMODE_PARALLEL_MODELS",
+            "APMODE_POLICY",
+        ):
+            assert var in haystack, f"{var} missing from `run --help`"
+
+    def test_run_output_short_flag(self) -> None:
+        """`run -o <dir>` must work as an alias for --output / --output-dir."""
+        result = runner.invoke(app, ["run", "--help"], env={"COLUMNS": "240"})
+        # Help table should list -o.
+        assert "-o" in result.output
+        # And --output-dir should be an alias too (per skill docs).
+        assert "--output-dir" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Skill-documented `bundle rocrate import|publish` aliases (added v0.6)
+# ---------------------------------------------------------------------------
+
+
+class TestBundleRocrateAliases:
+    """The skill documents `apmode bundle rocrate {export,import,publish}`.
+    The implementations live at `bundle import` / `bundle publish`; this test
+    pins down that the skill-documented invocations also resolve."""
+
+    def test_rocrate_import_alias_help(self) -> None:
+        result = runner.invoke(app, ["bundle", "rocrate", "import", "--help"])
+        assert result.exit_code == 0
+        # Help text references the round-trip behavior (shared with top-level form).
+        assert "_COMPLETE" in result.output
+
+    def test_rocrate_publish_alias_help(self) -> None:
+        result = runner.invoke(app, ["bundle", "rocrate", "publish", "--help"])
+        assert result.exit_code == 0
+        assert "registry" in result.output.lower() or "publish" in result.output.lower()
+
+    def test_rocrate_export_still_works(self) -> None:
+        result = runner.invoke(app, ["bundle", "rocrate", "--help"])
+        assert result.exit_code == 0
+        # All three commands listed in the rocrate group now.
+        for cmd in ("export", "import", "publish"):
+            assert cmd in result.output

@@ -37,6 +37,126 @@ def _action_status_id(converged: bool | None) -> dict[str, str]:
     return {"@id": ctx.SCHEMA_COMPLETED_ACTION_STATUS}
 
 
+# Mapping from the ``backend`` field on ``<cid>_result.json`` to a stable
+# SoftwareApplication ``@id`` inside the crate. New backends are added
+# here so the engine entity appears once regardless of how many
+# candidates were fit with it.
+_BACKEND_ENGINE_IDS: dict[str, str] = {
+    "nlmixr2": "#engine-nlmixr2",
+    "bayesian_stan": "#engine-bayesian-stan",
+    "node": "#engine-node",
+    "agentic": "#engine-agentic",
+}
+
+
+def engine_id_for_backend(backend: str) -> str:
+    """Return the canonical engine SoftwareApplication ``@id`` for ``backend``.
+
+    Falls back to a slug-form id for unknown backends so forward-compat
+    backends still appear in the graph rather than disappearing into the
+    ``#apmode-orchestrator`` catch-all.
+    """
+    if backend in _BACKEND_ENGINE_IDS:
+        return _BACKEND_ENGINE_IDS[backend]
+    slug = "".join(c if c.isalnum() or c in "-_" else "-" for c in backend.lower())
+    return f"#engine-{slug}" if slug else "#engine-unknown"
+
+
+def _ensure_backend_engine(
+    graph: list[dict[str, Any]],
+    bundle_dir: Path,
+    backend: str,
+) -> str:
+    """Upsert a SoftwareApplication for the backend engine and return its @id.
+
+    Pulls the engine version from ``backend_versions.json`` when
+    available (e.g. ``nlmixr2_version``, ``stan_version``); leaves the
+    ``softwareVersion`` off the entity when the bundle has no version
+    record rather than fabricating an ``"unknown"`` string.
+    """
+    engine_id = engine_id_for_backend(backend)
+    versions = load_json_optional(bundle_dir / "backend_versions.json") or {}
+    version_keys = {
+        "nlmixr2": ("nlmixr2_version", "rxode2_version"),
+        "bayesian_stan": ("stan_version", "cmdstan_version", "cmdstanpy_version"),
+        "node": ("diffrax_version", "jax_version"),
+        "agentic": ("apmode_version",),
+    }
+    software_version: str | None = None
+    for key in version_keys.get(backend, ()):
+        v = versions.get(key)
+        if isinstance(v, str) and v.strip():
+            software_version = v.strip()
+            break
+    entity: dict[str, Any] = {
+        "@id": engine_id,
+        "@type": "SoftwareApplication",
+        "name": _human_engine_name(backend),
+    }
+    if software_version is not None:
+        entity["softwareVersion"] = software_version
+    upsert(graph, entity)
+    return engine_id
+
+
+def _human_engine_name(backend: str) -> str:
+    """Human-friendly display name for the backend engine entity."""
+    return {
+        "nlmixr2": "nlmixr2 (R)",
+        "bayesian_stan": "Stan / CmdStan (Bayesian backend)",
+        "node": "Diffrax / JAX (Neural ODE backend)",
+        "agentic": "APMODE agentic LLM backend",
+    }.get(backend, backend)
+
+
+def backend_step_id(backend: str) -> str:
+    """Stable ``@id`` of the ``HowToStep`` representing a ``backend`` fit."""
+    slug = "".join(c if c.isalnum() or c in "-_" else "-" for c in backend.lower())
+    return f"#step-backend-{slug}" if slug else "#step-backend-unknown"
+
+
+def add_backend_howto_step(
+    graph: list[dict[str, Any]],
+    backend: str,
+    *,
+    workflow_id: str | None = None,
+    engine_id: str | None = None,
+) -> str:
+    """Ensure a HowToStep exists for ``backend`` and register it on the workflow.
+
+    The HowToStep's ``workExample`` points at the backend engine
+    SoftwareApplication (e.g. nlmixr2), not at the orchestrator, so the
+    provenance-run-crate semantic that "steps point to the tools that
+    execute them" is satisfied with a real engine rather than the
+    dispatch wrapper.
+    """
+    step_id = backend_step_id(backend)
+    step: dict[str, Any] = {
+        "@id": step_id,
+        "@type": "HowToStep",
+        "name": f"{_human_engine_name(backend)} fit",
+    }
+    if engine_id:
+        step["workExample"] = {"@id": engine_id}
+    upsert(graph, step)
+
+    if workflow_id:
+        workflow = upsert(
+            graph,
+            {
+                "@id": workflow_id,
+                "@type": [
+                    "File",
+                    "SoftwareSourceCode",
+                    "ComputationalWorkflow",
+                    "HowTo",
+                ],
+            },
+        )
+        merge_list_property(workflow, "step", {"@id": step_id})
+    return step_id
+
+
 def add_candidate_software_app(
     graph: list[dict[str, Any]],
     bundle_dir: Path,
@@ -117,14 +237,25 @@ def add_backend_create_action(
     *,
     data_manifest_id: str | None,
     organize_action_id: str | None = None,
+    workflow_id: str | None = None,
 ) -> str | None:
     """Project ``results/<id>_result.json`` as a CreateAction + result File.
 
     Returns the ``@id`` of the CreateAction, or ``None`` when the
     result JSON is absent. Registers the candidate's
     :class:`SoftwareApplication` (via :func:`add_candidate_software_app`)
-    if it does not exist yet, so callers may invoke this projector
-    directly per-candidate without pre-seeding the graph.
+    and the backend engine's :class:`SoftwareApplication` if they do
+    not exist yet, so callers may invoke this projector directly
+    per-candidate without pre-seeding the graph.
+
+    Per provenance-run-crate v0.5, ``CreateAction.instrument`` names
+    the tool being invoked. For a PK fit that is the backend engine
+    (nlmixr2 / Stan / NODE), not the candidate DSL spec. The candidate
+    SoftwareApplication is carried as one of the ``object`` inputs
+    alongside the data manifest, which matches the semantics that the
+    engine fits a model to data. ``workflow_id`` (when provided) is
+    used to register the matching HowToStep on the workflow so the
+    step/action chain is complete.
     """
     result_path = bundle_dir / "results" / f"{candidate_id}_result.json"
     if not result_path.is_file():
@@ -143,19 +274,29 @@ def add_backend_create_action(
     root = upsert(graph, {"@id": "./", "@type": "Dataset"})
     merge_list_property(root, "hasPart", {"@id": result_file["@id"]})
 
+    backend_name = str(result_payload.get("backend", "unknown"))
+    engine_id = _ensure_backend_engine(graph, bundle_dir, backend_name)
+    add_backend_howto_step(graph, backend_name, workflow_id=workflow_id, engine_id=engine_id)
+
     action_id = f"#backend-create-{candidate_id}"
-    backend_name = result_payload.get("backend", "unknown")
     converged = bool(result_payload.get("converged", False))
     action: dict[str, Any] = {
         "@id": action_id,
         "@type": "CreateAction",
         "name": f"{backend_name} fit of {candidate_id}",
-        "instrument": {"@id": app_id},
+        "instrument": {"@id": engine_id},
         "result": [{"@id": result_file["@id"]}],
         "actionStatus": _action_status_id(converged),
     }
+    # Objects are the "inputs" to the action: the data manifest plus
+    # the candidate model specification (projected as a
+    # SoftwareApplication carrying the DSL spec File via
+    # ``apmode:dslSpec``).
+    action_objects: list[dict[str, str]] = []
     if data_manifest_id:
-        action["object"] = [{"@id": data_manifest_id}]
+        action_objects.append({"@id": data_manifest_id})
+    action_objects.append({"@id": app_id})
+    action["object"] = action_objects
     upsert(graph, action)
 
     # Register the CreateAction as an object of the OrganizeAction

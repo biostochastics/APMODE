@@ -52,10 +52,16 @@ def add_regulatory_artifacts(
     """Project ``regulatory/`` artifacts onto the root Dataset.
 
     Args:
-        regulatory_context: Optional explicit context string (typically
-            one of :class:`apmode.bundle.rocrate.vocab.RegulatoryContext`).
-            When ``None``, the projector inspects the files present and
-            sets ``"pccp-ai-dsf"`` if any are found.
+        regulatory_context: Optional explicit context string — MUST be
+            one of :class:`apmode.bundle.rocrate.vocab.RegulatoryContext`
+            when regulatory files are present. Earlier versions defaulted
+            to ``pccp-ai-dsf`` whenever any file existed, which silently
+            mislabeled AI-Act-only or MDR-only bundles. We now refuse
+            the implicit default: operators must pass
+            ``--regulatory-context`` explicitly via
+            :mod:`apmode.bundle.rocrate.cli_hooks`, or the projector
+            leaves the context slot untouched and the orchestrator will
+            fill in ``research-only`` (non-regulated default).
 
     Returns True when at least one regulatory file was projected.
     """
@@ -100,8 +106,9 @@ def add_regulatory_artifacts(
         any_added = True
         break
 
-    if any_added:
-        root[vocab.REGULATORY_CONTEXT] = (
-            regulatory_context or vocab.RegulatoryContext.PCCP_AI_DSF.value
-        )
+    if any_added and regulatory_context is not None:
+        # Only set the context when the operator supplied one —
+        # otherwise the projector leaves the slot alone so the caller
+        # (orchestrator) can apply the ``research-only`` default.
+        root[vocab.REGULATORY_CONTEXT] = regulatory_context
     return any_added

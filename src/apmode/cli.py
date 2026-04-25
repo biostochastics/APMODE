@@ -273,6 +273,7 @@ def run(
     lane: Annotated[
         Lane,
         typer.Option(
+            envvar="APMODE_LANE",
             help=(
                 "Operating lane. "
                 "[dim]submission[/dim]=regulatory, "
@@ -283,11 +284,12 @@ def run(
     ] = Lane.SUBMISSION,
     seed: Annotated[
         int,
-        typer.Option(help="Root random seed for reproducibility."),
+        typer.Option(envvar="APMODE_SEED", help="Root random seed for reproducibility."),
     ] = 753849,
     policy: Annotated[
         Path | None,
         typer.Option(
+            envvar="APMODE_POLICY",
             help="Gate policy JSON file. Falls back to policies/<lane>.json.",
             show_default="policies/<lane>.json",
         ),
@@ -295,6 +297,7 @@ def run(
     timeout: Annotated[
         int,
         typer.Option(
+            envvar="APMODE_TIMEOUT",
             rich_help_panel="Execution",
             help=(
                 "Per-candidate backend timeout in seconds. "
@@ -306,12 +309,19 @@ def run(
     ] = 900,
     output: Annotated[
         Path,
-        typer.Option(help="Bundle output directory."),
+        typer.Option(
+            "--output",
+            "--output-dir",
+            "-o",
+            envvar="APMODE_OUTPUT_DIR",
+            help="Bundle output directory.",
+        ),
     ] = Path("runs"),
     agentic: Annotated[
         bool,
         typer.Option(
             "--agentic/--no-agentic",
+            envvar="APMODE_AGENTIC",
             rich_help_panel="Agentic LLM (Phase 3)",
             help=(
                 "Enable the agentic LLM backend (Phase 3). "
@@ -324,6 +334,7 @@ def run(
     provider: Annotated[
         str,
         typer.Option(
+            envvar="APMODE_PROVIDER",
             rich_help_panel="Agentic LLM (Phase 3)",
             help=(
                 "LLM provider for the agentic backend. "
@@ -335,6 +346,7 @@ def run(
     model: Annotated[
         str | None,
         typer.Option(
+            envvar="APMODE_MODEL",
             rich_help_panel="Agentic LLM (Phase 3)",
             help=(
                 "LLM model name. Defaults per provider: "
@@ -347,6 +359,7 @@ def run(
         int,
         typer.Option(
             "--max-iterations",
+            envvar="APMODE_AGENTIC_MAX_ITER",
             rich_help_panel="Agentic LLM (Phase 3)",
             help="Max agentic LLM iterations per run (PRD §4.2.6: cap=25).",
             min=1,
@@ -371,6 +384,7 @@ def run(
         typer.Option(
             "--parallel-models",
             "-j",
+            envvar="APMODE_PARALLEL_MODELS",
             rich_help_panel="Execution",
             help="Max concurrent model evaluations (R subprocesses). Default 1 = sequential.",
             min=1,
@@ -380,6 +394,7 @@ def run(
         str,
         typer.Option(
             "--backend",
+            envvar="APMODE_BACKEND",
             help=(
                 "Estimation backend. [dim]nlmixr2[/dim] (classical SAEM/FOCEi, default) "
                 "or [dim]bayesian_stan[/dim] (Stan+Torsten via cmdstanpy, Phase 2+ — "
@@ -508,6 +523,16 @@ def run(
     """Run the full APMODE pipeline on a PK dataset.
 
     Executes: ingest -> profile -> NCA -> split -> search -> governance gates -> bundle.
+
+    \b
+    Examples:
+      apmode run ./data/trial.csv                                       # submission default
+      apmode run ./data/trial.csv --lane discovery -j 4                 # parallel discovery
+      apmode run ./data/trial.csv --lane discovery --agentic            # opt-in LLM loop
+      apmode run ./data/trial.csv --backend bayesian_stan               # Stan/Torsten
+      apmode run ./data/trial.csv --resume-agentic -o ./runs/run_xyz    # resume after API failure
+      apmode run ./data/trial.csv --dry-run                             # preview dispatch plan
+      APMODE_LANE=discovery APMODE_OUTPUT_DIR=./runs apmode run ./d.csv # env-driven config
     """
     import logging
 
@@ -1934,27 +1959,77 @@ def datasets(
         str | None,
         typer.Option(help="Filter by elimination: linear, michaelis_menten."),
     ] = None,
+    output_json: Annotated[
+        bool,
+        typer.Option(
+            "--json",
+            help="Emit dataset registry / download result as JSON to stdout (suppresses Rich).",
+        ),
+    ] = False,
 ) -> None:
     """Discover and download public PK datasets.
 
     List available datasets:   apmode datasets
     Download one:              apmode datasets theo_sd
     Download with filter:      apmode datasets --route oral -o ./data
+    Machine-readable listing:  apmode datasets --json | jq
     """
+    from dataclasses import asdict, is_dataclass
+
     from apmode.data.datasets import (
         DATASET_REGISTRY,
         fetch_dataset,
         list_datasets,
     )
 
+    def _info_to_dict(info: object) -> dict[str, Any]:
+        # ``DatasetInfo`` is a @dataclass — keep robust to both shapes.
+        if is_dataclass(info) and not isinstance(info, type):
+            return asdict(info)
+        return {k: getattr(info, k) for k in vars(info)}
+
     if fetch is not None:
         # Download a specific dataset
         if fetch not in DATASET_REGISTRY:
             available = ", ".join(sorted(DATASET_REGISTRY.keys()))
-            err_console.print(
-                f"[red bold]Error:[/] Unknown dataset '{escape(fetch)}'. Available: {available}"
-            )
+            if output_json:
+                print(
+                    json.dumps(
+                        {
+                            "ok": False,
+                            "error": "unknown_dataset",
+                            "name": fetch,
+                            "available": sorted(DATASET_REGISTRY.keys()),
+                        },
+                        indent=2,
+                    )
+                )
+            else:
+                err_console.print(
+                    f"[red bold]Error:[/] Unknown dataset '{escape(fetch)}'. "
+                    f"Available: {available}"
+                )
             raise typer.Exit(code=1)
+
+        if output_json:
+            try:
+                path = fetch_dataset(fetch, output)
+            except RuntimeError as e:
+                print(json.dumps({"ok": False, "error": str(e), "name": fetch}, indent=2))
+                raise typer.Exit(code=1) from e
+            info = DATASET_REGISTRY[fetch]
+            print(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "name": fetch,
+                        "path": str(path),
+                        "info": _info_to_dict(info),
+                    },
+                    indent=2,
+                )
+            )
+            return
 
         with console.status(f"[bold cyan]Fetching {fetch}...[/]", spinner="dots"):
             try:
@@ -1972,6 +2047,20 @@ def datasets(
 
     # List available datasets
     results = list_datasets(route=route, elimination=elimination)
+    if output_json:
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "filters": {"route": route, "elimination": elimination},
+                    "count": len(results),
+                    "datasets": [_info_to_dict(info) for info in results],
+                },
+                indent=2,
+                default=str,
+            )
+        )
+        return
     if not results:
         console.print("[yellow]No datasets match the given filters.[/]")
         return
@@ -2276,6 +2365,87 @@ def _launch_run(
 # ---------------------------------------------------------------------------
 
 
+def _diff_emit_json(bundle_a: Path, bundle_b: Path) -> None:
+    """Emit a structured diff of two bundles to stdout (used by ``diff --json``).
+
+    Stable shape:
+
+    .. code-block:: json
+
+       {
+         "ok": true,
+         "bundle_a": "...",
+         "bundle_b": "...",
+         "evidence_diff": { "<key>": {"a": ..., "b": ..., "match": bool} },
+         "ranking_changes": [ {"rank": int, "a": "...", "b": "...", "bic_a": ?, "bic_b": ?} ],
+         "gate_pass_rates": { "gate1": {"a": [pass, total], "b": [pass, total]}, ... }
+       }
+    """
+    payload: dict[str, Any] = {
+        "ok": True,
+        "bundle_a": str(bundle_a),
+        "bundle_b": str(bundle_b),
+    }
+
+    em_a = _load_json(bundle_a / "evidence_manifest.json", "evidence_manifest (A)")
+    em_b = _load_json(bundle_b / "evidence_manifest.json", "evidence_manifest (B)")
+    if em_a or em_b:
+        em_a_d = em_a or {}
+        em_b_d = em_b or {}
+        evd: dict[str, dict[str, Any]] = {}
+        for key in sorted(set(em_a_d.keys()) | set(em_b_d.keys())):
+            if key.startswith("data_sha"):
+                continue
+            va, vb = em_a_d.get(key), em_b_d.get(key)
+            evd[key] = {"a": va, "b": vb, "match": va == vb}
+        payload["evidence_diff"] = evd
+
+    rank_a = _load_json(bundle_a / "ranking.json", "ranking (A)")
+    rank_b = _load_json(bundle_b / "ranking.json", "ranking (B)")
+    if rank_a or rank_b:
+        cands_a = (rank_a or {}).get("ranked_candidates", [])
+        cands_b = (rank_b or {}).get("ranked_candidates", [])
+        changes: list[dict[str, Any]] = []
+        for i in range(min(max(len(cands_a), len(cands_b), 1), 10)):
+            ca = cands_a[i] if i < len(cands_a) else {}
+            cb = cands_b[i] if i < len(cands_b) else {}
+            changes.append(
+                {
+                    "rank": i + 1,
+                    "a": ca.get("candidate_id", ca.get("model_id")),
+                    "b": cb.get("candidate_id", cb.get("model_id")),
+                    "bic_a": ca.get("bic"),
+                    "bic_b": cb.get("bic"),
+                }
+            )
+        payload["ranking_changes"] = changes
+
+    gd_a = bundle_a / "gate_decisions"
+    gd_b = bundle_b / "gate_decisions"
+    if gd_a.is_dir() and gd_b.is_dir():
+        rates: dict[str, dict[str, list[int]]] = {}
+        for gate, pattern, exclude_g25 in [
+            ("gate1", "gate1_*.json", False),
+            ("gate2", "gate2_*.json", True),
+            ("gate2_5", "gate2_5_*.json", False),
+            ("gate3", "gate3_*.json", False),
+        ]:
+            fa = list(gd_a.glob(pattern))
+            fb = list(gd_b.glob(pattern))
+            if exclude_g25:
+                fa = [f for f in fa if not f.name.startswith("gate2_5")]
+                fb = [f for f in fb if not f.name.startswith("gate2_5")]
+            if not fa and not fb:
+                continue
+            pa = sum(1 for f in fa if (_load_json(f, "") or {}).get("passed"))
+            pb = sum(1 for f in fb if (_load_json(f, "") or {}).get("passed"))
+            rates[gate] = {"a": [pa, len(fa)], "b": [pb, len(fb)]}
+        if rates:
+            payload["gate_pass_rates"] = rates
+
+    print(json.dumps(payload, indent=2, default=str))
+
+
 @app.command()
 def diff(
     bundle_a: Annotated[
@@ -2286,6 +2456,16 @@ def diff(
         Path,
         typer.Argument(help="Second bundle directory."),
     ],
+    output_json: Annotated[
+        bool,
+        typer.Option(
+            "--json",
+            help=(
+                "Emit a structured diff (evidence/ranking/gates) as JSON to "
+                "stdout and suppress Rich output. Useful for CI gates."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Compare two reproducibility bundles side-by-side.
 
@@ -2296,11 +2476,31 @@ def diff(
     Examples:
       apmode diff ./runs/run_abc123 ./runs/run_def456
       apmode diff ./runs/baseline ./runs/candidate     # A=baseline, B=candidate
+      apmode diff ./runs/a ./runs/b --json | jq '.ranking_changes'
     """
     for p, label in [(bundle_a, "A"), (bundle_b, "B")]:
         if not p.is_dir():
-            err_console.print(f"[red bold]Error:[/] Bundle {label} not found: {escape(str(p))}")
+            if output_json:
+                print(
+                    json.dumps(
+                        {
+                            "ok": False,
+                            "error": "bundle_not_found",
+                            "missing": label,
+                            "path": str(p),
+                        },
+                        indent=2,
+                    )
+                )
+            else:
+                err_console.print(
+                    f"[red bold]Error:[/] Bundle {label} not found: {escape(str(p))}"
+                )
             raise typer.Exit(code=1)
+
+    if output_json:
+        _diff_emit_json(bundle_a, bundle_b)
+        return
 
     console.print()
     console.rule("[bold]Bundle Diff[/]")
@@ -2390,6 +2590,115 @@ def diff(
 # ---------------------------------------------------------------------------
 
 
+def _log_emit_json(
+    bundle_dir: Path,
+    *,
+    gate: str | None,
+    failed: bool,
+    top: int,
+) -> None:
+    """Emit log/gate/failed/top-N as JSON to stdout (used by ``log --json``).
+
+    Mirrors the precedence in the Rich path: ``--gate`` > ``--failed`` > ``--top`` > overview.
+    """
+    payload: dict[str, Any] = {
+        "ok": True,
+        "bundle_dir": str(bundle_dir),
+        "view": "overview",
+    }
+
+    if gate:
+        gd_dir = bundle_dir / "gate_decisions"
+        decisions: list[dict[str, Any]] = []
+        if gd_dir.is_dir():
+            for f in sorted(gd_dir.glob(f"{gate}_*.json")):
+                data = _load_json(f, f.name)
+                if data is None:
+                    continue
+                decisions.append(data)
+        payload["view"] = "gate"
+        payload["gate"] = gate
+        payload["decisions"] = decisions
+        print(json.dumps(payload, indent=2, default=str))
+        return
+
+    if failed:
+        fc_path = bundle_dir / "failed_candidates.jsonl"
+        rows: list[dict[str, Any]] = []
+        if fc_path.exists():
+            for line in fc_path.read_text().splitlines():
+                rec = _parse_json_dict_row(line)
+                if rec is not None:
+                    rows.append(rec)
+        payload["view"] = "failed"
+        payload["count"] = len(rows)
+        payload["candidates"] = rows
+        print(json.dumps(payload, indent=2, default=str))
+        return
+
+    if top > 0:
+        rank_path = bundle_dir / "ranking.json"
+        rank = _load_json(rank_path, "ranking.json") if rank_path.exists() else None
+        cands_raw = (rank or {}).get("ranked_candidates", [])[:top]
+        out_cands: list[dict[str, Any]] = []
+        for entry in cands_raw:
+            cid = entry.get("candidate_id", entry.get("model_id"))
+            res = _load_result_json(bundle_dir, cid) if cid else None
+            spec = _load_json(bundle_dir / "compiled_specs" / f"{cid}.json", "") if cid else None
+            out_cands.append(
+                {
+                    "candidate_id": cid,
+                    "rank_entry": entry,
+                    "result": res,
+                    "spec_summary": _spec_one_liner(spec) if spec else None,
+                }
+            )
+        payload["view"] = "top"
+        payload["top"] = top
+        payload["candidates"] = out_cands
+        print(json.dumps(payload, indent=2, default=str))
+        return
+
+    # --- Overview (matches `_show_bundle_overview` data) ---
+    traj_path = bundle_dir / "search_trajectory.jsonl"
+    n_total = 0
+    n_conv = 0
+    if traj_path.exists():
+        for line in traj_path.read_text().splitlines():
+            row = _parse_json_dict_row(line)
+            if row is None:
+                continue
+            n_total += 1
+            if row.get("converged"):
+                n_conv += 1
+    payload["trajectory"] = {"n_total": n_total, "n_converged": n_conv}
+
+    gd_dir = bundle_dir / "gate_decisions"
+    if gd_dir.is_dir():
+        gates_overview: dict[str, dict[str, int]] = {}
+        for gate_label, pattern, exclude_g25 in [
+            ("gate1", "gate1_*.json", False),
+            ("gate2", "gate2_*.json", True),
+            ("gate2_5", "gate2_5_*.json", False),
+            ("gate3", "gate3_*.json", False),
+        ]:
+            files = list(gd_dir.glob(pattern))
+            if exclude_g25:
+                files = [f for f in files if not f.name.startswith("gate2_5")]
+            if not files:
+                continue
+            n_pass = sum(1 for f in files if (_load_json(f, "") or {}).get("passed"))
+            gates_overview[gate_label] = {"passed": n_pass, "total": len(files)}
+        if gates_overview:
+            payload["gates"] = gates_overview
+
+    fc_path = bundle_dir / "failed_candidates.jsonl"
+    if fc_path.exists():
+        text = fc_path.read_text().strip()
+        payload["n_failed_candidates"] = len(text.split("\n")) if text else 0
+    print(json.dumps(payload, indent=2, default=str))
+
+
 @app.command(name="log")
 def log_cmd(
     bundle_dir: Annotated[
@@ -2413,6 +2722,16 @@ def log_cmd(
             min=0,
         ),
     ] = 0,
+    output_json: Annotated[
+        bool,
+        typer.Option(
+            "--json",
+            help=(
+                "Emit gate / failed-candidate / top-N data as JSON to stdout "
+                "(suppresses Rich). Honors --gate, --failed, and --top."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Query logs, gate decisions, and parameters from a bundle.
 
@@ -2422,10 +2741,27 @@ def log_cmd(
       apmode log ./runs/run_abc123 --failed         # failed candidates
       apmode log ./runs/run_abc123 --gate gate1     # gate 1 details
       apmode log ./runs/run_abc123 --top 3          # top 3 with parameters
+      apmode log ./runs/run_abc123 --top 5 --json | jq '.candidates[].bic'
     """
     if not bundle_dir.is_dir():
-        err_console.print(f"[red bold]Error:[/] not a directory: {escape(str(bundle_dir))}")
+        if output_json:
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error": "not_a_directory",
+                        "bundle_dir": str(bundle_dir),
+                    },
+                    indent=2,
+                )
+            )
+        else:
+            err_console.print(f"[red bold]Error:[/] not a directory: {escape(str(bundle_dir))}")
         raise typer.Exit(code=1)
+
+    if output_json:
+        _log_emit_json(bundle_dir, gate=gate, failed=failed, top=top)
+        return
 
     console.print()
     console.rule(f"[bold]Bundle Log: {escape(bundle_dir.name)}[/]")
@@ -3406,7 +3742,18 @@ def report(
 
 
 @app.command()
-def doctor() -> None:
+def doctor(
+    output_json: Annotated[
+        bool,
+        typer.Option(
+            "--json",
+            help=(
+                "Emit per-component status as JSON to stdout (suppresses Rich). "
+                "Exit code is still 0 if all required components are found, 1 otherwise."
+            ),
+        ),
+    ] = False,
+) -> None:
     """Check that all runtime dependencies are installed and reachable.
 
     Verifies: R, nlmixr2, rxode2, cmdstan (optional), and LLM provider
@@ -3415,20 +3762,54 @@ def doctor() -> None:
     \b
     Examples:
       apmode doctor
+      apmode doctor --json | jq '.components[] | select(.status=="missing")'
     """
     import shutil
     import subprocess
 
-    console.print()
-    console.print(Panel("[bold]APMODE Environment Health Check[/]", border_style="cyan"))
-    console.print()
-
+    json_components: list[dict[str, Any]] = []
     table = Table(box=None, padding=(0, 1))
     table.add_column("Component", style="bold", width=28)
     table.add_column("Status", width=12)
     table.add_column("Detail", style="dim")
 
+    # Status taxonomy: ``ok`` ``missing`` ``error`` ``misconfigured`` ``skipped``
+    # ``not_installed`` ``not_set`` ``not_reachable`` — stable strings for
+    # ``--json`` consumers. The Rich glyph is derived from this label, so adding
+    # a new status only requires extending ``_GLYPH``.
+    _GLYPH: dict[str, str] = {
+        "ok": "[green]✓ found[/]",
+        "missing": "[red]✗ missing[/]",
+        "error": "[red]✗ error[/]",
+        "misconfigured": "[yellow]⚠ misconfigured[/]",
+        "skipped": "[dim]-- skipped[/]",
+        "not_installed": "[dim]-- not installed[/]",
+        "not_set": "[dim]-- not set[/]",
+        "not_reachable": "[dim]-- not reachable[/]",
+    }
     all_ok = True
+
+    def _emit(
+        name: str,
+        status: str,
+        detail: str,
+        *,
+        required: bool = True,
+        glyph_override: str | None = None,
+    ) -> None:
+        nonlocal all_ok
+        json_components.append(
+            {"name": name, "status": status, "detail": detail, "required": required}
+        )
+        glyph = glyph_override if glyph_override is not None else _GLYPH.get(status, status)
+        table.add_row(name, glyph, detail)
+        if required and status not in ("ok", "skipped"):
+            all_ok = False
+
+    if not output_json:
+        console.print()
+        console.print(Panel("[bold]APMODE Environment Health Check[/]", border_style="cyan"))
+        console.print()
 
     # ---- R ----
     r_exe = shutil.which("Rscript")
@@ -3439,12 +3820,13 @@ def doctor() -> None:
             ).strip()
         except Exception:
             r_ver = "?"
-        table.add_row("R (Rscript)", "[green]✓ found[/]", r_ver)
+        _emit("R (Rscript)", "ok", r_ver)
     else:
-        table.add_row(
-            "R (Rscript)", "[red]✗ missing[/]", "Install R ≥ 4.4 from https://cran.r-project.org"
+        _emit(
+            "R (Rscript)",
+            "missing",
+            "Install R ≥ 4.4 from https://cran.r-project.org",
         )
-        all_ok = False
 
     # ---- nlmixr2 ----
     if r_exe:
@@ -3460,17 +3842,15 @@ def doctor() -> None:
                 timeout=20,
             ).strip()
             if nlmixr2_ver:
-                table.add_row("nlmixr2 (R pkg)", "[green]✓ found[/]", f"v{nlmixr2_ver}")
+                _emit("nlmixr2 (R pkg)", "ok", f"v{nlmixr2_ver}")
             else:
-                table.add_row(
-                    "nlmixr2 (R pkg)", "[red]✗ missing[/]", "install.packages('nlmixr2')"
-                )
-                all_ok = False
+                _emit("nlmixr2 (R pkg)", "missing", "install.packages('nlmixr2')")
         except Exception:
-            table.add_row("nlmixr2 (R pkg)", "[red]✗ error[/]", "Could not query R packages")
-            all_ok = False
+            _emit("nlmixr2 (R pkg)", "error", "Could not query R packages")
     else:
-        table.add_row("nlmixr2 (R pkg)", "[dim]-- skipped[/]", "R not found")
+        # ``required=False`` here only affects ``all_ok``; the row is unactionable
+        # because the previous R check already failed and counts toward the overall result.
+        _emit("nlmixr2 (R pkg)", "skipped", "R not found", required=False)
 
     # ---- rxode2 ----
     if r_exe:
@@ -3482,15 +3862,13 @@ def doctor() -> None:
                 timeout=15,
             ).strip()
             if rxode2_ver:
-                table.add_row("rxode2 (R pkg)", "[green]✓ found[/]", f"v{rxode2_ver}")
+                _emit("rxode2 (R pkg)", "ok", f"v{rxode2_ver}")
             else:
-                table.add_row("rxode2 (R pkg)", "[red]✗ missing[/]", "install.packages('rxode2')")
-                all_ok = False
+                _emit("rxode2 (R pkg)", "missing", "install.packages('rxode2')")
         except Exception:
-            table.add_row("rxode2 (R pkg)", "[red]✗ error[/]", "Could not query R packages")
-            all_ok = False
+            _emit("rxode2 (R pkg)", "error", "Could not query R packages")
     else:
-        table.add_row("rxode2 (R pkg)", "[dim]-- skipped[/]", "R not found")
+        _emit("rxode2 (R pkg)", "skipped", "R not found", required=False)
 
     # ---- CmdStan (optional) ----
     # Distinguish "cmdstanpy not installed" from "installed but cmdstan_path() failed"
@@ -3498,20 +3876,22 @@ def doctor() -> None:
     try:
         import cmdstanpy
     except ImportError:
-        table.add_row(
+        _emit(
             "CmdStan (optional)",
-            "[dim]-- not installed[/]",
+            "not_installed",
             "Optional; `pip install cmdstanpy` for bayesian_stan backend",
+            required=False,
         )
     else:
         try:
             cs_path = cmdstanpy.cmdstan_path()
-            table.add_row("CmdStan (optional)", "[green]✓ found[/]", cs_path)
+            _emit("CmdStan (optional)", "ok", cs_path, required=False)
         except Exception as e:  # CmdStan install path errors
-            table.add_row(
+            _emit(
                 "CmdStan (optional)",
-                "[yellow]⚠ misconfigured[/]",
+                "misconfigured",
                 f"cmdstanpy installed but cmdstan_path() failed: {e}",
+                required=False,
             )
 
     # ---- Python packages ----
@@ -3520,15 +3900,15 @@ def doctor() -> None:
             import importlib.metadata as _meta
 
             ver = _meta.version(pkg)
-            table.add_row(f"{pkg} (Python)", "[green]✓ found[/]", f"v{ver}")
+            _emit(f"{pkg} (Python)", "ok", f"v{ver}")
         except Exception:
-            table.add_row(f"{pkg} (Python)", "[red]✗ missing[/]", f"pip install {pkg}")
-            all_ok = False
+            _emit(f"{pkg} (Python)", "missing", f"pip install {pkg}")
 
     # ---- LLM providers (API key presence only) ----
     # Iterate over `_PROVIDER_ENV_KEYS` so new providers appear here automatically;
     # providers without an env-var contract (e.g. ollama, probed separately below)
-    # are skipped by an empty key list.
+    # are skipped by an empty key list. LLM keys are always optional — the orchestrator
+    # only needs them when ``--agentic`` is passed.
     import os
 
     for provider_key, env_keys in _PROVIDER_ENV_KEYS.items():
@@ -3538,16 +3918,19 @@ def doctor() -> None:
         found = next(((k, os.environ[k]) for k in env_keys if os.environ.get(k)), None)
         if found:
             hit_key, hit_val = found
-            table.add_row(
+            _emit(
                 f"LLM: {label}",
-                "[green]✓ key set[/]",
+                "ok",
                 f"{hit_key}=****{hit_val[-4:]}",
+                required=False,
+                glyph_override="[green]✓ key set[/]",
             )
         else:
-            table.add_row(
+            _emit(
                 f"LLM: {label}",
-                "[dim]-- not set[/]",
+                "not_set",
                 f"{' or '.join(env_keys)} not in environment",
+                required=False,
             )
 
     # Ollama (local) — narrow exception to OSError (covers URLError/ConnectionRefused).
@@ -3557,20 +3940,38 @@ def doctor() -> None:
         import urllib.request
 
         urllib.request.urlopen("http://localhost:11434", timeout=1.0)  # nosec B310
-        table.add_row("LLM: Ollama (local)", "[green]✓ running[/]", "http://localhost:11434")
+        _emit(
+            "LLM: Ollama (local)",
+            "ok",
+            "http://localhost:11434",
+            required=False,
+            glyph_override="[green]✓ running[/]",
+        )
     except OSError as exc:
         # Surface the specific reason (Connection refused, Timed out, …) so users
         # can tell "not installed" from "installed but not running".
         reason = str(exc) or type(exc).__name__
-        table.add_row(
+        _emit(
             "LLM: Ollama (local)",
-            "[dim]-- not reachable[/]",
+            "not_reachable",
             f"http://localhost:11434 ({reason[:40]})",
+            required=False,
         )
+
+    if output_json:
+        print(
+            json.dumps(
+                {"ok": all_ok, "components": json_components},
+                indent=2,
+                default=str,
+            )
+        )
+        if not all_ok:
+            raise typer.Exit(code=1)
+        return
 
     console.print(table)
     console.print()
-
     if all_ok:
         console.print("[green bold]✓ All required components found.[/]")
     else:
@@ -3847,6 +4248,16 @@ def policies(
         bool,
         typer.Option("--validate", help="Validate JSON schema of each policy file."),
     ] = False,
+    output_json: Annotated[
+        bool,
+        typer.Option(
+            "--json",
+            help=(
+                "Emit policy summary (lane, version, gates, validation result) as JSON "
+                "to stdout (suppresses Rich)."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """List and inspect gate policy files.
 
@@ -3859,19 +4270,33 @@ def policies(
       apmode policies
       apmode policies submission
       apmode policies --validate
+      apmode policies --json | jq '.policies[].version'
     """
     # Locate policies/ via the shared helper.
     from apmode.paths import policies_dir as _policies_dir
 
     policies_dir = _policies_dir()
     if policies_dir is None or not policies_dir.is_dir():
-        err_console.print(
-            "[red bold]Error:[/] policies directory not found (set APMODE_POLICIES_DIR "
-            "to override)."
-        )
+        if output_json:
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error": "policies_dir_not_found",
+                        "hint": "set APMODE_POLICIES_DIR to override",
+                    },
+                    indent=2,
+                )
+            )
+        else:
+            err_console.print(
+                "[red bold]Error:[/] policies directory not found (set APMODE_POLICIES_DIR "
+                "to override)."
+            )
         raise typer.Exit(code=1)
 
     lanes_to_show = [lane] if lane else ["submission", "discovery", "optimization"]
+    json_policies: list[dict[str, Any]] = []
 
     table = Table(title="Gate Policies", box=None, padding=(0, 1))
     table.add_column("Lane", style="bold", width=16)
@@ -3886,12 +4311,28 @@ def policies(
         pfile = policies_dir / f"{ln}.json"
         if not pfile.exists():
             table.add_row(ln, f"{ln}.json", "—", "[dim]-- missing[/]", "—")
+            json_policies.append(
+                {
+                    "lane": ln,
+                    "file": f"{ln}.json",
+                    "exists": False,
+                    "status": "missing",
+                }
+            )
             all_ok = False
             continue
 
         pdata = _load_json(pfile, f"{ln}.json")
         if pdata is None:
             table.add_row(ln, f"{ln}.json", "—", "[red]✗ corrupt[/]", "—")
+            json_policies.append(
+                {
+                    "lane": ln,
+                    "file": f"{ln}.json",
+                    "exists": True,
+                    "status": "corrupt",
+                }
+            )
             all_ok = False
             continue
 
@@ -3902,12 +4343,16 @@ def policies(
                 gates_present.append(g.replace("_", "."))
 
         status = "[green]✓ OK[/]"
+        json_status: str = "ok"
+        json_missing: list[str] = []
         if validate:
             # Minimal schema check: required top-level keys
             required_keys = {"policy_version", "lane"}
             missing = required_keys - set(pdata.keys())
             if missing:
                 status = f"[red]✗ missing {', '.join(sorted(missing))}[/]"
+                json_status = "missing_keys"
+                json_missing = sorted(missing)
                 all_ok = False
 
         table.add_row(
@@ -3917,6 +4362,40 @@ def policies(
             status,
             ", ".join(gates_present) or "—",
         )
+        json_policies.append(
+            {
+                "lane": ln,
+                "file": f"{ln}.json",
+                "exists": True,
+                "status": json_status,
+                "version": version,
+                "gates_present": gates_present,
+                "missing_keys": json_missing,
+                "path": str(pfile),
+            }
+        )
+
+    if output_json:
+        # When a single lane was requested, embed the full raw policy so
+        # callers can extract per-check thresholds without a second read.
+        if lane and len(json_policies) == 1 and json_policies[0].get("exists"):
+            pfile_single = policies_dir / f"{lane}.json"
+            json_policies[0]["raw"] = _load_json(pfile_single, f"{lane}.json")
+        print(
+            json.dumps(
+                {
+                    "ok": all_ok,
+                    "policies_dir": str(policies_dir),
+                    "validate": validate,
+                    "policies": json_policies,
+                },
+                indent=2,
+                default=str,
+            )
+        )
+        if not all_ok:
+            raise typer.Exit(code=1)
+        return
 
     console.print()
     console.print(table)

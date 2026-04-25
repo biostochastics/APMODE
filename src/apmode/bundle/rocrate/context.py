@@ -30,6 +30,13 @@ WRROC_PROCESS_0_5 = "https://w3id.org/ro/wfrun/process/0.5"
 WRROC_WORKFLOW_0_5 = "https://w3id.org/ro/wfrun/workflow/0.5"
 WRROC_PROVENANCE_0_5 = "https://w3id.org/ro/wfrun/provenance/0.5"
 
+WORKFLOW_RO_CRATE_1_0 = "https://w3id.org/workflowhub/workflow-ro-crate/1.0"
+"""Workflow RO-Crate base profile (the non-run workflow profile that the
+WRROC family inherits from). Provenance Run Crate v0.5 says the root
+Dataset ``conformsTo`` SHOULD reference this versioned permalink in
+addition to the three WRROC profiles. Including it unlocks
+WorkflowHub's workflow-aware rendering paths."""
+
 WRROC_TERMS_CONTEXT = "https://w3id.org/ro/terms/workflow-run/context"
 """JSON-LD terms context for Workflow Run RO-Crate (imports wfrun,
 schema.org extensions, prov aliases)."""

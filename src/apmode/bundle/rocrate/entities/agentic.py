@@ -9,10 +9,19 @@ Each iteration has up to three files:
 
 Each iteration becomes one ``CreateAction`` with ``@id =
 #agentic-<iteration_id>``. Iterations are linked by
-``prov:wasInformedBy`` in discovery order. When
-``include_provagent=True`` the metadata File is additionally typed
-as ``provagent:ModelInvocation`` — the v0.9 PROV-AGENT alignment
-(Souza et al., arXiv:2508.02866).
+``prov:wasInformedBy`` in **trace order** — sort priority is:
+
+1. ``meta.sequence_number`` (integer; written by the agentic runner)
+2. ``meta.started_at`` (ISO-8601 timestamp)
+3. lexicographic iteration id (fallback for older bundles)
+
+This matters when iteration ids do not sort lexicographically in
+trace order (e.g. ``iter2`` vs ``iter10``, or retry ids like
+``iter_retry_001`` interleaved with the main chain).
+
+When ``include_provagent=True`` the metadata File is additionally
+typed as ``provagent:AIModelInvocation`` — the canonical class name
+from PROV-AGENT (Souza et al., eScience 2025, arXiv:2508.02866v3).
 """
 
 from __future__ import annotations
@@ -31,6 +40,63 @@ from apmode.bundle.rocrate.entities._common import (
 )
 
 _TRACE_NAME_RE = re.compile(r"^(?P<iter>.+)_(?P<kind>input|output|meta)\.json$")
+
+
+def _extract_sequence_number(meta_payload: dict[str, Any]) -> int | None:
+    raw = meta_payload.get("sequence_number")
+    if isinstance(raw, bool):  # bool is an int subclass; skip
+        return None
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, str) and raw.strip().isdigit():
+        return int(raw.strip())
+    return None
+
+
+def _extract_timestamp(meta_payload: dict[str, Any]) -> str | None:
+    for key in ("started_at", "timestamp"):
+        v = meta_payload.get(key)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return None
+
+
+def _resolve_iteration_order(
+    payloads: list[tuple[str, dict[str, Any]]],
+) -> list[tuple[str, dict[str, Any]]]:
+    """Return iterations in trace order, using a single consistent signal.
+
+    The sort key is chosen *globally* per bundle so we never mix two
+    ordering signals in the same chain (which would interleave
+    sequence-numbered iterations with timestamp-only ones in
+    counter-intuitive ways):
+
+    1. If **every** iteration carries a numeric ``sequence_number``,
+       sort by it (with iteration id as deterministic tiebreaker).
+    2. Else if **every** iteration carries a non-empty ``started_at`` /
+       ``timestamp``, sort by that string with iteration id tiebreak.
+    3. Else fall back to lexicographic iteration id — accepting that
+       ``iter10`` will follow ``iter2`` only if the writer pads ids.
+
+    Choosing one signal across the whole chain means a future bundle
+    that adds ``sequence_number`` to *some* iterations cannot quietly
+    rearrange the chain; the writer must populate every iteration to
+    benefit from the stronger signal.
+    """
+    sequences = [_extract_sequence_number(meta) for _, meta in payloads]
+    if all(s is not None for s in sequences):
+        # mypy: every entry is int after the all() check
+        return sorted(
+            payloads,
+            key=lambda pair: (_extract_sequence_number(pair[1]) or 0, pair[0]),
+        )
+    timestamps = [_extract_timestamp(meta) for _, meta in payloads]
+    if all(t is not None for t in timestamps):
+        return sorted(
+            payloads,
+            key=lambda pair: (_extract_timestamp(pair[1]) or "", pair[0]),
+        )
+    return sorted(payloads, key=lambda pair: pair[0])
 
 
 def add_agentic_trace(
@@ -56,20 +122,30 @@ def add_agentic_trace(
             continue
         by_iter.setdefault(m.group("iter"), {})[m.group("kind")] = p
 
+    # Resolve ordering once so we can reuse meta payloads below.
+    payloads: list[tuple[str, dict[str, Any]]] = []
+    for iteration_id, files in by_iter.items():
+        meta_payload = load_json_optional(files.get("meta", Path("/dev/null"))) or {}
+        payloads.append((iteration_id, meta_payload))
+    ordered = _resolve_iteration_order(payloads)
+
     action_ids: list[str] = []
     previous_id: str | None = None
-    for iteration_id in sorted(by_iter.keys()):
+    for iteration_id, meta_payload in ordered:
         files = by_iter[iteration_id]
         file_refs: list[dict[str, str]] = []
         output_payload = load_json_optional(files.get("output", Path("/dev/null"))) or {}
-        meta_payload = load_json_optional(files.get("meta", Path("/dev/null"))) or {}
 
         for kind, p in sorted(files.items()):
             extra: dict[str, Any] = {
                 "description": f"Agentic trace ({kind}) for iteration {iteration_id}",
             }
             if kind == "meta" and include_provagent:
-                extra["additionalType"] = "provagent:ModelInvocation"
+                # PROV-AGENT v3 (eScience 2025) canonicalizes this
+                # class name as ``AIModelInvocation``; earlier preprint
+                # drafts used ``ModelInvocation``. Keep the typed value
+                # in lock-step with the published paper.
+                extra["additionalType"] = "provagent:AIModelInvocation"
             entity = file_entity(
                 bundle_dir,
                 p,

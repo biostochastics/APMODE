@@ -356,9 +356,7 @@ def test_treedepth_skipped_without_sampler_config() -> None:
     res = _make_result(diag, sampler_config=None)
     out = evaluate_gate1_bayesian(res, _policy())
     assert out.passed is True
-    td_check = next(
-        c for c in out.checks if c.check_id == "bayesian_treedepth_fraction"
-    )
+    td_check = next(c for c in out.checks if c.check_id == "bayesian_treedepth_fraction")
     assert td_check.observed == "not_evaluated"
 
 

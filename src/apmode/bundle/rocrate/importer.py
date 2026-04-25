@@ -28,19 +28,20 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-# The name is repeated here (rather than imported from
+# The names are repeated here (rather than imported from
 # ``apmode.bundle.emitter``) so the importer stays light-weight and
-# does not pull in Lark + the DSL stack.
+# does not pull in Lark + the DSL stack. Keep in lock-step with
+# ``apmode.bundle.emitter._DIGEST_EXCLUDED_NAMES``.
 _COMPLETE_SENTINEL = "_COMPLETE"
+_SBOM_FILENAME = "bom.cdx.json"
+_SBC_MANIFEST_FILENAME = "sbc_manifest.json"
+_DIGEST_EXCLUDED_NAMES_LOWER: frozenset[str] = frozenset(
+    name.lower() for name in (_COMPLETE_SENTINEL, _SBOM_FILENAME, _SBC_MANIFEST_FILENAME)
+)
 
 _ROCRATE_OWNED_FILES: frozenset[str] = frozenset(
     {
         "ro-crate-metadata.json",
-    }
-)
-_ROCRATE_OWNED_DIRS: frozenset[str] = frozenset(
-    {
-        "workflows",
     }
 )
 
@@ -84,15 +85,68 @@ def import_crate(source: Path, target: Path) -> Path:
         with tempfile.TemporaryDirectory() as td:
             staging = Path(td)
             _safe_extract_zip(source, staging)
-            _copy_bundle_files(staging, target)
+            synthetic_workflow = _read_synthetic_workflow_path(staging)
+            _copy_bundle_files(staging, target, synthetic_workflow=synthetic_workflow)
     elif source.is_dir():
-        _copy_bundle_files(source, target)
+        synthetic_workflow = _read_synthetic_workflow_path(source)
+        _copy_bundle_files(source, target, synthetic_workflow=synthetic_workflow)
     else:
         msg = f"unsupported crate source: {source}"
         raise RoCrateImportError(msg)
 
     _verify_sentinel(target)
     return target
+
+
+def _read_synthetic_workflow_path(crate_root: Path) -> str | None:
+    """Return the POSIX-relative path of the crate's synthetic workflow file.
+
+    The exporter materialises a single JSON stub at ``workflows/<lane>-lane.apmode``
+    to back the ``mainEntity`` ComputationalWorkflow. That file is an
+    RO-Crate-side artifact (never present in the source bundle) and MUST
+    be dropped on import. All *other* ``workflows/*`` files are treated as
+    legitimate user bundle content.
+
+    Reads ``ro-crate-metadata.json`` and resolves ``root.mainEntity.@id``.
+    Returns ``None`` if metadata is missing/unparseable so that strict
+    validation happens later in :func:`_verify_sentinel` rather than
+    short-circuiting here.
+    """
+    metadata_path = crate_root / "ro-crate-metadata.json"
+    if not metadata_path.is_file():
+        return None
+    try:
+        payload = json.loads(metadata_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    graph = payload.get("@graph")
+    if not isinstance(graph, list):
+        return None
+    root = next((e for e in graph if isinstance(e, dict) and e.get("@id") == "./"), None)
+    if root is None:
+        return None
+    main = root.get("mainEntity")
+    if not isinstance(main, dict):
+        return None
+    main_id = main.get("@id")
+    if not isinstance(main_id, str) or not main_id:
+        return None
+    # Reject paths that could escape the crate root or read absolute
+    # filesystem locations. We never *use* this string as a path
+    # operand (it is only compared by string equality in
+    # :func:`_copy_bundle_files`), but a maliciously crafted crate
+    # could otherwise cause us to silently exclude the wrong file —
+    # e.g. ``../_COMPLETE`` would skip the sentinel on copy and leave
+    # the importer with a broken digest. Be conservative.
+    if (
+        ".." in main_id.split("/")
+        or main_id.startswith("/")
+        or main_id.startswith("\\")
+        or "\x00" in main_id
+        or ":" in main_id
+    ):
+        return None
+    return main_id
 
 
 def _safe_extract_zip(source: Path, staging: Path) -> None:
@@ -133,16 +187,26 @@ def _safe_extract_zip(source: Path, staging: Path) -> None:
         zf.extractall(staging)
 
 
-def _copy_bundle_files(crate_root: Path, dest: Path) -> None:
+def _copy_bundle_files(
+    crate_root: Path,
+    dest: Path,
+    *,
+    synthetic_workflow: str | None = None,
+) -> None:
     """Copy bundle-owned files from the crate to the destination.
 
-    RO-Crate-owned files (``ro-crate-metadata.json`` and the virtual
-    ``workflows/`` definition created by the exporter) are excluded so
-    the resulting directory is a valid APMODE bundle again.
+    Excludes two classes of crate-owned artifacts:
 
-    Symlinks inside the staging tree are also rejected — bundles only
-    contain regular files, and a symlink is either a malicious ZIP
-    entry or filesystem corruption.
+    1. ``ro-crate-metadata.json`` (always).
+    2. The single synthetic workflow stub materialised by
+       :meth:`apmode.bundle.rocrate.projector.RoCrateEmitter._materialise_virtual_workflow`
+       — identified by the crate's ``mainEntity.@id`` in
+       ``ro-crate-metadata.json``. Only that exact path is dropped, so
+       user-authored files under ``workflows/`` (if any) are preserved.
+
+    Symlinks inside the staging tree are rejected — bundles only contain
+    regular files, and a symlink is either a malicious ZIP entry or
+    filesystem corruption.
     """
     crate_resolved = crate_root.resolve()
     dest_resolved = dest.resolve()
@@ -167,8 +231,7 @@ def _copy_bundle_files(crate_root: Path, dest: Path) -> None:
         rel_posix = rel.as_posix()
         if rel_posix in _ROCRATE_OWNED_FILES:
             continue
-        top = rel.parts[0] if rel.parts else ""
-        if top in _ROCRATE_OWNED_DIRS:
+        if synthetic_workflow is not None and rel_posix == synthetic_workflow:
             continue
         dst = (dest / rel).resolve()
         try:
@@ -203,11 +266,13 @@ def _verify_sentinel(bundle: Path) -> None:
 
     digest = hashlib.sha256()
     for p in sorted(bundle.rglob("*"), key=lambda q: q.relative_to(bundle).as_posix()):
-        # bom.cdx.json is a producer-side sidecar that may be generated
-        # post-seal (via ``apmode bundle sbom``); it is excluded from the
-        # digest just like the sentinel so its presence does not trip the
-        # tamper check on import.
-        if not p.is_file() or p.name in (_COMPLETE_SENTINEL, "bom.cdx.json"):
+        # The exclusion set mirrors ``apmode.bundle.emitter._DIGEST_EXCLUDED_NAMES``:
+        # the sentinel itself, the CycloneDX SBOM sidecar, and the SBC
+        # manifest stub. Names are compared case-insensitively so a
+        # round-trip through a case-insensitive filesystem (macOS APFS
+        # default, Windows NTFS) cannot mask a legitimate file or
+        # inadvertently exclude a lookalike.
+        if not p.is_file() or p.name.lower() in _DIGEST_EXCLUDED_NAMES_LOWER:
             continue
         digest.update(p.relative_to(bundle).as_posix().encode("utf-8"))
         digest.update(b"\0")

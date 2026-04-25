@@ -72,6 +72,106 @@ class TestImportCrateZip:
         assert (target / "_COMPLETE").is_file()
 
 
+class TestWorkflowsSubtreePreserved:
+    """B1 regression — user-owned ``workflows/*`` is not dropped on import.
+
+    The exporter materialises a synthetic stub at ``workflows/<lane>-lane.apmode``
+    to back ``mainEntity``, but any other ``workflows/*`` entry the source
+    bundle happens to have (e.g. an orchestrator asset) is legitimate
+    user content and must round-trip.
+    """
+
+    def test_user_workflows_file_survives_directory_import(self, tmp_path: Path) -> None:
+        orig = tmp_path / "orig"
+        orig.mkdir()
+        bundle = build_submission_bundle(orig)
+        # Plant a user-owned file inside ``workflows/`` *before* sealing.
+        # Re-seal the bundle so its sha256 matches what's on disk.
+        (bundle / "workflows").mkdir(exist_ok=True)
+        user_payload = b"user-owned-workflow-asset\n"
+        (bundle / "workflows" / "user-notes.txt").write_bytes(user_payload)
+        import hashlib
+        import json
+
+        digest = hashlib.sha256()
+        for p in sorted(bundle.rglob("*"), key=lambda q: q.relative_to(bundle).as_posix()):
+            if not p.is_file() or p.name in ("_COMPLETE", "bom.cdx.json", "sbc_manifest.json"):
+                continue
+            digest.update(p.relative_to(bundle).as_posix().encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(p.read_bytes())
+        (bundle / "_COMPLETE").write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "run_id": "with-user-workflows",
+                    "sha256": digest.hexdigest(),
+                },
+                indent=2,
+            )
+            + "\n"
+        )
+
+        out = tmp_path / "crate_dir"
+        RoCrateEmitter().export_from_sealed_bundle(
+            bundle,
+            out,
+            RoCrateExportOptions(date_published="2026-04-17T10:00:00Z"),
+        )
+        target = tmp_path / "imported"
+        import_crate(out, target)
+
+        preserved = target / "workflows" / "user-notes.txt"
+        synthetic = target / "workflows" / "submission-lane.apmode"
+        assert preserved.is_file(), "user-owned workflows/ file was silently dropped"
+        assert preserved.read_bytes() == user_payload
+        assert not synthetic.exists(), "synthetic workflow stub should not be imported"
+
+    def test_user_workflows_file_survives_zip_import(self, tmp_path: Path) -> None:
+        orig = tmp_path / "orig"
+        orig.mkdir()
+        bundle = build_submission_bundle(orig)
+        (bundle / "workflows").mkdir(exist_ok=True)
+        user_payload = b'{"note": "zip form"}\n'
+        (bundle / "workflows" / "user.json").write_bytes(user_payload)
+        import hashlib
+        import json
+
+        digest = hashlib.sha256()
+        for p in sorted(bundle.rglob("*"), key=lambda q: q.relative_to(bundle).as_posix()):
+            if not p.is_file() or p.name in ("_COMPLETE", "bom.cdx.json", "sbc_manifest.json"):
+                continue
+            digest.update(p.relative_to(bundle).as_posix().encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(p.read_bytes())
+        (bundle / "_COMPLETE").write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "run_id": "zip-user-workflows",
+                    "sha256": digest.hexdigest(),
+                },
+                indent=2,
+            )
+            + "\n"
+        )
+
+        out_zip = tmp_path / "crate.zip"
+        RoCrateEmitter().export_from_sealed_bundle(
+            bundle,
+            out_zip,
+            RoCrateExportOptions(date_published="2026-04-17T10:00:00Z"),
+        )
+        target = tmp_path / "imported_zip"
+        import_crate(out_zip, target)
+
+        preserved = target / "workflows" / "user.json"
+        synthetic = target / "workflows" / "submission-lane.apmode"
+        assert preserved.is_file()
+        assert preserved.read_bytes() == user_payload
+        assert not synthetic.exists()
+
+
 class TestSafeguards:
     def test_refuses_non_empty_target(self, tmp_path: Path) -> None:
         crate = _export_crate(tmp_path, form="dir")

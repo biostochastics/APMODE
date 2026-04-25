@@ -27,11 +27,15 @@ def add_credibility_reports(
 ) -> list[str]:
     """Project ``credibility/<id>.json`` files as ``File`` entities.
 
-    For every candidate with both a CreateAction entity in the graph
-    and a credibility JSON on disk, attach the credibility File to the
-    CreateAction's ``result`` list.
+    A credibility report is only projected when its corresponding
+    ``#backend-create-<id>`` CreateAction is already in the graph —
+    credibility is candidate-scoped provenance, so a dangling
+    credibility File without an action to attach to would leave the
+    crate with orphaned evidence that could not be traced to a
+    candidate run. The caller (the projector) must project
+    :mod:`apmode.bundle.rocrate.entities.backend` before credibility.
 
-    Returns the list of File ``@id``s added.
+    Returns the list of File ``@id``s added (may be empty).
     """
     d = bundle_dir / "credibility"
     if not d.is_dir():
@@ -39,6 +43,16 @@ def add_credibility_reports(
     added: list[str] = []
     for p in sorted(d.glob("*.json")):
         candidate_id = p.stem
+
+        action_id = f"#backend-create-{candidate_id}"
+        candidate_action = next((e for e in graph if e.get("@id") == action_id), None)
+        if candidate_action is None:
+            # No backend result for this candidate — skip emission to
+            # avoid an orphan credibility File. Preserves the invariant
+            # that every credibility report is reachable from a
+            # CreateAction in the graph.
+            continue
+
         payload = load_json_optional(p) or {}
         context_of_use = payload.get("context_of_use")
         description = f"Credibility report for {candidate_id}" + (
@@ -56,13 +70,7 @@ def add_credibility_reports(
         upsert(graph, entity)
         root = upsert(graph, {"@id": "./", "@type": "Dataset"})
         merge_list_property(root, "hasPart", {"@id": entity["@id"]})
-
-        # Link to this candidate's CreateAction if it exists
-        action_id = f"#backend-create-{candidate_id}"
-        for ent in graph:
-            if ent.get("@id") == action_id:
-                merge_list_property(ent, "result", {"@id": entity["@id"]})
-                break
+        merge_list_property(candidate_action, "result", {"@id": entity["@id"]})
         added.append(str(entity["@id"]))
     return added
 

@@ -82,6 +82,9 @@
           dict({
             '@id': 'https://w3id.org/ro/wfrun/workflow/0.5',
           }),
+          dict({
+            '@id': 'https://w3id.org/workflowhub/workflow-ro-crate/1.0',
+          }),
         ]),
         'datePublished': '2026-04-17T10:00:00Z',
         'description': 'APMODE reproducibility bundle projected as RO-Crate (Workflow Run / Provenance Run Crate v0.5); run_id=golden-submission-run',
@@ -177,12 +180,18 @@
         'version': '0.5',
       }),
       dict({
+        '@id': 'https://w3id.org/workflowhub/workflow-ro-crate/1.0',
+        '@type': 'CreativeWork',
+        'name': 'Workflow RO-Crate Profile',
+        'version': '1.0',
+      }),
+      dict({
         '@id': 'ranking.json',
         '@type': list([
           'File',
           'CreativeWork',
         ]),
-        'contentSize': 238,
+        'contentSize': '238',
         'description': 'Gate 3 ranking (best = c001)',
         'encodingFormat': 'application/json',
         'name': 'Gate 3 ranking',
@@ -221,6 +230,12 @@
         'version': 'c001',
       }),
       dict({
+        '@id': '#engine-nlmixr2',
+        '@type': 'SoftwareApplication',
+        'name': 'nlmixr2 (R)',
+        'softwareVersion': '3.0.0',
+      }),
+      dict({
         '@id': 'workflows/submission-lane.apmode',
         '@type': list([
           'File',
@@ -228,12 +243,12 @@
           'ComputationalWorkflow',
           'HowTo',
         ]),
-        'contentSize': 239,
+        'contentSize': '268',
         'description': 'Virtual workflow definition for the APMODE Submission lane — declarative list of gate + backend steps.',
         'encodingFormat': 'application/json',
         'hasPart': list([
           dict({
-            '@id': '#candidate-c001',
+            '@id': '#engine-nlmixr2',
           }),
         ]),
         'license': dict({
@@ -243,8 +258,11 @@
         'programmingLanguage': dict({
           '@id': '#apmode-dsl',
         }),
-        'sha256': '60d7d98ee4476636e9cd54233f09897147248e984e5e6c71c46708449fbca80c',
+        'sha256': 'ccf494b5ce2bb66715def3b09975f33eab8fa21a0825b8b2b81ed379b9032a4d',
         'step': list([
+          dict({
+            '@id': '#step-backend-nlmixr2',
+          }),
           dict({
             '@id': '#step-gate1',
           }),
@@ -253,6 +271,14 @@
           }),
         ]),
         'version': '0.6.0',
+      }),
+      dict({
+        '@id': '#step-backend-nlmixr2',
+        '@type': 'HowToStep',
+        'name': 'nlmixr2 (R) fit',
+        'workExample': dict({
+          '@id': '#engine-nlmixr2',
+        }),
       }),
       dict({
         '@id': '#step-gate1',
@@ -343,10 +369,13 @@
           '@id': 'http://schema.org/CompletedActionStatus',
         }),
         'instrument': dict({
-          '@id': '#candidate-c001',
+          '@id': '#engine-nlmixr2',
         }),
         'name': 'nlmixr2 fit of c001',
         'object': list([
+          dict({
+            '@id': '#candidate-c001',
+          }),
           dict({
             '@id': 'data_manifest.json',
           }),
@@ -399,17 +428,17 @@
         '@id': '_COMPLETE',
         '@type': 'File',
         'additionalType': 'apmode:completeSentinel',
-        'contentSize': 143,
-        'description': 'Bundle integrity sentinel (SHA-256 over all bundle files)',
+        'contentSize': '182',
+        'description': 'Bundle integrity sentinel (SHA-256 over all non-sentinel bundle files)',
         'encodingFormat': 'application/json',
         'identifier': 'sha256:dc549678ef2d2be168bd6a8446721eb1517016461647ffd38540a58241019e44',
         'name': 'Bundle integrity sentinel',
-        'sha256': 'f697da07dd0dae78981a3c04aed612af55960c0c62882bcbbf22f3742d9af67e',
+        'sha256': '6e24e12f3e0e3033db519306cd622c228413ac3754c38570ef3cb64a6e46f771',
       }),
       dict({
         '@id': 'backend_versions.json',
         '@type': 'File',
-        'contentSize': 114,
+        'contentSize': '114',
         'description': 'Software versions and container digests',
         'encodingFormat': 'application/json',
         'name': 'Backend versions',
@@ -418,7 +447,7 @@
       dict({
         '@id': 'candidate_lineage.json',
         '@type': 'File',
-        'contentSize': 114,
+        'contentSize': '114',
         'description': 'APMODE candidate derivation DAG',
         'encodingFormat': 'application/json',
         'name': 'Candidate lineage (DAG)',
@@ -430,7 +459,7 @@
           'File',
           'SoftwareSourceCode',
         ]),
-        'contentSize': 35,
+        'contentSize': '35',
         'description': 'nlmixr2 lowering of the DSL spec',
         'encodingFormat': 'text/x-r-source',
         'name': 'Candidate c001 nlmixr2 R code',
@@ -443,7 +472,7 @@
           'File',
           'SoftwareSourceCode',
         ]),
-        'contentSize': 213,
+        'contentSize': '213',
         'description': 'Typed APMODE DSL specification (JSON)',
         'encodingFormat': 'application/json',
         'name': 'Candidate c001 DSL spec',
@@ -455,7 +484,7 @@
       dict({
         '@id': 'data_manifest.json',
         '@type': 'File',
-        'contentSize': 310,
+        'contentSize': '310',
         'description': 'APMODE data manifest; 12 subjects; 120 observations',
         'encodingFormat': 'application/json',
         'identifier': 'sha256:0000000000000000000000000000000000000000000000000000000000000000',
@@ -466,7 +495,7 @@
         '@id': 'evidence_manifest.json',
         '@type': 'File',
         'additionalType': 'apmode:evidenceClass',
-        'contentSize': 473,
+        'contentSize': '473',
         'description': 'APMODE evidence manifest (richness=moderate)',
         'encodingFormat': 'application/json',
         'name': 'Evidence manifest (APMODE profiler)',
@@ -475,7 +504,7 @@
       dict({
         '@id': 'failed_candidates.jsonl',
         '@type': 'File',
-        'contentSize': 0,
+        'contentSize': '0',
         'description': 'APMODE failed candidates artifact',
         'encodingFormat': 'application/x-ndjson',
         'name': 'Failed Candidates',
@@ -484,7 +513,7 @@
       dict({
         '@id': 'gate_decisions/gate1_c001.json',
         '@type': 'File',
-        'contentSize': 231,
+        'contentSize': '231',
         'description': 'All checks passed',
         'encodingFormat': 'application/json',
         'name': 'Gate 1 decision for c001',
@@ -493,7 +522,7 @@
       dict({
         '@id': 'gate_decisions/gate3_c001.json',
         '@type': 'File',
-        'contentSize': 220,
+        'contentSize': '220',
         'description': 'Ranked',
         'encodingFormat': 'application/json',
         'name': 'Gate 3 decision for c001',
@@ -502,7 +531,7 @@
       dict({
         '@id': 'initial_estimates.json',
         '@type': 'File',
-        'contentSize': 20,
+        'contentSize': '20',
         'description': 'Per-candidate initial parameter estimates with provenance',
         'encodingFormat': 'application/json',
         'name': 'Initial estimates',
@@ -511,7 +540,7 @@
       dict({
         '@id': 'policy_file.json',
         '@type': 'File',
-        'contentSize': 154,
+        'contentSize': '154',
         'description': 'APMODE gate policy — Submission — v0.5.0',
         'encodingFormat': 'application/json',
         'name': 'APMODE gate policy',
@@ -520,7 +549,7 @@
       dict({
         '@id': 'results/c001_result.json',
         '@type': 'File',
-        'contentSize': 176,
+        'contentSize': '176',
         'description': 'nlmixr2 fit result',
         'encodingFormat': 'application/json',
         'name': 'Backend result for c001',
@@ -529,7 +558,7 @@
       dict({
         '@id': 'search_graph.json',
         '@type': 'File',
-        'contentSize': 130,
+        'contentSize': '130',
         'description': 'APMODE search graph artifact',
         'encodingFormat': 'application/json',
         'name': 'Search Graph',
@@ -538,7 +567,7 @@
       dict({
         '@id': 'search_trajectory.jsonl',
         '@type': 'File',
-        'contentSize': 136,
+        'contentSize': '136',
         'description': 'APMODE search trajectory artifact',
         'encodingFormat': 'application/x-ndjson',
         'name': 'Search Trajectory',
@@ -547,7 +576,7 @@
       dict({
         '@id': 'seed_registry.json',
         '@type': 'File',
-        'contentSize': 88,
+        'contentSize': '88',
         'description': 'Random seeds used across backends for reproducibility',
         'encodingFormat': 'application/json',
         'name': 'Seed registry',
@@ -557,7 +586,7 @@
         '@id': 'split_manifest.json',
         '@type': 'File',
         'additionalType': 'apmode:split',
-        'contentSize': 81,
+        'contentSize': '81',
         'description': 'APMODE split manifest (subject_level)',
         'encodingFormat': 'application/json',
         'name': 'Split manifest (APMODE)',

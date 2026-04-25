@@ -59,7 +59,12 @@ def add_bayesian_artifacts(
         kind = m.group("kind")
         ext = m.group("ext")
         label = kind.replace("_", " ").title()
-        encoding = "application/vnd.apache.parquet" if ext == "parquet" else "application/json"
+        # Parquet does not have an IANA-registered media type yet
+        # (Apache submission is pending). ``application/x-parquet`` is
+        # the de-facto value used across Arrow tooling, Dremio, DuckDB
+        # and the CNCF ParquetFormat project. Keep this until IANA
+        # approves an official vendor tree assignment.
+        encoding = "application/x-parquet" if ext == "parquet" else "application/json"
         entity = file_entity(
             bundle_dir,
             p,

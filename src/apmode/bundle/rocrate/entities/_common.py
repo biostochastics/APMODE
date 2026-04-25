@@ -98,6 +98,13 @@ def file_entity(
     caller is referencing a placeholder that does not yet exist on disk
     (e.g., a virtual workflow entity), pass a path that does not exist
     and SHA-256 is omitted.
+
+    ``contentSize`` is emitted as a string of decimal bytes to match
+    the schema.org Text range for the property
+    (https://schema.org/contentSize). RO-Crate examples in the wild use
+    both integer and string forms; string is the schema.org-canonical
+    serialisation and keeps JSON-LD processors from coercing the value
+    through an integer type-promotion path.
     """
     entity: dict[str, Any] = {
         "@id": posix_id(bundle_dir, file_path),
@@ -107,7 +114,7 @@ def file_entity(
     }
     if file_path.is_file():
         try:
-            entity["contentSize"] = file_path.stat().st_size
+            entity["contentSize"] = str(file_path.stat().st_size)
             entity["sha256"] = _sha256_hex(file_path)
         except OSError:  # pragma: no cover - defensive
             pass
@@ -117,12 +124,18 @@ def file_entity(
 
 
 def load_json_optional(path: Path) -> dict[str, Any] | None:
-    """Load a JSON object from ``path`` or return ``None`` if absent/unparseable."""
+    """Load a JSON object from ``path`` or return ``None`` if absent/unparseable.
+
+    ``UnicodeDecodeError`` is caught alongside ``OSError`` /
+    ``json.JSONDecodeError`` so binary-corrupted files do not surface
+    as opaque tracebacks. Callers that need stricter behaviour (e.g.
+    fail fast on a corrupted sentinel) should use ``json.loads`` directly.
+    """
     if not path.is_file():
         return None
     try:
         loaded = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return None
     return loaded if isinstance(loaded, dict) else None
 
