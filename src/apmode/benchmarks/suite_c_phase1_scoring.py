@@ -48,7 +48,7 @@ from apmode.benchmarks.literature_loader import (
     PHASE1_MLE_FIXTURE_IDS,
     load_fixture_by_id,
 )
-from apmode.benchmarks.suite_c import WIN_MARGIN_DELTA
+from apmode.benchmarks.suite_c import DEFAULT_SPLIT, WIN_MARGIN_DELTA
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -90,6 +90,14 @@ class FixtureScore(BaseModel):
     workflow is the integration concern of plan Task 44, not this
     helper.
 
+    ``npe_apmode_per_fold`` carries the raw per-fold NPEs that produce
+    ``npe_apmode`` (their median). Optional and ``None`` for legacy
+    inputs that only ship the median; when present, it MUST contain
+    exactly ``DEFAULT_SPLIT.n_folds`` (5) finite positive values, so
+    downstream variance/CI tooling does not need to special-case
+    partial-fold runs. Adding it as an optional field rather than a
+    required one preserves the v0.5 inputs JSON shape.
+
     ``beats_literature`` is the canonical disqualifier:
     ``True`` iff ``npe_apmode <= npe_literature * (1 - WIN_MARGIN_DELTA)``.
     """
@@ -99,6 +107,7 @@ class FixtureScore(BaseModel):
     fixture_id: str = Field(min_length=1)
     npe_apmode: float = Field(gt=0.0)
     npe_literature: float = Field(gt=0.0)
+    npe_apmode_per_fold: tuple[float, ...] | None = None
     beats_literature: bool
     win_margin_delta: float = Field(default=WIN_MARGIN_DELTA, ge=0.0, le=1.0)
 
@@ -108,6 +117,29 @@ class FixtureScore(BaseModel):
         if not math.isfinite(v):
             msg = "NPE values must be finite (no inf/NaN)"
             raise ValueError(msg)
+        return v
+
+    @field_validator("npe_apmode_per_fold")
+    @classmethod
+    def _check_per_fold_values(cls, v: tuple[float, ...] | None) -> tuple[float, ...] | None:
+        if v is None:
+            return v
+        if not v:
+            msg = "npe_apmode_per_fold must be non-empty when provided"
+            raise ValueError(msg)
+        expected = DEFAULT_SPLIT.n_folds
+        if len(v) != expected:
+            msg = (
+                f"npe_apmode_per_fold must have exactly {expected} entries "
+                f"(matching DEFAULT_SPLIT.n_folds), got {len(v)}"
+            )
+            raise ValueError(msg)
+        for i, fold_npe in enumerate(v):
+            if not math.isfinite(fold_npe) or fold_npe <= 0:
+                msg = (
+                    f"npe_apmode_per_fold[{i}] must be a positive finite number, got {fold_npe!r}"
+                )
+                raise ValueError(msg)
         return v
 
 
@@ -146,6 +178,7 @@ def score_fixture(
     npe_apmode: float,
     npe_literature: float,
     win_margin_delta: float = WIN_MARGIN_DELTA,
+    npe_apmode_per_fold: tuple[float, ...] | None = None,
 ) -> FixtureScore:
     """Decide whether APMODE beats the literature NPE for one fixture.
 
@@ -154,6 +187,11 @@ def score_fixture(
     (``0.02``); callers should not override it without a versioned
     policy reason — drifting the margin per dataset would invalidate
     cross-release comparisons.
+
+    ``npe_apmode_per_fold`` is optional — when supplied by the
+    Task 44 live-fit runner it carries the raw per-fold NPEs whose
+    median is ``npe_apmode``. Validation is delegated to
+    :class:`FixtureScore` so the validator runs once at construction.
     """
     if not math.isfinite(npe_apmode) or npe_apmode <= 0:
         msg = f"npe_apmode must be a positive finite number, got {npe_apmode!r}"
@@ -168,6 +206,7 @@ def score_fixture(
         fixture_id=fixture_id,
         npe_apmode=npe_apmode,
         npe_literature=npe_literature,
+        npe_apmode_per_fold=npe_apmode_per_fold,
         beats_literature=beats,
         win_margin_delta=win_margin_delta,
     )

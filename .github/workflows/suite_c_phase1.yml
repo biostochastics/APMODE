@@ -43,6 +43,7 @@ jobs:
   score:
     name: Score Phase-1 fixtures
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -81,15 +82,40 @@ jobs:
           path: |
             scorecard.json
             scorecard.md
+          retention-days: 30
 
       - name: Append summary to GitHub Actions UI
         if: steps.inputs.outputs.exists == 'true'
         run: cat scorecard.md >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Check for existing open gate-miss issue (week-scoped)
+        # Dedups within the same UTC week so a manual workflow_dispatch
+        # re-run on the same Monday does not stack issues. Across weeks,
+        # the title carries the date and a fresh issue is opened so the
+        # regression history remains visible if last week's issue is
+        # still being triaged.
+        if: |
+          steps.inputs.outputs.exists == 'true' &&
+          steps.score.outputs.passes == 'false' &&
+          (github.event.inputs.open_issue_on_failure == 'true' || github.event_name == 'schedule')
+        id: check-existing-issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ISO_DATE="$(date -u +%Y-%m-%d)"
+          SEARCH_TITLE="Suite C Phase-1 gate missed (week of ${ISO_DATE})"
+          if gh issue list --state open --label "suite-c" --label "phase-1-regression" --json title --jq '.[].title' | grep -Fxq "$SEARCH_TITLE"; then
+            echo "duplicate=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Duplicate gate-miss issue already open for week ${ISO_DATE} — skipping issue creation"
+          else
+            echo "duplicate=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Open GitHub issue on missed gate
         if: |
           steps.inputs.outputs.exists == 'true' &&
           steps.score.outputs.passes == 'false' &&
+          steps.check-existing-issue.outputs.duplicate == 'false' &&
           (github.event.inputs.open_issue_on_failure == 'true' || github.event_name == 'schedule')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

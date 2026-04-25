@@ -28,12 +28,18 @@ Exit codes:
   * ``3`` — at least one fixture's NPE values failed validation
     (negative or non-finite). Exit non-zero so the workflow surfaces
     a hard error rather than silently falsifying the scorecard.
+  * ``4`` — only emitted when ``--fail-on-missed-gate`` is supplied
+    AND ``passes_gate`` is False. Lets the same CLI back per-PR jobs
+    that want a hard failure on regression instead of deferring to the
+    weekly workflow's open-issue path. Without the flag, a missed gate
+    still exits 0 (the gate is reported in JSON for downstream consumers).
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -54,27 +60,33 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
-def _load_inputs(path: Path) -> dict[str, dict[str, float]]:
-    """Read the inputs JSON and return ``{fixture_id: {npe_apmode, npe_literature}}``.
+def _load_inputs(path: Path) -> dict[str, dict[str, object]]:
+    """Read the inputs JSON and return ``{fixture_id: payload}`` per fixture.
 
     The expected payload shape:
 
     .. code-block:: json
 
         {
-          "theophylline_boeckmann_1992": {"npe_apmode": 0.95, "npe_literature": 1.00},
-          "warfarin_funaki_2018":        {"npe_apmode": 0.99, "npe_literature": 1.00}
+          "theophylline_boeckmann_1992": {
+            "npe_apmode": 0.95,
+            "npe_literature": 1.00,
+            "npe_apmode_per_fold": [0.93, 0.96, 0.94, 0.97, 0.95]
+          },
+          "warfarin_funaki_2018": {"npe_apmode": 0.99, "npe_literature": 1.00}
         }
 
-    Extra fields per entry are tolerated (forward compat for a future
-    per-fold structure plan Task 44 may add) — only ``npe_apmode`` and
-    ``npe_literature`` are required.
+    ``npe_apmode_per_fold`` is optional — supplied by the live-fit
+    runner (plan Task 44) to carry the raw per-fold NPE values whose
+    median is ``npe_apmode``. Inputs JSON files written before the
+    runner landed are still accepted unchanged. Extra unrelated fields
+    per entry are tolerated for forward compat.
     """
     raw = json.loads(path.read_text())
     if not isinstance(raw, dict):
         msg = f"inputs JSON root must be an object, got {type(raw).__name__}"
         raise TypeError(msg)
-    out: dict[str, dict[str, float]] = {}
+    out: dict[str, dict[str, object]] = {}
     for fid, payload in raw.items():
         if not isinstance(payload, dict):
             msg = f"inputs entry for fixture {fid!r} must be an object"
@@ -85,22 +97,37 @@ def _load_inputs(path: Path) -> dict[str, dict[str, float]]:
                 "'npe_literature' keys"
             )
             raise KeyError(msg)
-        out[fid] = {
+        entry: dict[str, object] = {
             "npe_apmode": float(payload["npe_apmode"]),
             "npe_literature": float(payload["npe_literature"]),
         }
+        per_fold = payload.get("npe_apmode_per_fold")
+        if per_fold is not None:
+            if not isinstance(per_fold, list):
+                msg = (
+                    f"inputs entry for fixture {fid!r}: "
+                    "'npe_apmode_per_fold' must be a list when present"
+                )
+                raise TypeError(msg)
+            entry["npe_apmode_per_fold"] = tuple(float(x) for x in per_fold)
+        out[fid] = entry
     return out
 
 
-def _score_all(inputs: dict[str, dict[str, float]]) -> list[FixtureScore]:
+def _score_all(inputs: dict[str, dict[str, object]]) -> list[FixtureScore]:
     """Score every fixture in the inputs map. Caller-stable order."""
     scores: list[FixtureScore] = []
     for fid, payload in inputs.items():
+        per_fold_raw = payload.get("npe_apmode_per_fold")
+        per_fold: tuple[float, ...] | None = (
+            per_fold_raw if isinstance(per_fold_raw, tuple) else None
+        )
         scores.append(
             score_fixture(
                 fixture_id=fid,
-                npe_apmode=payload["npe_apmode"],
-                npe_literature=payload["npe_literature"],
+                npe_apmode=float(payload["npe_apmode"]),  # type: ignore[arg-type]
+                npe_literature=float(payload["npe_literature"]),  # type: ignore[arg-type]
+                npe_apmode_per_fold=per_fold,
             )
         )
     return scores
@@ -182,6 +209,16 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
             "(used by the GitHub Actions step summary)."
         ),
     )
+    parser.add_argument(
+        "--fail-on-missed-gate",
+        action="store_true",
+        default=False,
+        help=(
+            "Exit non-zero (code 4) when passes_gate=false. "
+            "Useful for per-PR jobs that want a hard failure instead of "
+            "deferring to the weekly workflow's open-issue path."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -207,13 +244,34 @@ def main(argv: Sequence[str] | None = None) -> int:
     card = aggregate_phase1_scorecard(scores)
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(card.model_dump_json(indent=2) + "\n")
+    _atomic_write(args.out, card.model_dump_json(indent=2) + "\n")
 
     if args.markdown_summary is not None:
         args.markdown_summary.parent.mkdir(parents=True, exist_ok=True)
-        args.markdown_summary.write_text(render_markdown_summary(card))
+        _atomic_write(args.markdown_summary, render_markdown_summary(card))
+
+    if args.fail_on_missed_gate and not card.passes_gate:
+        sys.stderr.write("error: gate missed (passes_gate=false)\n")
+        return 4
 
     return 0
+
+
+def _atomic_write(target: Path, content: str) -> None:
+    """Write ``content`` to ``target`` via tmp-file + rename.
+
+    A SIGKILL (or OOM) mid-write leaves either the previous version
+    intact or the tmp file orphaned next to the target — never a
+    half-written scorecard the workflow's `gh issue create` step
+    would mis-render. The PID-suffixed tmp name makes concurrent
+    invocations unlikely to collide; the rename is atomic on the
+    same filesystem (the only mode the CLI is exercised in — both
+    the local invocation and the runner write under the same tmp /
+    repo workspace).
+    """
+    tmp = target.with_suffix(target.suffix + f".{os.getpid()}.tmp")
+    tmp.write_text(content)
+    tmp.replace(target)
 
 
 if __name__ == "__main__":  # pragma: no cover — exercised via subprocess in CI

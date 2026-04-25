@@ -63,6 +63,40 @@ def test_score_fixture_apmode_exactly_at_threshold_beats() -> None:
     assert score.beats_literature is True
 
 
+def test_score_fixture_per_fold_must_match_default_split_n_folds() -> None:
+    """The per-fold validator enforces the ``DEFAULT_SPLIT.n_folds`` invariant.
+
+    A wrong-length per-fold tuple can sneak through the inputs JSON
+    layer, so the FixtureScore model is the last guard before
+    downstream variance / CI tooling consumes the values.
+    """
+    with pytest.raises(ValueError, match="must have exactly 5 entries"):
+        score_fixture(
+            fixture_id="theophylline_boeckmann_1992",
+            npe_apmode=0.95,
+            npe_literature=1.0,
+            npe_apmode_per_fold=(0.93, 0.96, 0.94, 0.97),  # 4 entries
+        )
+    s = score_fixture(
+        fixture_id="theophylline_boeckmann_1992",
+        npe_apmode=0.95,
+        npe_literature=1.0,
+        npe_apmode_per_fold=(0.93, 0.96, 0.94, 0.97, 0.95),
+    )
+    assert s.npe_apmode_per_fold == (0.93, 0.96, 0.94, 0.97, 0.95)
+
+
+def test_score_fixture_per_fold_rejects_non_finite_value() -> None:
+    """Inf/NaN sneaking through one fold short-circuits the median honesty."""
+    with pytest.raises(ValueError, match=r"npe_apmode_per_fold\[2\]"):
+        score_fixture(
+            fixture_id="theophylline_boeckmann_1992",
+            npe_apmode=0.95,
+            npe_literature=1.0,
+            npe_apmode_per_fold=(0.93, 0.96, float("inf"), 0.97, 0.95),
+        )
+
+
 def test_score_fixture_rejects_non_positive_npe() -> None:
     with pytest.raises(ValueError, match="npe_apmode must be a positive"):
         score_fixture(
