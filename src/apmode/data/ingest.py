@@ -20,6 +20,15 @@ from apmode.dsl.normalize import CANONICAL_COLUMNS, normalize_columns
 _CANONICAL_COLUMNS = CANONICAL_COLUMNS
 
 _REQUIRED_COLUMNS = frozenset({"NMID", "TIME", "DV", "MDV", "EVID", "AMT", "CMT"})
+_HASH_CHUNK_SIZE = 1024 * 1024
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(_HASH_CHUNK_SIZE), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def ingest_nonmem_csv(
@@ -62,7 +71,7 @@ def ingest_nonmem_csv(
     df: pd.DataFrame = CanonicalPKSchema.validate(raw, lazy=True)
 
     # Compute SHA-256 of the raw file
-    sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+    sha256 = _sha256_file(path)
 
     # Detect covariates (columns not in canonical set)
     covariates: list[CovariateMetadata] = []

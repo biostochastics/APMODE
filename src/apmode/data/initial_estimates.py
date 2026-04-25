@@ -10,8 +10,10 @@ Algorithm references:
   - PKNCA ``pk.calc.auc`` linear-up/log-down integration (Purves 1992):
     https://humanpred.github.io/pknca/articles/v23-auc-integration-methods.html
   - Gabrielsson & Weiner, PKPD Data Analysis (5th ed., 2017) §2.8.4.
-  - Wang et al. (2025), J Pharmacokinet Pharmacodyn, "automated pipeline to
-    generate initial estimates for population PK base models."
+  - Huang Z, Fidler M, Lan M, Cheng I-L, Kloprogge F, Standing JF (2025).
+    An automated pipeline to generate initial estimates for population
+    pharmacokinetic base models. J Pharmacokinet Pharmacodyn 52:60.
+    doi:10.1007/s10928-025-10000-z
 
 Sources of initial estimates (in priority order):
   1. Per-subject NCA with QC gates → median across surviving subjects.

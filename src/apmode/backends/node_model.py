@@ -1,11 +1,13 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Bram-style NODE sub-model (PRD SS4.2.4).
+"""Bräm-style NODE sub-model (PRD SS4.2.4).
 
 Low-dimensional MLP that learns a PK sub-function (absorption or elimination
 rate). Random effects on input-layer weights for per-subject variation.
 Constraint template on output for physiological plausibility.
 
-Reference: Bram DS et al. J Pharmacokinet Pharmacodyn 51:123-140, 2024.
+Reference: Bräm DS, Nahum U, Schropp J, Pfister M, Koch G (2024).
+Low-dimensional neural ODEs and their application in pharmacokinetics.
+J Pharmacokinet Pharmacodyn 51:123-140. doi:10.1007/s10928-023-09886-4
 """
 
 from __future__ import annotations
@@ -66,7 +68,7 @@ class NODESubModel(eqx.Module):
     def apply_random_effects(self, re: jax.Array) -> NODESubModel:
         """Return a new model with RE-perturbed input-layer weights.
 
-        Per Bram et al.: random effects are additive perturbations on the
+        Per Bräm et al. 2024: random effects are additive perturbations on the
         first layer's weight matrix (broadcast across input_dim columns).
         """
         old_weight = self.linear1.weight  # shape: (hidden_dim, input_dim)

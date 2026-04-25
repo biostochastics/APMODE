@@ -7,7 +7,9 @@ predictions on the held-out group.
 
 Two evaluation modes:
   - fixed_parameter (default): Use candidate's fitted parameters to predict
-    held-out data without re-estimation (fast, per Khandokar 2025).
+    held-out data without re-estimation (fast, per Vongjarudech, Khandokar,
+    Hsu & Karlsson, "Evaluation of Cross-Validation in Pharmacometrics Model
+    Selection," PAGE 33 (2025) Abstr 11736).
   - refit: Re-estimate on train fold then predict test fold (strict CV).
 
 Metrics aggregated across folds:

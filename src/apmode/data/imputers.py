@@ -17,14 +17,13 @@ execution route.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import os
-import signal
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from apmode.backends.process_lifecycle import terminate_process_group
 from apmode.errors import BackendTimeoutError, CrashError
 
 if TYPE_CHECKING:
@@ -71,14 +70,15 @@ async def _spawn_rscript(
         async with asyncio.timeout(timeout_seconds):
             await proc.communicate()
     except TimeoutError:
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        await proc.wait()
+        await terminate_process_group(proc)
         raise BackendTimeoutError(
             f"Imputation Rscript timed out after {timeout_seconds}s",
             timeout_seconds=timeout_seconds,
             pid=proc.pid,
         ) from None
+    except asyncio.CancelledError:
+        await terminate_process_group(proc)
+        raise
     return proc.returncode or 0
 
 

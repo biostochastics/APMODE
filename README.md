@@ -616,7 +616,7 @@ Suite C anchors APMODE against published, peer-reviewed reference parameterisati
 
 | `dataset_id` | Route | DSL skeleton | Reference DOI |
 |--------------|-------|--------------|---------------|
-| `theophylline_boeckmann_1992` | oral | 1-cmt + FO ka | [10.1002/psp4.12471](https://doi.org/10.1002/psp4.12471) |
+| `theophylline_boeckmann_1992` | oral | 1-cmt + FO ka | Boeckmann, Sheiner & Beal (1994), *NONMEM Users Guide Part V* (R `datasets::Theoph`; no DOI) |
 | `warfarin_funaki_2018` | oral | 1-cmt + lagged-FO ka | [10.1002/psp4.12445](https://doi.org/10.1002/psp4.12445) |
 | `mavoglurant_wendling_2015` | oral | 2-cmt + FO ka | [10.1007/s11095-014-1574-1](https://doi.org/10.1007/s11095-014-1574-1) |
 | `gentamicin_germovsek_2017` | iv_bolus | 1-cmt | [10.1128/AAC.02659-16](https://doi.org/10.1128/AAC.02659-16) |
@@ -699,7 +699,7 @@ uv run pytest tests/ --snapshot-update     # update snapshots after emitter chan
 - **Huang 2025 λz selector + initial-estimates pipeline**: Huang Z, Fidler M, Lan M, Cheng I-L, Kloprogge F, Standing JF (2025). An automated pipeline to generate initial estimates for population pharmacokinetic base models. *J Pharmacokinet Pharmacodyn* 52:60. doi:10.1007/s10928-025-10000-z
 - **Wagner-Nelson absorption**: Wagner JG, Nelson E (1963). Percent absorbed time plots derived from blood level and/or urinary excretion data. *J Pharm Sci* 52(6):610-611. doi:10.1002/jps.2600520627
 - **Richardson 2025 popPK automation**: Richardson S, Irurzun-Arana I et al. (2025). A machine learning approach to population pharmacokinetic modelling automation. *Commun Med* 5:327. doi:10.1038/s43856-025-01054-8
-- **Pharmpy AMD**: Chen X, Hooker AC, Karlsson MO et al. (2024). A fully automatic tool for development of population pharmacokinetic models. *CPT Pharmacometrics Syst Pharmacol* 13:1785-1797
+- **Pharmpy AMD**: Chen X, Nordgren R, Belin S, Hamdan A, Wang S, Huang Z, Hooker AC, Karlsson MO (2024). A fully automatic tool for development of population pharmacokinetic models. *CPT Pharmacometrics Syst Pharmacol* 13(10):1784-1797. doi:10.1002/psp4.13222
 - **BLQ M3 likelihood**: Beal SL (2001). Ways to fit a PK model with some data below the quantification limit. *J Pharmacokinet Pharmacodyn* 28(5):481-504. doi:10.1023/a:1012299115260
 - **BLQ method comparison**: Ahn JE, Karlsson MO, Dunne A, Ludden TM (2008). Likelihood-based approaches to handling data below the quantification limit using NONMEM VI. *J Pharmacokinet Pharmacodyn* 35(4):401-421. doi:10.1007/s10928-008-9094-4
 - **SCM covariate selection**: Wählby U, Jonsson EN, Karlsson MO (2002). Comparison of stepwise covariate model building strategies in population pharmacokinetic-pharmacodynamic analysis. *AAPS PharmSci* 4(4):E27. doi:10.1208/ps040427
@@ -709,8 +709,8 @@ uv run pytest tests/ --snapshot-update     # update snapshots after emitter chan
 - **Transit compartments**: Savic et al. (2007), J Pharmacokinet Pharmacodyn 34:711-726
 - **Allometric scaling**: Anderson & Holford (2008), Clin Pharmacokinet 47:455-467
 - **Rank-normalized R̂ + ESS**: Vehtari A, Gelman A, Simpson D, Carpenter B, Bürkner P-C (2021). Rank-normalization, folding, and localization: an improved R̂ for assessing convergence of MCMC. *Bayesian Analysis* 16(2):667-718
-- **FREM**: Nyberg J et al. (2024). Full Random Effects Modeling (FREM) — conditioning covariates as observations. *AAPS J* / Jonsson 2024
-- **Robust MAP / Historical Borrowing**: Schmidli H, Gsteiger S, Roychoudhury S et al. (2014). Robust MAP priors for design and analysis with historical control data. *Biometrics* 70(4):1023-1032
+- **FREM**: Jonsson EN, Nyberg J (2024). Full Random Effects Models (FREM): A practical usage guide. *CPT Pharmacometrics Syst Pharmacol* 13(8):1297-1308. doi:10.1002/psp4.13190
+- **Robust MAP / Historical Borrowing**: Schmidli H, Gsteiger S, Roychoudhury S, O'Hagan A, Spiegelhalter D, Neuenschwander B (2014). Robust meta-analytic-predictive priors in clinical trials with historical control information. *Biometrics* 70(4):1023-1032. doi:10.1111/biom.12242
 - **NCA**: PKNCA-style curve-stripping for terminal lambda_z (`pk.calc.half.life`, adjusted R² with most-points tiebreak), linear-up/log-down AUC integration (Purves 1992, `pk.calc.auc`). Reference: Purves (1992) J Pharmacokin Biopharm 20:211; PKNCA vignettes at https://humanpred.github.io/pknca/
 
 ---
@@ -863,7 +863,9 @@ CWRES conventions (Nguyen et al. 2017, *CPT PSP* 6:87), VPC coverage
 2021, *Bayesian Analysis* 16:667), E-BFMI (Betancourt 2016,
 *arXiv:1604.00695*), PSIS-LOO Pareto-k (Vehtari et al. 2017,
 *Stat Comput* 27:1413), BLQ M3/M7 (Beal 2001, *JPKPD* 28:481;
-Wijk et al. 2025), FREM (Nyberg 2024). Lane-specific tolerances
+Wijk M, Wasmann RE, Jacobson KR, Svensson EM, Denti P 2025,
+*CPT:PSP*, doi:10.1002/psp4.70015), FREM (Jonsson & Nyberg 2024,
+*CPT:PSP* 13(8):1297, doi:10.1002/psp4.13190). Lane-specific tolerances
 follow the PRD §4.3.1 submission/discovery/optimization risk profile.
 
 To tune for a deployment, edit the relevant policy JSON, re-run

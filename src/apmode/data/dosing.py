@@ -69,18 +69,17 @@ def expand_addl(
     if not mask.any():
         return df.copy()
 
-    new_rows: list[pd.Series] = []
-    for idx in df.index[mask]:
-        row = df.loc[idx]
-        n_addl = int(addl.loc[idx])
-        interval = float(ii.loc[idx])
+    new_rows: list[dict[str, object]] = []
+    expanding = df.loc[mask].assign(_n_addl=addl[mask], _ii=ii[mask])
+    for row in expanding.to_dict("records"):
+        n_addl = int(row.pop("_n_addl"))
+        interval = float(row.pop("_ii"))
         base_time = float(row[col_time])
 
         for k in range(1, n_addl + 1):
-            new_row = row.copy()
+            new_row = dict(row)
             new_row[col_time] = base_time + k * interval
             new_row[col_addl] = 0
-            # Mark as expanded for traceability
             new_rows.append(new_row)
 
     if not new_rows:
@@ -275,7 +274,7 @@ def extract_subject_events(
     - event_inf_rates: infusion rate deltas (+rate=start, -rate=stop)
     - obs_indices: indices into event arrays where EVID=0
     """
-    sdf = event_table[event_table[col_id] == subject_id].copy()
+    sdf = event_table[event_table[col_id] == subject_id]
 
     inf_rate_col = "_INF_RATE" if "_INF_RATE" in sdf.columns else None
 

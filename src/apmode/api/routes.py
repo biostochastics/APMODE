@@ -168,6 +168,7 @@ def build_router(
     router = APIRouter()
     require_api_key = _build_require_api_key()
     protected = APIRouter(dependencies=[Depends(require_api_key)])
+    create_run_lock = asyncio.Lock()
 
     # -----------------------------------------------------------------
     # Health (unauthenticated)
@@ -202,60 +203,55 @@ def build_router(
 
         # Cap concurrency BEFORE allocating a run_id / inserting a row,
         # so a flooded server does not pollute the SQLite store with
-        # rejected runs. The check is best-effort (asyncio is single-
-        # threaded so ``len(active_tasks)`` is consistent at the await
-        # point above).
-        active_now = cast(
-            "dict[str, asyncio.Task[None]]",
-            request.app.state.active_tasks,
-        )
-        max_concurrent = _resolve_max_concurrent_runs()
-        if len(active_now) >= max_concurrent:
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail=(
-                    f"server at capacity: {len(active_now)} runs active "
-                    f"(cap={max_concurrent}); retry after 30 s"
-                ),
-                headers={"Retry-After": "30"},
+        # rejected runs. The lock keeps the capacity check, row insert,
+        # and active-task registration atomic across concurrent POSTs.
+        async with create_run_lock:
+            active_tasks = cast(
+                "dict[str, asyncio.Task[None]]",
+                request.app.state.active_tasks,
             )
+            max_concurrent = _resolve_max_concurrent_runs()
+            if len(active_tasks) >= max_concurrent:
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail=(
+                        f"server at capacity: {len(active_tasks)} runs active "
+                        f"(cap={max_concurrent}); retry after 30 s"
+                    ),
+                    headers={"Retry-After": "30"},
+                )
 
-        run_id = generate_run_id()
-        bundle_dir = runs_dir / run_id
+            run_id = generate_run_id()
+            bundle_dir = runs_dir / run_id
 
-        record = RunRecord(
-            run_id=run_id,
-            status=RunStatus.PENDING,
-            bundle_dir=str(bundle_dir),
-            lane=body.lane,
-            backend=body.backend,
-            seed=body.seed,
-            requeue_on_interrupt=body.requeue_on_interrupt,
-        )
-        await store.create(record)
-
-        active_tasks = cast(
-            "dict[str, asyncio.Task[None]]",
-            request.app.state.active_tasks,
-        )
-
-        async def _on_complete(rid: str) -> None:
-            active_tasks.pop(rid, None)
-
-        task = asyncio.create_task(
-            execute_run(
+            record = RunRecord(
                 run_id=run_id,
-                bundle_dir=bundle_dir,
-                request=body,
-                runs_dir=runs_dir,
-                runner_factory=runner_factory,
-                store=store,
-                on_complete=_on_complete,
-                dataset_root=dataset_root,
-            ),
-            name=f"apmode-run-{run_id}",
-        )
-        active_tasks[run_id] = task
+                status=RunStatus.PENDING,
+                bundle_dir=str(bundle_dir),
+                lane=body.lane,
+                backend=body.backend,
+                seed=body.seed,
+                requeue_on_interrupt=body.requeue_on_interrupt,
+            )
+            await store.create(record)
+
+            async def _on_complete(rid: str) -> None:
+                active_tasks.pop(rid, None)
+
+            task = asyncio.create_task(
+                execute_run(
+                    run_id=run_id,
+                    bundle_dir=bundle_dir,
+                    request=body,
+                    runs_dir=runs_dir,
+                    runner_factory=runner_factory,
+                    store=store,
+                    on_complete=_on_complete,
+                    dataset_root=dataset_root,
+                ),
+                name=f"apmode-run-{run_id}",
+            )
+            active_tasks[run_id] = task
 
         # Setting Retry-After lets a polite client back off rather than
         # busy-poll. 5 s is short enough that a fast NLME fit is visible

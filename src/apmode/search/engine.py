@@ -340,7 +340,7 @@ class SearchEngine:
                 converged=result.converged,
                 bic=result.bic,
                 aic=result.aic,
-                n_params=n_params,
+                n_params=len(result.parameter_estimates),
             )
         except BackendError as e:
             logger.warning("Candidate %s (%s) backend error: %s", spec.model_id, backend_name, e)

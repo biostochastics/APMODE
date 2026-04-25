@@ -466,7 +466,7 @@ def prepare_frem_data(
     aug_rows: list[dict[str, object]] = []
 
     # Static covariates: one observation row per subject at baseline.
-    for _, subj_row in first_per_subj.iterrows():
+    for subj_row in first_per_subj.to_dict("records"):
         sid = subj_row[id_col]
         baseline_time = float(subj_row[time_col])
         for cov in static_covs:
@@ -492,7 +492,7 @@ def prepare_frem_data(
         per_subj_groups = out.groupby(id_col, sort=False)
         for sid, subj_df in per_subj_groups:
             seen_at_time: dict[float, float] = {}
-            for _, row in subj_df.iterrows():
+            for row in subj_df.to_dict("records"):
                 cov_value = row.get(cov.name)
                 if pd.isna(cov_value):
                     continue

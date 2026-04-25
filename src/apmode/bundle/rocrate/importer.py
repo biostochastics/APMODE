@@ -38,6 +38,7 @@ _SBC_MANIFEST_FILENAME = "sbc_manifest.json"
 _DIGEST_EXCLUDED_NAMES_LOWER: frozenset[str] = frozenset(
     name.lower() for name in (_COMPLETE_SENTINEL, _SBOM_FILENAME, _SBC_MANIFEST_FILENAME)
 )
+_HASH_CHUNK_SIZE = 1024 * 1024
 
 _ROCRATE_OWNED_FILES: frozenset[str] = frozenset(
     {
@@ -276,7 +277,9 @@ def _verify_sentinel(bundle: Path) -> None:
             continue
         digest.update(p.relative_to(bundle).as_posix().encode("utf-8"))
         digest.update(b"\0")
-        digest.update(p.read_bytes())
+        with p.open("rb") as f:
+            for chunk in iter(lambda: f.read(_HASH_CHUNK_SIZE), b""):
+                digest.update(chunk)
     observed = digest.hexdigest()
     if observed != expected:
         msg = (

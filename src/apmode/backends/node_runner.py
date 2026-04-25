@@ -516,11 +516,15 @@ class NodeBackendRunner:
                 # Multi-dose / delayed dose / reset: use event-driven piecewise path
                 y0 = jnp.zeros(n_states, dtype=jnp.float32)
                 all_events: list[tuple[float, float, int, int]] = []
-                for _, row in event_rows.iterrows():
-                    evid = int(row[cm.evid])
-                    amt = float(row[cm.amt]) if evid in (1, 4) else 0.0
-                    cmt_val = int(row[cmt_col]) if cmt_col in row.index else 1
-                    all_events.append((float(row[cm.time]), amt, cmt_val, evid))
+                event_cols = [cm.time, cm.evid, cm.amt]
+                if cmt_col in event_rows.columns:
+                    event_cols.append(cmt_col)
+                for values in event_rows[event_cols].itertuples(index=False, name=None):
+                    time_val = float(values[0])
+                    evid = int(values[1])
+                    amt = float(values[2]) if evid in (1, 4) else 0.0
+                    cmt_val = int(values[3]) if len(values) > 3 else 1
+                    all_events.append((time_val, amt, cmt_val, evid))
 
                 subjects.append(
                     {

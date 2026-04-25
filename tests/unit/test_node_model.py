@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Tests for the Bram-style NODE sub-model."""
+"""Tests for the Bräm-style NODE sub-model."""
 
 from __future__ import annotations
 

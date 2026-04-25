@@ -18,7 +18,7 @@ import logging
 from typing import TYPE_CHECKING, Literal, cast
 
 import numpy as np
-import pandas as pd  # noqa: TC002
+import pandas as pd
 from scipy.signal import find_peaks
 
 from apmode.bundle.models import (
@@ -225,7 +225,9 @@ def profile_data(
     wn_ka = _wagner_nelson_ka_median(obs, doses, multi_dose=multi_dose)
     node_budget = _compute_node_dim_budget(obs, n_subjects, multi_dose=multi_dose)
     tad_flag = _assess_tad_consistency(obs, doses, multi_dose=multi_dose)
-    richness = _classify_richness(obs, n_subjects)
+    per_subj_obs_counts = obs.groupby("NMID").size()
+    subj_covs = _subject_covariate_first_values(df, manifest)
+    richness = _classify_richness(obs, n_subjects, per_subj_counts=per_subj_obs_counts)
     abs_cov = _assess_absorption_coverage(obs)
 
     return EvidenceManifest(
@@ -244,10 +246,12 @@ def profile_data(
         ),
         peak_prominence_fraction=_peak_prominence_fraction(obs, doses, multi_dose=multi_dose),
         richness_category=richness,
-        identifiability_ceiling=_assess_identifiability(obs, n_subjects),
+        identifiability_ceiling=_assess_identifiability(
+            obs, n_subjects, per_subj_counts=per_subj_obs_counts
+        ),
         covariate_burden=len(manifest.covariates),
-        covariate_correlated=_check_covariate_correlation(df, manifest),
-        covariate_missingness=_assess_covariate_missingness(df, manifest),
+        covariate_correlated=_check_covariate_correlation(df, manifest, subj_covs=subj_covs),
+        covariate_missingness=_assess_covariate_missingness(df, manifest, subj_covs=subj_covs),
         time_varying_covariates=_detect_time_varying_covariates(df, manifest),
         blq_burden=blq_burden,
         lloq_value=lloq_value,
@@ -761,8 +765,9 @@ def _compute_terminal_log_residual_mad(
     if obs.empty:
         return None
     residuals: list[float] = []
+    doses_by_subj = dict(tuple(doses.groupby("NMID", sort=False))) if not doses.empty else {}
     for subj, subj_obs in obs.groupby("NMID"):
-        subj_doses = doses[doses["NMID"] == subj] if not doses.empty else doses
+        subj_doses = doses_by_subj.get(subj, doses)
         # BLQ-aware filter applied via the source DataFrame, then windowed.
         subj_obs_filt = subj_obs[positive_unblqd_mask(subj_obs)]
         if len(subj_obs_filt) < 4:
@@ -829,15 +834,10 @@ def _detect_time_varying_covariates(
     if not cov_names:
         return False
 
-    for col in cov_names:
-        series = df[col]
-        if series.isna().all():
-            continue
-        # Per-subject unique non-NaN value count. >1 ⇒ time-varying for that subject.
-        for _, subj_series in df.groupby("NMID")[col]:
-            if int(subj_series.dropna().nunique()) > 1:
-                return True
-    return False
+    unique_counts = df.groupby("NMID")[cov_names].nunique(dropna=True)
+    if unique_counts.empty:
+        return False
+    return bool((unique_counts > 1).any().any())
 
 
 # ---------------------------------------------------------------------------
@@ -1375,7 +1375,7 @@ def _classify_nonlinear_clearance_evidence_strength(
         signals[SignalId.DOSE_PROPORTIONALITY_SMITH] = NonlinearClearanceSignal(
             signal_id=SignalId.DOSE_PROPORTIONALITY_SMITH,
             algorithm="smith_2000_power_model",
-            citation="Smith 2000 (Clin Pharmacokinet 38:1-16)",
+            citation="Smith 2000 (Pharm Res 17(10):1278-1283; doi:10.1023/a:1026451721686)",
             policy_key="policies/profiler.json#/smith_theta_bounds",
             threshold_value=smith_fit.beta_smith_high,
             observed_value=smith_fit.beta,
@@ -1390,7 +1390,7 @@ def _classify_nonlinear_clearance_evidence_strength(
         signals[SignalId.DOSE_PROPORTIONALITY_SMITH] = NonlinearClearanceSignal(
             signal_id=SignalId.DOSE_PROPORTIONALITY_SMITH,
             algorithm="smith_2000_power_model",
-            citation="Smith 2000 (Clin Pharmacokinet 38:1-16)",
+            citation="Smith 2000 (Pharm Res 17(10):1278-1283; doi:10.1023/a:1026451721686)",
             policy_key="policies/profiler.json#/smith_theta_bounds",
             eligible=False,
             eligibility_reason=smith_fit.rationale,
@@ -1616,7 +1616,12 @@ def _nonlinear_clearance_confidence(
     return float(max(scores))
 
 
-def _classify_richness(obs: pd.DataFrame, n_subjects: int) -> str:
+def _classify_richness(
+    obs: pd.DataFrame,
+    n_subjects: int,
+    *,
+    per_subj_counts: pd.Series | None = None,
+) -> str:
     """Classify sampling richness per PRD §4.2.1.
 
     sparse:   < ``_MIN_OBS_PER_SUBJECT_MODERATE`` samples/subject
@@ -1629,7 +1634,8 @@ def _classify_richness(obs: pd.DataFrame, n_subjects: int) -> str:
         return "sparse"
 
     # Use median samples per subject (robust to PK-intensive outliers)
-    per_subj_counts = obs.groupby("NMID").size()
+    if per_subj_counts is None:
+        per_subj_counts = obs.groupby("NMID").size()
     median_samples = float(per_subj_counts.median()) if len(per_subj_counts) > 0 else 0.0
 
     if median_samples < _MIN_OBS_PER_SUBJECT_MODERATE:
@@ -1639,7 +1645,12 @@ def _classify_richness(obs: pd.DataFrame, n_subjects: int) -> str:
     return "rich"
 
 
-def _assess_identifiability(obs: pd.DataFrame, n_subjects: int) -> str:
+def _assess_identifiability(
+    obs: pd.DataFrame,
+    n_subjects: int,
+    *,
+    per_subj_counts: pd.Series | None = None,
+) -> str:
     """Assess identifiability ceiling based on design and sampling.
 
     high:   ≥ ``_NODE_DISCOVERY_MIN_SUBJECTS`` subjects AND median samples
@@ -1656,7 +1667,8 @@ def _assess_identifiability(obs: pd.DataFrame, n_subjects: int) -> str:
     # subjects to power even the optimization lane → low.
     if n_subjects < _NODE_OPTIMIZATION_MIN_SUBJECTS // 2:
         return "low"
-    per_subj_counts = obs.groupby("NMID").size()
+    if per_subj_counts is None:
+        per_subj_counts = obs.groupby("NMID").size()
     median_samples = float(per_subj_counts.median()) if len(per_subj_counts) > 0 else 0.0
     if median_samples > _MIN_OBS_PER_SUBJECT_RICH and n_subjects >= _NODE_DISCOVERY_MIN_SUBJECTS:
         return "high"
@@ -1668,9 +1680,22 @@ def _assess_identifiability(obs: pd.DataFrame, n_subjects: int) -> str:
     return "low"
 
 
+def _subject_covariate_first_values(
+    df: pd.DataFrame,
+    manifest: DataManifest,
+) -> pd.DataFrame:
+    """Return one covariate row per subject for manifest-declared covariates."""
+    cov_names = [c.name for c in manifest.covariates if c.name in df.columns]
+    if not cov_names:
+        return pd.DataFrame(index=pd.Index([], name="NMID"))
+    return df.groupby("NMID")[cov_names].first()
+
+
 def _check_covariate_correlation(
     df: pd.DataFrame,
     manifest: DataManifest,
+    *,
+    subj_covs: pd.DataFrame | None = None,
 ) -> bool:
     """Check if any covariates are correlated (|r| > 0.7)."""
     cov_names = [
@@ -1680,7 +1705,9 @@ def _check_covariate_correlation(
         return False
 
     # Get unique per-subject covariate values
-    subj_covs = df.groupby("NMID")[cov_names].first()
+    if subj_covs is None:
+        subj_covs = _subject_covariate_first_values(df, manifest)
+    subj_covs = subj_covs[[c for c in cov_names if c in subj_covs.columns]]
     # Numeric only
     numeric_covs = subj_covs.select_dtypes(include=[np.number])
     if numeric_covs.shape[1] < 2:
@@ -1695,6 +1722,8 @@ def _check_covariate_correlation(
 def _assess_covariate_missingness(
     df: pd.DataFrame,
     manifest: DataManifest,
+    *,
+    subj_covs: pd.DataFrame | None = None,
 ) -> CovariateSpec | None:
     """Assess covariate missingness pattern and fraction."""
     cov_names = [c.name for c in manifest.covariates if c.name in df.columns]
@@ -1702,7 +1731,9 @@ def _assess_covariate_missingness(
         return None
 
     # Per-subject covariate completeness
-    subj_covs = df.groupby("NMID")[cov_names].first()
+    if subj_covs is None:
+        subj_covs = _subject_covariate_first_values(df, manifest)
+    subj_covs = subj_covs[[c for c in cov_names if c in subj_covs.columns]]
     total_cells = subj_covs.size
     if total_cells == 0:
         return None

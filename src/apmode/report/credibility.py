@@ -94,7 +94,7 @@ def generate_credibility_report(
         ml_transparency=(
             f"Backend: {result.backend}. "
             f"NODE sub-model with constrained output layer. "
-            f"Random effects on input-layer weights (Bram et al. 2024)."
+            f"Random effects on input-layer weights (Bräm et al. 2024)."
             if is_ml
             else None
         ),

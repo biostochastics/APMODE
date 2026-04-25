@@ -14,6 +14,7 @@ Artifacts:
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -96,6 +97,7 @@ _DIGEST_EXCLUDED_NAMES: frozenset[str] = frozenset(
         _SBC_MANIFEST_FILENAME,
     }
 )
+_HASH_CHUNK_SIZE = 1024 * 1024
 # Module-level lock that serialises ``_compute_bundle_digest`` against
 # any concurrent caller of ``BundleEmitter.append_*`` on the same run
 # directory. The asyncio-only invariant in production already prevents
@@ -232,29 +234,23 @@ def _compute_bundle_digest(run_dir: Path) -> str:
     POSIX-relative path, with path + null byte + bytes, so the digest is
     reproducible across filesystems that differ in readdir order.
 
-    To eliminate the latent TOCTOU window between ``rglob`` listing the
-    files and ``read_bytes()`` consuming each one, the helper takes a
-    process-wide lock and reads every file's bytes into memory *before*
-    streaming them into the SHA-256 incremental digest. Concurrent
-    appends or post-seal sidecar writes therefore see a consistent
-    snapshot or are serialised behind the lock; the cost (a transient
-    in-memory copy of the bundle) is bounded by typical bundle sizes
-    (low-tens of MB) and pays for the structural guarantee that the
-    sealed digest fingerprints exactly one consistent state.
+    The process-wide lock serialises digesting against all emitter-owned
+    writes. File payloads are streamed in chunks rather than materialised
+    wholesale, so large posterior artifacts do not create a second in-memory
+    copy during sealing.
     """
     with _DIGEST_LOCK:
-        snapshot: list[tuple[str, bytes]] = []
+        digest = hashlib.sha256()
         for p in sorted(run_dir.rglob("*"), key=lambda q: q.relative_to(run_dir).as_posix()):
             if not p.is_file() or p.name in _DIGEST_EXCLUDED_NAMES:
                 continue
             rel = p.relative_to(run_dir).as_posix()
-            snapshot.append((rel, p.read_bytes()))
-    digest = hashlib.sha256()
-    for rel, payload in snapshot:
-        digest.update(rel.encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(payload)
-    return digest.hexdigest()
+            digest.update(rel.encode("utf-8"))
+            digest.update(b"\0")
+            with p.open("rb") as f:
+                for chunk in iter(lambda: f.read(_HASH_CHUNK_SIZE), b""):
+                    digest.update(chunk)
+        return digest.hexdigest()
 
 
 class BundleEmitter:
@@ -337,37 +333,61 @@ class BundleEmitter:
         """Return True when the ``_COMPLETE`` sentinel is present."""
         return (self.run_dir / _COMPLETE_SENTINEL).exists()
 
+    def _ensure_unsealed(self) -> None:
+        if self.is_sealed():
+            msg = f"bundle {self.run_dir} is sealed; refusing to modify artifacts"
+            raise BundleAlreadySealedError(msg)
+
+    def _write_text(self, path: Path, text: str, *, allow_sealed: bool = False) -> Path:
+        """Atomically write text while preserving the sealed-bundle invariant."""
+        with _DIGEST_LOCK:
+            if not allow_sealed:
+                self._ensure_unsealed()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = path.with_name(
+                f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+            )
+            try:
+                tmp_path.write_text(text)
+                os.replace(tmp_path, path)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    tmp_path.unlink()
+                raise
+        return path
+
+    def _ensure_artifact_dir(self, path: Path) -> Path:
+        with _DIGEST_LOCK:
+            self._ensure_unsealed()
+            path.mkdir(parents=True, exist_ok=True)
+        return path
+
     # --- Core manifests ---
 
     def write_data_manifest(self, manifest: DataManifest) -> Path:
         """Write data_manifest.json."""
         path = self.run_dir / "data_manifest.json"
-        path.write_text(manifest.model_dump_json(indent=2))
-        return path
+        return self._write_text(path, manifest.model_dump_json(indent=2))
 
     def write_seed_registry(self, registry: SeedRegistry) -> Path:
         """Write seed_registry.json."""
         path = self.run_dir / "seed_registry.json"
-        path.write_text(registry.model_dump_json(indent=2))
-        return path
+        return self._write_text(path, registry.model_dump_json(indent=2))
 
     def write_backend_versions(self, versions: BackendVersions) -> Path:
         """Write backend_versions.json."""
         path = self.run_dir / "backend_versions.json"
-        path.write_text(versions.model_dump_json(indent=2))
-        return path
+        return self._write_text(path, versions.model_dump_json(indent=2))
 
     def write_evidence_manifest(self, manifest: EvidenceManifest) -> Path:
         """Write evidence_manifest.json (Data Profiler output)."""
         path = self.run_dir / "evidence_manifest.json"
-        path.write_text(manifest.model_dump_json(indent=2))
-        return path
+        return self._write_text(path, manifest.model_dump_json(indent=2))
 
     def write_initial_estimates(self, estimates: InitialEstimates) -> Path:
         """Write initial_estimates.json (keyed by candidate_id)."""
         path = self.run_dir / "initial_estimates.json"
-        path.write_text(estimates.model_dump_json(indent=2))
-        return path
+        return self._write_text(path, estimates.model_dump_json(indent=2))
 
     def write_nca_diagnostics(self, diagnostics: list[NCASubjectDiagnostic]) -> Path:
         """Write nca_diagnostics.jsonl (one row per subject).
@@ -379,26 +399,22 @@ class BundleEmitter:
         """
         path = self.run_dir / "nca_diagnostics.jsonl"
         lines = [d.model_dump_json() for d in diagnostics]
-        path.write_text("\n".join(lines) + ("\n" if lines else ""))
-        return path
+        return self._write_text(path, "\n".join(lines) + ("\n" if lines else ""))
 
     def nca_plots_dir(self) -> Path:
         """Ensure and return diagnostics/nca_plots/ for per-subject NCA figures."""
         plots_dir = self.run_dir / "diagnostics" / "nca_plots"
-        plots_dir.mkdir(parents=True, exist_ok=True)
-        return plots_dir
+        return self._ensure_artifact_dir(plots_dir)
 
     def write_split_manifest(self, split: SplitManifest) -> Path:
         """Write split_manifest.json."""
         path = self.run_dir / "split_manifest.json"
-        path.write_text(split.model_dump_json(indent=2))
-        return path
+        return self._write_text(path, split.model_dump_json(indent=2))
 
     def write_policy_file(self, policy_data: dict[str, object]) -> Path:
         """Write policy_file.json (copy of the gate thresholds used for this run)."""
         path = self.run_dir / "policy_file.json"
-        path.write_text(json.dumps(policy_data, indent=2, default=str))
-        return path
+        return self._write_text(path, json.dumps(policy_data, indent=2, default=str))
 
     def write_missing_data_directive(self, directive: MissingDataDirective) -> Path:
         """Write missing_data_directive.json.
@@ -410,14 +426,12 @@ class BundleEmitter:
         the run without having to re-resolve against the policy file.
         """
         path = self.run_dir / "missing_data_directive.json"
-        path.write_text(directive.model_dump_json(indent=2))
-        return path
+        return self._write_text(path, directive.model_dump_json(indent=2))
 
     def write_imputation_stability(self, manifest: ImputationStabilityManifest) -> Path:
         """Write imputation_stability.json (MI runs only)."""
         path = self.run_dir / "imputation_stability.json"
-        path.write_text(manifest.model_dump_json(indent=2))
-        return path
+        return self._write_text(path, manifest.model_dump_json(indent=2))
 
     def write_categorical_encoding_provenance(
         self, provenance: CategoricalEncodingProvenance
@@ -431,8 +445,7 @@ class BundleEmitter:
         came from auto-detection or a caller override (PRD §4.2.0).
         """
         path = self.run_dir / "categorical_encoding_provenance.json"
-        path.write_text(provenance.model_dump_json(indent=2))
-        return path
+        return self._write_text(path, provenance.model_dump_json(indent=2))
 
     # --- Compiled specs ---
 
@@ -449,14 +462,14 @@ class BundleEmitter:
         """
         _validate_path_component(spec.model_id, "model_id")
         json_path = self._compiled_specs_dir / f"{spec.model_id}.json"
-        json_path.write_text(spec.model_dump_json(indent=2))
+        self._write_text(json_path, spec.model_dump_json(indent=2))
 
         if spec.has_node_modules():
             return json_path, None
 
         r_path = self._compiled_specs_dir / f"{spec.model_id}.R"
         r_code = emit_nlmixr2(spec, initial_estimates=initial_estimates)
-        r_path.write_text(r_code)
+        self._write_text(r_path, r_code)
 
         return json_path, r_path
 
@@ -466,15 +479,13 @@ class BundleEmitter:
         """Write results/{candidate_id}_result.json."""
         _validate_path_component(result.model_id, "model_id")
         path = self._results_dir / f"{result.model_id}_result.json"
-        path.write_text(result.model_dump_json(indent=2))
-        return path
+        return self._write_text(path, result.model_dump_json(indent=2))
 
     def write_seed_result(self, result: BackendResult, candidate_id: str, seed_index: int) -> Path:
         """Write results/{candidate_id}_seed_{n}_result.json."""
         _validate_path_component(candidate_id, "candidate_id")
         path = self._results_dir / f"{candidate_id}_seed_{seed_index}_result.json"
-        path.write_text(result.model_dump_json(indent=2))
-        return path
+        return self._write_text(path, result.model_dump_json(indent=2))
 
     # --- Gate decisions ---
 
@@ -494,8 +505,7 @@ class BundleEmitter:
         _validate_path_component(gate_token, "gate_number")
         filename = f"gate{gate_token}_{gate_result.candidate_id}.json"
         path = self._gate_decisions_dir / filename
-        path.write_text(gate_result.model_dump_json(indent=2))
-        return path
+        return self._write_text(path, gate_result.model_dump_json(indent=2))
 
     # --- Search artifacts ---
 
@@ -547,99 +557,85 @@ class BundleEmitter:
     def write_candidate_lineage(self, lineage: CandidateLineage) -> Path:
         """Write candidate_lineage.json (DAG of candidate parentage)."""
         path = self.run_dir / "candidate_lineage.json"
-        path.write_text(lineage.model_dump_json(indent=2))
-        return path
+        return self._write_text(path, lineage.model_dump_json(indent=2))
 
     def write_search_graph(self, graph: SearchGraph) -> Path:
         """Write search_graph.json (enriched DAG for deep inspection)."""
         path = self.run_dir / "search_graph.json"
-        path.write_text(graph.model_dump_json(indent=2))
-        return path
+        return self._write_text(path, graph.model_dump_json(indent=2))
 
     def write_ranking(self, ranking: Ranking) -> Path:
         """Write ranking.json (full ordered candidate list from Gate 3)."""
         path = self.run_dir / "ranking.json"
-        path.write_text(ranking.model_dump_json(indent=2))
-        return path
+        return self._write_text(path, ranking.model_dump_json(indent=2))
 
     def write_report_provenance(self, provenance: ReportProvenance) -> Path:
         """Write report_provenance.json (who/what generated each section)."""
         path = self.run_dir / "report_provenance.json"
-        path.write_text(provenance.model_dump_json(indent=2))
-        return path
+        return self._write_text(path, provenance.model_dump_json(indent=2))
 
     # --- Credibility reports (per-candidate, Phase 2+) ---
 
     def _credibility_dir(self) -> Path:
         """Ensure and return the credibility/ subdirectory."""
         cred_dir = self.run_dir / "credibility"
-        cred_dir.mkdir(exist_ok=True)
-        return cred_dir
+        return self._ensure_artifact_dir(cred_dir)
 
     def write_credibility_report(self, report: CredibilityReport) -> Path:
         """Write credibility/{candidate_id}.json."""
         _validate_path_component(report.candidate_id, "candidate_id")
         path = self._credibility_dir() / f"{report.candidate_id}.json"
-        path.write_text(report.model_dump_json(indent=2))
-        return path
+        return self._write_text(path, report.model_dump_json(indent=2))
 
     # --- LORO-CV results (Phase 3, Optimization lane) ---
 
     def _loro_cv_dir(self) -> Path:
         """Ensure and return the loro_cv/ subdirectory."""
         loro_dir = self.run_dir / "loro_cv"
-        loro_dir.mkdir(exist_ok=True)
-        return loro_dir
+        return self._ensure_artifact_dir(loro_dir)
 
     def write_loro_cv_result(self, result: LOROCVResult) -> Path:
         """Write loro_cv/{candidate_id}.json."""
         _validate_path_component(result.candidate_id, "candidate_id")
         path = self._loro_cv_dir() / f"{result.candidate_id}.json"
-        path.write_text(result.model_dump_json(indent=2))
-        return path
+        return self._write_text(path, result.model_dump_json(indent=2))
 
     # --- Agentic trace (Phase 3, PRD §4.2.6) ---
 
     def _agentic_trace_dir(self) -> Path:
         """Ensure and return the agentic_trace/ subdirectory."""
         trace_dir = self.run_dir / "agentic_trace"
-        trace_dir.mkdir(exist_ok=True)
-        return trace_dir
+        return self._ensure_artifact_dir(trace_dir)
 
     def write_agentic_trace_input(self, inp: AgenticTraceInput) -> Path:
         """Write agentic_trace/{iteration_id}_input.json."""
         _validate_path_component(inp.iteration_id, "iteration_id")
         path = self._agentic_trace_dir() / f"{inp.iteration_id}_input.json"
-        path.write_text(inp.model_dump_json(indent=2))
-        return path
+        return self._write_text(path, inp.model_dump_json(indent=2))
 
     def write_agentic_trace_output(self, out: AgenticTraceOutput) -> Path:
         """Write agentic_trace/{iteration_id}_output.json."""
         _validate_path_component(out.iteration_id, "iteration_id")
         path = self._agentic_trace_dir() / f"{out.iteration_id}_output.json"
-        path.write_text(out.model_dump_json(indent=2))
-        return path
+        return self._write_text(path, out.model_dump_json(indent=2))
 
     def write_agentic_trace_meta(self, meta: AgenticTraceMeta) -> Path:
         """Write agentic_trace/{iteration_id}_meta.json."""
         _validate_path_component(meta.iteration_id, "iteration_id")
         path = self._agentic_trace_dir() / f"{meta.iteration_id}_meta.json"
-        path.write_text(meta.model_dump_json(indent=2))
-        return path
+        return self._write_text(path, meta.model_dump_json(indent=2))
 
     def write_run_lineage(self, lineage: RunLineage) -> Path:
         """Write run_lineage.json (multi-run provenance, PRD §4.2.6)."""
         path = self.run_dir / "run_lineage.json"
-        path.write_text(lineage.model_dump_json(indent=2))
-        return path
+        return self._write_text(path, lineage.model_dump_json(indent=2))
 
     # --- Bayesian artifacts (Phase 2+) ---
 
     def _bayesian_dir(self) -> Path:
         """Ensure and return the bayesian/ subdirectory."""
         bayes_dir = self.run_dir / "bayesian"
-        bayes_dir.mkdir(exist_ok=True)
-        return bayes_dir
+        return self._ensure_artifact_dir(bayes_dir)
 
     def write_prior_manifest(self, manifest: PriorManifest, candidate_id: str) -> Path:
         """Write bayesian/{candidate_id}_prior_manifest.json.
@@ -651,8 +647,7 @@ class BundleEmitter:
         """
         _validate_path_component(candidate_id, "candidate_id")
         path = self._bayesian_dir() / f"{candidate_id}_prior_manifest.json"
-        path.write_text(manifest.model_dump_json(indent=2))
-        return path
+        return self._write_text(path, manifest.model_dump_json(indent=2))
 
     def write_prior_manifest_from_specs(
         self,
@@ -694,8 +689,7 @@ class BundleEmitter:
         """
         _validate_path_component(candidate_id, "candidate_id")
         path = self._bayesian_dir() / f"{candidate_id}_simulation_protocol.json"
-        path.write_text(protocol.model_dump_json(indent=2))
-        return path
+        return self._write_text(path, protocol.model_dump_json(indent=2))
 
     def write_mcmc_diagnostics(self, diagnostics: PosteriorDiagnostics, candidate_id: str) -> Path:
         """Write bayesian/{candidate_id}_mcmc_diagnostics.json.
@@ -705,8 +699,7 @@ class BundleEmitter:
         """
         _validate_path_component(candidate_id, "candidate_id")
         path = self._bayesian_dir() / f"{candidate_id}_mcmc_diagnostics.json"
-        path.write_text(diagnostics.model_dump_json(indent=2))
-        return path
+        return self._write_text(path, diagnostics.model_dump_json(indent=2))
 
     def write_sbc_manifest(self, manifest: SBCManifest) -> Path:
         """Write artifacts/sbc/sbc_manifest.json (plan Task 26).
@@ -723,8 +716,7 @@ class BundleEmitter:
         sbc_dir = self.run_dir / "artifacts" / "sbc"
         sbc_dir.mkdir(parents=True, exist_ok=True)
         path = sbc_dir / _SBC_MANIFEST_FILENAME
-        path.write_text(manifest.model_dump_json(indent=2))
-        return path
+        return self._write_text(path, manifest.model_dump_json(indent=2), allow_sealed=True)
 
     def write_loo_summary(self, summary: LOOSummary) -> Path:
         """Write bayesian/{candidate_id}_loo_summary.json (plan Task 18).
@@ -737,8 +729,7 @@ class BundleEmitter:
         """
         _validate_path_component(summary.candidate_id, "candidate_id")
         path = self._bayesian_dir() / f"{summary.candidate_id}_loo_summary.json"
-        path.write_text(summary.model_dump_json(indent=2))
-        return path
+        return self._write_text(path, summary.model_dump_json(indent=2))
 
     def write_reparameterization_recommendation(
         self,
@@ -755,8 +746,7 @@ class BundleEmitter:
         _validate_path_component(recommendation.candidate_id, "candidate_id")
         filename = f"{recommendation.candidate_id}_reparameterization_recommendation.json"
         path = self._bayesian_dir() / filename
-        path.write_text(recommendation.model_dump_json(indent=2))
-        return path
+        return self._write_text(path, recommendation.model_dump_json(indent=2))
 
     def write_prior_data_conflict(self, artifact: PriorDataConflict) -> Path:
         """Write bayesian/{candidate_id}_prior_data_conflict.json (plan Task 20).
@@ -770,8 +760,7 @@ class BundleEmitter:
         """
         _validate_path_component(artifact.candidate_id, "candidate_id")
         path = self._bayesian_dir() / f"{artifact.candidate_id}_prior_data_conflict.json"
-        path.write_text(artifact.model_dump_json(indent=2))
-        return path
+        return self._write_text(path, artifact.model_dump_json(indent=2))
 
     def write_prior_sensitivity(self, artifact: PriorSensitivity) -> Path:
         """Write bayesian/{candidate_id}_prior_sensitivity.json (plan Task 21).
@@ -784,8 +773,7 @@ class BundleEmitter:
         """
         _validate_path_component(artifact.candidate_id, "candidate_id")
         path = self._bayesian_dir() / f"{artifact.candidate_id}_prior_sensitivity.json"
-        path.write_text(artifact.model_dump_json(indent=2))
-        return path
+        return self._write_text(path, artifact.model_dump_json(indent=2))
 
     def write_sampler_config(self, config: SamplerConfig, candidate_id: str) -> Path:
         """Write bayesian/{candidate_id}_sampler_config.json.
@@ -798,8 +786,7 @@ class BundleEmitter:
         """
         _validate_path_component(candidate_id, "candidate_id")
         path = self._bayesian_dir() / f"{candidate_id}_sampler_config.json"
-        path.write_text(config.model_dump_json(indent=2))
-        return path
+        return self._write_text(path, config.model_dump_json(indent=2))
 
     def copy_posterior_draws(self, source: Path, candidate_id: str) -> Path:
         """Copy posterior_draws.parquet from the harness work_dir into the bundle.
@@ -811,7 +798,9 @@ class BundleEmitter:
 
         _validate_path_component(candidate_id, "candidate_id")
         dest = self._bayesian_dir() / f"{candidate_id}_draws.parquet"
-        shutil.copy2(source, dest)
+        with _DIGEST_LOCK:
+            self._ensure_unsealed()
+            shutil.copy2(source, dest)
         return dest
 
     def write_posterior_summary(
@@ -853,7 +842,9 @@ class BundleEmitter:
 
         table = pa.Table.from_pandas(summary_df[list(canonical)], preserve_index=False)
         dest = self._bayesian_dir() / f"{candidate_id}_posterior_summary.parquet"
-        pq.write_table(table, dest)
+        with _DIGEST_LOCK:
+            self._ensure_unsealed()
+            pq.write_table(table, dest)
         return dest
 
     def write_posterior_draws(
@@ -916,5 +907,7 @@ class BundleEmitter:
             }
         )
         dest = self._bayesian_dir() / f"{candidate_id}_posterior_draws.parquet"
-        pq.write_table(table, dest)
+        with _DIGEST_LOCK:
+            self._ensure_unsealed()
+            pq.write_table(table, dest)
         return dest
