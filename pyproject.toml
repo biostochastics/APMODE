@@ -155,6 +155,18 @@ override-dependencies = [
     "aiohttp>=3.13.4",
     "python-dotenv>=1.2.2",
 ]
+# Forward note: GHSA-58qw-9mgm-455v / CVE-2026-3219 affects pip
+# <= 26.0.1 ("concatenated tar/ZIP interpretation conflict"). The
+# upstream fix (pypa/pip#13870) is merged for milestone 26.1 but has
+# not shipped to PyPI yet — 26.0.1 is still the latest publicly
+# available version. A constraint-dependency cannot be added today
+# because uv's resolver would refuse to lock against an unavailable
+# release. Exposure on this project is dev-only: pip is pulled in
+# transitively via ``pip-audit -> pip-api -> pip``, and pip-audit
+# lives in ``[project.optional-dependencies].dev``. APMODE never
+# invokes pip at runtime — users install via ``uv sync``. Once
+# pip 26.1 ships we will add ``"pip>=26.1"`` to the override list
+# above so subsequent ``uv lock --upgrade`` runs pick it up.
 
 [tool.mypy]
 python_version = "3.12"
