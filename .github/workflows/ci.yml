@@ -77,7 +77,12 @@ jobs:
         # (subprocess literal with shell=True) is still enforced.
         run: uv run bandit -r src/apmode/ -ll --skip B604
       - name: pip-audit dependency CVE scan
-        run: uv run pip-audit
+        # CVE-2026-3219 affects pip 26.0.1 (uv-bundled). No fix
+        # available upstream as of 2026-04-25; ignore until pip
+        # publishes a patched release. APMODE itself does not invoke
+        # pip at runtime — pip is only present in the build/dev
+        # environment (uv pulls it for compatibility).
+        run: uv run pip-audit --ignore-vuln CVE-2026-3219
       - name: Generate CycloneDX SBOM
         # pip-audit exits non-zero if CVEs are present but still writes
         # the SBOM; we always want the artifact, so tolerate a non-zero

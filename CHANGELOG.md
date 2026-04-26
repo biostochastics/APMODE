@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Phase-1 scorecard from end-to-end live run
+
+The first complete Phase-1 scorecard from a live `apmode.benchmarks.suite_c_phase1_runner`
+end-to-end pass on the five open `nlmixr2data` fixtures. Committed at
+`benchmarks/suite_c/phase1_npe_inputs.json` so the weekly CI workflow has a measured
+baseline. All 50 fits (5 fixtures × 5 folds × 2 sides) returned `status=success` after
+the v0.6.1-rc1 nine-fix bring-up. Dimensionless NPE per fixture:
+
+| Fixture | n | NPE APMODE | NPE Lit | Δ |
+|---|---:|---:|---:|---:|
+| theophylline | 12 | 0.186 | 0.178 | -4% |
+| warfarin | 32 | 0.232 | 0.227 | -2% |
+| **mavoglurant** | 120 | **0.408** | **0.993** | **+59%** |
+| phenobarbital | 59 | 0.251 | 0.270 | +7% |
+| oral_1cpt | 120 | 0.263 | 0.259 | -2% |
+
+`fraction_beats_literature_median = 40% (2/5)`, below the 60% target. The three losses are
+all within the δ=0.02 win-margin Monte-Carlo noise band; the mavoglurant +59% win is the
+methodology-improvement signal. Oral_1CPT is a simulated ground-truth-recovery fixture
+where the literature side is fitting the simulator's exact typical values — a near-tie
+is the design expectation, not a regression.
+
+### Fixed — CI: pip-audit ignore CVE-2026-3219; bandit B604 skip; SAEM fixture committed; bayesian-dispatch tests skip-on-no-Rscript; help-rendering test relaxed
+
+Fix the linux-x86_64 CI failures across `security`, `test (3.12/3.13/3.14)` jobs that
+were stacking up on every push. All four classes are environment-only (full local sweep
+stays at 2557+ passing).
+
+- **`pip-audit` CVE-2026-3219** — pip 26.0.1 (uv-bundled) carries a known vulnerability
+  with no upstream fix yet. APMODE itself never invokes pip at runtime; pip is only in
+  the build/dev environment. The CI invocation now passes
+  `--ignore-vuln CVE-2026-3219` with an inline justification.
+- **`Bandit B604` false positives on dataclass `shell=` kwarg** — Bandit's
+  `any_other_function_with_shell=True` matcher fires on any literal `shell=` call,
+  including `apmode.shells.{bash,fish,zsh,powershell}` emitting
+  `InstallResult(shell=self.name, ...)` where `shell` is the target-shell-name field,
+  not a subprocess injection vector. CI now passes `--skip B604` with rationale; B602
+  (subprocess literal with shell=True) is still enforced.
+- **SAEM-replay fixture not tracked** — `tests/fixtures/saem/theo_sd_30b_30e.log`
+  matched the `*.log` ignore glob and was never committed. 7 tests in
+  `test_saem_progress.py` + `test_nlmixr2_streaming.py` replay it and failed on CI
+  with `FileNotFoundError`. Fix: add `!tests/fixtures/saem/*.log` exception and commit
+  the 4.9 KiB fixture.
+- **Bayesian-dispatch tests construct `Nlmixr2Runner`** — two tests in
+  `test_orchestrator_bayesian_dispatch.py` instantiate `Nlmixr2Runner(work_dir=tmp_path)`,
+  whose `__init__` resolves `Rscript` via `shutil.which` (issue #22) and raises
+  `FileNotFoundError` on the R-less CI image. Fix: add a module-level
+  `_RSCRIPT_AVAILABLE` guard and `pytest.mark.skipif` both tests.
+- **`test_run_output_short_flag` rich-rendering brittleness** — asserted on
+  rich-rendered `--help` output for the `--output-dir` alias. Fix: invoke
+  `apmode run /nonexistent.csv {alias} /tmp/out` for each of `-o` / `--output` /
+  `--output-dir` and assert no "No such option" parsing error — functional
+  acceptance is the actual contract.
+
 ### Fixed — Documentation accuracy and drift cleanup
 
 - Synced README / CLAUDE auto-managed counters to the current test collection
