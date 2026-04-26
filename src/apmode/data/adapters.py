@@ -59,6 +59,64 @@ _RESERVED_COLUMNS: frozenset[str] = frozenset(
     }
 )
 
+# Columns whose names collide with common PK parameter names. The
+# nlmixr2data ACOP-2016 simulated datasets (Oral_1CPT, Bolus_1CPT, ...)
+# carry the simulator's true per-subject parameter values in columns
+# named exactly ``V``, ``CL``, ``KA``, etc. When rxode2 / nlmixr2 sees
+# a data column with the same name as a model parameter, it silently
+# uses the *data* column instead of the compiled model parameter.
+# That is harmless during estimation (data columns ignored unless the
+# model explicitly references them) but breaks the
+# ``rxode2::rxSolve(object=fit, events=data, nStud=n_sims)`` posterior-
+# predictive call inside ``r/harness.R::.simulate_posterior_predictive``:
+# rxSolve treats the matching-name data columns as time-varying inputs,
+# the per-subject ``V/CL/KA`` columns are constant for every observation,
+# and the resulting trajectory shape mismatches the expected n_sims x
+# n_obs matrix. The harness's ``tryCatch`` then returns NULL and Gate 3
+# ends up with ``npe_score: None``, which the Phase-1 runner's strict
+# ``_extract_npe`` rightly refuses.
+#
+# These names are NEVER legitimate NONMEM event-table columns, so
+# stripping them at the adapter is always safe.
+_PK_PARAM_COLLISION_COLUMNS: frozenset[str] = frozenset(
+    {
+        # Volumes
+        "V",
+        "VC",
+        "V1",
+        "V2",
+        "V3",
+        "VP",
+        "VSS",
+        # Clearances
+        "CL",
+        "CLR",
+        "CLT",
+        "CLP",
+        "Q",
+        "Q2",
+        "Q3",
+        # Absorption
+        "KA",
+        "KTR",
+        "MTT",
+        # Elimination rates / Michaelis-Menten
+        "KE",
+        "KEL",
+        "VM",
+        "VMAX",
+        "KM",
+        # Bioavailability / lag
+        "F",
+        "F1",
+        "TLAG",
+        # ACOP-2016 simulator metadata (not a parameter, but
+        # similarly safe to strip — the model never references it)
+        "DOSE",
+        "SD",
+    }
+)
+
 
 def to_nlmixr2_format(df: pd.DataFrame) -> pd.DataFrame:
     """Convert canonical PK DataFrame to nlmixr2-ready form.
@@ -85,6 +143,20 @@ def to_nlmixr2_format(df: pd.DataFrame) -> pd.DataFrame:
         raise ValueError(msg)
 
     out = df.rename(columns=_CANONICAL_TO_NLMIXR2).copy()
+
+    # Strip parameter-name-collision columns (V, CL, KA, ...) the
+    # ACOP-2016 simulator ships. See _PK_PARAM_COLLISION_COLUMNS for
+    # the rationale; without this strip the harness's
+    # ``rxode2::rxSolve(object=fit, events=data)`` returns NULL and
+    # Gate 3 sees ``npe_score: None``.
+    collision_cols = sorted(set(out.columns) & _PK_PARAM_COLLISION_COLUMNS)
+    if collision_cols:
+        _logger.info(
+            "adapter.dropped_pk_param_collision_columns",
+            n_columns=len(collision_cols),
+            dropped_columns=collision_cols,
+        )
+        out = out.drop(columns=collision_cols)
 
     if "DVID" in out.columns:
         evid = out["EVID"] if "EVID" in out.columns else pd.Series(0, index=out.index)
