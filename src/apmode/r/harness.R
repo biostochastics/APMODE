@@ -119,17 +119,45 @@ response_path <- args[2]
       subj_data <- data_obs[as.character(data_obs$ID) == sid, , drop = FALSE]
       # Order by TIME for stable AUC math downstream.
       subj_data <- subj_data[order(subj_data$TIME), , drop = FALSE]
-      t_obs <- as.numeric(subj_data$TIME)
-      dv_obs <- as.numeric(subj_data$DV)
 
       subj_sims <- sim_df[as.character(sim_df$id) == sid, , drop = FALSE]
+
+      # rxode2 sometimes truncates simulation output before the final
+      # observed time (e.g. trailing ``DV=0`` rows on a per-subject
+      # time series — mavoglurant has DV=0 entries at 36 h / 48 h on
+      # several test-fold subjects). When the sim covers fewer time
+      # points than the data, the strict ``nrow(s_rows) == n_obs``
+      # check fails for every replicate and the helper returns NULL.
+      # Use the union of *covered* times across sim replicates as
+      # the per-subject time axis: every observation we DO get a sim
+      # for becomes a column; observations that no sim covered are
+      # simply dropped from this subject's t_observed / observed_dv
+      # / sims_at_observed (the ranker / VPC are all per-subject so
+      # this is a clean truncation, not a silent drop).
+      sim_times <- unique(as.numeric(subj_sims$time))
+      keep_times <- as.numeric(subj_data$TIME) %in% sim_times
+      subj_data <- subj_data[keep_times, , drop = FALSE]
+      t_obs <- as.numeric(subj_data$TIME)
+      dv_obs <- as.numeric(subj_data$DV)
       n_obs <- length(t_obs)
+
       mat <- matrix(NA_real_, nrow = n_sims, ncol = n_obs)
-      for (s in seq_len(n_sims)) {
-        s_rows <- subj_sims[subj_sims[[sim_idx_col]] == s, , drop = FALSE]
-        s_rows <- s_rows[order(s_rows$time), , drop = FALSE]
-        if (nrow(s_rows) == n_obs) {
-          mat[s, ] <- as.numeric(s_rows[[sim_col]])
+      if (n_obs > 0) {
+        for (s in seq_len(n_sims)) {
+          s_rows <- subj_sims[subj_sims[[sim_idx_col]] == s, , drop = FALSE]
+          s_rows <- s_rows[order(s_rows$time), , drop = FALSE]
+          # Match the per-sim simulated values back to the observed
+          # times for this subject. ``match()`` returns positional
+          # indices (NA for sim times that don't match an observed
+          # time, which we drop). ``s_rows`` already has unique
+          # per-time rows from rxSolve.
+          if (nrow(s_rows) > 0) {
+            idx <- match(t_obs, as.numeric(s_rows$time))
+            valid <- !is.na(idx)
+            if (any(valid)) {
+              mat[s, valid] <- as.numeric(s_rows[[sim_col]][idx[valid]])
+            }
+          }
         }
       }
       per_subj_mats[[i]] <- mat

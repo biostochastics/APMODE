@@ -376,6 +376,46 @@ class TestPredictedSimulations1DCoercion:
         assert subj.observed_dv == [24.3]
         assert subj.sims_at_observed == [[1.0], [2.0], [3.0]]
 
+    def test_harness_drops_unmatched_observed_times(self) -> None:
+        """Pin the time-match-truncation logic in
+        ``.simulate_posterior_predictive``.
+
+        rxode2's ``rxSolve`` sometimes produces fewer simulated rows
+        than there are observation rows in the input data — the
+        canonical case is trailing ``DV=0`` observations that
+        rxode2 truncates after the last "useful" time. The
+        previous strict ``nrow(s_rows) == n_obs`` check then
+        silently marked every replicate as failed and the helper
+        returned NULL.
+
+        The harness now uses the union of TIMES the sim actually
+        covers as the per-subject time axis: observations whose
+        TIME the sim doesn't cover are dropped from t_observed /
+        observed_dv / sims_at_observed for that subject. The
+        per-subject helper documents the truncation as a clean
+        column drop, not a silent failure.
+        """
+        from pathlib import Path
+
+        import apmode
+
+        harness = (Path(apmode.__file__).parent / "r" / "harness.R").read_text()
+        # Pin the substring so a refactor that removes the
+        # truncation re-introduces the silent NPE=None abort.
+        assert "sim_times <- unique(as.numeric(subj_sims$time))" in harness, (
+            "r/harness.R must build the per-subject time axis from the "
+            "simulation's actual TIMES, not the data's, so partial "
+            "rxSolve coverage does not silently mark every replicate "
+            "as failed."
+        )
+        assert "keep_times <- as.numeric(subj_data$TIME) %in% sim_times" in harness, (
+            "r/harness.R must filter subj_data to TIMES rxSolve covered."
+        )
+        assert "idx <- match(t_obs, as.numeric(s_rows$time))" in harness, (
+            "r/harness.R must positionally match per-sim values back to "
+            "observed times via match() — not by row count alone."
+        )
+
     def test_harness_filters_evid_case_insensitively(self) -> None:
         """Pin the case-insensitive ``evid`` filter in
         ``.simulate_posterior_predictive``.
