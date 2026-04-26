@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — Undefined CWRES emits JSON `null`, not a fabricated `0/1` fallback
+
+Per ICH M15 §3 and Karlsson 2007 (the canonical CWRES diagnostic
+paper), CWRES is a *diagnostic*, not a convergence indicator: a
+nlmixr2 fit can be numerically converged with usable parameter
+estimates yet have undefined residuals (Suite-B
+`b8_mavoglurant_null_covariates`: 5 random null covariates contaminate
+the residual computation). An earlier patch substituted
+`cwres_mean=0, cwres_sd=1, outlier_fraction=0` for any non-finite
+aggregate; that silent fallback would have let degenerate fits pass
+downstream Gate 1 ranking as "perfectly diagnosed" — exactly the
+failure mode regulatory diagnostics protocols explicitly forbid.
+
+Replaced with end-to-end "diagnostic unavailable" propagation
+(reverts the 11ed85b approach):
+
+1. **R harness** (`r/harness.R::.simulate_posterior_predictive`):
+   `.finite_or_null(x)` returns R `NULL` (→ JSON `null`) on any
+   non-finite input. No more fabricated `0/1`.
+2. **Pydantic schema** (`apmode.bundle.models.GOFMetrics`):
+   `cwres_mean`, `cwres_sd`, `outlier_fraction` are now
+   `Optional[float] = None`. Updated docstring cites ICH M15 §3 and
+   Karlsson 2007.
+3. **Gate 1** (`apmode.governance.gates`):
+   `_check_state_trajectory_validity` and `_check_cwres` both
+   fail-closed when the metric is `None` —
+   `GateCheckResult.observed = "unavailable"`. A fit Gate 1 cannot
+   diagnose cannot pass Gate 1.
+4. **Cross-paradigm ranker** (`compute_cwres_npe_proxy`): returns
+   `+inf` when either CWRES aggregate is `None`, so a
+   diagnostically-incomplete fit ranks worst, not best, under the
+   "lower is better" ordering.
+5. **LORO-CV** (`apmode.evaluation.loro_cv`): `test_npde_mean` /
+   `test_npde_variance` propagate `None` cleanly through the
+   per-fold calculation instead of crashing on `cwres_sd**2`.
+6. **Reporters** (`diagnostic_summarizer`, `report.renderer`):
+   render `None` as the literal `"unavailable"` so audit-trail
+   readers see the diagnostic gap rather than a misleading
+   `"0.0000"` entry.
+
+Tests: 3 new pins in `tests/unit/test_r_subprocess.py
+::TestPredictedSimulations1DCoercion`:
+`test_harness_emits_null_for_undefined_gof` (pins
+`.finite_or_null` definition + all three call sites),
+`test_gof_metrics_schema_accepts_none` (all-None and
+mixed-availability constructions round-trip cleanly),
+`test_cwres_npe_proxy_returns_inf_when_unavailable` (proves the
+ranker fails-closed; well-defined fits still return finite).
+
 ### Added — Phase-1 scorecard from end-to-end live run
 
 The first complete Phase-1 scorecard from a live `apmode.benchmarks.suite_c_phase1_runner`
