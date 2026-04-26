@@ -76,10 +76,21 @@ response_path <- args[2]
       returnType = "data.frame"
     )
 
-    # Defensive filter in case a newer rxode2 starts surfacing EVID in the
-    # output — keep the observation-only invariant downstream.
-    if ("EVID" %in% names(sim_df)) {
-      sim_df <- sim_df[sim_df$EVID == 0, , drop = FALSE]
+    # Defensive filter on rxode2's "evid" column — keep only
+    # observation rows so the per-subject sim matrix has exactly
+    # n_obs columns. rxode2 outputs the column lowercased ("evid",
+    # not "EVID") and includes both EVID=0 (observation) and EVID=2
+    # (other event) rows; the EVID=2 rows would otherwise inflate
+    # the per-sim row count past n_obs and the harness's strict
+    # ``nrow(s_rows) == n_obs`` check would silently mark every
+    # replicate as failed, returning NULL for the entire fixture.
+    # Closes the Oral_1CPT (ACOP-2016 simulated, EVID=2 reset
+    # rows present) NPE=None abort. Match case-insensitively
+    # because the rxode2 column-naming convention has shifted in
+    # past minor versions.
+    evid_col <- intersect(c("evid", "EVID"), names(sim_df))
+    if (length(evid_col) > 0) {
+      sim_df <- sim_df[sim_df[[evid_col[1]]] == 0, , drop = FALSE]
     }
 
     # Identify the simulated DV column — rxode2 conventionally uses "sim",

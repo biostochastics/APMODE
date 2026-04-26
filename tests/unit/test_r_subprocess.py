@@ -375,3 +375,31 @@ class TestPredictedSimulations1DCoercion:
         assert subj.t_observed == [57.5]
         assert subj.observed_dv == [24.3]
         assert subj.sims_at_observed == [[1.0], [2.0], [3.0]]
+
+    def test_harness_filters_evid_case_insensitively(self) -> None:
+        """Pin the case-insensitive ``evid`` filter in
+        ``.simulate_posterior_predictive``.
+
+        rxode2's ``rxSolve`` returns the EVID column as ``evid``
+        (lowercase) in the modern data-frame mode. The previous
+        ``"EVID" %in% names(sim_df)`` check missed the lowercase
+        column entirely, so EVID=2 (other-event) rows in datasets
+        like Oral_1CPT inflated the per-subject sim row count past
+        ``n_obs`` and the strict ``nrow(s_rows) == n_obs`` check
+        silently marked every replicate as failed, returning NULL
+        for the entire fixture and crashing Phase-1 on the
+        ``BackendResult.diagnostics.npe_score is None`` check.
+        """
+        from pathlib import Path
+
+        import apmode
+
+        harness = (Path(apmode.__file__).parent / "r" / "harness.R").read_text()
+        # Pin both halves of the case-insensitive intersect: the
+        # canonical lowercase plus the legacy uppercase fallback.
+        assert 'intersect(c("evid", "EVID"), names(sim_df))' in harness, (
+            "r/harness.R must filter rxSolve output by both 'evid' "
+            "(modern rxode2) and 'EVID' (legacy) so EVID=2 'other-event' "
+            "rows do not inflate the per-sim row count and silently mark "
+            "every replicate as failed."
+        )
