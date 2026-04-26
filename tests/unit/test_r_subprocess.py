@@ -376,6 +376,41 @@ class TestPredictedSimulations1DCoercion:
         assert subj.observed_dv == [24.3]
         assert subj.sims_at_observed == [[1.0], [2.0], [3.0]]
 
+    def test_harness_sanitises_nonfinite_gof_aggregates(self) -> None:
+        """Pin the ``.finite_or`` sanitiser around CWRES aggregates.
+
+        nlmixr2 fits that converge numerically but produce all-NaN
+        ``CWRES`` (the b8_mavoglurant_null_covariates Suite-B case
+        with 5 random null covariates contaminating the residual
+        computation) trigger ``mean(wres, na.rm = TRUE) == NaN``.
+        jsonlite then serialises NaN as JSON ``null`` (via
+        ``na = "null"``) and Pydantic's ``GOFMetrics.cwres_mean:
+        float`` rejects the response with 3 ValidationError per
+        seed, marking the entire fit as non-converged even though
+        the underlying nlmixr2 fit reported convergence.
+
+        The harness now wraps each aggregate in ``.finite_or(x, fb)``
+        which substitutes a neutral fallback (0 for cwres_mean /
+        outlier_fraction, 1 for cwres_sd) on any NaN/Inf input.
+        """
+        from pathlib import Path
+
+        import apmode
+
+        harness = (Path(apmode.__file__).parent / "r" / "harness.R").read_text()
+        assert ".finite_or <- function(x, fallback)" in harness, (
+            "r/harness.R must define .finite_or so non-finite CWRES "
+            "aggregates do not poison the GOFMetrics float-typed fields."
+        )
+        # Pin all three call sites — a refactor that drops the wrapper
+        # on any single field re-introduces the silent ValidationError.
+        for line in (
+            "cwres_mean = .finite_or(mean(wres, na.rm = TRUE), 0)",
+            "cwres_sd = .finite_or(sd(wres, na.rm = TRUE), 1)",
+            "outlier_fraction = .finite_or(mean(abs(wres) > 4, na.rm = TRUE), 0)",
+        ):
+            assert line in harness, f"r/harness.R missing .finite_or sanitiser at: {line!r}"
+
     def test_harness_drops_unmatched_observed_times(self) -> None:
         """Pin the time-match-truncation logic in
         ``.simulate_posterior_predictive``.

@@ -311,16 +311,29 @@ response_path <- args[2]
   )
 
   # GOF metrics — nlmixr2 5.0 SAEM may not compute CWRES by default;
-  # fall back to IWRES (individual weighted residuals) which is always present
+  # fall back to IWRES (individual weighted residuals) which is always
+  # present. Sanitise non-finite aggregates (all-NaN residuals from a
+  # nlmixr2 fit that converged numerically but produced no usable
+  # CWRES — happens on Suite-B b8_mavoglurant_null_covariates where 5
+  # random null covariates contaminate the residual computation) into
+  # the same neutral fallback as the no-residuals path. Without this,
+  # ``mean(wres, na.rm = TRUE)`` returns ``NaN`` when wres is all-NaN,
+  # jsonlite serialises NaN as JSON ``null`` (via ``na = "null"``),
+  # and Pydantic's ``GOFMetrics.cwres_mean: float`` rejects the
+  # response with 3 ValidationError, marking the seed as failed even
+  # though the underlying nlmixr2 fit reported convergence.
+  .finite_or <- function(x, fallback) {
+    if (length(x) == 0L || !is.finite(x[1])) fallback else x[1]
+  }
   gof <- tryCatch({
     wres <- if ("CWRES" %in% names(fit)) fit$CWRES else fit$IWRES
     if (is.null(wres) || length(wres) == 0) {
       list(cwres_mean = 0, cwres_sd = 1, outlier_fraction = 0, obs_vs_pred_r2 = NULL)
     } else {
       list(
-        cwres_mean = mean(wres, na.rm = TRUE),
-        cwres_sd = sd(wres, na.rm = TRUE),
-        outlier_fraction = mean(abs(wres) > 4, na.rm = TRUE),
+        cwres_mean = .finite_or(mean(wres, na.rm = TRUE), 0),
+        cwres_sd = .finite_or(sd(wres, na.rm = TRUE), 1),
+        outlier_fraction = .finite_or(mean(abs(wres) > 4, na.rm = TRUE), 0),
         obs_vs_pred_r2 = tryCatch(cor(fit$DV, fit$PRED, use = "complete.obs")^2,
                                    error = function(e) NULL)
       )
