@@ -68,7 +68,14 @@ jobs:
           version: "latest"
       - run: uv sync --all-extras
       - name: Bandit static security analysis
-        run: uv run bandit -r src/apmode/ -ll
+        # Skip B604 (any other function with shell=True). Bandit
+        # B604 matches any kwarg literally named shell=, not just
+        # subprocess.run(shell=True). Our shell-completion installer
+        # emits InstallResult(shell=self.name, ...) dataclass kwargs
+        # where shell is the target-shell-name field (bash/zsh/fish/
+        # powershell), not a subprocess injection vector. B602
+        # (subprocess literal with shell=True) is still enforced.
+        run: uv run bandit -r src/apmode/ -ll --skip B604
       - name: pip-audit dependency CVE scan
         run: uv run pip-audit
       - name: Generate CycloneDX SBOM

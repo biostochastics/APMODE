@@ -1203,12 +1203,50 @@ class TestEnvVarBindings:
             assert var in haystack, f"{var} missing from `run --help`"
 
     def test_run_output_short_flag(self) -> None:
-        """`run -o <dir>` must work as an alias for --output / --output-dir."""
+        """`run -o <dir>` and `--output-dir <dir>` must both be accepted
+        as aliases for ``--output`` (per skill docs).
+
+        Asserts on functional behaviour (typer parses both forms
+        without raising "no such option") rather than on rich's
+        rendered ``--help`` output: rich/typer minor-version drift
+        (CI's environment vs. local) sometimes hides the second alias
+        from the help table even when the option *is* registered.
+        Functional acceptance is the actual contract — we exercise it
+        directly here.
+        """
+        # Functional acceptance: invoke `apmode run` with each alias
+        # against a non-existent dataset. typer's "no such option"
+        # parsing error exits with code 2 and a "No such option"
+        # diagnostic; an *accepted* alias proceeds past argument
+        # parsing and surfaces a *different* error (missing dataset
+        # file). We assert that none of the three aliases hits the
+        # parser-error path.
+        for alias in ("-o", "--output", "--output-dir"):
+            result = runner.invoke(
+                app,
+                ["run", "/nonexistent/dataset.csv", alias, "/tmp/out"],
+                env={"COLUMNS": "240"},
+            )
+            # Typer's option-parsing error returns exit code 2 with
+            # "No such option" in stderr/stdout. Anything else
+            # (missing dataset, validation error, ...) means the
+            # alias was accepted.
+            output = (result.output or "") + (
+                result.stderr_bytes.decode()
+                if hasattr(result, "stderr_bytes") and result.stderr_bytes
+                else ""
+            )
+            assert "No such option" not in output, (
+                f"{alias!r} not accepted by `apmode run` — typer reports "
+                f"'No such option' which means the alias is missing from "
+                f"the option's decl list. Output: {output[:200]}"
+            )
+
+        # And the help text exposes -o (the most-likely-rendered alias
+        # under any rich version); we don't pin --output-dir's
+        # rendering because rich condenses long-option lists.
         result = runner.invoke(app, ["run", "--help"], env={"COLUMNS": "240"})
-        # Help table should list -o.
         assert "-o" in result.output
-        # And --output-dir should be an alias too (per skill docs).
-        assert "--output-dir" in result.output
 
 
 # ---------------------------------------------------------------------------

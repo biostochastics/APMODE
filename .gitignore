@@ -48,6 +48,8 @@ runs/
 benchmarks/data/
 benchmarks/runs/
 *.log
+# Test fixtures legitimately track .log SAEM-stream replay corpus
+!tests/fixtures/saem/*.log
 
 # Research / scratch (gitignored exploration)
 _research/
