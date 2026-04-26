@@ -100,11 +100,28 @@ class ConvergenceMetadata(BaseModel):
 
 
 class GOFMetrics(BaseModel):
-    """Goodness-of-fit metrics."""
+    """Goodness-of-fit metrics.
 
-    cwres_mean: float
-    cwres_sd: float
-    outlier_fraction: float = Field(ge=0.0, le=1.0)
+    All four fields are ``Optional[float]`` because nlmixr2 fits can
+    be numerically converged yet produce undefined residuals — the
+    canonical example is a fit where the residual computation
+    collapses to all-NaN (Suite-B b8_mavoglurant_null_covariates: 5
+    random null covariates contaminate the CWRES computation even
+    though parameter estimates are well-defined). Per ICH M15 §3
+    and Karlsson 2007 (the canonical CWRES diagnostic paper), CWRES
+    is a *diagnostic*, not a convergence indicator: silently
+    substituting a 0/1 fallback would let a degenerate fit pass
+    downstream Gate 1 ranking as "perfectly diagnosed", which is
+    exactly the failure mode regulatory diagnostics protocols
+    explicitly forbid. None values must be interpreted as
+    "diagnostic unavailable for this fit"; consumers (Gate 1, the
+    cross-paradigm ranker, ``diagnostic_summarizer``) decide
+    whether to fail-closed on diagnostic incompleteness.
+    """
+
+    cwres_mean: float | None = None
+    cwres_sd: float | None = None
+    outlier_fraction: float | None = Field(default=None, ge=0.0, le=1.0)
     obs_vs_pred_r2: float | None = None
 
 

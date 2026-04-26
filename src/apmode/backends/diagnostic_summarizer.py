@@ -158,14 +158,26 @@ def summarize_for_llm(
         rse_str = f"RSE={pinfo['rse_pct']:.1f}%" if pinfo["rse_pct"] else "RSE=N/A"
         lines.append(f"  {name} = {pinfo['estimate']:.4g} ({rse_str})")
 
-    # CWRES
+    # CWRES — None means the underlying nlmixr2 fit produced
+    # undefined residuals (e.g. collapsed under null-covariate
+    # contamination); render as "unavailable" so the LLM / human
+    # reader sees the diagnostic gap explicitly rather than a
+    # fabricated 0/1 fallback.
     lines.append("")
     lines.append("### Residual Diagnostics")
     cwres_mean = s["cwres_mean"]
-    lines.append(f"  CWRES mean = {cwres_mean:.4f}, SD = {s['cwres_sd']:.4f}")
-    if abs(cwres_mean) > 0.3:
-        lines.append(f"  **High CWRES bias ({cwres_mean:.4f})** — suggests systematic misfit.")
-    lines.append(f"  Outlier fraction = {s['outlier_fraction']:.4f}")
+    cwres_sd = s["cwres_sd"]
+    if cwres_mean is None or cwres_sd is None:
+        lines.append("  CWRES: **unavailable** (residuals undefined for this fit).")
+    else:
+        lines.append(f"  CWRES mean = {cwres_mean:.4f}, SD = {cwres_sd:.4f}")
+        if abs(cwres_mean) > 0.3:
+            lines.append(f"  **High CWRES bias ({cwres_mean:.4f})** — suggests systematic misfit.")
+    outlier_fraction = s["outlier_fraction"]
+    if outlier_fraction is None:
+        lines.append("  Outlier fraction: **unavailable** (residuals undefined).")
+    else:
+        lines.append(f"  Outlier fraction = {outlier_fraction:.4f}")
 
     # Shrinkage
     shrinkage = s["eta_shrinkage"]

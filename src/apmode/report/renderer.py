@@ -295,14 +295,19 @@ def _candidate_detail(
             lines.append(f"- **{name}** = {pe.estimate:.4g}{rse}")
         lines.append("")
 
-    # Diagnostics
+    # Diagnostics — None values render as "unavailable" so the
+    # report explicitly surfaces the diagnostic gap rather than
+    # defaulting to a fabricated 0/1 (see GOFMetrics docstring).
     lines.append("### Diagnostics\n")
     gof = result.diagnostics.gof
     lines.append("| Metric | Value | Threshold |")
     lines.append("|--------|------:|-----------|")
-    lines.append(f"| CWRES mean | {gof.cwres_mean:.4f} | |")
-    lines.append(f"| CWRES SD | {gof.cwres_sd:.4f} | ~1.0 |")
-    lines.append(f"| Outlier fraction | {gof.outlier_fraction:.1%} | <5% |")
+    cwres_mean_str = "unavailable" if gof.cwres_mean is None else f"{gof.cwres_mean:.4f}"
+    cwres_sd_str = "unavailable" if gof.cwres_sd is None else f"{gof.cwres_sd:.4f}"
+    outlier_str = "unavailable" if gof.outlier_fraction is None else f"{gof.outlier_fraction:.1%}"
+    lines.append(f"| CWRES mean | {cwres_mean_str} | |")
+    lines.append(f"| CWRES SD | {cwres_sd_str} | ~1.0 |")
+    lines.append(f"| Outlier fraction | {outlier_str} | <5% |")
     if gof.obs_vs_pred_r2 is not None:
         lines.append(f"| Obs vs Pred R^2 | {gof.obs_vs_pred_r2:.4f} | |")
 

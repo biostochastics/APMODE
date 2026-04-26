@@ -188,14 +188,19 @@ def _extract_fold_metrics(
     predictive distribution; this is a planned future enhancement.
     """
     # Prefer split-aware test-set CWRES mean when available;
-    # always use overall CWRES SD² for variance (split_gof lacks test_cwres_sd)
+    # always use overall CWRES SD² for variance (split_gof lacks test_cwres_sd).
+    # ``None`` for either propagates as ``None`` into the LORO fold result —
+    # the downstream aggregator at ``test_npde_mean / variance`` already
+    # treats None as "fold diagnostic unavailable" (and uses 0.0/1.0 only
+    # for the cross-fold mean/variance aggregation).
     sgof = result.diagnostics.split_gof
     if sgof is not None:
-        test_cwres_mean = sgof.test_cwres_mean
+        test_cwres_mean: float | None = sgof.test_cwres_mean
     else:
         test_cwres_mean = result.diagnostics.gof.cwres_mean
-    # Variance: always from overall GOF cwres_sd (the only SD available)
-    test_cwres_var = result.diagnostics.gof.cwres_sd**2
+    # Variance: always from overall GOF cwres_sd (the only SD available).
+    cwres_sd = result.diagnostics.gof.cwres_sd
+    test_cwres_var: float | None = cwres_sd**2 if cwres_sd is not None else None
 
     # Extract VPC coverage for this fold (min across bands)
     vpc = result.diagnostics.vpc

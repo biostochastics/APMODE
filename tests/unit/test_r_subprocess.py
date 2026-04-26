@@ -376,40 +376,106 @@ class TestPredictedSimulations1DCoercion:
         assert subj.observed_dv == [24.3]
         assert subj.sims_at_observed == [[1.0], [2.0], [3.0]]
 
-    def test_harness_sanitises_nonfinite_gof_aggregates(self) -> None:
-        """Pin the ``.finite_or`` sanitiser around CWRES aggregates.
+    def test_harness_emits_null_for_undefined_gof(self) -> None:
+        """Pin the ``.finite_or_null`` policy around CWRES aggregates.
 
-        nlmixr2 fits that converge numerically but produce all-NaN
-        ``CWRES`` (the b8_mavoglurant_null_covariates Suite-B case
-        with 5 random null covariates contaminating the residual
-        computation) trigger ``mean(wres, na.rm = TRUE) == NaN``.
-        jsonlite then serialises NaN as JSON ``null`` (via
-        ``na = "null"``) and Pydantic's ``GOFMetrics.cwres_mean:
-        float`` rejects the response with 3 ValidationError per
-        seed, marking the entire fit as non-converged even though
-        the underlying nlmixr2 fit reported convergence.
+        nlmixr2 fits can be numerically converged with usable
+        parameter estimates yet produce all-NaN residuals (Suite-B
+        b8_mavoglurant_null_covariates: 5 random null covariates
+        contaminate the residual computation). Per ICH M15 §3 and
+        Karlsson 2007 (the canonical CWRES diagnostic paper),
+        CWRES is a *diagnostic*, not a convergence indicator: a
+        silent 0/1 fallback would let degenerate fits pass
+        downstream Gate 1 ranking as "perfectly diagnosed".
 
-        The harness now wraps each aggregate in ``.finite_or(x, fb)``
-        which substitutes a neutral fallback (0 for cwres_mean /
-        outlier_fraction, 1 for cwres_sd) on any NaN/Inf input.
+        The harness emits JSON ``null`` (via R ``NULL``) for any
+        non-finite aggregate; ``GOFMetrics`` accepts
+        ``Optional[float]`` so the response round-trips cleanly.
+        Downstream consumers (Gate 1, ranker, summarizer, report
+        renderer) explicitly handle ``None`` as "diagnostic
+        unavailable" with fail-closed semantics.
         """
         from pathlib import Path
 
         import apmode
 
         harness = (Path(apmode.__file__).parent / "r" / "harness.R").read_text()
-        assert ".finite_or <- function(x, fallback)" in harness, (
-            "r/harness.R must define .finite_or so non-finite CWRES "
-            "aggregates do not poison the GOFMetrics float-typed fields."
+        assert ".finite_or_null <- function(x)" in harness, (
+            "r/harness.R must define .finite_or_null so non-finite CWRES "
+            "aggregates emit JSON null (not a fabricated 0/1)."
         )
-        # Pin all three call sites — a refactor that drops the wrapper
-        # on any single field re-introduces the silent ValidationError.
         for line in (
-            "cwres_mean = .finite_or(mean(wres, na.rm = TRUE), 0)",
-            "cwres_sd = .finite_or(sd(wres, na.rm = TRUE), 1)",
-            "outlier_fraction = .finite_or(mean(abs(wres) > 4, na.rm = TRUE), 0)",
+            "cwres_mean = .finite_or_null(mean(wres, na.rm = TRUE))",
+            "cwres_sd = .finite_or_null(sd(wres, na.rm = TRUE))",
+            "outlier_fraction = .finite_or_null(mean(abs(wres) > 4, na.rm = TRUE))",
         ):
-            assert line in harness, f"r/harness.R missing .finite_or sanitiser at: {line!r}"
+            assert line in harness, f"r/harness.R missing .finite_or_null sanitiser at: {line!r}"
+
+    def test_gof_metrics_schema_accepts_none(self) -> None:
+        """``GOFMetrics`` must accept ``None`` for cwres_mean / cwres_sd /
+        outlier_fraction so the harness's "diagnostic unavailable"
+        signal round-trips through Pydantic. Downstream consumers
+        (Gate 1, ranker, summarizer) handle ``None`` with explicit
+        fail-closed semantics.
+        """
+        from apmode.bundle.models import GOFMetrics
+
+        gof = GOFMetrics()
+        assert gof.cwres_mean is None
+        assert gof.cwres_sd is None
+        assert gof.outlier_fraction is None
+        assert gof.obs_vs_pred_r2 is None
+
+        gof = GOFMetrics(
+            cwres_mean=0.05,
+            cwres_sd=None,
+            outlier_fraction=0.02,
+            obs_vs_pred_r2=0.91,
+        )
+        assert gof.cwres_mean == 0.05
+        assert gof.cwres_sd is None
+
+    def test_cwres_npe_proxy_returns_inf_when_unavailable(self) -> None:
+        """The cross-paradigm ranker's CWRES-NPE-proxy fallback must
+        rank a fit with undefined CWRES *worst* (not best). Without
+        this, a fit with cwres_mean=None would silently sort to the
+        front under any "lower is better" ordering.
+        """
+        import math
+        from types import SimpleNamespace
+
+        from apmode.bundle.models import (
+            BLQHandling,
+            DiagnosticBundle,
+            GOFMetrics,
+            IdentifiabilityFlags,
+        )
+        from apmode.governance.ranking import compute_cwres_npe_proxy
+
+        diag = DiagnosticBundle(
+            gof=GOFMetrics(),  # all None
+            identifiability=IdentifiabilityFlags(
+                condition_number=10.0,
+                profile_likelihood_ci={},
+                ill_conditioned=False,
+            ),
+            blq=BLQHandling(method="none", n_blq=0, blq_fraction=0.0),
+        )
+        result = SimpleNamespace(diagnostics=diag)
+        assert math.isinf(compute_cwres_npe_proxy(result))  # type: ignore[arg-type]
+
+        # Sanity: a well-defined fit returns a finite value.
+        diag2 = DiagnosticBundle(
+            gof=GOFMetrics(cwres_mean=0.0, cwres_sd=1.0, outlier_fraction=0.0),
+            identifiability=IdentifiabilityFlags(
+                condition_number=10.0,
+                profile_likelihood_ci={},
+                ill_conditioned=False,
+            ),
+            blq=BLQHandling(method="none", n_blq=0, blq_fraction=0.0),
+        )
+        result2 = SimpleNamespace(diagnostics=diag2)
+        assert compute_cwres_npe_proxy(result2) == 0.0  # type: ignore[arg-type]
 
     def test_harness_drops_unmatched_observed_times(self) -> None:
         """Pin the time-match-truncation logic in

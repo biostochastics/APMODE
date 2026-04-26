@@ -186,8 +186,16 @@ def compute_cwres_npe_proxy(result: BackendResult) -> float:
     NPE from :func:`apmode.benchmarks.scoring.compute_npe`. Computes
     ``sqrt(cwres_mean² + (cwres_sd - 1)²)``. Named with ``_proxy`` to
     prevent any consumer from mistaking it for true NPE.
+
+    When either CWRES aggregate is ``None`` (residuals undefined for
+    this fit — see ``GOFMetrics`` docstring), returns ``+inf`` so the
+    fit ranks worst. Per the partial-population ban (PRD §4.3.1) and
+    ICH M15 §3, an unavailable diagnostic must not let a fit out-rank
+    a fully-diagnosed peer.
     """
     gof = result.diagnostics.gof
+    if gof.cwres_mean is None or gof.cwres_sd is None:
+        return float("inf")
     return float(np.sqrt(gof.cwres_mean**2 + (gof.cwres_sd - 1.0) ** 2))
 
 

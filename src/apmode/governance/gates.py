@@ -222,8 +222,13 @@ def _check_state_trajectory(result: BackendResult, g1: Gate1Config) -> GateCheck
     if gof.obs_vs_pred_r2 is not None and gof.obs_vs_pred_r2 < g1.obs_vs_pred_r2_min:
         issues.append(f"R²={gof.obs_vs_pred_r2:.3f} (<{g1.obs_vs_pred_r2_min})")
 
-    # CWRES SD: should be near 1.0; far from it signals misspecification
-    if gof.cwres_sd < g1.cwres_sd_min:
+    # CWRES SD: should be near 1.0; far from it signals misspecification.
+    # ``None`` means residuals were undefined for this fit (Karlsson 2007;
+    # ICH M15 §3) — fail-closed because Gate 1 cannot affirm structural
+    # validity without a usable diagnostic stream.
+    if gof.cwres_sd is None:
+        issues.append("cwres_sd=unavailable (residuals undefined)")
+    elif gof.cwres_sd < g1.cwres_sd_min:
         issues.append(f"cwres_sd={gof.cwres_sd:.3f} (<{g1.cwres_sd_min})")
     elif gof.cwres_sd > g1.cwres_sd_max:
         issues.append(f"cwres_sd={gof.cwres_sd:.3f} (>{g1.cwres_sd_max})")
@@ -246,31 +251,61 @@ def _check_state_trajectory(result: BackendResult, g1: Gate1Config) -> GateCheck
 
 
 def _check_cwres(result: BackendResult, g1: Gate1Config) -> list[GateCheckResult]:
-    """Check 4: CWRES diagnostics — mean and outlier fraction."""
+    """Check 4: CWRES diagnostics — mean and outlier fraction.
+
+    ``None`` for any aggregate means the fit's residual computation
+    collapsed (e.g. nlmixr2 returned all-NaN CWRES under null-
+    covariate contamination) — see ``GOFMetrics`` docstring. Per
+    ICH M15 §3, an unavailable diagnostic must fail-closed: Gate 1
+    cannot affirm "structural validity" on a fit it cannot
+    diagnose, so the check is reported as ``passed=False`` with an
+    explicit ``observed="unavailable"`` rather than silently
+    passing on a fabricated 0.0 value.
+    """
     gof = result.diagnostics.gof
     checks: list[GateCheckResult] = []
 
-    # CWRES mean should be near 0
-    cwres_ok = abs(gof.cwres_mean) <= g1.cwres_mean_max
-    checks.append(
-        GateCheckResult(
-            check_id="cwres_mean",
-            passed=cwres_ok,
-            observed=gof.cwres_mean,
-            threshold=g1.cwres_mean_max,
+    # CWRES mean should be near 0; None fails closed.
+    if gof.cwres_mean is None:
+        checks.append(
+            GateCheckResult(
+                check_id="cwres_mean",
+                passed=False,
+                observed="unavailable",
+                threshold=g1.cwres_mean_max,
+            )
         )
-    )
+    else:
+        cwres_ok = abs(gof.cwres_mean) <= g1.cwres_mean_max
+        checks.append(
+            GateCheckResult(
+                check_id="cwres_mean",
+                passed=cwres_ok,
+                observed=gof.cwres_mean,
+                threshold=g1.cwres_mean_max,
+            )
+        )
 
-    # Outlier fraction (|CWRES| > 4)
-    outlier_ok = gof.outlier_fraction <= g1.outlier_fraction_max
-    checks.append(
-        GateCheckResult(
-            check_id="cwres_outlier_fraction",
-            passed=outlier_ok,
-            observed=gof.outlier_fraction,
-            threshold=g1.outlier_fraction_max,
+    # Outlier fraction (|CWRES| > 4); None fails closed.
+    if gof.outlier_fraction is None:
+        checks.append(
+            GateCheckResult(
+                check_id="cwres_outlier_fraction",
+                passed=False,
+                observed="unavailable",
+                threshold=g1.outlier_fraction_max,
+            )
         )
-    )
+    else:
+        outlier_ok = gof.outlier_fraction <= g1.outlier_fraction_max
+        checks.append(
+            GateCheckResult(
+                check_id="cwres_outlier_fraction",
+                passed=outlier_ok,
+                observed=gof.outlier_fraction,
+                threshold=g1.outlier_fraction_max,
+            )
+        )
 
     return checks
 
