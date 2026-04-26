@@ -36,8 +36,20 @@ class CanonicalPKSchema(pa.DataFrameModel):
     DUR: Series[float] | None = pa.Field(ge=0.0, nullable=True)
     ADDL: Series[int] | None = pa.Field(ge=0, description="Number of additional doses")
     II: Series[float] | None = pa.Field(ge=0.0, nullable=True, description="Inter-dose interval")
+    # NONMEM steady-state flag. Standard values: 0=none, 1=SS,
+    # 2=SS+superposition. 99 is an ACOP-style "not applicable" sentinel
+    # that the nlmixr2data ACOP-2016 simulated datasets use on
+    # observation / non-dose rows; downstream checks treat 99 as
+    # equivalent to 0 (not-SS). Without 99 in the allowlist the
+    # canonical-PK validator rejects every row of Oral_1CPT /
+    # Bolus_1CPT / Infusion_1CPT (and the MM variants), which makes
+    # those fixtures unusable in Phase-1.
     SS: Series[int] | None = pa.Field(
-        isin=[0, 1, 2], description="Steady-state flag (0=none, 1=SS, 2=SS+superposition)"
+        isin=[0, 1, 2, 99],
+        description=(
+            "Steady-state flag (0=none, 1=SS, 2=SS+superposition, "
+            "99=not applicable / ACOP-style sentinel — treated as 0)"
+        ),
     )
     BLQ_FLAG: Series[int] | None = pa.Field(isin=[0, 1])
     LLOQ: Series[float] | None = pa.Field(ge=0.0, nullable=True)
