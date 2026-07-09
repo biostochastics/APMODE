@@ -1,7 +1,7 @@
 # Suite C Phase-1 fixture — Gentamicin neonatal IOV (1-cmt IV bolus).
 #
 # The DDMoRe gentamicin dataset (`ddmore_gentamicin`) was modelled by
-# Germovsek et al. 2017 (DOI below) using a 1-cmt IV bolus model with
+# Germovsek et al. 2016 (DOI below) using a 1-cmt IV bolus model with
 # IOV on CL plus allometric weight scaling on CL and V. The fixture's
 # `reference_params` capture the DSL-comparable typical-value
 # disposition (CL and V); the IOV / weight covariates the published
@@ -22,12 +22,12 @@ dataset_id: ddmore_gentamicin
 
 reference:
   citation: >
-    Germovsek E, Kent A, Metsvaht T, Lutsar I, Klein N, Standing JF.
-    (2017) Development and Evaluation of a Gentamicin Pharmacokinetic
-    Model That Facilitates Opportunistic Gentamicin Therapeutic Drug
-    Monitoring in Neonates and Infants. Antimicrob Agents Chemother
-    61(8):e02659-16.
-  doi: "10.1128/AAC.02659-16"
+    Germovsek E, Kent A, Metsvaht T, Lutsar I, Klein N, Turner MA,
+    Sharland M, Nielsen EI, Heath PT, Standing JF. (2016) Development
+    and Evaluation of a Gentamicin Pharmacokinetic Model That
+    Facilitates Opportunistic Gentamicin Therapeutic Drug Monitoring
+    in Neonates and Infants. Antimicrob Agents Chemother 60(8):4869-4877.
+  doi: "10.1128/AAC.00577-16"
   population_description: >
     205 neonates (gestational age 24-42 weeks, post-natal age 0-30 days),
     2788 gentamicin serum concentrations from a multi-centre opportunistic
@@ -43,8 +43,8 @@ reference_params:
   V: 1.5       # central volume (L) — approx 0.5 L/kg × 3 kg
   CL: 0.21     # gentamicin clearance (L/h) for a 4-kg full-term neonate
                # (De Cock et al. 2014 typical value, matched against the
-               # Germovsek 2017 1-cmt fit's typical-value CL).
+               # Germovsek 2016 1-cmt fit's typical-value CL).
 
 parameterization_mapping:
-  Cldrug: CL   # De Cock 2014 / Germovsek 2017 typical-value naming
+  Cldrug: CL   # De Cock 2014 / Germovsek 2016 typical-value naming
   Vc: V

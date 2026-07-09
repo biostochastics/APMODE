@@ -19,7 +19,7 @@ parameterization mapping needed to translate published symbol names
 | `mavoglurant_wendling_2015` | oral | 2-cmt + FO ka | [10.1007/s11095-014-1574-1](https://doi.org/10.1007/s11095-014-1574-1) (Wendling et al. 2015, mavoglurant population PK; the Phase-1 fixture uses the simpler 2-cmt approximation, while SumIG absorption remains a v0.7 preview path) |
 | `phenobarbital_grasela_1985` | iv_bolus | 1-cmt | [10.1159/000457062](https://doi.org/10.1159/000457062) (Grasela & Donn 1985, phenobarbital neonatal PK) |
 | `oral_1cpt_acop_2016` | oral | 1-cmt + FO ka | [10.32614/CRAN.package.nlmixr2data](https://doi.org/10.32614/CRAN.package.nlmixr2data) (ACOP 2016 / `nlmixr2data::Oral_1CPT` ground-truth recovery fixture) |
-| `gentamicin_germovsek_2017` | iv_bolus | 1-cmt | [10.1128/AAC.02659-16](https://doi.org/10.1128/AAC.02659-16) (Germovsek et al. 2017, gentamicin IOV neonates) |
+| `gentamicin_germovsek_2017` | iv_bolus | 1-cmt | [10.1128/AAC.00577-16](https://doi.org/10.1128/AAC.00577-16) (Germovsek et al. 2016, gentamicin IOV neonates) |
 | `schoemaker_nlmixr2_tutorial` | iv_bolus | 1-cmt | [10.1002/psp4.12471](https://doi.org/10.1002/psp4.12471) (Schoemaker et al. 2019, `pkBolus1cmt` reference values) |
 
 ## Why the names changed from the original plan draft
