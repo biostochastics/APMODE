@@ -522,14 +522,13 @@
       kint <- exp(lkint)
       kdeg <- koff  # receptor degradation ~ koff initial estimate
       ksyn <- kdeg * R0  # receptor synthesis at baseline
-      kel <- CL / V  # elimination rate constant
       CL <- exp(lCL + eta.CL)
       
       # Compartment dynamics
       d/dt(depot) <- -ka * depot
       # TMDD full binding model (Mager & Jusko 2001)
       L <- centr / V  # drug concentration
-      d/dt(centr) <- ka * depot - kel * centr - kon * L * R * V + koff * RC * V
+      d/dt(centr) <- ka * depot - CL / V * centr - kon * L * R * V + koff * RC * V
       d/dt(R) <- ksyn - kdeg * R - kon * L * R + koff * RC
       d/dt(RC) <- kon * L * R - koff * RC - kint * RC
       R(0) <- R0
@@ -570,7 +569,6 @@
       kint <- exp(lkint)
       kdeg <- kint  # receptor degradation initial estimate
       ksyn <- kdeg * R0
-      kel <- CL / V  # elimination rate constant
       CL <- exp(lCL + eta.CL)
       
       # Compartment dynamics
@@ -589,7 +587,7 @@
       Cfree <- 0.5 * ((Ctot - Rtot - KSS) + sqrt((Ctot - Rtot - KSS)^2 + 4 * KSS * Ctot))
       Rfree <- Rtot * KSS / (KSS + Cfree)
       RC <- Ctot - Cfree
-      d/dt(Atot) <- ka * depot - kel * Cfree * V - kint * RC * V
+      d/dt(Atot) <- ka * depot - CL / V * Cfree * V - kint * RC * V
       d/dt(Rtot) <- ksyn - kdeg * Rfree - kint * RC
       Atot(0) <- 0
       Rtot(0) <- R0

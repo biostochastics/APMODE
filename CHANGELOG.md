@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — TMDD nlmixr2/Stan emitters no longer reference `CL` before it is defined
+
+- **`kel <- CL / V` was emitted before `CL` existed.** `_emit_backtransform()`
+  in `src/apmode/dsl/nlmixr2_emitter.py` emits Absorption, then
+  Distribution, then Elimination sections in that fixed order. The
+  `TMDDCore`/`TMDDQSS` Distribution branches computed
+  `kel <- CL / V` while `CL`'s own back-transform
+  (`CL <- exp(lCL + eta.CL)`) only runs in the Elimination section that
+  follows — so the generated R `model({})` block referenced `CL` one
+  line before it was ever assigned. rxode2 parses `model({})`
+  sequentially; an identifier read before any earlier line defines it is
+  silently reclassified as an expected **data covariate**, so every
+  TMDD fit failed immediately (`Names must include the elements
+  {'TIME','CL'}`) regardless of estimation method — surfacing as an
+  opaque "convergence failure" rather than a parse error. Confirmed live
+  on Suite A scenario A5 (TMDDQSS + LinearElim): now converges
+  (OFV=2602, 6/7 recovered etas < 0.25 RMSE across the suite).
+- **TMDD elimination now routes through `_elimination_rate_expr()` /
+  `_stan_elim_expr()`** instead of a hardcoded linear `kel`, so
+  `TMDDCore`/`TMDDQSS` correctly respect whichever elimination module
+  (`LinearElim`, `MichaelisMenten`, `ParallelLinearMM`, `TimeVaryingElim`)
+  is paired with them. Previously, TMDD + `MichaelisMenten` would have
+  left `CL` completely undefined (not just misordered), and TMDD +
+  `ParallelLinearMM`/`TimeVaryingElim` would have silently ignored the
+  nonlinear/time-varying elimination physics. Mirrored fix applied to
+  the Stan emitter's `_emit_ode_dynamics` TMDD branches.
+- Added `TestNoForwardReferencedLocals` to
+  `tests/unit/test_r_syntax_validation.py`: a pure-Python def-before-use
+  scanner over the emitted `model({})` block that would have caught this
+  bug class, since golden-snapshot text comparisons cannot (the buggy
+  ordering is exactly as textually stable as the fix). Extended the
+  shared spec fixture list with TMDD × `MichaelisMenten` /
+  `ParallelLinearMM` / `TimeVaryingElim` combinations. Updated the two
+  affected golden snapshots (`test_tmdd_core`, `test_tmdd_qss`).
+
 ### Security — clear 24 open Dependabot advisories across 8 transitive dependencies
 
 - `litellm` bumped to `>=1.84.0` (direct `llm` extra dependency): patches

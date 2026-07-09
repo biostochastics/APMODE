@@ -1205,17 +1205,19 @@ def _emit_ode_dynamics(spec: DSLSpec, indent: int = 4) -> list[str]:
         lines.append(f"{pad}dydt[{centr + 1}] = Q2 / V1 * centr - Q2 / V2 * periph1;")
         lines.append(f"{pad}dydt[{centr + 2}] = Q3 / V1 * centr - Q3 / V3 * periph2;")
     elif isinstance(dist_mod, TMDDCore):
-        lines.append(f"{pad}real kel = CL / {vol};")
+        # Elimination acts on free (central) drug via elim_expr — computed
+        # above as _stan_elim_expr(elim_mod, "centr", vol) — so TMDDCore
+        # respects whichever elimination module is paired with it instead
+        # of a hardcoded linear ``kel`` (mirrors the nlmixr2 emitter fix).
         lines.append(f"{pad}real kdeg = koff;  // receptor degradation ~ koff")
         lines.append(f"{pad}real ksyn = kdeg * R0;  // receptor synthesis at steady state")
         lines.append(
-            f"{pad}dydt[{centr}] = {abs_influx} - kel * centr"
+            f"{pad}dydt[{centr}] = {abs_influx} - {elim_expr}"
             f" - kon * conc * R * {vol} + koff * RC * {vol};"
         )
         lines.append(f"{pad}dydt[{centr + 1}] = ksyn - kdeg * R - kon * conc * R + koff * RC;")
         lines.append(f"{pad}dydt[{centr + 2}] = kon * conc * R - koff * RC - kint * RC;")
     elif isinstance(dist_mod, TMDDQSS):
-        lines.append(f"{pad}real kel = CL / {vol};")
         lines.append(f"{pad}real kdeg = kint;  // receptor degradation initial estimate")
         lines.append(f"{pad}real ksyn = kdeg * R0;  // receptor synthesis at steady state")
         lines.append(
@@ -1224,8 +1226,12 @@ def _emit_ode_dynamics(spec: DSLSpec, indent: int = 4) -> list[str]:
         )
         lines.append(f"{pad}real Rfree = Rtot * KD / (KD + Cfree);")
         lines.append(f"{pad}real RC_conc = conc - Cfree;")
+        # Elimination acts on free drug amount (Cfree * vol); resolves to
+        # CL*Cfree for linear, Vmax*Cfree/(Km+Cfree) for MM — see
+        # _stan_elim_expr and the analogous nlmixr2 _emit_tmdd_qss_odes.
+        _qss_elim_expr = _stan_elim_expr(elim_mod, f"(Cfree * {vol})", vol)
         lines.append(
-            f"{pad}dydt[{centr}] = {abs_influx} - kel * Cfree * {vol} - kint * RC_conc * {vol};"
+            f"{pad}dydt[{centr}] = {abs_influx} - {_qss_elim_expr} - kint * RC_conc * {vol};"
         )
         lines.append(f"{pad}dydt[{centr + 1}] = ksyn - kdeg * Rfree - kint * RC_conc;")
 

@@ -635,7 +635,6 @@ def _emit_backtransform(spec: DSLSpec) -> list[str]:
         # kdeg for receptor turnover (Mager & Jusko 2001: ksyn = kdeg * R0)
         lines.append("kdeg <- koff  # receptor degradation ~ koff initial estimate")
         lines.append("ksyn <- kdeg * R0  # receptor synthesis at baseline")
-        lines.append("kel <- CL / V  # elimination rate constant")
     elif isinstance(dist_mod, TMDDQSS):
         lines.append(_bt("V", "lV"))
         lines.append(_bt("R0", "lR0"))
@@ -643,7 +642,6 @@ def _emit_backtransform(spec: DSLSpec) -> list[str]:
         lines.append(_bt("kint", "lkint"))
         lines.append("kdeg <- kint  # receptor degradation initial estimate")
         lines.append("ksyn <- kdeg * R0")
-        lines.append("kel <- CL / V  # elimination rate constant")
 
     # Elimination
     if isinstance(elim_mod, LinearElim):
@@ -812,9 +810,9 @@ def _emit_ode_dynamics(spec: DSLSpec) -> list[str]:
         lines.append("d/dt(periph2) <- Q3 / V1 * centr - Q3 / V3 * periph2")
         lines.append("cp <- centr / V1")
     elif isinstance(dist_mod, TMDDCore):
-        _emit_tmdd_core_odes(lines, _abs_influx)
+        _emit_tmdd_core_odes(lines, _abs_influx, elim_mod)
     elif isinstance(dist_mod, TMDDQSS):
-        _emit_tmdd_qss_odes(lines, _abs_influx)
+        _emit_tmdd_qss_odes(lines, _abs_influx, elim_mod)
 
     return lines
 
@@ -858,33 +856,41 @@ def _elimination_rate_expr(elim_mod: object, cmt: str, vol: str) -> str:
     return f"CL / {vol} * {cmt}"
 
 
-def _emit_tmdd_core_odes(lines: list[str], abs_influx: str) -> None:
+def _emit_tmdd_core_odes(lines: list[str], abs_influx: str, elim_mod: object) -> None:
     """Emit TMDD full binding model ODEs (Mager & Jusko 2001).
 
     Ref: Mager DE, Jusko WJ. J Pharmacokinet Pharmacodyn. 2001;28:507-532.
     States: centr = drug amount, R = free receptor conc, RC = complex conc.
     Drug concentration L = centr/V used in binding terms for dimensional consistency.
-    d/dt(centr) = input - kel*centr - kon*(centr/V)*R*V + koff*RC*V
+    d/dt(centr) = input - elim(centr) - kon*(centr/V)*R*V + koff*RC*V, where elim()
+    is :func:`_elimination_rate_expr` so TMDDCore respects whichever elimination
+    module (linear/MM/parallel/time-varying) is paired with it instead of a
+    hardcoded linear ``kel``.
     d/dt(R) = ksyn - kdeg*R - kon*(centr/V)*R + koff*RC
     d/dt(RC) = kon*(centr/V)*R - (koff + kint)*RC
     where ksyn = kdeg*R0 at steady state.
     """
+    _elim_expr = _elimination_rate_expr(elim_mod, "centr", "V")
     lines.append("# TMDD full binding model (Mager & Jusko 2001)")
     lines.append("L <- centr / V  # drug concentration")
-    lines.append(f"d/dt(centr) <- {abs_influx} - kel * centr - kon * L * R * V + koff * RC * V")
+    lines.append(f"d/dt(centr) <- {abs_influx} - {_elim_expr} - kon * L * R * V + koff * RC * V")
     lines.append("d/dt(R) <- ksyn - kdeg * R - kon * L * R + koff * RC")
     lines.append("d/dt(RC) <- kon * L * R - koff * RC - kint * RC")
     lines.append("R(0) <- R0")
     lines.append("cp <- centr / V")
 
 
-def _emit_tmdd_qss_odes(lines: list[str], abs_influx: str) -> None:
+def _emit_tmdd_qss_odes(lines: list[str], abs_influx: str, elim_mod: object) -> None:
     """Emit TMDD quasi-steady-state ODEs (Gibiansky et al. 2008).
 
     Ref: Gibiansky L, et al. J Pharmacokinet Pharmacodyn. 2008;35:573-591.
     Uses total drug amount (Atot) and total receptor conc (Rtot) as states.
     Free drug concentration solved algebraically from QSS condition.
     KSS = (koff + kint) / kon; KD = koff/kon is used as approximation.
+    Elimination acts on free drug via :func:`_elimination_rate_expr` (cmt=Cfree*V,
+    i.e. free amount, vol=V) so TMDDQSS respects whichever elimination module is
+    paired with it — e.g. linear resolves to ``CL/V*(Cfree*V)`` = ``CL*Cfree``,
+    MM resolves to ``Vmax*Cfree/(Km+Cfree)`` — instead of a hardcoded linear ``kel``.
     """
     lines.append("# TMDD quasi-steady-state (Gibiansky et al. 2008)")
     lines.append("# KSS = (koff + kint)/kon; KD = koff/kon.")
@@ -902,7 +908,8 @@ def _emit_tmdd_qss_odes(lines: list[str], abs_influx: str) -> None:
     )
     lines.append("Rfree <- Rtot * KSS / (KSS + Cfree)")
     lines.append("RC <- Ctot - Cfree")
-    lines.append(f"d/dt(Atot) <- {abs_influx} - kel * Cfree * V - kint * RC * V")
+    _elim_expr = _elimination_rate_expr(elim_mod, "Cfree * V", "V")
+    lines.append(f"d/dt(Atot) <- {abs_influx} - {_elim_expr} - kint * RC * V")
     lines.append("d/dt(Rtot) <- ksyn - kdeg * Rfree - kint * RC")
     lines.append("Atot(0) <- 0")
     lines.append("Rtot(0) <- R0")

@@ -106,6 +106,38 @@ _ALL_SPECS: list[tuple[str, DSLSpec]] = [
             variability=[IIV(params=["CL", "R0"], structure="diagonal")],
         ),
     ),
+    (
+        "tmdd_core_mm",
+        _make_spec(
+            distribution=TMDDCore(),
+            elimination=MichaelisMenten(),
+            variability=[IIV(params=["Vmax", "R0"], structure="diagonal")],
+        ),
+    ),
+    (
+        "tmdd_qss_mm",
+        _make_spec(
+            distribution=TMDDQSS(),
+            elimination=MichaelisMenten(),
+            variability=[IIV(params=["Vmax", "R0"], structure="diagonal")],
+        ),
+    ),
+    (
+        "tmdd_core_parallel_mm",
+        _make_spec(
+            distribution=TMDDCore(),
+            elimination=ParallelLinearMM(),
+            variability=[IIV(params=["CL", "R0"], structure="diagonal")],
+        ),
+    ),
+    (
+        "tmdd_qss_time_varying",
+        _make_spec(
+            distribution=TMDDQSS(),
+            elimination=TimeVaryingElim(decay_fn="exponential"),
+            variability=[IIV(params=["CL", "R0"], structure="diagonal")],
+        ),
+    ),
     ("blq_m3", _make_spec(observation=BLQM3(loq_value=0.1))),
     ("blq_m4", _make_spec(observation=BLQM4(loq_value=0.5))),
     ("additive", _make_spec(observation=Additive(sigma_add=1.0))),
@@ -301,3 +333,102 @@ class TestBasicRSyntax:
         assert "model({" in r_code
         # ini should come before model
         assert r_code.index("ini({") < r_code.index("model({")
+
+
+class TestNoForwardReferencedLocals:
+    """Regression test for the TMDD ``kel <- CL / V`` ordering bug.
+
+    rxode2 parses ``model({})`` sequentially: a bare identifier read on
+    the RHS of an assignment before any earlier line defines it is
+    silently reclassified as an expected *data covariate* rather than a
+    model-local (confirmed via ``nlmixr2est:::.nlmixr0preProcessCovariatesPresent``),
+    which breaks every fit with an opaque "missing data column" error
+    instead of a parse failure. Golden-snapshot text comparisons don't
+    catch this since the buggy ordering is just as textually stable as
+    the fixed ordering. This test tracks line-by-line definitions
+    (``name <- ...``, ``d/dt(name) <- ...``, ``name(0) <- ...``) and
+    flags any structural-parameter identifier referenced before its own
+    defining line.
+    """
+
+    # Identifiers legitimately usable before any local "<-" definition:
+    # rxode2/R builtins that are never assigned via "<-" in the model
+    # block. Function calls (any identifier immediately followed by
+    # "(", e.g. exp(...), sqrt(...), transit(...)) are recognized
+    # structurally in ``_assert_rhs_defined`` rather than enumerated here.
+    _KNOWN_SAFE = {
+        "t",
+        "amt",
+    }
+
+    @staticmethod
+    def _covariate_names(spec: DSLSpec) -> set[str]:
+        """Covariate columns are legitimately data-sourced, not locally defined."""
+        return {cov.covariate for cov in spec.covariates}
+
+    @staticmethod
+    def _ini_defined_names(ini_block: str) -> set[str]:
+        """Names ``ini({})`` declares as THETA/OMEGA/SIGMA parameters.
+
+        These are true model parameters (not sequential locals): unlike
+        ``model({})``, order inside ``ini({})`` doesn't matter and every
+        name declared there (log-domain THETAs like ``lCL``, direct
+        covariate coefficients like ``beta_CL_WT``, residual terms like
+        ``prop.sd``) is available anywhere in ``model({})`` regardless of
+        textual position.
+        """
+        return set(re.findall(r"^\s*(\w+(?:\.\w+)*)\s*<-", ini_block, re.MULTILINE))
+
+    @pytest.mark.parametrize("name,spec", _ALL_SPECS, ids=[s[0] for s in _ALL_SPECS])
+    def test_structural_params_defined_before_use(self, name: str, spec: DSLSpec) -> None:
+        r_code = emit_nlmixr2(spec)
+        ini_block = _extract_block(r_code, "ini")
+        model_block = _extract_block(r_code, "model")
+        safe = self._KNOWN_SAFE | self._covariate_names(spec) | {"eta", "cp"}
+
+        # ODE states are mutually visible regardless of textual d/dt()
+        # order (they're simultaneous, not sequential locals) — e.g.
+        # `d/dt(depot) <- -ka * depot` legitimately self-references.
+        # Only bare algebraic locals (kel, L, Ctot, Cfree, ...) assigned
+        # via plain `<-` are subject to rxode2's strict sequential rule,
+        # which is the category the TMDD `kel` bug fell into.
+        state_names = set(re.findall(r"d/dt\((\w+)\)", model_block))
+        state_names |= set(re.findall(r"(\w+)\(0\)\s*<-", model_block))
+
+        defined: set[str] = self._ini_defined_names(ini_block) | state_names
+        for line in model_block.split("\n"):
+            stripped = line.split("#", 1)[0].strip()
+            if not stripped:
+                continue
+
+            state_match = re.match(r"d/dt\((\w+)\)\s*<-\s*(.+)", stripped)
+            init_match = re.match(r"(\w+)\(0\)\s*<-", stripped)
+            obs_match = re.match(r"\w+\s*~\s*", stripped)
+            assign_match = re.match(r"(\w+(?:\.\w+)*)\s*<-\s*(.+)", stripped)
+
+            if state_match:
+                _lhs, rhs = state_match.groups()
+                self._assert_rhs_defined(rhs, defined, safe, name, stripped)
+            elif init_match or obs_match:
+                continue
+            elif assign_match:
+                lhs, rhs = assign_match.groups()
+                self._assert_rhs_defined(rhs, defined, safe, name, stripped)
+                defined.add(lhs.split(".")[0])
+                defined.add(lhs)
+
+    @staticmethod
+    def _assert_rhs_defined(
+        rhs: str, defined: set[str], safe: set[str], case_name: str, context: str
+    ) -> None:
+        for match in re.finditer(r"[A-Za-z_][A-Za-z0-9_.]*\s*(\()?", rhs):
+            ident = match.group(0).rstrip("( ").rstrip()
+            if match.group(1):
+                continue  # function call (exp(...), sqrt(...), transit(...), ...)
+            base = ident.split(".")[0]
+            if ident in safe or base in safe or ident in defined or base in defined:
+                continue
+            raise AssertionError(
+                f"[{case_name}] identifier {ident!r} used before it is defined "
+                f"anywhere earlier in the model({{}}) block: {context!r}"
+            )
