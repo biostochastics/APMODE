@@ -67,7 +67,10 @@ def scenario_a2() -> DSLSpec:
         absorption=FirstOrder(ka=100.0),  # large ka approximates IV bolus
         distribution=TwoCmt(V1=50.0, V2=80.0, Q=10.0),
         elimination=ParallelLinearMM(CL=3.0, Vmax=100.0, Km=10.0),
-        variability=[IIV(params=["CL", "V1", "Vmax"], structure="diagonal")],
+        # Q (inter-compartmental clearance) has simulated BSV (omega=0.04 in
+        # reference_params.json) and must be estimable here too, or
+        # eta-recovery scoring has nothing to compare it against.
+        variability=[IIV(params=["CL", "V1", "Q", "Vmax"], structure="diagonal")],
         observation=Combined(sigma_prop=0.1, sigma_add=0.5),
     )
 
@@ -83,7 +86,12 @@ def scenario_a3() -> DSLSpec:
         absorption=Transit(n=3, ktr=2.0, ka=1.0),
         distribution=OneCmt(V=60.0),
         elimination=LinearElim(CL=4.0),
-        variability=[IIV(params=["CL", "V", "ktr"], structure="diagonal")],
+        # ka has simulated BSV (omega=0.04 in reference_params.json)
+        # alongside ktr; Savic et al. 2007 retain IIV on ka when adding
+        # transit-compartment IIV rather than dropping it, and it must be
+        # estimable here too or eta-recovery scoring has nothing to
+        # compare it against.
+        variability=[IIV(params=["CL", "V", "ktr", "ka"], structure="diagonal")],
         observation=Proportional(sigma_prop=0.12),
     )
 
