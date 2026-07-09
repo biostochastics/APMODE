@@ -75,6 +75,29 @@ class TestCanonicalPKSchema:
         with pytest.raises(pa.errors.SchemaErrors):
             CanonicalPKSchema.validate(df, lazy=True)
 
+    def test_nan_dv_accepted_when_mdv_1(self) -> None:
+        """A genuinely missing sample (dropout, unscheduled-visit miss) is
+        DV=NaN with MDV=1 in standard NONMEM convention — distinct from
+        BLQ-censoring, which carries a real numeric value (e.g. the LLOQ)
+        with MDV=0. Suite A's A17 scenario (block-structured IIV, additive
+        error) simulates this and previously tripped a not_nullable DV
+        check that predates MDV-aware validation.
+        """
+        df = pd.DataFrame(
+            [
+                self._minimal_observation_row(NMID=1, TIME=1.0),
+                self._minimal_observation_row(NMID=1, TIME=2.0, DV=float("nan"), MDV=1),
+            ]
+        )
+        validated = CanonicalPKSchema.validate(df, lazy=True)
+        assert len(validated) == 2
+
+    def test_nan_dv_rejected_when_mdv_0(self) -> None:
+        """A NaN DV on a row the fit is meant to use (MDV=0) still fails closed."""
+        df = pd.DataFrame([self._minimal_observation_row(DV=float("nan"), MDV=0)])
+        with pytest.raises(pa.errors.SchemaErrors):
+            CanonicalPKSchema.validate(df, lazy=True)
+
     def test_optional_blq_fields(self) -> None:
         df = pd.DataFrame(
             [

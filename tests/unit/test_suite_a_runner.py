@@ -328,6 +328,70 @@ class TestFitErrorContained:
         assert "boom" in (results["A1"].error_message or "")
 
 
+class TestIngestErrorContained:
+    """Regression test: an ingest-time failure must not abort the batch.
+
+    Before this fix, ``run_scenario`` called ``ingest_nonmem_csv`` outside
+    the try/except that only wrapped the fit itself — contradicting its
+    own docstring's "never raises" contract. A schema violation in one
+    scenario's ground-truth CSV (e.g. Suite A's A17, which legitimately
+    has DV=NaN/MDV=1 missing-sample rows that an earlier, over-strict
+    CanonicalPKSchema rejected) propagated uncaught and aborted every
+    scenario after it in ``run_all``.
+    """
+
+    def test_ingest_exception_recorded_not_raised(self, tmp_path: Path) -> None:
+        suite_dir = tmp_path / "suite_a"
+        suite_dir.mkdir(parents=True, exist_ok=True)
+        csv_path = suite_dir / f"{_A1_STEM}.csv"
+        # MDV=0 with a NaN DV violates dv_present_when_mdv_0 — an ingest
+        # error, not a fit error, since it's caught before the fit runs.
+        csv_path.write_text("NMID,TIME,DV,AMT,EVID,MDV,CMT\n1,0,0,100,1,1,1\n1,1,,0,0,0,2\n")
+        eta_path = suite_dir / f"{_A1_STEM}_eta.csv"
+        eta_path.write_text("NMID,eta.ka,eta.V,eta.CL\n1,0.10,0.05,-0.02\n")
+
+        fake_runner = AsyncMock()
+        fake_runner.run = AsyncMock(return_value=_make_backend_result())
+
+        result = asyncio.run(
+            run_scenario(
+                "A1",
+                scenario_a1,
+                runner=fake_runner,
+                suite_dir=suite_dir,
+                seed=1,
+                timeout_seconds=600,
+            )
+        )
+
+        assert result.status == "ingest_error"
+        assert result.error_message is not None
+        fake_runner.run.assert_not_awaited()
+
+    def test_one_scenario_ingest_failure_does_not_abort_run_all(self, tmp_path: Path) -> None:
+        suite_dir = tmp_path / "suite_a"
+        suite_dir.mkdir(parents=True, exist_ok=True)
+        csv_path = suite_dir / f"{_A1_STEM}.csv"
+        csv_path.write_text("NMID,TIME,DV,AMT,EVID,MDV,CMT\n1,0,0,100,1,1,1\n1,1,,0,0,0,2\n")
+        (suite_dir / f"{_A1_STEM}_eta.csv").write_text(
+            "NMID,eta.ka,eta.V,eta.CL\n1,0.10,0.05,-0.02\n"
+        )
+        fake_runner = AsyncMock()
+        fake_runner.run = AsyncMock(return_value=_make_backend_result())
+
+        results = asyncio.run(
+            run_all(
+                [("A1", scenario_a1)],
+                runner=fake_runner,
+                suite_dir=suite_dir,
+                seed=1,
+                timeout_seconds=600,
+            )
+        )
+
+        assert results["A1"].status == "ingest_error"
+
+
 # ---------------------------------------------------------------------------
 # A3 "n" parameter filtering (structural, not calibratable)
 # ---------------------------------------------------------------------------
