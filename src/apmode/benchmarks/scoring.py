@@ -11,6 +11,7 @@ artifacts. Produces BenchmarkScore per case. Supports all three suite types:
 
 from __future__ import annotations
 
+import math
 import statistics
 from typing import TYPE_CHECKING, Literal
 
@@ -46,6 +47,7 @@ __all__ = [
     "is_nca_eligible_per_subject",
     "score_case",
     "score_convergence",
+    "score_eta_recovery",
     "score_parameter_bias",
     "score_parameter_coverage",
     "score_structure_recovery",
@@ -153,6 +155,39 @@ def score_parameter_coverage(
         else:
             coverage[param_name] = None  # Missing estimate
     return coverage
+
+
+def score_eta_recovery(
+    true_eta: dict[str, dict[str, float]],
+    fitted_eta: dict[str, dict[str, float]],
+) -> dict[str, float]:
+    """Per-parameter RMSE between simulated ground-truth and fitted ETAs.
+
+    Only subjects present in both ``true_eta`` and ``fitted_eta`` contribute
+    to a given parameter's RMSE — a subject missing from the fit (e.g. it
+    dropped out of ``per_subject_eta`` due to a partial-convergence subset)
+    is excluded from that parameter's score rather than penalized as a zero,
+    mirroring the missingness handling in :func:`score_parameter_bias`.
+    A parameter with zero overlapping subjects across the two inputs scores
+    ``NaN`` (unscorable), not ``0.0`` — a silent zero would read as "perfect
+    recovery" when the truth is "no data to compare."
+    """
+    all_params: set[str] = set()
+    for subj_etas in true_eta.values():
+        all_params.update(subj_etas)
+
+    result: dict[str, float] = {}
+    for param in all_params:
+        errors: list[float] = []
+        for subject_id, subj_true in true_eta.items():
+            if param not in subj_true:
+                continue
+            subj_fitted = fitted_eta.get(subject_id)
+            if subj_fitted is None or param not in subj_fitted:
+                continue
+            errors.append((subj_fitted[param] - subj_true[param]) ** 2)
+        result[param] = math.sqrt(statistics.fmean(errors)) if errors else float("nan")
+    return result
 
 
 # ---------------------------------------------------------------------------
