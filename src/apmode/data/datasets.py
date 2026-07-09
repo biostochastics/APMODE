@@ -307,6 +307,68 @@ DATASET_REGISTRY: dict[str, DatasetInfo] = {
         ],
         reference="ACOP 2016 simulation.",
     ),
+    "Bolus_1CPTMM": DatasetInfo(
+        name="Bolus_1CPTMM",
+        source="nlmixr2data",
+        description=(
+            "Simulated 1-compartment IV bolus with Michaelis-Menten elimination"
+            " (120 subjects). Ground truth: nonlinear clearance, no absorption phase."
+        ),
+        n_subjects=120,
+        n_rows=7920,
+        route="iv_bolus",
+        elimination="michaelis_menten",
+        compartments=1,
+        columns=[
+            "ID",
+            "TIME",
+            "DV",
+            "LNDV",
+            "MDV",
+            "AMT",
+            "EVID",
+            "DOSE",
+            "V",
+            "VM",
+            "KM",
+            "SD",
+            "CMT",
+        ],
+        reference="ACOP 2016 simulation.",
+    ),
+    "Infusion_2CPTMM": DatasetInfo(
+        name="Infusion_2CPTMM",
+        source="nlmixr2data",
+        description=(
+            "Simulated 2-compartment IV infusion with Michaelis-Menten elimination"
+            " (120 subjects). Ground truth: nonlinear clearance, two-compartment"
+            " distribution, constant-rate infusion dosing."
+        ),
+        n_subjects=120,
+        n_rows=7920,
+        route="iv_infusion",
+        elimination="michaelis_menten",
+        compartments=2,
+        columns=[
+            "ID",
+            "TIME",
+            "DV",
+            "LNDV",
+            "MDV",
+            "AMT",
+            "RATE",
+            "EVID",
+            "DOSE",
+            "V",
+            "VM",
+            "KM",
+            "Q",
+            "V2",
+            "SD",
+            "CMT",
+        ],
+        reference="ACOP 2016 simulation.",
+    ),
     "mavoglurant": DatasetInfo(
         name="mavoglurant",
         source="nlmixr2data",
