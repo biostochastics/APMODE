@@ -83,8 +83,8 @@ class TestSuiteBExtendedCases:
     """Validate extended Suite B case definitions."""
 
     def test_all_cases_count(self) -> None:
-        """7 extended cases (B4-B9, with B5 having two BLQ variants)."""
-        assert len(ALL_EXTENDED_CASES) == 7
+        """8 extended cases (B4-B10, with B5 having two BLQ variants)."""
+        assert len(ALL_EXTENDED_CASES) == 8
 
     def test_all_cases_are_suite_b(self) -> None:
         """All extended cases belong to Suite B."""

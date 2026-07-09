@@ -91,6 +91,7 @@ _DATASET_TO_REGISTRY_KEY: dict[str, str] = {
     "nlmixr2data_theophylline": "theo_sd",
     "nlmixr2data_warfarin": "warfarin",
     "nlmixr2data_mavoglurant": "mavoglurant",
+    "nlmixr2data_bolus_1cptmm": "Bolus_1CPTMM",
 }
 
 # Cases skipped at runtime — NODE backend live wiring is out of v0.6 scope.
@@ -156,15 +157,17 @@ def _build_default_spec(case: BenchmarkCase) -> DSLSpec:
     if case.expected_structure is not None and case.expected_structure.n_compartments is not None:
         n_cmt = case.expected_structure.n_compartments
 
-    distribution = OneCmt(V=50.0) if n_cmt == 1 else TwoCmt(V1=50.0, V2=80.0, Q=10.0)
+    distribution = OneCmt() if n_cmt == 1 else TwoCmt()
+    initial = {"V": 50.0} if n_cmt == 1 else {"V1": 50.0, "V2": 80.0, "Q": 10.0}
     iiv_params = ["CL", "V"] if n_cmt == 1 else ["CL", "V1"]
     return DSLSpec(
         model_id=f"suite_b_{case.case_id}",
-        absorption=FirstOrder(ka=1.0),
+        absorption=FirstOrder(),
         distribution=distribution,
-        elimination=LinearElim(CL=5.0),
+        elimination=LinearElim(),
         variability=[IIV(params=iiv_params, structure="diagonal")],
         observation=Combined(sigma_prop=0.15, sigma_add=0.5),
+        initial={"ka": 1.0, "CL": 5.0, **initial},
     )
 
 

@@ -19,6 +19,7 @@ from apmode.benchmarks.models import (
     PerturbationRecipe,
     PerturbationType,
 )
+from apmode.benchmarks.suite_b_extended import CASE_B10_BOLUS_1CPTMM_MISMATCH
 from apmode.benchmarks.suite_b_runner import (
     SeedRunResult,
     SuiteBCaseResult,
@@ -59,6 +60,39 @@ class TestResolveDatasetCSV:
                 cache_dir=tmp_path / "cache",
                 overrides={},
             )
+
+    def test_resolve_bolus_1cptmm_via_registry(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """B10's dataset_id must be reachable through the registry map.
+
+        Mirrors the file's "no R subprocess" convention: stub
+        ``fetch_dataset`` instead of invoking the real Rscript fetch
+        path, and assert the resolver forwards the correct registry key.
+        """
+        captured: dict[str, object] = {}
+
+        def _fake_fetch_dataset(registry_key: str, cache_dir: Path) -> Path:
+            captured["registry_key"] = registry_key
+            captured["cache_dir"] = cache_dir
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            fake_csv = cache_dir / f"{registry_key}.csv"
+            fake_csv.write_text("ID,TIME,DV\n1,0,0\n")
+            return fake_csv
+
+        monkeypatch.setattr(
+            "apmode.benchmarks.suite_b_runner.fetch_dataset", _fake_fetch_dataset
+        )
+
+        out = resolve_dataset_csv(
+            CASE_B10_BOLUS_1CPTMM_MISMATCH.dataset_id,
+            cache_dir=tmp_path,
+            overrides={},
+        )
+
+        assert captured["registry_key"] == "Bolus_1CPTMM"
+        assert out.name == "Bolus_1CPTMM.csv"
+        assert out.exists()
 
 
 # ---------------------------------------------------------------------------

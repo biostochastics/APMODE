@@ -216,6 +216,26 @@ CASE_B9_GENTA_IOV = BenchmarkCase(
 
 
 # ---------------------------------------------------------------------------
+# B10: Bolus 1-cmt MM-elimination structural-mismatch anchor
+# ---------------------------------------------------------------------------
+
+CASE_B10_BOLUS_1CPTMM_MISMATCH = BenchmarkCase(
+    case_id="b10_bolus_1cptmm_mismatch",
+    suite="B",
+    dataset_id="nlmixr2data_bolus_1cptmm",
+    description=(
+        "Bolus_1CPTMM ground truth has Michaelis-Menten elimination; the "
+        "default DSLSpec builder always assumes LinearElim. Tests whether "
+        "the runner surfaces the resulting fit degradation rather than "
+        "silently reporting a converged-but-misspecified model."
+    ),
+    lane="discovery",
+    policy_file="discovery.json",
+    ci_cadence="nightly",
+)
+
+
+# ---------------------------------------------------------------------------
 # All extended cases
 # ---------------------------------------------------------------------------
 
@@ -227,6 +247,7 @@ ALL_EXTENDED_CASES: list[BenchmarkCase] = [
     CASE_B7_MAVO_SPARSE_ABS,
     CASE_B8_MAVO_NULL_COV,
     CASE_B9_GENTA_IOV,
+    CASE_B10_BOLUS_1CPTMM_MISMATCH,
 ]
 
 # Nightly subset
