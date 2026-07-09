@@ -303,6 +303,7 @@ class OpenRouterClient(OpenAIClient):
             temperature=config.temperature,
             max_tokens=config.max_tokens,
             api_base=config.api_base or "https://openrouter.ai/api/v1",
+            timeout_seconds=config.timeout_seconds,
         )
         super().__init__(patched)
         api_key = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENAI_API_KEY")

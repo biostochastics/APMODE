@@ -86,6 +86,20 @@ def test_openrouter_client_sets_base_url() -> None:
     assert client._config.api_base == "https://openrouter.ai/api/v1"
 
 
+def test_openrouter_client_preserves_custom_config() -> None:
+    config = LLMConfig(
+        model="anthropic/claude-sonnet-4",
+        provider="openrouter",
+        api_base="https://custom.example/v1",
+        timeout_seconds=7.5,
+        max_tokens=512,
+    )
+    client = OpenRouterClient(config)
+    assert client._config.api_base == "https://custom.example/v1"
+    assert client._config.timeout_seconds == 7.5
+    assert client._config.max_tokens == 512
+
+
 # --- Anthropic mock tests ---
 
 

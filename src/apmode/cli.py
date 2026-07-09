@@ -174,6 +174,7 @@ def _try_build_agentic_runner(
     inner_runner: BackendRunner,
     provider: str,
     model_name: str | None,
+    api_base: str | None,
     max_iterations: int,
     lane: str,
     trace_dir: Path,
@@ -189,12 +190,19 @@ def _try_build_agentic_runner(
     # Check if provider is valid
     known = available_providers()
     if provider not in known:
+        if model_name is None:
+            if not quiet:
+                err_console.print(
+                    f"[yellow]Warning:[/] unknown LLM provider '{provider}'. "
+                    f"Available: {', '.join(known)}. Use --model to route via "
+                    "LiteLLM fallback. Agentic backend disabled."
+                )
+            return None
         if not quiet:
             err_console.print(
                 f"[yellow]Warning:[/] unknown LLM provider '{provider}'. "
-                f"Available: {', '.join(known)}. Agentic backend disabled."
+                "Using LiteLLM fallback with the supplied model."
             )
-        return None
 
     # Check for API key (ollama needs none)
     env_keys = _PROVIDER_ENV_KEYS.get(provider, [])
@@ -217,7 +225,7 @@ def _try_build_agentic_runner(
         return None
 
     try:
-        llm_config = LLMConfig(model=resolved_model, provider=provider)
+        llm_config = LLMConfig(model=resolved_model, provider=provider, api_base=api_base)
         llm_client = create_llm_client(llm_config)
     except Exception as e:
         if not quiet:
@@ -365,7 +373,8 @@ def run(
             help=(
                 "LLM provider for the agentic backend. "
                 "[dim]anthropic[/dim], [dim]openai[/dim], [dim]gemini[/dim], "
-                "[dim]ollama[/dim], [dim]openrouter[/dim]."
+                "[dim]ollama[/dim], [dim]openrouter[/dim], or [dim]litellm[/dim] "
+                "fallback-compatible provider names when --model is supplied."
             ),
         ),
     ] = "anthropic",
@@ -377,7 +386,20 @@ def run(
             help=(
                 "LLM model name. Defaults per provider: "
                 "anthropic=claude-sonnet-4-20250514, openai=gpt-4o, "
-                "gemini=gemini-2.5-flash, ollama=qwen3:4b."
+                "gemini=gemini-2.5-flash, ollama=qwen3:4b, "
+                "openrouter=anthropic/claude-sonnet-4-20250514."
+            ),
+        ),
+    ] = None,
+    api_base: Annotated[
+        str | None,
+        typer.Option(
+            "--api-base",
+            envvar="APMODE_API_BASE",
+            rich_help_panel="Agentic LLM (Phase 3)",
+            help=(
+                "Override the LLM API base URL for OpenAI-compatible, Anthropic-compatible, "
+                "LiteLLM, or local provider endpoints."
             ),
         ),
     ] = None,
@@ -816,6 +838,7 @@ def run(
                 inner_runner=runner,
                 provider=provider,
                 model_name=model,
+                api_base=api_base,
                 max_iterations=max_iterations,
                 lane=lane.value,
                 trace_dir=output / "agentic_trace",

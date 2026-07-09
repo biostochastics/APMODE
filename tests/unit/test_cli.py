@@ -873,11 +873,78 @@ class TestRunWiring:
                     "discovery",
                     "--agentic",
                     "--yes",
+                    "--api-base",
+                    "https://llm.example/v1",
                     "--output",
                     str(tmp_path / "disc"),
                 ],
             )
             assert mock_build.called, "agentic must be dispatched on discovery lane"
+            assert mock_build.call_args.kwargs["api_base"] == "https://llm.example/v1"
+
+    def test_agentic_builder_passes_api_base_to_llm_config(self, tmp_path: Path) -> None:
+        from apmode.cli import _try_build_agentic_runner
+
+        captured = {}
+
+        def _fake_create(config: Any) -> MagicMock:
+            captured["config"] = config
+            client = MagicMock()
+
+            async def _complete(*_a: Any, **_k: Any) -> Any:
+                del _a, _k
+
+            client.complete = _complete
+            return client
+
+        with patch("apmode.backends.llm_providers.create_llm_client", side_effect=_fake_create):
+            runner_obj = _try_build_agentic_runner(
+                inner_runner=MagicMock(),
+                provider="ollama",
+                model_name="llama3.1:8b",
+                api_base="http://localhost:11435",
+                max_iterations=1,
+                lane="discovery",
+                trace_dir=tmp_path / "agentic_trace",
+                quiet=True,
+            )
+
+        assert runner_obj is not None
+        assert captured["config"].api_base == "http://localhost:11435"
+
+    def test_agentic_builder_allows_litellm_fallback_provider(self, tmp_path: Path) -> None:
+        from apmode.cli import _try_build_agentic_runner
+
+        captured = {}
+
+        def _fake_create(config: Any) -> MagicMock:
+            captured["config"] = config
+            client = MagicMock()
+
+            async def _complete(*_a: Any, **_k: Any) -> Any:
+                del _a, _k
+
+            client.complete = _complete
+            return client
+
+        with (
+            patch("apmode.backends.llm_providers.available_providers", return_value=["litellm"]),
+            patch("apmode.backends.llm_providers.create_llm_client", side_effect=_fake_create),
+        ):
+            runner_obj = _try_build_agentic_runner(
+                inner_runner=MagicMock(),
+                provider="custom_provider",
+                model_name="custom/model",
+                api_base=None,
+                max_iterations=1,
+                lane="discovery",
+                trace_dir=tmp_path / "agentic_trace",
+                quiet=True,
+            )
+
+        assert runner_obj is not None
+        assert captured["config"].provider == "custom_provider"
+        assert captured["config"].model == "custom/model"
 
 
 # ---------------------------------------------------------------------------
