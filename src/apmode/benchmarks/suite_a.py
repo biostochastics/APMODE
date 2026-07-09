@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Benchmark Suite A: Synthetic Recovery scenarios (PRD §5).
 
-Seven scenarios with known ground truth for structure/parameter recovery testing.
+Scenarios with known ground truth for structure/parameter recovery testing.
 Each function returns a DSLSpec with realistic PK parameter values.
 
 Scenarios:
@@ -13,6 +13,19 @@ Scenarios:
   A6: 1-cmt oral, allometric WT + categorical renal covariates on CL
   A7: 2-cmt, NODE nonlinear absorption (ground truth: saturable Michaelis-Menten)
   A8: 1-cmt oral, monotonic autoinduction of CL + allometric CRCL covariate
+  A9: Erlang absorption (n=3 explicit chain), 1-cmt, linear elimination
+  A10: Parallel first-order absorption (two simultaneous depots), 1-cmt, linear
+  A11: Mixed first-order + zero-order absorption, 1-cmt, linear elimination
+  A12: Standalone zero-order absorption, 1-cmt, linear elimination
+  A13: Sum-of-two-Inverse-Gaussians (SumIG, k=2) absorption, 1-cmt, linear
+  A14: Three-compartment IV bolus, linear elimination
+  A15: TMDD full binding model (Mager & Jusko 2001), 3-arm dose-ranging design
+  A16: 1-cmt oral, time-varying (exponential decay) elimination, unconfounded
+  A17: 1-cmt oral, block-structured IIV (CL-V correlation) + additive error
+  A18: 1-cmt oral, inter-occasion variability (IOV) on ka across 3 occasions
+  A19: 1-cmt oral, maturation-form (Hill/sigmoid) covariate on CL
+  A20a/A20b: 1-cmt oral, elevated-LLOQ BLQ (shared ground truth, M3 vs M4)
+  A21: TMDD QSS, multi-analyte observation (free drug + total target)
 """
 
 from __future__ import annotations
@@ -21,22 +34,38 @@ import csv
 from pathlib import Path
 
 from apmode.dsl.ast_models import (
+    BLQM3,
+    BLQM4,
     IIV,
+    IOV,
     TMDDQSS,
+    Additive,
     Combined,
     CovariateLink,
     DSLSpec,
+    Erlang,
     ExperimentalFlags,
     FirstOrder,
+    IVBolus,
     LinearElim,
     MichaelisMenten,
+    MixedFirstZero,
     NODEAbsorption,
+    ObservationEndpoint,
+    OccasionByDoseEpoch,
     OneCmt,
+    ParallelFirstOrder,
     ParallelLinearMM,
     Proportional,
+    SumIG,
+    ThreeCmt,
+    TimeVaryingElim,
+    TMDDCore,
     Transit,
     TwoCmt,
+    ZeroOrder,
 )
+from apmode.dsl.priors import LogNormalPrior, PriorSpec
 
 
 def scenario_a1() -> DSLSpec:
@@ -241,6 +270,336 @@ def scenario_a8() -> DSLSpec:
     )
 
 
+def scenario_a9() -> DSLSpec:
+    """A9: Erlang absorption (n=3 explicit chain), 1-cmt, linear elimination.
+
+    Distinct from A3's Transit (rxode2 ``transit(n, mtt)``, gamma
+    interpolation + terminal ka): Erlang lowers to an explicit
+    n-compartment chain with the last state feeding centr directly, no
+    terminal ka (ADR-0003 D2).
+    """
+    return DSLSpec(
+        model_id="suite_a_scenario_a9",
+        absorption=Erlang(n=3),
+        distribution=OneCmt(),
+        elimination=LinearElim(),
+        variability=[IIV(params=["CL", "V", "ktr"], structure="diagonal")],
+        observation=Proportional(sigma_prop=0.12),
+        initial={"ktr": 2.0, "V": 65.0, "CL": 4.5},
+    )
+
+
+def scenario_a10() -> DSLSpec:
+    """A10: Parallel first-order absorption (two simultaneous depots), 1-cmt.
+
+    Two SIMULTANEOUS first-order depots (fast ka1, slow ka2) with a
+    bioavailability-fraction split, distinct from A11's mixed first+zero-
+    order mechanism. ``frac`` is fixed (no IIV) for identifiability.
+    """
+    return DSLSpec(
+        model_id="suite_a_scenario_a10",
+        absorption=ParallelFirstOrder(),
+        distribution=OneCmt(),
+        elimination=LinearElim(),
+        variability=[IIV(params=["CL", "V", "ka1", "ka2"], structure="diagonal")],
+        observation=Proportional(sigma_prop=0.10),
+        initial={"ka1": 2.0, "ka2": 0.3, "frac": 0.6, "V": 60.0, "CL": 4.0},
+    )
+
+
+def scenario_a11() -> DSLSpec:
+    """A11: Mixed first-order + zero-order absorption, 1-cmt, linear elimination.
+
+    A first-order depot and a separate zero-order depot (modeled duration)
+    both feed centr, split by a fixed bioavailability fraction.
+    """
+    return DSLSpec(
+        model_id="suite_a_scenario_a11",
+        absorption=MixedFirstZero(),
+        distribution=OneCmt(),
+        elimination=LinearElim(),
+        variability=[IIV(params=["CL", "V", "ka", "dur"], structure="diagonal")],
+        observation=Proportional(sigma_prop=0.10),
+        initial={"ka": 1.5, "dur": 3.0, "frac": 0.55, "V": 60.0, "CL": 4.0},
+    )
+
+
+def scenario_a12() -> DSLSpec:
+    """A12: Standalone zero-order absorption, 1-cmt, linear elimination.
+
+    Dose enters centr directly at a constant rate over ``dur`` hours
+    (matrix-controlled-release-style oral, or constant-rate extravascular
+    input) via rxode2's modeled-duration infusion mechanism.
+    """
+    return DSLSpec(
+        model_id="suite_a_scenario_a12",
+        absorption=ZeroOrder(),
+        distribution=OneCmt(),
+        elimination=LinearElim(),
+        variability=[IIV(params=["CL", "V", "dur"], structure="diagonal")],
+        observation=Proportional(sigma_prop=0.12),
+        initial={"dur": 4.0, "V": 55.0, "CL": 4.5},
+    )
+
+
+def scenario_a13() -> DSLSpec:
+    """A13: Sum-of-two-Inverse-Gaussians (SumIG, k=2) absorption, 1-cmt.
+
+    Closed-form analytical input rate (Csajka 2005; Weiss & Wegner 2022),
+    single-dose only (v0.7 limitation, ADR-0003 D4). Per SumIG's own
+    identifiability note (ADR-0003 D5), disposition (CL/V) is kept fixed
+    (no IIV) here -- only the absorption-shape parameter MT_1 carries BSV.
+    ``k>=2`` requires disposition to be marked fixed-external in the
+    validator's cross-module check (ADR-0003 D5) -- the ``priors`` below
+    are the spec-side signal for that (as opposed to an
+    ``EvidenceManifest.disposition_fixed`` flag set at dispatch time).
+    """
+    return DSLSpec(
+        model_id="suite_a_scenario_a13",
+        absorption=SumIG(k=2),
+        distribution=OneCmt(),
+        elimination=LinearElim(),
+        variability=[IIV(params=["MT_1"], structure="diagonal")],
+        observation=Proportional(sigma_prop=0.15),
+        priors=[
+            PriorSpec(
+                target="CL",
+                family=LogNormalPrior(mu=1.386294, sigma=0.01),  # log(4.0)
+                source="fixed_external",
+                justification="Benchmark ground truth: CL fixed at the R-simulated "
+                "population value per SumIG(k=2) disposition-fixed identifiability "
+                "constraint (ADR-0003 D5).",
+            ),
+            PriorSpec(
+                target="V",
+                family=LogNormalPrior(mu=3.688879, sigma=0.01),  # log(40.0)
+                source="fixed_external",
+                justification="Benchmark ground truth: V fixed at the R-simulated "
+                "population value per SumIG(k=2) disposition-fixed identifiability "
+                "constraint (ADR-0003 D5).",
+            ),
+        ],
+        initial={
+            "MT_1": 0.5,
+            "MT_2": 3.5,
+            "RD2_1": 0.3,
+            "RD2_2": 2.0,
+            "weight_1": 0.55,
+            "V": 40.0,
+            "CL": 4.0,
+        },
+    )
+
+
+def scenario_a14() -> DSLSpec:
+    """A14: Three-compartment IV bolus, linear elimination.
+
+    Dose routes directly to centr (IVBolus, no depot). Sampling in the R
+    ground truth extends to 120h with several points beyond 24h so the deep
+    third compartment (V3/Q3) is identifiable and the fit cannot collapse
+    to an apparent 2-cmt model.
+    """
+    return DSLSpec(
+        model_id="suite_a_scenario_a14",
+        absorption=IVBolus(),
+        distribution=ThreeCmt(),
+        elimination=LinearElim(),
+        variability=[IIV(params=["CL", "V1", "Q2", "Q3"], structure="diagonal")],
+        observation=Proportional(sigma_prop=0.15),
+        initial={"V1": 5.0, "V2": 15.0, "V3": 100.0, "Q2": 8.0, "Q3": 1.5, "CL": 5.0},
+    )
+
+
+def scenario_a15() -> DSLSpec:
+    """A15: TMDD full binding model (Mager & Jusko 2001), dose-ranging design.
+
+    Distinct from A5's QSS approximation. The R ground truth uses a 3-arm
+    dose-ranging design (low/mid/high, ~20 subjects/arm) spanning
+    sub-saturating to saturating target exposure so kon/koff are
+    identifiable from the shape of the nonlinear-clearance transition — a
+    single dose level cannot separate linear from target-mediated
+    clearance. Binding-kinetic parameters (kon, koff, kint) carry no IIV.
+    """
+    return DSLSpec(
+        model_id="suite_a_scenario_a15",
+        absorption=FirstOrder(),
+        distribution=TMDDCore(),
+        elimination=LinearElim(),
+        variability=[IIV(params=["CL", "V", "R0", "ka"], structure="diagonal")],
+        observation=Proportional(sigma_prop=0.15),
+        initial={
+            "ka": 0.02,
+            "V": 3.0,
+            "R0": 20.0,
+            "kon": 0.1,
+            "koff": 0.1,
+            "kint": 0.03,
+            "CL": 0.01,
+        },
+    )
+
+
+def scenario_a16() -> DSLSpec:
+    """A16: 1-cmt oral, time-varying (exponential decay) elimination, unconfounded.
+
+    ``CL(t) = CL * exp(-kdecay * t)`` with NO covariate attached to CL,
+    unlike A8's covariate-confounded autoinduction — isolates whether
+    structure search attributes the CL drift to time-varying kinetics
+    rather than defaulting to a covariate explanation. R ground truth uses
+    repeated (QD x 14 days) dosing so decay is separable from distribution.
+    """
+    return DSLSpec(
+        model_id="suite_a_scenario_a16",
+        absorption=FirstOrder(),
+        distribution=OneCmt(),
+        elimination=TimeVaryingElim(decay_fn="exponential"),
+        variability=[IIV(params=["CL", "V", "ka"], structure="diagonal")],
+        observation=Proportional(sigma_prop=0.10),
+        initial={"ka": 1.2, "V": 50.0, "CL": 5.0, "kdecay": 0.0015},
+    )
+
+
+def scenario_a17() -> DSLSpec:
+    """A17: 1-cmt oral, block-structured IIV (CL-V correlation) + additive error.
+
+    Genuine positive CL-V correlation (~0.4) combined with an Additive
+    (not proportional) residual error model. Variability structure and
+    observation error are orthogonal DSL axes, so combining them in one
+    spec does not confound either one's estimability.
+    """
+    return DSLSpec(
+        model_id="suite_a_scenario_a17",
+        absorption=FirstOrder(),
+        distribution=OneCmt(),
+        elimination=LinearElim(),
+        variability=[
+            IIV(params=["CL", "V"], structure="block"),
+            IIV(params=["ka"], structure="diagonal"),
+        ],
+        observation=Additive(sigma_add=0.5),
+        initial={"ka": 1.3, "V": 12.0, "CL": 4.5},
+    )
+
+
+def scenario_a18() -> DSLSpec:
+    """A18: 1-cmt oral, inter-occasion variability (IOV) on ka across 3 occasions.
+
+    Three dosing occasions spaced a week apart (negligible carryover given
+    the elimination half-life at these CL/V values). The R ground truth's
+    occasion-indexing data column is named ``OCC`` (rxode2 itself requires
+    the internal simulation column to be literally ``occ`` lowercase;
+    verified empirically -- see ``simulate_all.R::sim_A18``).
+    """
+    return DSLSpec(
+        model_id="suite_a_scenario_a18",
+        absorption=FirstOrder(),
+        distribution=OneCmt(),
+        elimination=LinearElim(),
+        variability=[
+            IIV(params=["CL", "V", "ka"], structure="diagonal"),
+            IOV(params=["ka"], occasions=OccasionByDoseEpoch(column="OCC")),
+        ],
+        observation=Proportional(sigma_prop=0.10),
+        initial={"ka": 1.2, "V": 55.0, "CL": 4.0},
+    )
+
+
+def scenario_a19() -> DSLSpec:
+    """A19: 1-cmt oral, maturation-form (Hill/sigmoid) covariate on CL.
+
+    ``CL(PNA) = CL0 * PNA^hill / (PNA^hill + TM50^hill)``, postnatal age
+    (PNA, weeks) drawn from uniform(2, 40) in the R ground truth so the
+    cohort meaningfully straddles TM50=15 (populating the sigmoid's steep
+    region, not just its flat asymptotes).
+    """
+    return DSLSpec(
+        model_id="suite_a_scenario_a19",
+        absorption=FirstOrder(),
+        distribution=OneCmt(),
+        elimination=LinearElim(),
+        variability=[IIV(params=["CL", "V", "ka"], structure="diagonal")],
+        covariates=[
+            CovariateLink(param="CL", covariate="PNA", form="maturation", tm50=15.0, hill=3.0),
+        ],
+        observation=Proportional(sigma_prop=0.12),
+        initial={"ka": 1.0, "V": 25.0, "CL": 6.0},
+    )
+
+
+def scenario_a20a() -> DSLSpec:
+    """A20a: 1-cmt oral, elevated-LLOQ BLQ via M3 (left-censoring).
+
+    Shares the SAME simulated CSV ground truth as :func:`scenario_a20b`
+    (elevated LLOQ=0.12 vs. A2/A4/A5's ~0.01-0.02, chosen for a ~15-30%
+    BLQ fraction) — M3 vs. M4 differ only in the emitted likelihood, not
+    the raw M3-style data encoding used by the R simulator. Scored as a
+    paired benchmark unit (A20a/A20b) against identical ground truth, not
+    as two independent recovery tests.
+    """
+    return DSLSpec(
+        model_id="suite_a_scenario_a20a",
+        absorption=FirstOrder(),
+        distribution=OneCmt(),
+        elimination=LinearElim(),
+        variability=[IIV(params=["CL", "V", "ka"], structure="diagonal")],
+        observation=BLQM3(loq_value=0.12, error_model="proportional", sigma_prop=0.15),
+        initial={"ka": 1.5, "V": 70.0, "CL": 6.0},
+    )
+
+
+def scenario_a20b() -> DSLSpec:
+    """A20b: 1-cmt oral, elevated-LLOQ BLQ via M4 (censoring, positive constraint).
+
+    See :func:`scenario_a20a` docstring — shares the same ground truth CSV.
+    """
+    return DSLSpec(
+        model_id="suite_a_scenario_a20b",
+        absorption=FirstOrder(),
+        distribution=OneCmt(),
+        elimination=LinearElim(),
+        variability=[IIV(params=["CL", "V", "ka"], structure="diagonal")],
+        observation=BLQM4(loq_value=0.12, error_model="proportional", sigma_prop=0.15),
+        initial={"ka": 1.5, "V": 70.0, "CL": 6.0},
+    )
+
+
+def scenario_a21() -> DSLSpec:
+    """A21: TMDD QSS, multi-analyte observation (free drug + total target).
+
+    Same structural values as A5. The DSL's only multi-analyte-eligible
+    pairing -- ``DSLSpec.known_prediction_variables()`` only exposes
+    ``"C_target_total"`` (the Rtot state) under TMDDQSS; there is no
+    metabolite/parent-child compartment topology in the DSL yet. DVID=1
+    is free-drug concentration (``C_central``), DVID=2 is total-target
+    concentration (``C_target_total``).
+    """
+    return DSLSpec(
+        model_id="suite_a_scenario_a21",
+        absorption=FirstOrder(),
+        distribution=TMDDQSS(),
+        elimination=LinearElim(),
+        variability=[
+            IIV(params=["CL", "V", "R0", "KD", "kint", "ka"], structure="diagonal"),
+        ],
+        observation=Proportional(sigma_prop=0.15),
+        observations={
+            "free_drug": ObservationEndpoint(
+                name="free_drug",
+                dvid=1,
+                prediction="C_central",
+                error=Proportional(sigma_prop=0.15),
+            ),
+            "total_target": ObservationEndpoint(
+                name="total_target",
+                dvid=2,
+                prediction="C_target_total",
+                error=Proportional(sigma_prop=0.12),
+            ),
+        },
+        initial={"ka": 0.02, "V": 3.5, "R0": 10.0, "KD": 1.0, "kint": 0.03, "CL": 0.015},
+    )
+
+
 # Reference parameter values (ground truth for recovery testing).
 # Keys match structural_param_names() for each scenario's DSLSpec.
 REFERENCE_PARAMS: dict[str, dict[str, float]] = {
@@ -253,6 +612,38 @@ REFERENCE_PARAMS: dict[str, dict[str, float]] = {
     # A7: mechanistic params only (NODE absorption weights are not named structural params)
     "A7": {"V1": 50.0, "V2": 80.0, "Q": 10.0, "CL": 4.0},
     "A8": {"ka": 1.822, "V": 29.964, "CL": 4.482},
+    # Erlang.n is structural (set by transform, not estimated) — unlike
+    # Transit.n, it is not in structural_param_names(); only ktr is.
+    "A9": {"ktr": 2.0, "V": 65.0, "CL": 4.5},
+    "A10": {"ka1": 2.0, "ka2": 0.3, "frac": 0.6, "V": 60.0, "CL": 4.0},
+    "A11": {"ka": 1.5, "dur": 3.0, "frac": 0.55, "V": 60.0, "CL": 4.0},
+    "A12": {"dur": 4.0, "V": 55.0, "CL": 4.5},
+    "A13": {
+        "MT_1": 0.5,
+        "MT_2": 3.5,
+        "RD2_1": 0.3,
+        "RD2_2": 2.0,
+        "weight_1": 0.55,
+        "V": 40.0,
+        "CL": 4.0,
+    },
+    "A14": {"V1": 5.0, "V2": 15.0, "V3": 100.0, "Q2": 8.0, "Q3": 1.5, "CL": 5.0},
+    "A15": {
+        "ka": 0.02,
+        "V": 3.0,
+        "R0": 20.0,
+        "kon": 0.1,
+        "koff": 0.1,
+        "kint": 0.03,
+        "CL": 0.01,
+    },
+    "A16": {"ka": 1.2, "V": 50.0, "CL": 5.0, "kdecay": 0.0015},
+    "A17": {"ka": 1.3, "V": 12.0, "CL": 4.5},
+    "A18": {"ka": 1.2, "V": 55.0, "CL": 4.0},
+    "A19": {"ka": 1.0, "V": 25.0, "CL": 6.0},
+    "A20a": {"ka": 1.5, "V": 70.0, "CL": 6.0},
+    "A20b": {"ka": 1.5, "V": 70.0, "CL": 6.0},
+    "A21": {"ka": 0.02, "V": 3.5, "R0": 10.0, "KD": 1.0, "kint": 0.03, "CL": 0.015},
 }
 
 # Ground truth absorption parameters for A7 (not in DSLSpec structural params,
@@ -286,6 +677,24 @@ ALL_SCENARIOS = [
     ("A6", scenario_a6),
     ("A7", scenario_a7),
     ("A8", scenario_a8),
+    ("A9", scenario_a9),
+    ("A10", scenario_a10),
+    ("A11", scenario_a11),
+    ("A12", scenario_a12),
+    ("A13", scenario_a13),
+    ("A14", scenario_a14),
+    ("A15", scenario_a15),
+    ("A16", scenario_a16),
+    ("A17", scenario_a17),
+    ("A18", scenario_a18),
+    ("A19", scenario_a19),
+    # A20a/A20b: paired benchmark unit sharing one simulated ground-truth
+    # CSV (a20_1cmt_oral_blq_elevated_lloq.csv) -- see scenario_a20a
+    # docstring. Two DSLSpec factories so both BLQ_M3 and BLQ_M4 close
+    # their respective capability tags against identical ground truth.
+    ("A20a", scenario_a20a),
+    ("A20b", scenario_a20b),
+    ("A21", scenario_a21),
 ]
 
 
@@ -302,6 +711,21 @@ SCENARIO_FILENAME_STEMS: dict[str, str] = {
     "A6": "a6_1cmt_covariates",
     "A7": "a7_2cmt_node_absorption",
     "A8": "a8_1cmt_autoind_covariate",
+    "A9": "a9_erlang_absorption",
+    "A10": "a10_parallel_first_order",
+    "A11": "a11_mixed_first_zero_absorption",
+    "A12": "a12_zero_order_absorption",
+    "A13": "a13_sum_ig_absorption",
+    "A14": "a14_3cmt_iv_bolus",
+    "A15": "a15_tmdd_core_dosearms",
+    "A16": "a16_time_varying_elim_unconfounded",
+    "A17": "a17_block_iiv_additive_error",
+    "A18": "a18_iov_occasions",
+    "A19": "a19_maturation_covariate",
+    # A20a/A20b share one ground-truth CSV -- see ALL_SCENARIOS comment.
+    "A20a": "a20_1cmt_oral_blq_elevated_lloq",
+    "A20b": "a20_1cmt_oral_blq_elevated_lloq",
+    "A21": "a21_tmdd_qss_multi_analyte",
 }
 
 

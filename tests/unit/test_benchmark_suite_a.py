@@ -21,28 +21,43 @@ from apmode.benchmarks.suite_a import (
     scenario_a6,
     scenario_a7,
     scenario_a8,
+    scenario_a13,
 )
 from apmode.dsl.nlmixr2_emitter import emit_nlmixr2
 from apmode.dsl.validator import validate_dsl
 
 SUITE_A_DIR = Path(__file__).resolve().parents[2] / "benchmarks" / "suite_a"
 
-# Classical scenarios (no NODE modules) — can be validated for submission lane
-# and compiled to R code.
-CLASSICAL_SCENARIOS = [(n, f) for n, f in ALL_SCENARIOS if n != "A7"]
-
-# NODE scenarios — validated for discovery lane only, no R compilation.
+# A13 (SumIG) is not admissible in the submission lane (ADR-0003 D6, same
+# family of restriction as NODE modules) but is otherwise a normal,
+# non-NODE, R-compilable spec — it gets its own bucket rather than being
+# folded into either CLASSICAL_SCENARIOS (submission-lane tested) or
+# NODE_SCENARIOS (has_node_modules()-asserting).
 NODE_SCENARIOS = [(n, f) for n, f in ALL_SCENARIOS if n == "A7"]
+DISCOVERY_ONLY_NON_NODE_SCENARIOS = [(n, f) for n, f in ALL_SCENARIOS if n == "A13"]
+
+# Every non-NODE scenario, including A13 — used for compilation and
+# reference-param-membership checks that don't depend on lane admissibility.
+NON_NODE_SCENARIOS = [(n, f) for n, f in ALL_SCENARIOS if n != "A7"]
+
+# Classical scenarios (no NODE modules, submission-lane admissible) — can be
+# validated for submission lane and compiled to R code.
+CLASSICAL_SCENARIOS = [(n, f) for n, f in NON_NODE_SCENARIOS if n != "A13"]
+
+# SumIG(k=2)'s MT_2 is a *derived* quantity in the emitted R code
+# (``MT_2 <- MT_1 + delta_MT_2``, positive-difference parameterisation to
+# prevent label switching — ADR-0003) rather than a literal token, so its
+# REFERENCE_PARAMS value does not appear verbatim in emitted R code the way
+# every other scenario's calibration values do. Maps (scenario, param) ->
+# the literal value that *does* appear instead.
+_VALUE_LITERAL_OVERRIDES: dict[tuple[str, str], float] = {
+    ("A13", "MT_2"): REFERENCE_PARAMS["A13"]["MT_2"] - REFERENCE_PARAMS["A13"]["MT_1"],
+}
 
 
-@pytest.mark.parametrize("name,factory", CLASSICAL_SCENARIOS)
-class TestSuiteAClassicalScenarios:
-    """Classical (non-NODE) scenario validation and compilation."""
-
-    def test_spec_is_valid(self, name: str, factory: object) -> None:
-        spec = factory()  # type: ignore[operator]
-        errors = validate_dsl(spec, lane=Lane.SUBMISSION)
-        assert errors == [], f"Scenario {name} validation errors: {errors}"
+@pytest.mark.parametrize("name,factory", NON_NODE_SCENARIOS)
+class TestSuiteANonNodeCompilation:
+    """Compilation + reference-param checks shared by every non-NODE scenario."""
 
     def test_spec_compiles_to_r(self, name: str, factory: object) -> None:
         spec = factory()  # type: ignore[operator]
@@ -63,15 +78,45 @@ class TestSuiteAClassicalScenarios:
         """Verify that REFERENCE_PARAMS values appear in emitted R code.
 
         Integer params (like Transit n) are emitted without decimal point.
+        See ``_VALUE_LITERAL_OVERRIDES`` for the one scenario (A13/MT_2)
+        whose reference value is not a literal token in the emitted code.
         """
         spec = factory()  # type: ignore[operator]
         ref = REFERENCE_PARAMS[name]
         r_code = emit_nlmixr2(spec)
         for param, value in ref.items():
+            value = _VALUE_LITERAL_OVERRIDES.get((name, param), value)
             # Try both float and int representations
             int_val = int(value) if value == int(value) else None
             found = str(value) in r_code or (int_val is not None and str(int_val) in r_code)
             assert found, f"Scenario {name}: param {param}={value} not found in emitted R code"
+
+
+@pytest.mark.parametrize("name,factory", CLASSICAL_SCENARIOS)
+class TestSuiteAClassicalScenarios:
+    """Submission-lane admissibility for classical (non-NODE, non-SumIG) scenarios."""
+
+    def test_spec_is_valid(self, name: str, factory: object) -> None:
+        spec = factory()  # type: ignore[operator]
+        errors = validate_dsl(spec, lane=Lane.SUBMISSION)
+        assert errors == [], f"Scenario {name} validation errors: {errors}"
+
+
+@pytest.mark.parametrize("name,factory", DISCOVERY_ONLY_NON_NODE_SCENARIOS)
+class TestSuiteADiscoveryOnlyScenarios:
+    """Scenarios admissible only in Discovery/Optimization lanes (not Submission)."""
+
+    def test_spec_is_valid_discovery(self, name: str, factory: object) -> None:
+        spec = factory()  # type: ignore[operator]
+        errors = validate_dsl(spec, lane=Lane.DISCOVERY)
+        assert errors == [], f"Scenario {name} validation errors: {errors}"
+
+    def test_spec_not_valid_submission(self, name: str, factory: object) -> None:
+        """Confirms the lane restriction this bucket exists for is real,
+        not just an artifact of how the test groups happen to be split."""
+        spec = factory()  # type: ignore[operator]
+        errors = validate_dsl(spec, lane=Lane.SUBMISSION)
+        assert errors != [], f"Scenario {name} unexpectedly valid in submission lane"
 
 
 @pytest.mark.parametrize("name,factory", NODE_SCENARIOS)
@@ -183,14 +228,44 @@ class TestSuiteASpecific:
             "A6",
             "A7",
             "A8",
+            "A9",
+            "A10",
+            "A11",
+            "A12",
+            "A13",
+            "A14",
+            "A15",
+            "A16",
+            "A17",
+            "A18",
+            "A19",
+            "A20a",
+            "A20b",
+            "A21",
         }
-        for name, factory in CLASSICAL_SCENARIOS:
+        for name, factory in NON_NODE_SCENARIOS:
             spec = factory()
             struct = set(spec.structural_param_names())
             ref = set(REFERENCE_PARAMS[name].keys())
             assert ref == struct, (
                 f"Scenario {name}: reference params {ref} != structural params {struct}"
             )
+
+    def test_a20a_a20b_share_filename_stem(self) -> None:
+        """A20a/A20b are a paired benchmark unit against identical ground
+        truth (BLQ_M3 vs. BLQ_M4), not two independent recovery tests."""
+        from apmode.benchmarks.suite_a import SCENARIO_FILENAME_STEMS
+
+        assert SCENARIO_FILENAME_STEMS["A20a"] == SCENARIO_FILENAME_STEMS["A20b"]
+
+    def test_a13_disposition_fixed_via_priors(self) -> None:
+        """SumIG(k=2) requires disposition (CL/V) fixed externally
+        (ADR-0003 D5); the benchmark spec supplies this via
+        source="fixed_external" priors rather than a dispatch-time
+        EvidenceManifest flag."""
+        spec = scenario_a13()
+        fixed_targets = {p.target for p in spec.priors if p.source == "fixed_external"}
+        assert {"CL", "V"}.issubset(fixed_targets)
 
 
 class TestLoadReferenceEta:

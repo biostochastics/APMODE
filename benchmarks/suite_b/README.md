@@ -8,7 +8,7 @@
 ## Cases
 
 The case definitions live in `src/apmode/benchmarks/suite_b_extended.py`
-(B4–B9 real-data anchors) and `src/apmode/benchmarks/suite_b.py` (B1–B3
+(B4–B12 real-data anchors) and `src/apmode/benchmarks/suite_b.py` (B1–B3
 NODE specs, currently mock-only — live wiring is out of v0.6 scope and
 the runner skips them with a clear `skipped=True` flag).
 
@@ -20,7 +20,12 @@ the runner skips them with a clear `skipped=True` flag).
 | `b6_mavoglurant_outliers5` | `nlmixr2data_mavoglurant` | inject_outliers @ 5% |
 | `b7_mavoglurant_sparse_absorption` | `nlmixr2data_mavoglurant` | remove_absorption_samples |
 | `b8_mavoglurant_null_covariates` | `nlmixr2data_mavoglurant` | add_null_covariates × 5 |
-| `b9_gentamicin_iov` | `ddmore_gentamicin` | none (IOV challenge) |
+| `b9_gentamicin_iov` | `ddmore_gentamicin` | none (IOV challenge; 5-fold subject-level CV via `split_strategy`) |
+| `b10_bolus_1cptmm_mismatch` | `nlmixr2data_bolus_1cptmm` | none (structural-mismatch anchor) |
+| `b11_mavoglurant_protocol_pooling` | `nlmixr2data_mavoglurant` | add_protocol_pooling (2 protocols, varied sampling + LLOQ) |
+| `b12_mavoglurant_covmiss10` | `nlmixr2data_mavoglurant` | inject_covariate_missingness @ 10% |
+| `b12_mavoglurant_covmiss20` | `nlmixr2data_mavoglurant` | inject_covariate_missingness @ 20% |
+| `b12_mavoglurant_covmiss30` | `nlmixr2data_mavoglurant` | inject_covariate_missingness @ 30% |
 
 ## Running the live runner
 
@@ -110,3 +115,18 @@ specific RNG signature will exhibit large `cross_seed_cv_max`.
 The current threshold (0.50) is intentionally loose — a v0.7 follow-up
 should narrow it once enough seeds have been observed across the
 B-case roster to set a data-driven ceiling.
+
+## `split_strategy` wiring
+
+Cases that declare a `split_strategy` (currently only `b9_gentamicin_iov`,
+`subject_level_kfold` at 5 folds) drive genuine cross-validation instead of
+the default cross-seed sweep: the runner splits subjects into disjoint
+train/test CSVs per fold (`apmode.data.splitter.k_fold_split`) and threads
+the held-out test CSV through `Nlmixr2Runner.run(test_data_path=...)`, one
+fit per fold, mirroring the pattern in
+`apmode.benchmarks.suite_c_phase1_runner.run_fixture`. Each `seed_results`
+entry in `suite_b_results.json` carries a `fold` index (`null` for cases
+without a `split_strategy`) so the two run modes are distinguishable in the
+output. `split_strategy.method` values other than `subject_level_kfold`
+raise `NotImplementedError` rather than silently falling back to the
+single-fit path.

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Benchmark Suite B Extended: Real-data anchors with controlled perturbations.
 
-Extends the original Suite B (B1-B3) with real-data scenarios (B4-B9):
+Extends the original Suite B (B1-B3) with real-data scenarios (B4-B12):
 
   B4: Theophylline NODE anchor — continuity with Bräm 2023
   B5: Mavoglurant BLQ robustness — inject 25%/40% BLQ censoring
@@ -9,6 +9,9 @@ Extends the original Suite B (B1-B3) with real-data scenarios (B4-B9):
   B7: Mavoglurant sparse absorption — remove pre-Tmax samples
   B8: Mavoglurant null covariate FP rate — add 5 random covariates
   B9: Gentamicin IOV challenge — inter-occasion variability on CL
+  B10: Bolus 1-cmt MM-elimination structural-mismatch anchor
+  B11: Mavoglurant protocol pooling — heterogeneous sampling/LLOQ (PRD §5)
+  B12: Mavoglurant covariate missingness — 10%/20%/30% MCAR sweep (PRD §5)
 
 Architecture:
   - Real datasets enter as *anchors* for controlled perturbations
@@ -236,6 +239,122 @@ CASE_B10_BOLUS_1CPTMM_MISMATCH = BenchmarkCase(
 
 
 # ---------------------------------------------------------------------------
+# B11: Mavoglurant protocol pooling (PRD §5 "protocol heterogeneity handling")
+# ---------------------------------------------------------------------------
+
+CASE_B11_MAVO_PROTOCOL_POOLING = BenchmarkCase(
+    case_id="b11_mavoglurant_protocol_pooling",
+    suite="B",
+    dataset_id="nlmixr2data_mavoglurant",
+    description=(
+        "Mavoglurant subjects relabeled across 2 synthetic protocols with "
+        "per-protocol sampling density and LLOQ variation. Tests robustness "
+        "to pooled-study protocol heterogeneity (PRD §5)."
+    ),
+    lane="discovery",
+    policy_file="discovery.json",
+    perturbations=[
+        PerturbationRecipe(
+            perturbation_type=PerturbationType.ADD_PROTOCOL_POOLING,
+            n_protocols=2,
+            vary_sampling=True,
+            vary_lloq=True,
+            seed=48,
+        ),
+    ],
+    expected_structure=ExpectedStructure(
+        distribution="TwoCmt",
+        n_compartments=2,
+    ),
+    ci_cadence="nightly",
+)
+
+
+# ---------------------------------------------------------------------------
+# B12: Mavoglurant covariate missingness sweep
+# (PRD §5 "inject covariate missingness at 10%, 20%, 30%")
+# ---------------------------------------------------------------------------
+
+_B12_COVARIATE_COLUMNS = ["AGE", "SEX", "WT", "HT"]
+
+CASE_B12_MAVO_COVMISS10 = BenchmarkCase(
+    case_id="b12_mavoglurant_covmiss10",
+    suite="B",
+    dataset_id="nlmixr2data_mavoglurant",
+    description=(
+        "Mavoglurant with 10% MCAR covariate missingness on AGE/SEX/WT/HT. "
+        "Tests covariate-handling robustness under mild missingness burden."
+    ),
+    lane="submission",
+    policy_file="submission.json",
+    perturbations=[
+        PerturbationRecipe(
+            perturbation_type=PerturbationType.INJECT_COVARIATE_MISSINGNESS,
+            covariate_missingness_fraction=0.10,
+            covariate_missingness_columns=_B12_COVARIATE_COLUMNS,
+            seed=49,
+        ),
+    ],
+    expected_structure=ExpectedStructure(
+        distribution="TwoCmt",
+        n_compartments=2,
+    ),
+    ci_cadence="nightly",
+)
+
+CASE_B12_MAVO_COVMISS20 = BenchmarkCase(
+    case_id="b12_mavoglurant_covmiss20",
+    suite="B",
+    dataset_id="nlmixr2data_mavoglurant",
+    description=(
+        "Mavoglurant with 20% MCAR covariate missingness on AGE/SEX/WT/HT. "
+        "Tests covariate-handling robustness under moderate missingness burden."
+    ),
+    lane="submission",
+    policy_file="submission.json",
+    perturbations=[
+        PerturbationRecipe(
+            perturbation_type=PerturbationType.INJECT_COVARIATE_MISSINGNESS,
+            covariate_missingness_fraction=0.20,
+            covariate_missingness_columns=_B12_COVARIATE_COLUMNS,
+            seed=50,
+        ),
+    ],
+    expected_structure=ExpectedStructure(
+        distribution="TwoCmt",
+        n_compartments=2,
+    ),
+    ci_cadence="nightly",
+)
+
+CASE_B12_MAVO_COVMISS30 = BenchmarkCase(
+    case_id="b12_mavoglurant_covmiss30",
+    suite="B",
+    dataset_id="nlmixr2data_mavoglurant",
+    description=(
+        "Mavoglurant with 30% MCAR covariate missingness on AGE/SEX/WT/HT. "
+        "Stress test: heavy missingness burden should not collapse "
+        "structural selection or covariate-model stability."
+    ),
+    lane="submission",
+    policy_file="submission.json",
+    perturbations=[
+        PerturbationRecipe(
+            perturbation_type=PerturbationType.INJECT_COVARIATE_MISSINGNESS,
+            covariate_missingness_fraction=0.30,
+            covariate_missingness_columns=_B12_COVARIATE_COLUMNS,
+            seed=51,
+        ),
+    ],
+    expected_structure=ExpectedStructure(
+        distribution="TwoCmt",
+        n_compartments=2,
+    ),
+    ci_cadence="weekly",
+)
+
+
+# ---------------------------------------------------------------------------
 # All extended cases
 # ---------------------------------------------------------------------------
 
@@ -248,6 +367,10 @@ ALL_EXTENDED_CASES: list[BenchmarkCase] = [
     CASE_B8_MAVO_NULL_COV,
     CASE_B9_GENTA_IOV,
     CASE_B10_BOLUS_1CPTMM_MISMATCH,
+    CASE_B11_MAVO_PROTOCOL_POOLING,
+    CASE_B12_MAVO_COVMISS10,
+    CASE_B12_MAVO_COVMISS20,
+    CASE_B12_MAVO_COVMISS30,
 ]
 
 # Nightly subset

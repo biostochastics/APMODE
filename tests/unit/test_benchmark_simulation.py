@@ -33,7 +33,31 @@ class TestSimulationScaffolding:
     def test_simulation_script_has_all_scenarios(self) -> None:
         script = SUITE_A_DIR / "simulate_all.R"
         content = script.read_text()
-        for scenario_id in ("A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8"):
+        # A20a/A20b share one R simulator function (sim_A20) -- see
+        # SCENARIO_FILENAME_STEMS / ALL_SCENARIOS in suite_a.py.
+        for scenario_id in (
+            "A1",
+            "A2",
+            "A3",
+            "A4",
+            "A5",
+            "A6",
+            "A7",
+            "A8",
+            "A9",
+            "A10",
+            "A11",
+            "A12",
+            "A13",
+            "A14",
+            "A15",
+            "A16",
+            "A17",
+            "A18",
+            "A19",
+            "A20",
+            "A21",
+        ):
             assert f"sim_{scenario_id} <-" in content, (
                 f"Simulator function sim_{scenario_id} missing"
             )
@@ -107,8 +131,37 @@ class TestMultiReplicateDiscovery:
             SCENARIO_FILENAME_STEMS as stems,
         )
 
-        assert set(stems) == {"A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8"}
+        assert set(stems) == {
+            "A1",
+            "A2",
+            "A3",
+            "A4",
+            "A5",
+            "A6",
+            "A7",
+            "A8",
+            "A9",
+            "A10",
+            "A11",
+            "A12",
+            "A13",
+            "A14",
+            "A15",
+            "A16",
+            "A17",
+            "A18",
+            "A19",
+            "A20a",
+            "A20b",
+            "A21",
+        }
         for scenario_id, stem in stems.items():
+            # A20a/A20b share the "a20_..." stem (paired benchmark unit
+            # against one CSV) so the naive lower-cased-id prefix check
+            # doesn't apply to them.
+            if scenario_id in ("A20a", "A20b"):
+                assert stem == "a20_1cmt_oral_blq_elevated_lloq"
+                continue
             assert stem.startswith(scenario_id.lower() + "_"), (
                 f"Stem {stem} should start with {scenario_id.lower()}_"
             )
@@ -159,7 +212,7 @@ class TestMultiReplicateDiscovery:
         from apmode.benchmarks.suite_a import scenario_dataset_paths
 
         try:
-            scenario_dataset_paths(tmp_path, "A9")
+            scenario_dataset_paths(tmp_path, "A99")
         except KeyError:
             return
         raise AssertionError("Unknown scenario id should raise KeyError")
@@ -189,5 +242,7 @@ class TestMultiReplicateDiscovery:
             return  # scaffolding not present in this checkout
         manifest = suite_a_manifest(SUITE_A_DIR)
         # Whether the sim has been run in this checkout is optional; the
-        # manifest must at least return the eight expected keys.
-        assert set(manifest) == {"A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8"}
+        # manifest must at least return every expected key.
+        from apmode.benchmarks.suite_a import SCENARIO_FILENAME_STEMS
+
+        assert set(manifest) == set(SCENARIO_FILENAME_STEMS)

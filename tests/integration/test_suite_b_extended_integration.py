@@ -21,6 +21,10 @@ from apmode.benchmarks.suite_b_extended import (
     CASE_B7_MAVO_SPARSE_ABS,
     CASE_B8_MAVO_NULL_COV,
     CASE_B9_GENTA_IOV,
+    CASE_B11_MAVO_PROTOCOL_POOLING,
+    CASE_B12_MAVO_COVMISS10,
+    CASE_B12_MAVO_COVMISS20,
+    CASE_B12_MAVO_COVMISS30,
     NIGHTLY_CASES,
 )
 
@@ -83,8 +87,9 @@ class TestSuiteBExtendedCases:
     """Validate extended Suite B case definitions."""
 
     def test_all_cases_count(self) -> None:
-        """8 extended cases (B4-B10, with B5 having two BLQ variants)."""
-        assert len(ALL_EXTENDED_CASES) == 8
+        """12 extended cases (B4-B12: B5 has two BLQ variants, B12 has three
+        covariate-missingness fraction variants)."""
+        assert len(ALL_EXTENDED_CASES) == 12
 
     def test_all_cases_are_suite_b(self) -> None:
         """All extended cases belong to Suite B."""
@@ -119,6 +124,29 @@ class TestSuiteBExtendedCases:
         """Nightly subset includes only per_pr and nightly cadence cases."""
         for case in NIGHTLY_CASES:
             assert case.ci_cadence in ("per_pr", "nightly")
+
+    def test_b11_has_protocol_pooling_perturbation(self) -> None:
+        """B11 pools mavoglurant into 2 protocols with varied sampling/LLOQ."""
+        assert len(CASE_B11_MAVO_PROTOCOL_POOLING.perturbations) == 1
+        recipe = CASE_B11_MAVO_PROTOCOL_POOLING.perturbations[0]
+        assert recipe.perturbation_type == PerturbationType.ADD_PROTOCOL_POOLING
+        assert recipe.n_protocols == 2
+        assert recipe.vary_sampling is True
+        assert recipe.vary_lloq is True
+
+    def test_b12_covariate_missingness_sweep(self) -> None:
+        """B12 sweeps covariate missingness at 10/20/30% (PRD §5)."""
+        cases_and_fractions = [
+            (CASE_B12_MAVO_COVMISS10, 0.10),
+            (CASE_B12_MAVO_COVMISS20, 0.20),
+            (CASE_B12_MAVO_COVMISS30, 0.30),
+        ]
+        for case, fraction in cases_and_fractions:
+            assert len(case.perturbations) == 1
+            recipe = case.perturbations[0]
+            assert recipe.perturbation_type == PerturbationType.INJECT_COVARIATE_MISSINGNESS
+            assert recipe.covariate_missingness_fraction == pytest.approx(fraction)
+            assert set(recipe.covariate_missingness_columns) == {"AGE", "SEX", "WT", "HT"}
 
 
 # ---------------------------------------------------------------------------

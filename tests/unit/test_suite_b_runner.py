@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from apmode.benchmarks.models import (
@@ -18,12 +19,14 @@ from apmode.benchmarks.models import (
     ExpectedStructure,
     PerturbationRecipe,
     PerturbationType,
+    SplitStrategy,
 )
-from apmode.benchmarks.suite_b_extended import CASE_B10_BOLUS_1CPTMM_MISMATCH
+from apmode.benchmarks.suite_b_extended import CASE_B9_GENTA_IOV, CASE_B10_BOLUS_1CPTMM_MISMATCH
 from apmode.benchmarks.suite_b_runner import (
     SeedRunResult,
     SuiteBCaseResult,
     _build_default_spec,
+    _build_run_plan,
     _compute_cross_seed_stability,
     resolve_dataset_csv,
     write_results_atomic,
@@ -196,6 +199,105 @@ class TestComputeCrossSeedStability:
         assert "CL" not in cv_per_param
         assert "ka" in cv_per_param
         assert cv_max is not None
+
+
+# ---------------------------------------------------------------------------
+# Run plan construction (split_strategy wiring)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildRunPlan:
+    """Pure-Python tests for _build_run_plan — no R subprocess.
+
+    Covers the split_strategy wiring fix: cases without a split_strategy
+    keep the legacy N_seeds cross-seed sweep on the full perturbed
+    dataset; cases with a subject_level_kfold split_strategy (B9) get one
+    plan entry per CV fold with disjoint train/test subject CSVs.
+    """
+
+    def _synthetic_df(self, n_subjects: int = 20) -> pd.DataFrame:
+        rows: list[dict[str, float | int]] = []
+        for subj in range(1, n_subjects + 1):
+            rows.append({"NMID": subj, "TIME": 0.0, "DV": 0.0, "EVID": 1, "MDV": 1, "AMT": 100.0})
+            rows.append({"NMID": subj, "TIME": 1.0, "DV": 5.0, "EVID": 0, "MDV": 0, "AMT": 0.0})
+        return pd.DataFrame(rows)
+
+    def _no_split_case(self) -> BenchmarkCase:
+        return BenchmarkCase(
+            case_id="b_test_no_split",
+            suite="B",
+            dataset_id="nlmixr2data_theophylline",
+            description="test",
+            lane="submission",
+            policy_file="submission.json",
+        )
+
+    def test_no_split_strategy_returns_legacy_seed_sweep(self, tmp_path: Path) -> None:
+        case = self._no_split_case()
+        perturbed_csv = tmp_path / "perturbed.csv"
+        perturbed_csv.write_text("NMID,TIME,DV\n1,0,0\n")
+        plans = _build_run_plan(
+            case,
+            df=self._synthetic_df(),
+            perturbed_csv=perturbed_csv,
+            case_dir=tmp_path,
+            n_seeds=3,
+            base_seed=100,
+        )
+        assert len(plans) == 3
+        assert [p.seed for p in plans] == [100, 100 + 7919, 100 + 2 * 7919]
+        for p in plans:
+            assert p.data_path == perturbed_csv
+            assert p.test_data_path is None
+            assert p.fold is None
+
+    def test_split_strategy_subject_level_kfold_builds_disjoint_folds(
+        self, tmp_path: Path
+    ) -> None:
+        case = CASE_B9_GENTA_IOV
+        assert case.split_strategy is not None  # narrows type for mypy
+        df = self._synthetic_df(n_subjects=20)
+        plans = _build_run_plan(
+            case,
+            df=df,
+            perturbed_csv=tmp_path / "unused_perturbed.csv",
+            case_dir=tmp_path,
+            n_seeds=3,  # ignored on this branch
+            base_seed=999,  # ignored on this branch
+        )
+        assert len(plans) == case.split_strategy.n_folds == 5
+        assert [p.fold for p in plans] == [0, 1, 2, 3, 4]
+        expected_seeds = [case.split_strategy.seed + 7919 * i for i in range(5)]
+        assert [p.seed for p in plans] == expected_seeds
+
+        for p in plans:
+            assert p.test_data_path is not None
+            assert p.data_path.exists()
+            assert p.test_data_path.exists()
+            train_ids = set(pd.read_csv(p.data_path)["NMID"])
+            test_ids = set(pd.read_csv(p.test_data_path)["NMID"])
+            assert train_ids.isdisjoint(test_ids)
+            assert train_ids | test_ids == set(range(1, 21))
+
+    def test_unsupported_split_strategy_method_raises(self, tmp_path: Path) -> None:
+        case = BenchmarkCase(
+            case_id="b_test_unsupported_split",
+            suite="B",
+            dataset_id="nlmixr2data_theophylline",
+            description="test",
+            lane="discovery",
+            policy_file="discovery.json",
+            split_strategy=SplitStrategy(method="time_based", n_folds=3, seed=1),
+        )
+        with pytest.raises(NotImplementedError, match="subject_level_kfold"):
+            _build_run_plan(
+                case,
+                df=self._synthetic_df(),
+                perturbed_csv=tmp_path / "unused.csv",
+                case_dir=tmp_path,
+                n_seeds=3,
+                base_seed=1,
+            )
 
 
 # ---------------------------------------------------------------------------

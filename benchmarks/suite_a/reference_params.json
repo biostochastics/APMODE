@@ -1,6 +1,6 @@
 {
   "_meta": {
-    "generated_at": "2026-07-08",
+    "generated_at": "2026-07-09",
     "sigma_convention": "SD on data scale (not variance)",
     "replicates_generated": 1,
     "seed_base": 20260413
@@ -172,5 +172,231 @@
     "time_averaged_CL_over_48h_no_covariate": 3.872,
     "static_target_bias_pct": -13.66,
     "note_on_bias": "APMODE has no autoinduction primitive; a static-CL fit will recover a time-averaged CL of 3.872 vs true CL0 = 4.482. Bias = -13.66% (not -17.9%). Use time-averaged target when benchmarking, not CL0."
+  },
+  "A9": {
+    "n": 3,
+    "ktr": 2,
+    "V": 65,
+    "CL": 4.5,
+    "omega": {
+      "ktr": 0.09,
+      "V": 0.04,
+      "CL": 0.09
+    },
+    "sigma": {
+      "prop": 0.12
+    }
+  },
+  "A10": {
+    "ka1": 2,
+    "ka2": 0.3,
+    "frac": 0.6,
+    "V": 60,
+    "CL": 4,
+    "omega": {
+      "ka1": 0.09,
+      "ka2": 0.09,
+      "V": 0.04,
+      "CL": 0.09
+    },
+    "sigma": {
+      "prop": 0.1
+    }
+  },
+  "A11": {
+    "ka": 1.5,
+    "dur": 3,
+    "frac": 0.55,
+    "V": 60,
+    "CL": 4,
+    "omega": {
+      "ka": 0.09,
+      "dur": 0.04,
+      "V": 0.04,
+      "CL": 0.09
+    },
+    "sigma": {
+      "prop": 0.1
+    }
+  },
+  "A12": {
+    "dur": 4,
+    "V": 55,
+    "CL": 4.5,
+    "omega": {
+      "dur": 0.06,
+      "V": 0.04,
+      "CL": 0.09
+    },
+    "sigma": {
+      "prop": 0.12
+    }
+  },
+  "A13": {
+    "CL": 4,
+    "V": 40,
+    "MT_1": 0.5,
+    "MT_2": 3.5,
+    "RD2_1": 0.3,
+    "RD2_2": 2,
+    "weight_1": 0.55,
+    "omega": {
+      "MT_1": 0.04
+    },
+    "sigma": {
+      "prop": 0.15
+    },
+    "note": "CL/V/RD2_1/RD2_2/weight_1 fixed (no IIV) per SumIG identifiability constraint (ADR-0003 D5); only MT_1 carries BSV. k=2 fixed (v0.7)."
+  },
+  "A14": {
+    "V1": 5,
+    "V2": 15,
+    "V3": 100,
+    "Q2": 8,
+    "Q3": 1.5,
+    "CL": 5,
+    "omega": {
+      "V1": 0.04,
+      "Q2": 0.06,
+      "Q3": 0.06,
+      "CL": 0.09
+    },
+    "sigma": {
+      "prop": 0.15
+    }
+  },
+  "A15": {
+    "ka": 0.02,
+    "V": 3,
+    "R0": 20,
+    "kon": 0.1,
+    "koff": 0.1,
+    "kint": 0.03,
+    "CL": 0.01,
+    "dose_arms_mg": [
+      10,
+      60,
+      400
+    ],
+    "omega": {
+      "ka": 0.04,
+      "V": 0.04,
+      "R0": 0.06,
+      "CL": 0.09
+    },
+    "sigma": {
+      "prop": 0.15
+    },
+    "note": "kon/koff/kint fixed (no IIV); 3 dose arms (~20 subjects each) span sub-saturating to saturating target engagement."
+  },
+  "A16": {
+    "ka": 1.2,
+    "V": 50,
+    "CL0": 5,
+    "kdecay": 0.0015,
+    "dosing": "200 mg QD x 14 days (t=0..312h)",
+    "omega": {
+      "ka": 0.06,
+      "V": 0.04,
+      "CL": 0.09
+    },
+    "sigma": {
+      "prop": 0.1
+    },
+    "note": "CL(t) = CL0*exp(-kdecay*t), unconfounded (no covariate). kdecay fixed (no IIV). ~35% CL decline over the 336h window."
+  },
+  "A17": {
+    "ka": 1.3,
+    "V": 12,
+    "CL": 4.5,
+    "omega": {
+      "ka": 0.09,
+      "CL": 0.09,
+      "V": 0.04,
+      "CL_V_cov": 0.024,
+      "CL_V_corr": 0.4
+    },
+    "sigma": {
+      "add": 0.5
+    },
+    "note": "Block-structured IIV on CL+V (genuine correlation) with an Additive (not proportional) residual error model."
+  },
+  "A18": {
+    "ka": 1.2,
+    "V": 55,
+    "CL": 4,
+    "occasions": 3,
+    "occasion_spacing_h": 168,
+    "omega": {
+      "ka": 0.09,
+      "V": 0.04,
+      "CL": 0.09
+    },
+    "iov": {
+      "ka": 0.06
+    },
+    "sigma": {
+      "prop": 0.1
+    },
+    "note": "IOV on ka across 3 occasions (occ column, week-spaced dosing)."
+  },
+  "A19": {
+    "ka": 1,
+    "CL0": 6,
+    "V": 25,
+    "hill": 3,
+    "TM50": 15,
+    "covariates": {
+      "PNA_on_CL": {
+        "form": "maturation",
+        "hill": 3,
+        "tm50": 15,
+        "note": "CL(PNA) = CL0 * PNA^hill / (PNA^hill + TM50^hill); PNA ~ U(2, 40) weeks"
+      }
+    },
+    "omega": {
+      "ka": 0.09,
+      "CL": 0.09,
+      "V": 0.04
+    },
+    "sigma": {
+      "prop": 0.12
+    }
+  },
+  "A20": {
+    "ka": 1.5,
+    "V": 70,
+    "CL": 6,
+    "omega": {
+      "ka": 0.09,
+      "V": 0.04,
+      "CL": 0.09
+    },
+    "sigma": {
+      "prop": 0.15
+    },
+    "lloq": 0.12,
+    "note": "Shared ground truth for BOTH BLQ_M3 and BLQ_M4 DSLSpec.observation (scenario_a20a/scenario_a20b)."
+  },
+  "A21": {
+    "ka": 0.02,
+    "V": 3.5,
+    "R0": 10,
+    "KD": 1,
+    "kint": 0.03,
+    "CL": 0.015,
+    "omega": {
+      "ka": 0.04,
+      "V": 0.04,
+      "CL": 0.09,
+      "R0": 0.06,
+      "KD": 0.04,
+      "kint": 0.06
+    },
+    "sigma": {
+      "free_drug_prop": 0.15,
+      "total_target_prop": 0.12
+    },
+    "note": "Multi-analyte: DVID=1 free drug (cp), DVID=2 total target (Rtot). Same structural values as A5 (TMDD QSS)."
   }
 }

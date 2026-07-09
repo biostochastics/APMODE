@@ -5,7 +5,7 @@ Three-tier benchmark system:
 
   Suite A:          Synthetic recovery (A1-A8) — known ground truth
   Suite A-External: Schoemaker 2019 standard grid (nlmixr2data, 12 datasets)
-  Suite B:          NODE validation (B1-B3, mock) + real-data anchors (B4-B9)
+  Suite B:          NODE validation (B1-B3, mock) + real-data anchors (B4-B12)
   Suite C Phase 1:  Literature-anchor head-to-head (5 MLE + 2 Bayesian)
   Suite C Phase 2:  Synthetic-panel methodology validation (NOT a real-expert
                     benchmark; the blinded-human-expert head-to-head is gated

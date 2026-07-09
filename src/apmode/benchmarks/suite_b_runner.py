@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Suite B live-fit runner — perturbation resilience + cross-seed stability.
 
-For each Suite B case (B4-B9 in :mod:`apmode.benchmarks.suite_b_extended`)
+For each Suite B case (B4-B12 in :mod:`apmode.benchmarks.suite_b_extended`)
 this module composes the existing pieces into a single producer of
 ``benchmarks/suite_b/suite_b_results.json``:
 
@@ -15,15 +15,25 @@ this module composes the existing pieces into a single producer of
      to the expected ``n_compartments``). Cases that need NODE
      elimination/absorption (B1-B3) are skipped — the NODE backend live
      wiring is out of v0.6 scope.
-  4. Run **N_seeds** independent fits via :class:`Nlmixr2Runner.run`,
-     each with a different RNG seed. The PRD §5 R8 cross-seed
-     diagnostic-leakage monitor wants to see whether the proposed
-     structure / parameter estimates are stable under seed
-     perturbation; we record the per-seed estimates plus the across-
-     seed coefficient of variation on each parameter and surface that
-     as ``cross_seed_cv_max``.
+  4. Build a per-fit plan via :func:`_build_run_plan` and run each entry
+     through :class:`Nlmixr2Runner.run`. Two mutually exclusive shapes:
+
+       * No ``case.split_strategy`` declared (B4-B8, B10-B12): **N_seeds**
+         independent fits on the full perturbed dataset, each with a
+         different RNG seed. The PRD §5 R8 cross-seed diagnostic-leakage
+         monitor wants to see whether the proposed structure / parameter
+         estimates are stable under seed perturbation; we record the
+         per-seed estimates plus the across-seed coefficient of variation
+         on each parameter and surface that as ``cross_seed_cv_max``.
+       * ``case.split_strategy`` declared (B9's ``subject_level_kfold``):
+         one fit per CV fold, each trained on the fold's train-subject
+         CSV with the disjoint test-subject CSV wired through as
+         ``test_data_path`` — mirroring
+         :func:`apmode.benchmarks.suite_c_phase1_runner.run_fixture`'s
+         subject-level k-fold pattern. The same cross-seed-CV aggregation
+         doubles as a cross-fold stability signal in this branch.
   5. Score: convergence rate, dispatch correctness (when declared),
-     structural recovery (when declared), and the cross-seed
+     structural recovery (when declared), and the cross-seed/cross-fold
      stability metric.
   6. Atomic write of the inputs JSON (tmp + rename) so a SIGKILL
      mid-write never half-writes the file the CI workflow ingests.
@@ -37,6 +47,10 @@ Honest mode contracts inherited from Suite C Phase 1:
   pipeline so seed differences are the only source of cross-seed NPE
   variance — without this, simulator noise would dominate the seed-
   stability signal.
+* Subject-level k-fold guarantees train/test subject IDs are disjoint
+  (asserted as defence in depth) — required because rxode2 partitions
+  simulations by ID and a colliding ID would silently recycle the train
+  subject's posthoc ETA instead of a held-out draw.
 
 CLI
 ---
@@ -65,6 +79,7 @@ from apmode.benchmarks.perturbations import apply_perturbations
 from apmode.benchmarks.suite_b_extended import ALL_EXTENDED_CASES
 from apmode.data.datasets import DATASET_REGISTRY, fetch_dataset
 from apmode.data.ingest import ingest_nonmem_csv
+from apmode.data.splitter import k_fold_split
 from apmode.dsl.ast_models import (
     IIV,
     Combined,
@@ -77,6 +92,8 @@ from apmode.dsl.ast_models import (
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+
+    import pandas as pd
 
     from apmode.benchmarks.models import BenchmarkCase
     from apmode.bundle.models import BackendResult
@@ -110,7 +127,12 @@ _EXIT_FIT_FAILURE: int = 5
 
 @dataclass(frozen=True)
 class SeedRunResult:
-    """Per-seed fit result for the cross-seed stability monitor."""
+    """Per-seed (or per-fold) fit result for the cross-seed stability monitor.
+
+    ``fold`` is ``None`` for the legacy cross-seed-sweep path (no
+    ``split_strategy`` declared) and the 0-indexed CV fold number when
+    the case declares a ``split_strategy`` — see :func:`_build_run_plan`.
+    """
 
     seed: int
     converged: bool
@@ -118,6 +140,7 @@ class SeedRunResult:
     parameter_estimates: dict[str, float]
     bic: float | None
     wall_time_seconds: float
+    fold: int | None = None
 
 
 @dataclass(frozen=True)
@@ -263,8 +286,17 @@ async def _fit_one_seed(
     csv_path: Path,
     seed: int,
     timeout_seconds: int | None,
+    test_data_path: Path | None = None,
+    fold: int | None = None,
 ) -> SeedRunResult:
-    """Run a single nlmixr2 fit at ``seed`` against ``csv_path``."""
+    """Run a single nlmixr2 fit at ``seed`` against ``csv_path``.
+
+    ``test_data_path`` threads a disjoint held-out subject CSV through to
+    :meth:`Nlmixr2Runner.run` (the k-fold branch of :func:`_build_run_plan`
+    passes the fold's test subset here). ``fold`` is recorded on the
+    returned :class:`SeedRunResult` for audit; both default to the legacy
+    single-dataset cross-seed-sweep behaviour.
+    """
     manifest, _df = ingest_nonmem_csv(csv_path)
     initial_estimates: dict[str, float] = {
         "ka": 1.0,
@@ -281,6 +313,7 @@ async def _fit_one_seed(
         seed,
         timeout_seconds=timeout_seconds,
         data_path=csv_path,
+        test_data_path=test_data_path,
     )
     return SeedRunResult(
         seed=seed,
@@ -289,7 +322,118 @@ async def _fit_one_seed(
         parameter_estimates=_extract_estimates(result),
         bic=float(result.bic) if result.bic is not None else None,
         wall_time_seconds=float(result.wall_time_seconds or 0.0),
+        fold=fold,
     )
+
+
+# ---------------------------------------------------------------------------
+# Per-fit run plan: cross-seed sweep vs. subject-level k-fold CV
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _SeedRunPlan:
+    """One planned fit invocation: seed + input CSV(s) + optional fold index."""
+
+    seed: int
+    data_path: Path
+    test_data_path: Path | None = None
+    fold: int | None = None
+
+
+def _build_run_plan(
+    case: BenchmarkCase,
+    *,
+    df: pd.DataFrame,
+    perturbed_csv: Path,
+    case_dir: Path,
+    n_seeds: int,
+    base_seed: int,
+) -> list[_SeedRunPlan]:
+    """Build the list of per-fit plans for a case.
+
+    Cases without a ``split_strategy`` (the historical default: B4-B8,
+    B10-B12) get ``n_seeds`` independent fits on the full perturbed
+    dataset — the PRD R8 cross-seed stability monitor.
+
+    Cases that declare a ``split_strategy`` (currently only B9's
+    ``subject_level_kfold``) instead get one fit per CV fold, split via
+    :func:`apmode.data.splitter.k_fold_split` on ``df`` (post-
+    perturbation, so a case that both perturbs *and* CV-splits stays
+    internally consistent). Each fold's disjoint train/test subject CSVs
+    are written under ``case_dir/foldNN/`` and the test CSV is wired
+    through as ``test_data_path`` for held-out evaluation — the same
+    pattern :func:`apmode.benchmarks.suite_c_phase1_runner.run_fixture`
+    uses. ``n_seeds`` is ignored in this branch; fold count and CV seed
+    come from the declared ``SplitStrategy``.
+
+    Raises ``NotImplementedError`` for any ``split_strategy.method``
+    other than ``"subject_level_kfold"`` — surfacing the gap loudly
+    rather than silently falling back to the legacy single-fit path,
+    which would drop the case's declared CV intent (the bug this
+    function fixes).
+    """
+    strategy = case.split_strategy
+    if strategy is None:
+        return [
+            _SeedRunPlan(seed=base_seed + 7919 * i, data_path=perturbed_csv)
+            for i in range(n_seeds)
+        ]
+
+    if strategy.method != "subject_level_kfold":
+        msg = (
+            f"case {case.case_id!r}: split_strategy.method={strategy.method!r} "
+            "is not yet wired into suite_b_runner (only 'subject_level_kfold' "
+            "is supported today)"
+        )
+        raise NotImplementedError(msg)
+
+    folds = k_fold_split(df, seed=strategy.seed, k=strategy.n_folds)
+    if not folds:
+        msg = f"case {case.case_id!r}: k_fold_split returned no folds for k={strategy.n_folds}"
+        raise RuntimeError(msg)
+
+    plans: list[_SeedRunPlan] = []
+    for fold_idx, fold in enumerate(folds):
+        train_subjects = {a.subject_id for a in fold.assignments if a.fold == "train"}
+        test_subjects = {a.subject_id for a in fold.assignments if a.fold == "test"}
+        if not train_subjects.isdisjoint(test_subjects):
+            # Defence in depth: subject-level k-fold MUST emit disjoint
+            # subsets. A future split bug would otherwise feed colliding
+            # IDs to rxode2's per-ID partition and silently recycle the
+            # train subject's posthoc ETA in place of a fresh draw.
+            msg = (
+                f"case {case.case_id!r} fold {fold_idx}: train/test subject IDs "
+                f"overlap ({sorted(train_subjects & test_subjects)[:5]}); "
+                "rxode2 would silently recycle posthoc ETAs"
+            )
+            raise ValueError(msg)
+
+        train_df = df[df["NMID"].astype(str).isin(train_subjects)].copy()
+        test_df = df[df["NMID"].astype(str).isin(test_subjects)].copy()
+        if train_df.empty:
+            msg = f"case {case.case_id!r} fold {fold_idx}: train subset empty after subject filter"
+            raise ValueError(msg)
+        if test_df.empty:
+            msg = f"case {case.case_id!r} fold {fold_idx}: test subset empty after subject filter"
+            raise ValueError(msg)
+
+        fold_dir = case_dir / f"fold{fold_idx:02d}"
+        fold_dir.mkdir(parents=True, exist_ok=True)
+        train_csv = fold_dir / f"fold{fold_idx:02d}_train.csv"
+        test_csv = fold_dir / f"fold{fold_idx:02d}_test.csv"
+        train_df.to_csv(train_csv, index=False)
+        test_df.to_csv(test_csv, index=False)
+
+        plans.append(
+            _SeedRunPlan(
+                seed=strategy.seed + 7919 * fold_idx,
+                data_path=train_csv,
+                test_data_path=test_csv,
+                fold=fold_idx,
+            )
+        )
+    return plans
 
 
 # ---------------------------------------------------------------------------
@@ -349,34 +493,48 @@ async def run_case(
     # 3. Build the per-case DSLSpec.
     spec = _build_default_spec(case)
 
-    # 4. Multi-seed fits — the PRD R8 cross-seed stability monitor.
+    # 4. Build the per-fit plan and run it. Cases without a declared
+    # ``split_strategy`` get the legacy N_seeds cross-seed sweep on the
+    # full perturbed dataset (PRD R8); cases that declare one (currently
+    # only B9's ``subject_level_kfold``) get one fit per CV fold with a
+    # disjoint held-out test CSV wired through — see _build_run_plan.
+    run_plan = _build_run_plan(
+        case,
+        df=perturbed_df,
+        perturbed_csv=perturbed_csv,
+        case_dir=case_dir,
+        n_seeds=n_seeds,
+        base_seed=base_seed,
+    )
+
     seed_results: list[SeedRunResult] = []
-    for i in range(n_seeds):
-        # Large prime offset (7919) keeps per-seed seeds disjoint for
-        # any realistic n_seeds; mirrors the Suite C Phase 1 pattern.
-        seed = base_seed + 7919 * i
+    for plan in run_plan:
         try:
             seed_result = await _fit_one_seed(
                 runner=runner,
                 spec=spec,
-                csv_path=perturbed_csv,
-                seed=seed,
+                csv_path=plan.data_path,
+                seed=plan.seed,
                 timeout_seconds=timeout_seconds,
+                test_data_path=plan.test_data_path,
+                fold=plan.fold,
             )
         except Exception as exc:
             logger.warning(
-                "case %s seed %d: fit raised %s; recording as non-converged",
+                "case %s seed %d (fold %s): fit raised %s; recording as non-converged",
                 case.case_id,
-                seed,
+                plan.seed,
+                plan.fold,
                 exc,
             )
             seed_result = SeedRunResult(
-                seed=seed,
+                seed=plan.seed,
                 converged=False,
                 minimization_status=f"runner_error: {type(exc).__name__}",
                 parameter_estimates={},
                 bic=None,
                 wall_time_seconds=0.0,
+                fold=plan.fold,
             )
         seed_results.append(seed_result)
 
@@ -450,6 +608,7 @@ def _serialize_case(result: SuiteBCaseResult) -> dict[str, object]:
         "seed_results": [
             {
                 "seed": r.seed,
+                "fold": r.fold,
                 "converged": r.converged,
                 "minimization_status": r.minimization_status,
                 "parameter_estimates": r.parameter_estimates,
@@ -646,3 +805,6 @@ __all__ = [
     "run_case",
     "write_results_atomic",
 ]
+
+# Not exported publicly (leading underscore) but referenced by unit tests:
+# ``_SeedRunPlan``, ``_build_run_plan``.
