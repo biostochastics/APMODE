@@ -7,10 +7,15 @@ backend-specific expectations (e.g., nlmixr2 uses 'ID' not 'NMID').
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pandas as pd
 import structlog
 
 from apmode.data.categorical_encoding import auto_remap_binary_columns
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 _logger = structlog.get_logger(__name__)
 
@@ -118,17 +123,29 @@ _PK_PARAM_COLLISION_COLUMNS: frozenset[str] = frozenset(
 )
 
 
-def to_nlmixr2_format(df: pd.DataFrame) -> pd.DataFrame:
+def _normalize_dvid_allowlist(values: Iterable[object]) -> frozenset[str]:
+    """Normalize DVID tokens the same way row values are normalized."""
+    return frozenset(str(v).strip().lower() for v in values)
+
+
+def to_nlmixr2_format(
+    df: pd.DataFrame,
+    *,
+    dvid_allowlist: Iterable[object] | None = None,
+) -> pd.DataFrame:
     """Convert canonical PK DataFrame to nlmixr2-ready form.
 
     Performs three transformations that nlmixr2's SAEM engine requires
     but that the canonical APMODE schema does not enforce:
 
     1. ``NMID`` → ``ID`` rename.
-    2. Non-PK observation rows (``DVID`` outside the PK allowlist — e.g.
-       ``pca`` rows mixed into warfarin) are filtered. When the resulting
-       ``DVID`` column has ≤1 unique non-null value, the column is dropped
-       entirely so single-endpoint models pass nlmixr2's
+    2. Observation rows whose ``DVID`` is outside ``dvid_allowlist`` are
+       filtered. By default that allowlist is the single-endpoint PK
+       allowlist (``DVID`` values such as ``1``/``cp``), preserving the
+       historical behavior. Multi-analyte callers pass the DSL-declared
+       endpoint DVIDs so all modeled endpoints survive adaptation. When the
+       resulting ``DVID`` column has ≤1 unique non-null value, the column is
+       dropped entirely so single-endpoint models pass nlmixr2's
        "mis-match in nbr endpoints" check.
     3. String / 2-level categorical covariates (e.g. ``SEX="male"/"female"``)
        are remapped to integer 0/1 via
@@ -158,11 +175,15 @@ def to_nlmixr2_format(df: pd.DataFrame) -> pd.DataFrame:
         )
         out = out.drop(columns=collision_cols)
 
+    active_dvid_allowlist = (
+        PK_DVID_ALLOWLIST if dvid_allowlist is None else _normalize_dvid_allowlist(dvid_allowlist)
+    )
+
     if "DVID" in out.columns:
         evid = out["EVID"] if "EVID" in out.columns else pd.Series(0, index=out.index)
         obs_mask = evid == 0
         dvid_str = out["DVID"].astype(str).str.strip().str.lower()
-        keep_mask = (~obs_mask) | dvid_str.isin(_PK_DVID_ALLOWLIST)
+        keep_mask = (~obs_mask) | dvid_str.isin(active_dvid_allowlist)
         n_dropped = int((~keep_mask).sum())
         if n_dropped > 0:
             dropped_values = sorted({v for v in dvid_str[~keep_mask].unique() if v})
@@ -170,7 +191,7 @@ def to_nlmixr2_format(df: pd.DataFrame) -> pd.DataFrame:
                 "adapter.dropped_non_pk_dvid_rows",
                 n_rows=n_dropped,
                 dropped_dvid_values=dropped_values,
-                allowlist=sorted(_PK_DVID_ALLOWLIST),
+                allowlist=sorted(active_dvid_allowlist),
             )
             out = out.loc[keep_mask].reset_index(drop=True)
         remaining = out.loc[obs_mask.reindex(out.index, fill_value=False), "DVID"]

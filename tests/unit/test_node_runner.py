@@ -44,8 +44,8 @@ def _make_data_manifest() -> DataManifest:
 def _node_elim_spec() -> DSLSpec:
     return DSLSpec(
         model_id="test_node_elim",
-        absorption=FirstOrder(ka=1.0),
-        distribution=OneCmt(V=30.0),
+        absorption=FirstOrder(),
+        distribution=OneCmt(),
         elimination=NODEElimination(dim=3, constraint_template="bounded_positive"),
         variability=[IIV(params=["ka", "V"], structure="diagonal")],
         observation=Combined(sigma_prop=0.1, sigma_add=0.5),
@@ -56,8 +56,8 @@ def _node_abs_spec() -> DSLSpec:
     return DSLSpec(
         model_id="test_node_abs",
         absorption=NODEAbsorption(dim=3, constraint_template="monotone_decreasing"),
-        distribution=OneCmt(V=30.0),
-        elimination=LinearElim(CL=2.0),
+        distribution=OneCmt(),
+        elimination=LinearElim(),
         variability=[IIV(params=["V", "CL"], structure="diagonal")],
         observation=Combined(sigma_prop=0.1, sigma_add=0.5),
     )
@@ -66,9 +66,9 @@ def _node_abs_spec() -> DSLSpec:
 def _classical_spec() -> DSLSpec:
     return DSLSpec(
         model_id="test_classical",
-        absorption=FirstOrder(ka=1.0),
-        distribution=OneCmt(V=30.0),
-        elimination=LinearElim(CL=2.0),
+        absorption=FirstOrder(),
+        distribution=OneCmt(),
+        elimination=LinearElim(),
         variability=[IIV(params=["ka", "V", "CL"], structure="diagonal")],
         observation=Combined(sigma_prop=0.1, sigma_add=0.5),
     )

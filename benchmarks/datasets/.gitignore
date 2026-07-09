@@ -1,0 +1,8 @@
+# Cloned repos with NO LICENSE at HEAD — reference-only, do not commit.
+# Verified 2026-07-08 via GitHub API.
+metrum_expo1_nonmem/_cloned/
+metrum_expo4_torsten/_cloned/
+osp_observed_data/_cloned/
+# pmxNODE is GPL-3 — safe to commit the cloned _cloned/ tree,
+# but we already copied only the CSV/model files we need. Ignore the clone.
+pmxnode_examples/_cloned/

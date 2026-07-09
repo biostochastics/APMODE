@@ -4,12 +4,10 @@
     "type": "IVBolus"
   },
   "distribution": {
-    "type": "OneCmt",
-    "V": 1.4
+    "type": "OneCmt"
   },
   "elimination": {
-    "type": "Linear",
-    "CL": 0.0047
+    "type": "Linear"
   },
   "variability": [
     {
@@ -24,6 +22,10 @@
   "observation": {
     "type": "Proportional",
     "sigma_prop": 0.13
+  },
+  "initial": {
+    "V": 1.4,
+    "CL": 0.0047
   },
   "priors": [],
   "source_meta": {}

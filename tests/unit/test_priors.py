@@ -205,6 +205,13 @@ class TestValidatePriorFamily:
         err = validate_prior_family("iiv_sd", NormalPrior(mu=0, sigma=1))
         assert err is not None
 
+    def test_iiv_sd_rejects_invgamma_with_actionable_message(self) -> None:
+        err = validate_prior_family("iiv_sd", InvGammaPrior(alpha=2.0, beta=1.0))
+        assert err is not None
+        assert "variance-scale" in err and "SD-scale" in err
+        assert "MixturePrior component" in err
+        assert "not yet implemented" in err
+
     def test_corr_iiv_requires_lkj(self) -> None:
         assert validate_prior_family("corr_iiv", LKJPrior(eta=2)) is None
         err = validate_prior_family("corr_iiv", NormalPrior(mu=0, sigma=1))

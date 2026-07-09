@@ -25,6 +25,7 @@ from apmode.dsl.ast_models import (
     MixedFirstZero,
     NODEAbsorption,
     NODEElimination,
+    ObservationEndpoint,
     OccasionByStudy,
     OneCmt,
     ParallelLinearMM,
@@ -38,17 +39,23 @@ from apmode.dsl.ast_models import (
 )
 from apmode.dsl.nlmixr2_emitter import emit_nlmixr2
 
+_DEFAULT_INITIAL = {"ka": 1.0, "V": 70.0, "CL": 5.0}
+
 
 def _make_spec(**overrides: object) -> DSLSpec:
+    initial_override = overrides.pop("initial", None)
     defaults: dict[str, object] = {
         "model_id": "test_id_000000000000",
-        "absorption": FirstOrder(ka=1.0),
-        "distribution": OneCmt(V=70.0),
-        "elimination": LinearElim(CL=5.0),
+        "absorption": FirstOrder(),
+        "distribution": OneCmt(),
+        "elimination": LinearElim(),
         "variability": [IIV(params=["CL", "V"], structure="diagonal")],
         "observation": Proportional(sigma_prop=0.1),
+        "initial": dict(_DEFAULT_INITIAL),
     }
     defaults.update(overrides)
+    if initial_override is not None:
+        defaults["initial"] = initial_override
     return DSLSpec(**defaults)  # type: ignore[arg-type]
 
 
@@ -77,29 +84,29 @@ class TestAbsorptionEmission:
     """Test R code emission for each absorption module type."""
 
     def test_first_order(self) -> None:
-        r_code = emit_nlmixr2(_make_spec(absorption=FirstOrder(ka=1.0)))
+        r_code = emit_nlmixr2(_make_spec(absorption=FirstOrder()))
         assert "ka" in r_code
         # linCmt() handles linear 1-cmt models; ODE form uses depot explicitly
         assert "linCmt" in r_code or "depot" in r_code
 
     def test_zero_order(self) -> None:
-        r_code = emit_nlmixr2(_make_spec(absorption=ZeroOrder(dur=0.5)))
+        r_code = emit_nlmixr2(_make_spec(absorption=ZeroOrder()))
         assert "dur" in r_code
 
     def test_lagged_first_order(self) -> None:
-        r_code = emit_nlmixr2(_make_spec(absorption=LaggedFirstOrder(ka=1.5, tlag=0.3)))
+        r_code = emit_nlmixr2(_make_spec(absorption=LaggedFirstOrder()))
         assert "ka" in r_code
         assert "tlag" in r_code
         assert "alag" in r_code.lower() or "tlag" in r_code
 
     def test_transit(self) -> None:
-        r_code = emit_nlmixr2(_make_spec(absorption=Transit(n=4, ktr=2.0, ka=1.0)))
+        r_code = emit_nlmixr2(_make_spec(absorption=Transit(n=4)))
         assert "ktr" in r_code
         assert "mtt" in r_code  # rxode2 transit() uses mean transit time
         assert "transit" in r_code.lower()
 
     def test_mixed_first_zero(self) -> None:
-        r_code = emit_nlmixr2(_make_spec(absorption=MixedFirstZero(ka=1.0, dur=0.5, frac=0.6)))
+        r_code = emit_nlmixr2(_make_spec(absorption=MixedFirstZero()))
         assert "ka" in r_code
         assert "dur" in r_code
         assert "frac" in r_code or "F1" in r_code
@@ -107,21 +114,19 @@ class TestAbsorptionEmission:
 
 class TestDistributionEmission:
     def test_one_cmt(self) -> None:
-        r_code = emit_nlmixr2(_make_spec(distribution=OneCmt(V=70.0)))
+        r_code = emit_nlmixr2(_make_spec(distribution=OneCmt()))
         assert "V" in r_code
         # Should define central compartment concentration
         assert "central" in r_code.lower() or "cp" in r_code.lower()
 
     def test_two_cmt(self) -> None:
-        r_code = emit_nlmixr2(_make_spec(distribution=TwoCmt(V1=10.0, V2=20.0, Q=3.0)))
+        r_code = emit_nlmixr2(_make_spec(distribution=TwoCmt()))
         assert "V1" in r_code
         assert "V2" in r_code
         assert "Q" in r_code
 
     def test_three_cmt(self) -> None:
-        r_code = emit_nlmixr2(
-            _make_spec(distribution=ThreeCmt(V1=10.0, V2=20.0, V3=5.0, Q2=3.0, Q3=1.0))
-        )
+        r_code = emit_nlmixr2(_make_spec(distribution=ThreeCmt()))
         assert "V1" in r_code
         assert "V2" in r_code
         assert "V3" in r_code
@@ -131,24 +136,22 @@ class TestDistributionEmission:
 
 class TestEliminationEmission:
     def test_linear(self) -> None:
-        r_code = emit_nlmixr2(_make_spec(elimination=LinearElim(CL=5.0)))
+        r_code = emit_nlmixr2(_make_spec(elimination=LinearElim()))
         assert "CL" in r_code
 
     def test_michaelis_menten(self) -> None:
-        r_code = emit_nlmixr2(_make_spec(elimination=MichaelisMenten(Vmax=100.0, Km=10.0)))
+        r_code = emit_nlmixr2(_make_spec(elimination=MichaelisMenten()))
         assert "Vmax" in r_code
         assert "Km" in r_code
 
     def test_parallel_linear_mm(self) -> None:
-        r_code = emit_nlmixr2(_make_spec(elimination=ParallelLinearMM(CL=2.0, Vmax=50.0, Km=5.0)))
+        r_code = emit_nlmixr2(_make_spec(elimination=ParallelLinearMM()))
         assert "CL" in r_code
         assert "Vmax" in r_code
         assert "Km" in r_code
 
     def test_time_varying(self) -> None:
-        r_code = emit_nlmixr2(
-            _make_spec(elimination=TimeVaryingElim(CL=5.0, decay_fn="exponential"))
-        )
+        r_code = emit_nlmixr2(_make_spec(elimination=TimeVaryingElim(decay_fn="exponential")))
         assert "CL" in r_code
 
 
@@ -178,6 +181,72 @@ class TestObservationEmission:
         assert "LLOQ" in r_code or "M4" in r_code or "LIMIT" in r_code or "0.5" in r_code
 
 
+class TestMultiAnalyteObservationEmission:
+    """Multi-analyte observations: block emission (Formular sharpening plan §4 P1.7)."""
+
+    def test_single_endpoint_accessor_path_unchanged(self) -> None:
+        """No `.default` suffix leaks in for the (common) single-endpoint path."""
+        r_code = emit_nlmixr2(_make_spec(observation=Proportional(sigma_prop=0.1)))
+        assert "prop.sd <- 0.1" in r_code
+        assert "cp ~ prop(prop.sd)" in r_code
+        assert ".default" not in r_code
+
+    def test_two_endpoint_tmdd_qss_emits_per_endpoint_residuals(self) -> None:
+        spec = _make_spec(
+            distribution=TMDDQSS(),
+            observation=Combined(sigma_prop=0.12, sigma_add=0.2),
+            observations={
+                "plasma": ObservationEndpoint(
+                    name="plasma",
+                    dvid=1,
+                    prediction="C_central",
+                    error=Combined(sigma_prop=0.12, sigma_add=0.2),
+                ),
+                "target": ObservationEndpoint(
+                    name="target",
+                    dvid=2,
+                    prediction="C_target_total",
+                    error=Proportional(sigma_prop=0.2),
+                ),
+            },
+        )
+        r_code = emit_nlmixr2(spec)
+
+        # ini block: sigma names suffixed per endpoint, no collision.
+        assert "prop.sd.plasma <- 0.12" in r_code
+        assert "add.sd.plasma <- 0.2" in r_code
+        assert "prop.sd.target <- 0.2" in r_code
+
+        # model block: prediction resolved to its R state variable.
+        assert "cp ~ prop(prop.sd.plasma) + add(add.sd.plasma)" in r_code
+        assert "Rtot ~ prop(prop.sd.target)" in r_code
+
+        # Endpoint/DVID provenance surfaced as comments for auditability.
+        assert "endpoint 'plasma' (DVID=1)" in r_code
+        assert "endpoint 'target' (DVID=2)" in r_code
+
+    def test_unresolvable_prediction_raises_not_implemented(self) -> None:
+        """Defense in depth: an unvalidated spec with an unknown prediction fails loudly."""
+        spec = _make_spec(
+            observations={
+                "plasma": ObservationEndpoint(
+                    name="plasma",
+                    dvid=1,
+                    prediction="C_central",
+                    error=Proportional(sigma_prop=0.1),
+                ),
+                "metabolite": ObservationEndpoint(
+                    name="metabolite",
+                    dvid=2,
+                    prediction="C_metabolite",
+                    error=Additive(sigma_add=0.2),
+                ),
+            }
+        )
+        with pytest.raises(NotImplementedError, match="C_metabolite"):
+            emit_nlmixr2(spec)
+
+
 class TestVariabilityEmission:
     def test_iiv_diagonal(self) -> None:
         r_code = emit_nlmixr2(
@@ -203,8 +272,10 @@ class TestVariabilityEmission:
             _make_spec(
                 variability=[
                     IIV(params=["CL"], structure="diagonal"),
-                    CovariateLink(param="CL", covariate="WT", form="power"),
-                ]
+                ],
+                covariates=[
+                    CovariateLink(param="CL", covariate="WT", form="power", theta=0.75, ref=70.0),
+                ],
             )
         )
         assert "WT" in r_code
@@ -214,8 +285,10 @@ class TestVariabilityEmission:
             _make_spec(
                 variability=[
                     IIV(params=["CL"], structure="diagonal"),
-                    CovariateLink(param="CL", covariate="CRCL", form="exponential"),
-                ]
+                ],
+                covariates=[
+                    CovariateLink(param="CL", covariate="CRCL", form="exponential", theta=0.5),
+                ],
             )
         )
         assert "CRCL" in r_code
@@ -225,8 +298,10 @@ class TestVariabilityEmission:
             _make_spec(
                 variability=[
                     IIV(params=["V"], structure="diagonal"),
-                    CovariateLink(param="V", covariate="AGE", form="linear"),
-                ]
+                ],
+                covariates=[
+                    CovariateLink(param="V", covariate="AGE", form="linear", theta=0.1),
+                ],
             )
         )
         assert "AGE" in r_code
@@ -237,8 +312,10 @@ class TestVariabilityEmission:
                 variability=[
                     IIV(params=["CL", "V"], structure="block"),
                     IOV(params=["CL"], occasions=OccasionByStudy()),
-                    CovariateLink(param="CL", covariate="WT", form="power"),
-                ]
+                ],
+                covariates=[
+                    CovariateLink(param="CL", covariate="WT", form="power", theta=0.75, ref=70.0),
+                ],
             )
         )
         assert "WT" in r_code
@@ -248,16 +325,16 @@ class TestInitialEstimates:
     """The ini() block should use parameter values from the DSL as initial estimates."""
 
     def test_ka_initial_estimate(self) -> None:
-        r_code = emit_nlmixr2(_make_spec(absorption=FirstOrder(ka=1.5)))
+        r_code = emit_nlmixr2(_make_spec(initial={"ka": 1.5, "V": 70.0, "CL": 5.0}))
         # Should contain ka <- 1.5 or similar in ini block
         assert "1.5" in r_code
 
     def test_cl_initial_estimate(self) -> None:
-        r_code = emit_nlmixr2(_make_spec(elimination=LinearElim(CL=3.7)))
+        r_code = emit_nlmixr2(_make_spec(initial={"ka": 1.0, "V": 70.0, "CL": 3.7}))
         assert "3.7" in r_code
 
     def test_v_initial_estimate(self) -> None:
-        r_code = emit_nlmixr2(_make_spec(distribution=OneCmt(V=42.0)))
+        r_code = emit_nlmixr2(_make_spec(initial={"ka": 1.0, "V": 42.0, "CL": 5.0}))
         assert "42" in r_code
 
 
@@ -285,14 +362,20 @@ class TestInitialEstimateOverrides:
         assert r_code_default == r_code_none
 
     def test_two_cmt_override(self) -> None:
-        spec = _make_spec(distribution=TwoCmt(V1=50.0, V2=80.0, Q=10.0))
+        spec = _make_spec(
+            distribution=TwoCmt(),
+            initial={"ka": 1.0, "CL": 5.0, "V1": 50.0, "V2": 80.0, "Q": 10.0},
+        )
         r_code = emit_nlmixr2(spec, initial_estimates={"V1": 60.0, "Q": 15.0})
         assert "log(60.0)" in r_code  # V1 overridden
         assert "log(80.0)" in r_code  # V2 from spec
         assert "log(15.0)" in r_code  # Q overridden
 
     def test_mm_elim_override(self) -> None:
-        spec = _make_spec(elimination=MichaelisMenten(Vmax=100.0, Km=10.0))
+        spec = _make_spec(
+            elimination=MichaelisMenten(),
+            initial={"ka": 1.0, "V": 70.0, "Vmax": 100.0, "Km": 10.0},
+        )
         r_code = emit_nlmixr2(spec, initial_estimates={"Vmax": 200.0})
         assert "log(200.0)" in r_code
         assert "log(10.0)" in r_code  # Km from spec
@@ -302,7 +385,7 @@ class TestTMDDEmission:
     def test_tmdd_core(self) -> None:
         r_code = emit_nlmixr2(
             _make_spec(
-                distribution=TMDDCore(V=50.0, R0=10.0, kon=0.1, koff=0.01, kint=0.05),
+                distribution=TMDDCore(),
             )
         )
         assert "R0" in r_code
@@ -316,7 +399,7 @@ class TestTMDDEmission:
     def test_tmdd_qss(self) -> None:
         r_code = emit_nlmixr2(
             _make_spec(
-                distribution=TMDDQSS(V=50.0, R0=10.0, KD=0.5, kint=0.05),
+                distribution=TMDDQSS(),
             )
         )
         assert "R0" in r_code
@@ -400,9 +483,9 @@ class TestRoundtrip:
 
     def test_all_structural_params_present(self) -> None:
         spec = _make_spec(
-            absorption=LaggedFirstOrder(ka=1.5, tlag=0.3),
-            distribution=TwoCmt(V1=10.0, V2=20.0, Q=3.0),
-            elimination=ParallelLinearMM(CL=2.0, Vmax=50.0, Km=5.0),
+            absorption=LaggedFirstOrder(),
+            distribution=TwoCmt(),
+            elimination=ParallelLinearMM(),
         )
         r_code = emit_nlmixr2(spec)
         for param in spec.structural_param_names():

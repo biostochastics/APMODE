@@ -147,3 +147,27 @@ class TestToNlmixr2Format:
         result = to_nlmixr2_format(df)
         assert "WT" in result.columns
         assert "AGE" in result.columns
+
+    def test_custom_dvid_allowlist_preserves_multi_analyte_rows(self) -> None:
+        """Multi-endpoint nlmixr2 specs pass their DSL-declared DVIDs.
+
+        The default adapter allowlist is intentionally single-endpoint PK
+        focused; passing an explicit allowlist must preserve DVID 2 while
+        still dropping unmodeled observation endpoints.
+        """
+        df = pd.DataFrame(
+            {
+                "NMID": [1, 1, 1, 1],
+                "TIME": [0.0, 1.0, 1.0, 1.0],
+                "DV": [0.0, 5.0, 10.0, 99.0],
+                "MDV": [1, 0, 0, 0],
+                "EVID": [1, 0, 0, 0],
+                "AMT": [100.0, 0.0, 0.0, 0.0],
+                "CMT": [1, 1, 1, 1],
+                "DVID": [1, 1, 2, "pca"],
+            }
+        )
+        result = to_nlmixr2_format(df, dvid_allowlist={"1", "2"})
+        assert "DVID" in result.columns
+        assert list(result["DVID"]) == [1, 1, 2]
+        assert list(result["DV"]) == [0.0, 5.0, 10.0]

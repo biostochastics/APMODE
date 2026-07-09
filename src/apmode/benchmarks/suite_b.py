@@ -37,6 +37,7 @@ from apmode.bundle.models import (
 from apmode.dsl.ast_models import (
     IIV,
     DSLSpec,
+    ExperimentalFlags,
     FirstOrder,
     LinearElim,
     NODEAbsorption,
@@ -82,10 +83,14 @@ def scenario_b1() -> DSLSpec:
     return DSLSpec(
         model_id="suite_b_scenario_b1",
         absorption=NODEAbsorption(dim=4, constraint_template="bounded_positive"),
-        distribution=TwoCmt(V1=50.0, V2=80.0, Q=10.0),
-        elimination=LinearElim(CL=4.0),
+        distribution=TwoCmt(),
+        elimination=LinearElim(),
         variability=[IIV(params=["CL", "V1"], structure="diagonal")],
         observation=Proportional(sigma_prop=0.1),
+        initial={"V1": 50.0, "V2": 80.0, "Q": 10.0, "CL": 4.0},
+        # NODE backend validation scenario (Phase 0 P0.8): explicit opt-in
+        # required since no emitter has a working NODE backend yet.
+        experimental=ExperimentalFlags(node=True),
     )
 
 
@@ -98,11 +103,15 @@ def scenario_b2_spec() -> DSLSpec:
     """B2: NODE elimination spec that should NOT be dispatched under sparse data."""
     return DSLSpec(
         model_id="suite_b_scenario_b2",
-        absorption=FirstOrder(ka=1.5),
-        distribution=OneCmt(V=70.0),
+        absorption=FirstOrder(),
+        distribution=OneCmt(),
         elimination=NODEElimination(dim=3, constraint_template="monotone_decreasing"),
         variability=[IIV(params=["V"], structure="diagonal")],
         observation=Proportional(sigma_prop=0.15),
+        initial={"ka": 1.5, "V": 70.0},
+        # NODE backend validation scenario (Phase 0 P0.8): explicit opt-in
+        # required since no emitter has a working NODE backend yet.
+        experimental=ExperimentalFlags(node=True),
     )
 
 

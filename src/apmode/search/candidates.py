@@ -319,18 +319,26 @@ def _build_spec(
     When force_iov is set, IOV on CL is added to variability
     (PRD §4.2.1: protocol_heterogeneity = pooled-heterogeneous).
     """
-    # Absorption
+    # Absorption. Calibration values (ka, V, CL, ...) live in DSLSpec.initial
+    # (Formular sharpening plan §4 Phase 1, P1.4) — structural modules below
+    # carry only topology.
+    initial: dict[str, float] = {}
     ka = params.get("ka", 1.0)
     absorption: IVBolus | FirstOrder | LaggedFirstOrder | Transit
     has_absorption = abs_type != "none"
     if abs_type == "none":
         absorption = IVBolus()
     elif abs_type == "first_order":
-        absorption = FirstOrder(ka=ka)
+        absorption = FirstOrder()
+        initial["ka"] = ka
     elif abs_type == "lagged_first_order":
-        absorption = LaggedFirstOrder(ka=ka, tlag=0.5)
+        absorption = LaggedFirstOrder()
+        initial["ka"] = ka
+        initial["tlag"] = 0.5
     elif abs_type == "transit":
-        absorption = Transit(n=3, ktr=2.0, ka=ka)
+        absorption = Transit(n=3)
+        initial["ktr"] = 2.0
+        initial["ka"] = ka
     else:
         return None
 
@@ -338,13 +346,22 @@ def _build_spec(
     v = params.get("V", 70.0)
     distribution: OneCmt | TwoCmt | ThreeCmt
     if n_cmt == 1:
-        distribution = OneCmt(V=v)
+        distribution = OneCmt()
+        initial["V"] = v
         iiv_params = ["CL", "V"]
     elif n_cmt == 2:
-        distribution = TwoCmt(V1=v, V2=v * 0.5, Q=v * 0.1)
+        distribution = TwoCmt()
+        initial["V1"] = v
+        initial["V2"] = v * 0.5
+        initial["Q"] = v * 0.1
         iiv_params = ["CL", "V1"]
     elif n_cmt == 3:
-        distribution = ThreeCmt(V1=v, V2=v * 0.5, V3=v * 0.3, Q2=v * 0.1, Q3=v * 0.05)
+        distribution = ThreeCmt()
+        initial["V1"] = v
+        initial["V2"] = v * 0.5
+        initial["V3"] = v * 0.3
+        initial["Q2"] = v * 0.1
+        initial["Q3"] = v * 0.05
         iiv_params = ["CL", "V1"]
     else:
         return None
@@ -353,11 +370,17 @@ def _build_spec(
     cl = params.get("CL", 5.0)
     elimination: LinearElim | MichaelisMenten | ParallelLinearMM
     if elim_type == "linear":
-        elimination = LinearElim(CL=cl)
+        elimination = LinearElim()
+        initial["CL"] = cl
     elif elim_type == "michaelis_menten":
-        elimination = MichaelisMenten(Vmax=cl * 20, Km=10.0)
+        elimination = MichaelisMenten()
+        initial["Vmax"] = cl * 20
+        initial["Km"] = 10.0
     elif elim_type == "parallel":
-        elimination = ParallelLinearMM(CL=cl, Vmax=cl * 20, Km=10.0)
+        elimination = ParallelLinearMM()
+        initial["CL"] = cl
+        initial["Vmax"] = cl * 20
+        initial["Km"] = 10.0
     else:
         return None
 
@@ -397,6 +420,7 @@ def _build_spec(
         elimination=elimination,
         variability=variability_items,
         observation=observation,
+        initial=initial,
     )
 
 

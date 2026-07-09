@@ -18,10 +18,21 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 from apmode.data.missing_data import resolve_directive
+from apmode.dsl.capabilities import CapabilityTag, registered_emitters
 
 if TYPE_CHECKING:
     from apmode.bundle.models import EvidenceManifest, MissingDataDirective
     from apmode.governance.policy import MissingDataPolicy
+
+# Backend name -> registered DSL emitter name (apmode.dsl.capabilities).
+# jax_node and agentic_llm have no capability-matrix entry (neither is a DSL
+# emitter with declared SUPPORTS/EXPLICITLY_UNSUPPORTED sets); their
+# eligibility is governed by the manifest-driven checks elsewhere in
+# ``route``, not by ``_capability_incompatible_backends``.
+_BACKEND_EMITTER_NAMES: dict[str, str] = {
+    "nlmixr2": "nlmixr2",
+    "bayesian_stan": "stan",
+}
 
 # Literal form preserves the string-level contract with policy JSONs;
 # the canonical runtime enum lives in ``apmode.backends.protocol.Lane``.
@@ -50,6 +61,32 @@ class DispatchDecision:
     # without a policy (legacy call sites); backends that see None fall back
     # to their historical behavior.
     missing_data_directive: MissingDataDirective | None = None
+
+
+def _capability_incompatible_backends(
+    backends: list[str], required_tags: frozenset[CapabilityTag]
+) -> list[str]:
+    """Return the subset of ``backends`` whose registered DSL emitter
+    explicitly declares non-support for any tag in ``required_tags``.
+
+    Reads ``apmode.dsl.capabilities.registered_emitters()`` dynamically
+    rather than hardcoding a backend name, so a capability that later moves
+    from ``EXPLICITLY_UNSUPPORTED`` to ``SUPPORTS`` on an emitter (e.g. Stan
+    gaining real IOV support) stops being flagged here with no change to
+    this function.
+    """
+    emitters_by_name = {e.name: e for e in registered_emitters()}
+    incompatible: list[str] = []
+    for backend in backends:
+        emitter_name = _BACKEND_EMITTER_NAMES.get(backend)
+        if emitter_name is None:
+            continue
+        emitter = emitters_by_name.get(emitter_name)
+        if emitter is None:
+            continue
+        if emitter.explicitly_unsupported & required_tags:
+            incompatible.append(backend)
+    return incompatible
 
 
 def route(
@@ -145,9 +182,21 @@ def route(
             f"BLQ method {directive.blq_method} selected (burden={manifest.blq_burden:.2%})"
         )
 
-    # Protocol heterogeneity note
+    # Protocol heterogeneity: IOV must be tested. This also structurally
+    # requires the search space to add an IOV variability item to every
+    # candidate (see ``force_iov`` in search/candidates.py), so any backend
+    # whose emitter explicitly cannot lower VARIABILITY_IOV must be pulled
+    # here rather than crashing at compile time downstream.
     if manifest.protocol_heterogeneity == "pooled-heterogeneous":
         constraints.append("Pooled-heterogeneous: IOV must be tested")
+        for backend in _capability_incompatible_backends(
+            backends, frozenset({CapabilityTag.VARIABILITY_IOV})
+        ):
+            backends.remove(backend)
+            constraints.append(
+                f"{backend} removed: emitter does not support variability.iov "
+                "(pooled-heterogeneous protocol requires IOV)"
+            )
 
     # Covariate missingness note. When a directive is present use the resolved
     # method; otherwise emit the legacy "full-information recommended" hint.

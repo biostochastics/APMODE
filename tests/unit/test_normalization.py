@@ -172,11 +172,12 @@ class TestNormalizeColumns:
 def _make_spec(**overrides: object) -> DSLSpec:
     defaults: dict[str, object] = {
         "model_id": "test_norm_000000000000",
-        "absorption": FirstOrder(ka=1.0),
-        "distribution": OneCmt(V=70.0),
-        "elimination": LinearElim(CL=5.0),
+        "absorption": FirstOrder(),
+        "distribution": OneCmt(),
+        "elimination": LinearElim(),
         "variability": [IIV(params=["CL", "V"], structure="diagonal")],
         "observation": Proportional(sigma_prop=0.1),
+        "initial": {"ka": 1.0, "V": 70.0, "CL": 5.0},
     }
     defaults.update(overrides)
     return DSLSpec(**defaults)  # type: ignore[arg-type]
@@ -202,7 +203,9 @@ class TestValidatorNormalization:
         spec = _make_spec(
             variability=[
                 IIV(params=["CL", "V"], structure="diagonal"),
-                CovariateLink(param="cl", covariate="WT", form="power"),
+            ],
+            covariates=[
+                CovariateLink(param="cl", covariate="WT", form="power", theta=0.75, ref=70.0),
             ],
         )
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
@@ -224,8 +227,10 @@ class TestValidatorNormalization:
         spec = _make_spec(
             variability=[
                 IIV(params=["CL", "V"], structure="diagonal"),
-                CovariateLink(param="CL", covariate="WT", form="power"),
-                CovariateLink(param="cl", covariate="wt", form="exponential"),
+            ],
+            covariates=[
+                CovariateLink(param="CL", covariate="WT", form="power", theta=0.75, ref=70.0),
+                CovariateLink(param="cl", covariate="wt", form="exponential", theta=0.5),
             ],
         )
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
@@ -234,7 +239,7 @@ class TestValidatorNormalization:
     def test_2cmt_lowercase_params(self) -> None:
         """IIV with 'v1' should match TwoCmt's structural param 'V1'."""
         spec = _make_spec(
-            distribution=TwoCmt(V1=30.0, V2=40.0, Q=5.0),
+            distribution=TwoCmt(),
             variability=[IIV(params=["CL", "v1"], structure="diagonal")],
         )
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
@@ -251,7 +256,7 @@ class TestTransformNormalization:
 
     def test_add_covariate_lowercase_param(self) -> None:
         spec = _make_spec()
-        t = AddCovariateLink(param="cl", covariate="WT", form="power")
+        t = AddCovariateLink(param="cl", covariate="WT", form="power", theta=0.75, ref=70.0)
         errors = validate_transform(spec, t)
         assert len(errors) == 0
 
@@ -264,18 +269,18 @@ class TestTransformNormalization:
     def test_apply_covariate_normalizes_param(self) -> None:
         """apply_transform should store canonical param name in CovariateLink."""
         spec = _make_spec()
-        t = AddCovariateLink(param="cl", covariate="WT", form="power")
+        t = AddCovariateLink(param="cl", covariate="WT", form="power", theta=0.75, ref=70.0)
         new_spec = apply_transform(spec, t)
-        cov_links = [v for v in new_spec.variability if isinstance(v, CovariateLink)]
+        cov_links = list(new_spec.covariates)
         assert len(cov_links) == 1
         assert cov_links[0].param == "CL"  # normalized
 
     def test_duplicate_covariate_case_insensitive(self) -> None:
         """Duplicate check should be case-insensitive."""
         spec = _make_spec()
-        t1 = AddCovariateLink(param="CL", covariate="WT", form="power")
+        t1 = AddCovariateLink(param="CL", covariate="WT", form="power", theta=0.75, ref=70.0)
         spec2 = apply_transform(spec, t1)
-        t2 = AddCovariateLink(param="cl", covariate="wt", form="exponential")
+        t2 = AddCovariateLink(param="cl", covariate="wt", form="exponential", theta=0.5)
         errors = validate_transform(spec2, t2)
         assert len(errors) > 0
 
@@ -297,6 +302,8 @@ class TestTransformParserNormalization:
                         "param": "cl",
                         "covariate": "WT",
                         "form": "power",
+                        "theta": 0.75,
+                        "ref": 70.0,
                     },
                 ],
                 "reasoning": "Weight effect on clearance.",

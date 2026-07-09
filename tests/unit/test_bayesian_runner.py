@@ -37,9 +37,9 @@ from apmode.errors import BackendTimeoutError, ConvergenceError, CrashError
 def _classical_spec() -> DSLSpec:
     return DSLSpec(
         model_id="test_classical",
-        absorption=FirstOrder(ka=1.0),
-        distribution=OneCmt(V=20.0),
-        elimination=LinearElim(CL=5.0),
+        absorption=FirstOrder(),
+        distribution=OneCmt(),
+        elimination=LinearElim(),
         variability=[IIV(params=["CL"], structure="diagonal")],
         observation=Proportional(sigma_prop=0.3),
     )
@@ -49,8 +49,8 @@ def _node_spec() -> DSLSpec:
     return DSLSpec(
         model_id="test_node",
         absorption=NODEAbsorption(dim=4, constraint_template="bounded_positive"),
-        distribution=OneCmt(V=20.0),
-        elimination=LinearElim(CL=5.0),
+        distribution=OneCmt(),
+        elimination=LinearElim(),
         variability=[IIV(params=["CL"], structure="diagonal")],
         observation=Proportional(sigma_prop=0.3),
     )

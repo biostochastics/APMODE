@@ -32,9 +32,9 @@ from apmode.dsl.stan_emitter import emit_stan
 def _spec(decay: str) -> DSLSpec:
     return DSLSpec(
         model_id=f"tv_{decay}",
-        absorption=FirstOrder(ka=1.0),
-        distribution=OneCmt(V=70.0),
-        elimination=TimeVaryingElim(CL=5.0, kdecay=0.1, decay_fn=decay),  # type: ignore[arg-type]
+        absorption=FirstOrder(),
+        distribution=OneCmt(),
+        elimination=TimeVaryingElim(decay_fn=decay),  # type: ignore[arg-type]
         variability=[IIV(params=["CL", "V", "ka"], structure="diagonal")],
         observation=Additive(sigma_add=0.5),
     )
@@ -44,17 +44,17 @@ class TestDecayFormLiterals:
     """The Pydantic Literal is the authoritative whitelist."""
 
     def test_exponential_accepted(self) -> None:
-        TimeVaryingElim(CL=5.0, decay_fn="exponential")
+        TimeVaryingElim(decay_fn="exponential")
 
     def test_half_life_accepted(self) -> None:
-        TimeVaryingElim(CL=5.0, decay_fn="half_life")
+        TimeVaryingElim(decay_fn="half_life")
 
     def test_linear_accepted(self) -> None:
-        TimeVaryingElim(CL=5.0, decay_fn="linear")
+        TimeVaryingElim(decay_fn="linear")
 
     def test_unknown_rejected(self) -> None:
         with pytest.raises(ValidationError):
-            TimeVaryingElim(CL=5.0, decay_fn="weibull")  # type: ignore[arg-type]
+            TimeVaryingElim(decay_fn="weibull")  # type: ignore[arg-type]
 
 
 class TestNlmixr2EmitterPerDecayForm:

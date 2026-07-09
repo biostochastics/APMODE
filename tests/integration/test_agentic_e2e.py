@@ -33,9 +33,9 @@ from apmode.dsl.ast_models import (
 def _base_spec() -> DSLSpec:
     return DSLSpec(
         model_id="e2e-base",
-        absorption=FirstOrder(ka=1.0),
-        distribution=OneCmt(V=30.0),
-        elimination=LinearElim(CL=2.0),
+        absorption=FirstOrder(),
+        distribution=OneCmt(),
+        elimination=LinearElim(),
         variability=[IIV(params=["CL", "V"], structure="diagonal")],
         observation=Proportional(sigma_prop=0.1),
     )
@@ -118,6 +118,8 @@ async def test_agentic_e2e_produces_valid_bundle(tmp_path: Path) -> None:
                             "param": "CL",
                             "covariate": "WT",
                             "form": "power",
+                            "theta": 0.75,
+                            "ref": 70.0,
                         }
                     ],
                     "reasoning": "Add allometric weight scaling.",

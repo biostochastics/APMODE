@@ -12,7 +12,7 @@ Scenarios:
   A5: TMDD quasi-steady-state (SC mAb)
   A6: 1-cmt oral, allometric WT + categorical renal covariates on CL
   A7: 2-cmt, NODE nonlinear absorption (ground truth: saturable Michaelis-Menten)
-  A8: 1-cmt oral, time-varying CL (diurnal) + allometric CRCL covariate
+  A8: 1-cmt oral, monotonic autoinduction of CL + allometric CRCL covariate
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ from apmode.dsl.ast_models import (
     Combined,
     CovariateLink,
     DSLSpec,
+    ExperimentalFlags,
     FirstOrder,
     LinearElim,
     MichaelisMenten,
@@ -46,11 +47,12 @@ def scenario_a1() -> DSLSpec:
     """
     return DSLSpec(
         model_id="suite_a_scenario_a1",
-        absorption=FirstOrder(ka=1.5),
-        distribution=OneCmt(V=70.0),
-        elimination=LinearElim(CL=5.0),
+        absorption=FirstOrder(),
+        distribution=OneCmt(),
+        elimination=LinearElim(),
         variability=[IIV(params=["CL", "V", "ka"], structure="diagonal")],
         observation=Proportional(sigma_prop=0.15),
+        initial={"ka": 1.5, "V": 70.0, "CL": 5.0},
     )
 
 
@@ -64,14 +66,23 @@ def scenario_a2() -> DSLSpec:
     """
     return DSLSpec(
         model_id="suite_a_scenario_a2",
-        absorption=FirstOrder(ka=100.0),  # large ka approximates IV bolus
-        distribution=TwoCmt(V1=50.0, V2=80.0, Q=10.0),
-        elimination=ParallelLinearMM(CL=3.0, Vmax=100.0, Km=10.0),
+        absorption=FirstOrder(),  # large ka approximates IV bolus
+        distribution=TwoCmt(),
+        elimination=ParallelLinearMM(),
         # Q (inter-compartmental clearance) has simulated BSV (omega=0.04 in
         # reference_params.json) and must be estimable here too, or
         # eta-recovery scoring has nothing to compare it against.
         variability=[IIV(params=["CL", "V1", "Q", "Vmax"], structure="diagonal")],
         observation=Combined(sigma_prop=0.1, sigma_add=0.5),
+        initial={
+            "ka": 100.0,
+            "V1": 50.0,
+            "V2": 80.0,
+            "Q": 10.0,
+            "CL": 3.0,
+            "Vmax": 100.0,
+            "Km": 10.0,
+        },
     )
 
 
@@ -83,9 +94,9 @@ def scenario_a3() -> DSLSpec:
     """
     return DSLSpec(
         model_id="suite_a_scenario_a3",
-        absorption=Transit(n=3, ktr=2.0, ka=1.0),
-        distribution=OneCmt(V=60.0),
-        elimination=LinearElim(CL=4.0),
+        absorption=Transit(n=3),
+        distribution=OneCmt(),
+        elimination=LinearElim(),
         # ka has simulated BSV (omega=0.04 in reference_params.json)
         # alongside ktr; Savic et al. 2007 retain IIV on ka when adding
         # transit-compartment IIV rather than dropping it, and it must be
@@ -93,6 +104,7 @@ def scenario_a3() -> DSLSpec:
         # compare it against.
         variability=[IIV(params=["CL", "V", "ktr", "ka"], structure="diagonal")],
         observation=Proportional(sigma_prop=0.12),
+        initial={"ktr": 2.0, "ka": 1.0, "V": 60.0, "CL": 4.0},
     )
 
 
@@ -105,11 +117,12 @@ def scenario_a4() -> DSLSpec:
     """
     return DSLSpec(
         model_id="suite_a_scenario_a4",
-        absorption=FirstOrder(ka=1.2),
-        distribution=OneCmt(V=65.0),
-        elimination=MichaelisMenten(Vmax=80.0, Km=8.0),
+        absorption=FirstOrder(),
+        distribution=OneCmt(),
+        elimination=MichaelisMenten(),
         variability=[IIV(params=["Vmax", "V", "ka"], structure="diagonal")],
         observation=Combined(sigma_prop=0.1, sigma_add=0.3),
+        initial={"ka": 1.2, "V": 65.0, "Vmax": 80.0, "Km": 8.0},
     )
 
 
@@ -126,11 +139,12 @@ def scenario_a5() -> DSLSpec:
     """
     return DSLSpec(
         model_id="suite_a_scenario_a5",
-        absorption=FirstOrder(ka=0.02),
-        distribution=TMDDQSS(V=3.5, R0=10.0, KD=1.0, kint=0.03),
-        elimination=LinearElim(CL=0.015),
+        absorption=FirstOrder(),
+        distribution=TMDDQSS(),
+        elimination=LinearElim(),
         variability=[IIV(params=["CL", "V"], structure="diagonal")],
         observation=Proportional(sigma_prop=0.15),
+        initial={"ka": 0.02, "V": 3.5, "R0": 10.0, "KD": 1.0, "kint": 0.03, "CL": 0.015},
     )
 
 
@@ -146,16 +160,17 @@ def scenario_a6() -> DSLSpec:
     """
     return DSLSpec(
         model_id="suite_a_scenario_a6",
-        absorption=FirstOrder(ka=1.5),
-        distribution=OneCmt(V=70.0),
-        elimination=LinearElim(CL=5.0),
-        variability=[
-            IIV(params=["CL", "V", "ka"], structure="diagonal"),
-            CovariateLink(param="CL", covariate="WT", form="power"),
-            CovariateLink(param="V", covariate="WT", form="power"),
-            CovariateLink(param="CL", covariate="RENAL", form="categorical"),
+        absorption=FirstOrder(),
+        distribution=OneCmt(),
+        elimination=LinearElim(),
+        variability=[IIV(params=["CL", "V", "ka"], structure="diagonal")],
+        covariates=[
+            CovariateLink(param="CL", covariate="WT", form="power", theta=0.75, ref=70.0),
+            CovariateLink(param="V", covariate="WT", form="power", theta=1.0, ref=70.0),
+            CovariateLink(param="CL", covariate="RENAL", form="categorical", reference="normal"),
         ],
         observation=Proportional(sigma_prop=0.12),
+        initial={"ka": 1.5, "V": 70.0, "CL": 5.0},
     )
 
 
@@ -173,43 +188,56 @@ def scenario_a7() -> DSLSpec:
     return DSLSpec(
         model_id="suite_a_scenario_a7",
         absorption=NODEAbsorption(dim=4, constraint_template="bounded_positive"),
-        distribution=TwoCmt(V1=50.0, V2=80.0, Q=10.0),
-        elimination=LinearElim(CL=4.0),
+        distribution=TwoCmt(),
+        elimination=LinearElim(),
         variability=[IIV(params=["CL", "V1"], structure="diagonal")],
         observation=Combined(sigma_prop=0.1, sigma_add=0.3),
+        initial={"V1": 50.0, "V2": 80.0, "Q": 10.0, "CL": 4.0},
+        # Suite A NODE scenario (Phase 0 P0.8): explicit opt-in required
+        # since no emitter has a working NODE backend yet.
+        experimental=ExperimentalFlags(node=True),
     )
 
 
 def scenario_a8() -> DSLSpec:
-    """A8: 1-cmt oral with time-varying CL and CRCL covariate.
+    """A8: 1-cmt oral with monotonic CL autoinduction and CRCL covariate.
 
     Ground truth in the R simulator is
     ``CL(t, CRCL) = CL0 * (CRCL / 90)^theta * exp(-delta * t / 24)``. The
     DSL captures the static allometric CRCL effect via a power
-    CovariateLink; the diurnal damping (``exp(-delta * t / 24)``) has no
-    DSL primitive and is recorded in ``A8_COVARIATE_MODEL_NOTES``.
+    CovariateLink; the monotonic autoinduction term
+    (``exp(-delta * t / 24)``) has no DSL primitive and is recorded in
+    ``A8_COVARIATE_MODEL_NOTES``.
 
     Expected misspecification bias
     ------------------------------
-    Because APMODE fits a static ``CL`` against diurnally-varying truth,
-    the recovered point estimate will be a time-average of ``CL0``, biased
-    downward by ``(1 - exp(-delta)) / delta`` over the 24 h cycle — roughly
-    ``-7%`` at ``delta=0.15``. Benchmark tooling must compare recovery to
-    this time-averaged target, not to the raw ``CL0 = 4.482``. The scenario
-    is therefore a *DSL-capability* test (can APMODE detect the residual
-    pattern as a covariate-vs-time misspecification?), not a pure
-    parameter-recovery test like A1-A6.
+    Because APMODE fits a static ``CL`` against a monotonically-decaying
+    truth, the recovered point estimate approaches the time-average of
+    ``CL(t)`` over the observation window. Over 0-48 h with
+    ``CL0 = 4.482`` and ``delta = 0.15``, the analytical time-average
+    ``CL0 * (24/(delta * 48)) * (1 - exp(-delta * 48/24)) = 3.872``, so
+    the static-target recovery bias is ``-13.66%``. Benchmark tooling
+    must compare recovery to this time-averaged target, not to the raw
+    ``CL0 = 4.482``. The scenario is therefore a *DSL-capability* test
+    (can APMODE detect the residual pattern as a covariate-vs-time
+    misspecification?), not a pure parameter-recovery test like A1-A6.
     """
     return DSLSpec(
         model_id="suite_a_scenario_a8",
-        absorption=FirstOrder(ka=1.822),
-        distribution=OneCmt(V=29.964),
-        elimination=LinearElim(CL=4.482),
-        variability=[
-            IIV(params=["CL", "V"], structure="diagonal"),
-            CovariateLink(param="CL", covariate="CRCL", form="power"),
+        absorption=FirstOrder(),
+        distribution=OneCmt(),
+        elimination=LinearElim(),
+        # ka has simulated BSV (omega=0.09 in reference_params.json) — this
+        # is separate from the intentional autoinduction misspecification
+        # documented above (which is about the fixed-effect CL trajectory,
+        # not ka's between-subject variability) and must be estimable here
+        # too or eta-recovery scoring has nothing to compare it against.
+        variability=[IIV(params=["CL", "V", "ka"], structure="diagonal")],
+        covariates=[
+            CovariateLink(param="CL", covariate="CRCL", form="power", theta=0.75, ref=90.0),
         ],
         observation=Proportional(sigma_prop=0.10),
+        initial={"ka": 1.822, "V": 29.964, "CL": 4.482},
     )
 
 
@@ -237,12 +265,15 @@ A7_ABSORPTION_TRUTH: dict[str, float] = {
 # Ground truth covariate-model parameters for A8 that are not currently
 # expressible as DSL primitives. ``theta_crcl`` is the static CRCL allometric
 # exponent (captured in the DSL via ``CovariateLink(form="power")``), while
-# ``delta_diurnal`` is a time-dependent damping rate (``exp(-delta * t / 24)``)
+# ``delta_autoind`` is a monotonic autoinduction rate (``exp(-delta * t / 24)``)
 # with no DSL primitive today. The value is recorded here so Suite A fit
 # comparisons can distinguish DSL-approximation bias from estimation error.
 A8_COVARIATE_MODEL_NOTES: dict[str, float] = {
     "theta_crcl": 0.75,  # allometric exponent, CRCL/90 reference
-    "delta_diurnal": 0.15,  # diurnal damping per 24 h (not in DSL today)
+    "delta_autoind": 0.15,  # autoinduction rate per 24 h (not in DSL today)
+    # Expected downward bias on static-CL recovery over 0-48 h at delta=0.15:
+    "time_averaged_CL_over_48h": 3.872,
+    "static_target_bias_pct": -13.66,
 }
 
 # All scenario factories for iteration
@@ -256,6 +287,76 @@ ALL_SCENARIOS = [
     ("A7", scenario_a7),
     ("A8", scenario_a8),
 ]
+
+
+# Filename stems produced by benchmarks/suite_a/simulate_all.R. The R
+# simulator writes ``<stem>.csv`` for single-replicate runs and
+# ``<stem>_repNN.csv`` when invoked with n_replicates > 1. Each CSV has a
+# matching ``<stem>[_repNN]_eta.csv`` with per-subject eta draws.
+SCENARIO_FILENAME_STEMS: dict[str, str] = {
+    "A1": "a1_1cmt_oral_linear",
+    "A2": "a2_2cmt_iv_parallel_mm",
+    "A3": "a3_transit_1cmt_linear",
+    "A4": "a4_1cmt_oral_mm",
+    "A5": "a5_tmdd_qss",
+    "A6": "a6_1cmt_covariates",
+    "A7": "a7_2cmt_node_absorption",
+    "A8": "a8_1cmt_autoind_covariate",
+}
+
+
+def scenario_dataset_paths(
+    suite_dir: Path, scenario_id: str, *, include_eta: bool = False
+) -> list[Path]:
+    """Enumerate all dataset CSVs for a scenario, sorted by replicate index.
+
+    Args:
+        suite_dir: Directory containing the Suite A output CSVs
+            (typically ``benchmarks/suite_a/``).
+        scenario_id: One of ``A1``..``A8``.
+        include_eta: When True, also include ``<stem>[_repNN]_eta.csv``.
+
+    Returns:
+        A list of ``Path`` objects. Single-replicate runs return
+        ``[<stem>.csv]`` (or ``[<stem>.csv, <stem>_eta.csv]``);
+        multi-replicate runs return the ``_repNN`` variants in ascending
+        replicate order.
+    """
+    from re import compile as _re_compile
+
+    if scenario_id not in SCENARIO_FILENAME_STEMS:
+        raise KeyError(f"Unknown scenario id: {scenario_id!r}")
+    stem = SCENARIO_FILENAME_STEMS[scenario_id]
+    suite_dir = Path(suite_dir)
+
+    single = suite_dir / f"{stem}.csv"
+    rep_pattern = _re_compile(rf"^{stem}_rep(\d+)\.csv$")
+    rep_matches = sorted(
+        (
+            (int(m.group(1)), p)
+            for p in suite_dir.iterdir()
+            if p.is_file() and (m := rep_pattern.match(p.name))
+        ),
+        key=lambda pair: pair[0],
+    )
+
+    if rep_matches:
+        data_paths = [p for _, p in rep_matches]
+    elif single.exists():
+        data_paths = [single]
+    else:
+        return []
+
+    if not include_eta:
+        return data_paths
+
+    result: list[Path] = []
+    for p in data_paths:
+        result.append(p)
+        eta = p.with_name(p.stem + "_eta.csv")
+        if eta.exists():
+            result.append(eta)
+    return result
 
 
 def load_reference_eta(eta_csv_path: Path) -> dict[str, dict[str, float]]:
@@ -293,3 +394,18 @@ def load_reference_eta(eta_csv_path: Path) -> dict[str, dict[str, float]]:
             subject_id = str(row[id_col])
             result[subject_id] = {col[len("eta.") :]: float(row[col]) for col in eta_cols}
     return result
+
+
+def suite_a_manifest(suite_dir: Path) -> dict[str, list[Path]]:
+    """Return ``{scenario_id: [dataset_paths]}`` for every A1..A8 scenario.
+
+    Missing scenarios map to an empty list. Downstream harnesses iterate
+    over ``manifest[scenario_id]`` to fit across replicates without
+    knowing whether the simulator was invoked in single- or
+    multi-replicate mode.
+    """
+    suite_dir = Path(suite_dir)
+    return {
+        scenario_id: scenario_dataset_paths(suite_dir, scenario_id)
+        for scenario_id in SCENARIO_FILENAME_STEMS
+    }

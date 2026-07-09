@@ -74,6 +74,12 @@ _MODULE_REGISTRY: dict[str, type[BaseModel]] = {
 # Fallback initial-estimate kwargs for the short-form string syntax
 # ("new_module": "MichaelisMenten").  Values are in typical population-PK
 # units; the R harness will override with NCA-derived estimates if available.
+#
+# Formular sharpening plan §4 Phase 1 (P1.4): structural modules no longer
+# carry calibration fields, so a default dict here may mix structural keys
+# (e.g. Transit "n") with calibration keys (e.g. "ktr", "ka") — the split in
+# ``_parse_swap_module`` routes each to the right place (module kwargs vs.
+# ``SwapModule.initial_overrides``) using ``_CALIBRATION_FIELDS`` below.
 _MODULE_DEFAULTS: dict[str, dict[str, float | int | str]] = {
     "FirstOrder": {"ka": 1.0},
     "ZeroOrder": {"dur": 1.0},
@@ -90,6 +96,25 @@ _MODULE_DEFAULTS: dict[str, dict[str, float | int | str]] = {
     "Proportional": {"sigma_prop": 0.2},
     "Additive": {"sigma_add": 1.0},
     "Combined": {"sigma_prop": 0.15, "sigma_add": 0.5},
+}
+
+# Calibration (initial-estimate) field names per module type — the
+# counterpart to each module's structural ``model_fields`` (P1.4 split).
+# Empty/absent entries (observation modules) mean every field the module
+# accepts is structural (e.g. sigma_prop/sigma_add stay inline).
+_CALIBRATION_FIELDS: dict[str, frozenset[str]] = {
+    "FirstOrder": frozenset({"ka"}),
+    "ZeroOrder": frozenset({"dur"}),
+    "LaggedFirstOrder": frozenset({"ka", "tlag"}),
+    "Transit": frozenset({"ktr", "ka"}),
+    "MixedFirstZero": frozenset({"ka", "dur", "frac"}),
+    "OneCmt": frozenset({"V"}),
+    "TwoCmt": frozenset({"V1", "V2", "Q"}),
+    "ThreeCmt": frozenset({"V1", "V2", "V3", "Q2", "Q3"}),
+    "Linear": frozenset({"CL"}),
+    "MichaelisMenten": frozenset({"Vmax", "Km"}),
+    "ParallelLinearMM": frozenset({"CL", "Vmax", "Km"}),
+    "TimeVarying": frozenset({"CL", "kdecay"}),
 }
 
 
@@ -220,20 +245,49 @@ def _parse_swap_module(raw: dict[str, Any]) -> FormularTransform:
     # the allow-list is explicit at the entry point and the Pydantic
     # validator is a redundant second line of defence, not the sole
     # one.
-    allowed = set(module_cls.model_fields.keys()) - {"type"}
-    kwargs = dict(_MODULE_DEFAULTS.get(module_type, {}))
+    #
+    # Formular sharpening plan §4 Phase 1 (P1.4): structural modules no
+    # longer carry calibration fields (e.g. MichaelisMenten has no Vmax/Km
+    # attribute), so an LLM-supplied field is routed to one of two places:
+    # structural kwargs (module construction) or ``SwapModule.initial_overrides``
+    # (the new DSLSpec.initial entries this swap introduces). A field that
+    # matches neither allow-list is rejected, preserving the original
+    # fail-closed intent.
+    structural_allowed = set(module_cls.model_fields.keys()) - {"type"}
+    calibration_allowed = _CALIBRATION_FIELDS.get(module_type, frozenset())
+
+    defaults = dict(_MODULE_DEFAULTS.get(module_type, {}))
+    structural_kwargs = {k: v for k, v in defaults.items() if k in structural_allowed}
+    initial_overrides = {k: v for k, v in defaults.items() if k in calibration_allowed}
+
     for k, v in new_module_raw.items():
         if k == "type":
             continue
-        if k not in allowed:
+        if k in structural_allowed:
+            structural_kwargs[k] = v
+        elif k in calibration_allowed:
+            initial_overrides[k] = v
+        else:
             msg = (
                 f"swap_module: field {k!r} is not allowed on {module_type}; "
-                f"allowed fields are {sorted(allowed)}"
+                f"allowed structural fields are {sorted(structural_allowed)}, "
+                f"allowed calibration fields are {sorted(calibration_allowed)}"
             )
             raise ValueError(msg)
-        kwargs[k] = v
-    new_module = module_cls(**kwargs)
-    return SwapModule(position=raw["position"], new_module=new_module)
+
+    new_module = module_cls(**structural_kwargs)
+
+    raw_overrides = raw.get("initial_overrides")
+    if isinstance(raw_overrides, dict):
+        initial_overrides.update(raw_overrides)
+
+    return SwapModule(
+        position=raw["position"],
+        new_module=new_module,
+        initial_overrides=initial_overrides,
+        rationale=raw.get("rationale", ""),
+        expected_diagnostic_effect=list(raw.get("expected_diagnostic_effect", [])),
+    )
 
 
 def _parse_add_covariate_link(raw: dict[str, Any]) -> FormularTransform:
@@ -241,19 +295,39 @@ def _parse_add_covariate_link(raw: dict[str, Any]) -> FormularTransform:
         param=normalize_param_name(raw["param"]),
         covariate=raw["covariate"],
         form=raw["form"],
+        theta=raw.get("theta"),
+        ref=raw.get("ref"),
+        reference=raw.get("reference"),
+        tm50=raw.get("tm50"),
+        hill=raw.get("hill"),
+        rationale=raw.get("rationale", ""),
+        expected_diagnostic_effect=list(raw.get("expected_diagnostic_effect", [])),
     )
 
 
 def _parse_adjust_variability(raw: dict[str, Any]) -> FormularTransform:
-    return AdjustVariability(param=normalize_param_name(raw["param"]), action=raw["action"])
+    return AdjustVariability(
+        param=normalize_param_name(raw["param"]),
+        action=raw["action"],
+        rationale=raw.get("rationale", ""),
+        expected_diagnostic_effect=list(raw.get("expected_diagnostic_effect", [])),
+    )
 
 
 def _parse_set_transit_n(raw: dict[str, Any]) -> FormularTransform:
-    return SetTransitN(n=raw["n"])
+    return SetTransitN(
+        n=raw["n"],
+        rationale=raw.get("rationale", ""),
+        expected_diagnostic_effect=list(raw.get("expected_diagnostic_effect", [])),
+    )
 
 
 def _parse_toggle_lag(raw: dict[str, Any]) -> FormularTransform:
-    return ToggleLag(on=raw["on"])
+    return ToggleLag(
+        on=raw["on"],
+        rationale=raw.get("rationale", ""),
+        expected_diagnostic_effect=list(raw.get("expected_diagnostic_effect", [])),
+    )
 
 
 def _parse_replace_with_node(raw: dict[str, Any]) -> FormularTransform:
@@ -261,6 +335,8 @@ def _parse_replace_with_node(raw: dict[str, Any]) -> FormularTransform:
         position=raw["position"],
         constraint_template=raw["constraint_template"],
         dim=raw["dim"],
+        rationale=raw.get("rationale", ""),
+        expected_diagnostic_effect=list(raw.get("expected_diagnostic_effect", [])),
     )
 
 
@@ -284,6 +360,7 @@ def _parse_set_prior(raw: dict[str, Any]) -> FormularTransform:
         source=raw.get("source", "weakly_informative"),
         justification=raw.get("justification", ""),
         historical_refs=list(raw.get("historical_refs", [])),
+        expected_diagnostic_effect=list(raw.get("expected_diagnostic_effect", [])),
     )
 
 
@@ -293,7 +370,11 @@ def _parse_convert_transit_to_erlang(raw: dict[str, Any]) -> ConvertTransitToErl
     The transform takes a single integer ``n`` (1..7); validation of the
     Transit-absorption precondition lives on the AST class itself.
     """
-    return ConvertTransitToErlang(n=int(raw["n"]))
+    return ConvertTransitToErlang(
+        n=int(raw["n"]),
+        rationale=raw.get("rationale", ""),
+        expected_diagnostic_effect=list(raw.get("expected_diagnostic_effect", [])),
+    )
 
 
 def _parse_add_parallel_route(raw: dict[str, Any]) -> AddParallelRoute:
@@ -303,7 +384,12 @@ def _parse_add_parallel_route(raw: dict[str, Any]) -> AddParallelRoute:
     (fast/slow) parameterised by ``ka2`` and the fast-route fraction
     ``frac``.
     """
-    return AddParallelRoute(ka2=float(raw["ka2"]), frac=float(raw["frac"]))
+    return AddParallelRoute(
+        ka2=float(raw["ka2"]),
+        frac=float(raw["frac"]),
+        rationale=raw.get("rationale", ""),
+        expected_diagnostic_effect=list(raw.get("expected_diagnostic_effect", [])),
+    )
 
 
 def _parse_set_sumig_components(raw: dict[str, Any]) -> SetSumIGComponents:
@@ -319,6 +405,8 @@ def _parse_set_sumig_components(raw: dict[str, Any]) -> SetSumIGComponents:
         RD2_1=float(raw["RD2_1"]),
         RD2_2=float(raw["RD2_2"]),
         weight_1=float(raw["weight_1"]),
+        rationale=raw.get("rationale", ""),
+        expected_diagnostic_effect=list(raw.get("expected_diagnostic_effect", [])),
     )
 
 

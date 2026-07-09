@@ -320,9 +320,9 @@ def _spec_with_obs(observation: object) -> object:
 
     return DSLSpec(
         model_id="test_npe_spec_0001",
-        absorption=FirstOrder(ka=1.0),
-        distribution=OneCmt(V=10.0),
-        elimination=LinearElim(CL=1.0),
+        absorption=FirstOrder(),
+        distribution=OneCmt(),
+        elimination=LinearElim(),
         variability=[IIV(params=["CL", "V"], structure="diagonal")],
         observation=observation,  # type: ignore[arg-type]
     )

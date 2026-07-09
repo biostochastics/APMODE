@@ -32,9 +32,9 @@ from apmode.evaluation.loro_cv import _aggregate_loro_metrics, evaluate_loro_cv
 def _base_spec() -> DSLSpec:
     return DSLSpec(
         model_id="test-base",
-        absorption=FirstOrder(ka=1.0),
-        distribution=OneCmt(V=30.0),
-        elimination=LinearElim(CL=2.0),
+        absorption=FirstOrder(),
+        distribution=OneCmt(),
+        elimination=LinearElim(),
         variability=[IIV(params=["CL", "V"], structure="diagonal")],
         observation=Proportional(sigma_prop=0.1),
     )

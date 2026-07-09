@@ -3,6 +3,10 @@
 
 Verifies that any valid DSL string parses, transforms to a typed AST,
 validates, and lowers to R code — the full compiler pipeline.
+
+Formular sharpening plan §4 Phase 1 (P1.4): structural declarations name
+calibration parameters without values; all calibration values live in the
+top-level ``initial: { ... }`` block.
 """
 
 import pytest
@@ -25,24 +29,28 @@ from apmode.dsl.validator import validate_dsl
 
 # --- Strategies for generating valid DSL text ---
 
-ABSORPTIONS = [
-    "FirstOrder(ka={v})",
-    "ZeroOrder(dur={v})",
-    "LaggedFirstOrder(ka={v}, tlag={v2})",
-    "Transit(n={n}, ktr={v}, ka={v2})",
-    "MixedFirstZero(ka={v}, dur={v2}, frac={v3})",
+# (structural declaration template, calibration param names it introduces).
+# Templates with a "{n}" placeholder carry a structural (non-calibration)
+# integer that stays inline; every other name is a bare keyword resolved
+# via the top-level initial: block.
+ABSORPTIONS: list[tuple[str, list[str]]] = [
+    ("FirstOrder(ka)", ["ka"]),
+    ("ZeroOrder(dur)", ["dur"]),
+    ("LaggedFirstOrder(ka, tlag)", ["ka", "tlag"]),
+    ("Transit(n={n}, ktr, ka)", ["ktr", "ka"]),
+    ("MixedFirstZero(ka, dur, frac)", ["ka", "dur", "frac"]),
 ]
 
-DISTRIBUTIONS = [
-    "OneCmt(V={v})",
-    "TwoCmt(V1={v}, V2={v2}, Q={v3})",
-    "ThreeCmt(V1={v}, V2={v2}, V3={v3}, Q2={v4}, Q3={v5})",
+DISTRIBUTIONS: list[tuple[str, list[str]]] = [
+    ("OneCmt(V)", ["V"]),
+    ("TwoCmt(V1, V2, Q)", ["V1", "V2", "Q"]),
+    ("ThreeCmt(V1, V2, V3, Q2, Q3)", ["V1", "V2", "V3", "Q2", "Q3"]),
 ]
 
-ELIMINATIONS = [
-    "Linear(CL={v})",
-    "MichaelisMenten(Vmax={v}, Km={v2})",
-    "ParallelLinearMM(CL={v}, Vmax={v2}, Km={v3})",
+ELIMINATIONS: list[tuple[str, list[str]]] = [
+    ("Linear(CL)", ["CL"]),
+    ("MichaelisMenten(Vmax, Km)", ["Vmax", "Km"]),
+    ("ParallelLinearMM(CL, Vmax, Km)", ["CL", "Vmax", "Km"]),
 ]
 
 OBSERVATIONS = [
@@ -56,6 +64,9 @@ OBSERVATIONS = [
 STRUCTURES = ["diagonal", "block"]
 COV_FORMS = ["power", "exponential", "linear"]
 
+_FRAC_PARAMS = frozenset({"frac"})
+_NON_NEGATIVE_PARAMS = frozenset({"tlag"})
+
 
 def _pos_float() -> st.SearchStrategy[float]:
     return st.floats(min_value=0.01, max_value=1000.0, allow_nan=False, allow_infinity=False)
@@ -65,65 +76,46 @@ def _frac_float() -> st.SearchStrategy[float]:
     return st.floats(min_value=0.01, max_value=0.99, allow_nan=False, allow_infinity=False)
 
 
+def _non_negative_float() -> st.SearchStrategy[float]:
+    return st.floats(min_value=0.0, max_value=100.0, allow_nan=False, allow_infinity=False)
+
+
 def _pos_int() -> st.SearchStrategy[int]:
     return st.integers(min_value=1, max_value=20)
 
 
-# Map from template string prefix to the structural params it defines
-_ELIM_PARAMS: dict[str, list[str]] = {
-    "Linear(CL": ["CL"],
-    "MichaelisMenten(Vmax": ["Vmax", "Km"],
-    "ParallelLinearMM(CL": ["CL", "Vmax", "Km"],
-}
-
-_DIST_PARAMS: dict[str, list[str]] = {
-    "OneCmt(V": ["V"],
-    "TwoCmt(V1": ["V1", "V2"],
-    "ThreeCmt(V1": ["V1", "V2", "V3"],
-}
-
-_ABS_PARAMS: dict[str, list[str]] = {
-    "FirstOrder(ka": ["ka"],
-    "ZeroOrder(dur": ["dur"],
-    "LaggedFirstOrder(ka": ["ka"],
-    "Transit(n": ["ktr", "ka"],  # n excluded: no IIV/covariates on transit n
-    "MixedFirstZero(ka": ["ka"],
-}
-
-
-def _get_params_for_template(text: str, mapping: dict[str, list[str]]) -> list[str]:
-    """Extract structural param names from a formatted template string."""
-    for prefix, params in mapping.items():
-        if text.startswith(prefix):
-            return params
-    return []
+def _draw_value_for_param(draw: st.DrawFn, name: str) -> float:
+    if name in _FRAC_PARAMS:
+        return draw(_frac_float())
+    if name in _NON_NEGATIVE_PARAMS:
+        return draw(_non_negative_float())
+    return draw(_pos_float())
 
 
 @st.composite
 def valid_classical_dsl(draw: st.DrawFn) -> str:
     """Generate a syntactically valid classical (non-NODE) DSL model spec."""
-    v1, v2, v3, v4, v5 = [draw(_pos_float()) for _ in range(5)]
+    v1, v2 = draw(_pos_float()), draw(_pos_float())
     n = draw(_pos_int())
-    frac = draw(_frac_float())
 
-    abs_template = draw(st.sampled_from(ABSORPTIONS))
-    absorption = abs_template.format(v=v1, v2=v2, v3=frac, n=n)
+    abs_template, abs_params = draw(st.sampled_from(ABSORPTIONS))
+    absorption = abs_template.format(n=n)
 
-    dist_template = draw(st.sampled_from(DISTRIBUTIONS))
-    distribution = dist_template.format(v=v1, v2=v2, v3=v3, v4=v4, v5=v5)
+    dist_template, dist_params = draw(st.sampled_from(DISTRIBUTIONS))
+    distribution = dist_template
 
-    elim_template = draw(st.sampled_from(ELIMINATIONS))
-    elimination = elim_template.format(v=v1, v2=v2, v3=v3)
+    elim_template, elim_params = draw(st.sampled_from(ELIMINATIONS))
+    elimination = elim_template
 
     obs_template = draw(st.sampled_from(OBSERVATIONS))
     observation = obs_template.format(v=v1, v2=v2)
 
-    # Build IIV params from actual structural params to pass validation
-    struct_params = (
-        _get_params_for_template(absorption, _ABS_PARAMS)
-        + _get_params_for_template(distribution, _DIST_PARAMS)
-        + _get_params_for_template(elimination, _ELIM_PARAMS)
-    )
+    # Deduplicate while preserving order — the three axes never share a
+    # calibration name in this generator's template set.
+    struct_params = list(dict.fromkeys([*abs_params, *dist_params, *elim_params]))
+    initial_values = {p: _draw_value_for_param(draw, p) for p in struct_params}
+    initial_text = ", ".join(f"{p} = {v}" for p, v in initial_values.items())
+
     # Pick 2+ params for block compatibility (need >= 2 for block structure)
     n_params = draw(st.integers(min_value=2, max_value=min(len(struct_params), 4)))
     iiv_params = struct_params[:n_params]
@@ -131,15 +123,21 @@ def valid_classical_dsl(draw: st.DrawFn) -> str:
     structure = draw(st.sampled_from(STRUCTURES))
     variability = f"IIV(params=[{params}], structure={structure})"
 
-    # Optionally add CovariateLink on a valid structural param
+    # Optionally add a covariate link on a valid structural param (P1.6:
+    # top-level covariates: block, arrow syntax, not embedded in variability).
     add_cov = draw(st.booleans())
+    covariates_block = ""
     if add_cov:
         cov_param = draw(st.sampled_from(iiv_params))
         cov_form = draw(st.sampled_from(COV_FORMS))
-        variability = f"""{{
-            IIV(params=[{params}], structure={structure})
-            CovariateLink(param={cov_param}, covariate=WT, form={cov_form})
-        }}"""
+        cov_theta = draw(_pos_float())
+        if cov_form == "power":
+            cov_ref = draw(_pos_float())
+            covariates_block = (
+                f"covariates: {{ {cov_param} <- WT.power(theta={cov_theta}, ref={cov_ref}) }}"
+            )
+        else:
+            covariates_block = f"covariates: {{ {cov_param} <- WT.{cov_form}(theta={cov_theta}) }}"
 
     return f"""
     model {{
@@ -148,6 +146,8 @@ def valid_classical_dsl(draw: st.DrawFn) -> str:
         elimination: {elimination}
         variability: {variability}
         observation: {observation}
+        initial: {{ {initial_text} }}
+        {covariates_block}
     }}
     """
 
@@ -199,6 +199,8 @@ class TestFullPipelineRoundtrip:
         assert roundtripped.elimination == spec.elimination
         assert roundtripped.observation == spec.observation
         assert len(roundtripped.variability) == len(spec.variability)
+        assert roundtripped.covariates == spec.covariates
+        assert roundtripped.initial == spec.initial
 
     @given(spec_text=valid_classical_dsl())
     @settings(max_examples=50)
@@ -240,10 +242,11 @@ class TestNODEValidationProperties:
         spec = DSLSpec(
             model_id="test_node_property",
             absorption=NODEAbsorption(dim=dim, constraint_template=template),  # type: ignore[arg-type]
-            distribution=OneCmt(V=70.0),
-            elimination=LinearElim(CL=5.0),
+            distribution=OneCmt(),
+            elimination=LinearElim(),
             variability=[IIV(params=["CL", "V"], structure="diagonal")],
             observation=Proportional(sigma_prop=0.1),
+            initial={"V": 70.0, "CL": 5.0},
         )
         errors = validate_dsl(spec, lane=lane)
 
@@ -270,10 +273,11 @@ class TestNODEValidationProperties:
         spec = DSLSpec(
             model_id="test_node_submission",
             absorption=NODEAbsorption(dim=dim, constraint_template=template),  # type: ignore[arg-type]
-            distribution=OneCmt(V=70.0),
-            elimination=LinearElim(CL=5.0),
+            distribution=OneCmt(),
+            elimination=LinearElim(),
             variability=[IIV(params=["CL", "V"], structure="diagonal")],
             observation=Proportional(sigma_prop=0.1),
+            initial={"V": 70.0, "CL": 5.0},
         )
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
         assert any(e.constraint == "node_lane_admissibility" for e in errors)

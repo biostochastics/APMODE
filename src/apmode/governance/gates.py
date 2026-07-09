@@ -26,12 +26,13 @@ from apmode.bundle.models import (
     LOROMetrics,
     _pit_key,
 )
+from apmode.dsl.lane import Lane
 from apmode.governance.policy import Gate25Config  # noqa: TC001 — used at runtime
 from apmode.ids import generate_gate_id
 
 logger = structlog.get_logger(__name__)
 
-_VALID_LANES = frozenset({"submission", "discovery", "optimization"})
+_VALID_LANES = frozenset(str(lane) for lane in Lane)
 
 if TYPE_CHECKING:
     from apmode.bundle.models import (
@@ -836,7 +837,7 @@ def _check_loro_requirement(
     pooled variance.
     """
     del result  # candidate is identified upstream; evaluation uses loro_metrics only
-    if not g2.loro_required or lane != "optimization":
+    if not g2.loro_required or lane != Lane.OPTIMIZATION:
         return GateCheckResult(
             check_id="loro_required",
             passed=True,

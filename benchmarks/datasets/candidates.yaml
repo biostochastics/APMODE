@@ -1,0 +1,414 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Benchmark Dataset Candidates — research-mode extensions to registry.yaml
+#
+# v2 (2026-07-08 post-verification):
+#   * Row/subject counts spot-checked against local R install
+#   * URLs HEAD-checked; live status recorded per-entry (`access_verified`)
+#   * Licenses corrected via GitHub API + raw LICENSE fetch (not paper claims)
+#   * REMOVED bugs_model_library — Bitbucket repo returns 404 (upstream link dead)
+#   * ADDED metrum_torsten_expo4 + metrum_torsten_lib as its replacements
+#   * ADDED verified: true|false per retrieval command
+#
+# Fields (extensions to registry.yaml schema, all optional):
+#   url, doi, github, fetch_command   — retrieval
+#   access_verified                    — {live|503|404|unchecked} @ 2026-07-08
+#   license_verified_via               — how the SPDX was confirmed
+#   apmode_lanes, apmode_role          — governance tie-in
+#   promoted_from                      — literature anchor
+
+datasets:
+
+  # ============================================================
+  # Tier 1: Open R data packages — CI-eligible on package install
+  # ============================================================
+
+  nlmixr2data_extended_grid:
+    name: "nlmixr2data ACOP-2016 full grid (missing suites)"
+    source: "nlmixr2data CRAN package"
+    url: "https://cran.r-project.org/web/packages/nlmixr2data/"
+    github: "https://github.com/nlmixr2/nlmixr2data"
+    citation: "Schoemaker R, Xiong Y, Wilkins J, Laveille C, Wang W. nlmixr2: an open-source package for pharmacometric modelling in R. ACOP 2016"
+    license: "GPL-3.0-only"
+    license_verified_via: "GitHub API 2026-07-08"
+    access_tier: open
+    access_verified: "live @ 2026-07-08"
+    fetch_command: "R -e 'install.packages(\"nlmixr2data\", repos=\"https://cloud.r-project.org\"); data(package=\"nlmixr2data\")'"
+    verified: true
+    verification_note: "25 datasets confirmed present in local install (R 4.5.3, nlmixr2data v2.0.9)"
+    apmode_lanes: [submission, discovery]
+    apmode_role: "structural-recovery grid"
+    verified_row_counts:  # from Rscript spot-check 2026-07-08
+      theo_sd: 144
+      theo_md: 348
+      warfarin: 515      # note: registry.yaml says 519 — 4-row discrepancy, needs reconciliation
+      mavoglurant: 2678  # note: registry.yaml says 2346 — 332-row discrepancy, needs reconciliation
+      pheno_sd: 744      # NOT 155 — this is the multi-dose extension, not the NONMEM sparse PHENO
+      Oral_1CPT: 7920
+      Oral_2CPT: 7920
+      Bolus_1CPT: 7920
+      Bolus_1CPTMM: 7920
+      Infusion_2CPT: 7920
+      wbcSim: 280
+      nimoData: 441
+      metabolite: 10     # small — parent/metabolite kinetics toy
+      Wang2007: 20       # very small — OFV comparison
+      invgaussian: 14
+      rats: 32
+      pump: 10
+      nmtest: 7157
+    covered_datasets:
+      - Oral_2CPT
+      - Bolus_1CPT
+      - Bolus_2CPT
+      - Bolus_1CPTMM
+      - Bolus_2CPTMM
+      - Oral_1CPTMM
+      - Oral_2CPTMM
+      - Infusion_1CPT
+      - Infusion_2CPT
+      - Infusion_1CPTMM
+      - Infusion_2CPTMM
+      - wbcSim
+      - nimoData
+      - metabolite
+      - Wang2007
+      - nmtest
+      - invgaussian
+      - rats
+      - pump
+      - theo_md
+    justification: "Fills structural coverage APMODE lacks: MM elimination (*_1CPTMM), 2-cpt oral, PKPD turnover (wbcSim), non-standard absorption (invgaussian). Recovery ground-truth is known from ACOP 2016 → direct Suite-A extension. RECONCILE: pheno_sd/warfarin/mavoglurant row counts in this file differ from registry.yaml — likely reflects package version drift."
+
+  saemix_theo_covariate:
+    name: "Theophylline with simulated SEX/WEIGHT covariates"
+    source: "saemix::theo.saemix"
+    url: "https://rdrr.io/cran/saemix/man/theo.saemix.html"
+    citation_key: "saemix_pkg, boeckmann1994_nonmem"  # see CITATIONS.bib
+    license: "GPL (>= 2)"
+    license_verified_via: "saemix DESCRIPTION 2026-07-08"
+    access_tier: open
+    access_verified: "live @ 2026-07-08 (installed locally)"
+    verified: true
+    verified_row_counts: {rows: 120, cols: 6, columns: "Id,Dose,Time,Concentration,Weight,Sex"}
+    n_subjects: 12
+    n_observations: 120
+    route: oral
+    has_covariates: true
+    covariate_names: [Weight, Sex]
+    fetch_command: "R -e 'install.packages(\"saemix\"); data(theo.saemix, package=\"saemix\")'"
+    apmode_lanes: [submission, discovery]
+    apmode_role: "covariate-model discovery fixture (SEX is simulated → known ground truth)"
+    justification: "Sex covariate is *synthetic* — covariate-discovery test with a known answer, without needing an FDA-restricted dataset. NOTE: theo.saemix has 120 rows (not the 132 of NONMEM's theo); saemix removes t=0."
+
+  npde_reference_sims:
+    name: "npde package reference simulated sets (warfarin)"
+    source: "npde::simwarfarinBase + simwarfarinCov"
+    url: "https://rdrr.io/cran/npde/man/warfarin.html"
+    citation: "Comets E, Brendel K, Mentré F. (2008) Comp Methods Prog Biomed 90(2):154-166"
+    license: "GPL-2.0-or-later"
+    license_verified_via: "CRAN DESCRIPTION"
+    access_tier: open
+    access_verified: "live (docs page 200)"
+    verified: false
+    fetch_command: "R -e 'install.packages(\"npde\"); data(warfarin, package=\"npde\")'  # simwarfarinBase 1000× via github: github.com/ecomets/npde30"
+    apmode_lanes: [submission, discovery]
+    apmode_role: "reference NPDE ground-truth for VPC/NPE gate calibration"
+    justification: "1000× posterior-predictive simulations exist per warfarin base + covariate model → your predictive_summary.build_predictive_diagnostics helper has an exact reference to calibrate NPE/VPC scoring against Comets 2008."
+
+  r_base_datasets:
+    name: "R base datasets: Theoph + Indometh"
+    source: "R datasets package"
+    citation: "Kwan, Breault, Umbenhauer, McMahon, Duggan (1976) J Pharmacokinet Biopharm 4:255-280"
+    license: "GPL-2.0-only"
+    license_verified_via: "R core"
+    access_tier: open
+    access_verified: "live (local R 4.5.3)"
+    verified: true
+    verified_row_counts:
+      Indometh: {rows: 66, subjects: 6, cols: "Subject,time,conc"}
+      Theoph:   {rows: 132, subjects: 12, cols: "Subject,Wt,Dose,Time,conc"}
+    fetch_command: "R -e 'data(Indometh); data(Theoph)'"
+    apmode_lanes: [submission]
+    apmode_role: "cleanest 2-cpt biexponential IV fixture; Suite-B anchor"
+    justification: "Only IV-bolus 2-cpt reference in the open canon. Theo covers 1-cpt oral, Indometh covers 2-cpt IV — a complete minimal set for Submission-lane sanity."
+
+  medicaldata_indometh:
+    name: "medicaldata::indometh + indo_rct"
+    source: "medicaldata R package (Vincentarelbundock Rdatasets mirror)"
+    url: "https://vincentarelbundock.github.io/Rdatasets/datasets.html"
+    citation: "medicaldata package (Higgins TL)"
+    license: "CC0-1.0"
+    license_verified_via: "package DESCRIPTION (unverified locally)"
+    access_tier: open
+    access_verified: "live (mirror index page 200)"
+    verified: false
+    fetch_command: "R -e 'install.packages(\"medicaldata\"); data(indometh, package=\"medicaldata\")'"
+    apmode_lanes: [submission]
+    apmode_role: "CC0-licensed cross-check for R-base Indometh (identical raw data, permissive license)"
+    justification: "CC0 licensing avoids any GPL-2 stack issue if APMODE is ever bundled with an MIT-licensed dependency."
+
+  # ============================================================
+  # Tier 1: Curated public repositories
+  # ============================================================
+
+  ddmore_repository_index:
+    name: "DDMoRe Model Repository — full 123-model catalog"
+    source: "DDMoRe Foundation"
+    url: "http://repository.ddmore.foundation/models"
+    legacy_url: "http://repository.ddmore.eu/models"
+    citation: "Harnisch et al. (2013) CPT:PSP 2:e34; PharmML Bergmann et al. (2017) CPT:PSP 6(10):649-659"
+    license: "Apache-2.0 (PharmML spec); per-model varies"
+    access_tier: scripted
+    access_verified: "503 SERVICE UNAVAILABLE @ 2026-07-08"
+    access_note: "repository.ddmore.foundation returns 503 across all URLs. www.ddmore.foundation itself is 200 and still links to the repository as active. Likely a deployment outage rather than sunset — re-verify before promotion. If persistent, alternative: request PharmML files directly from foundation contact (Langegracht 70, Leiden)."
+    verified: false
+    fetch_command: "curl -s http://repository.ddmore.foundation/api/v1/models"
+    apmode_lanes: [submission, discovery, optimization]
+    apmode_role: "Suite-C literature anchor pool (24 oncology + 19 diabetes + others)"
+    canonical_ids_to_include:
+      DDMODEL00000003:  "Hamren 2008 diabetes tesaglitazar (KPD turnover; DDMoRe qualification exemplar)"
+      DDMODEL00000103:  "Trefz 2015 Kuvan/PKU turnover-KPD"
+      DDMODEL00000130:  "Karaiskos 2015 CMS/colistin PK (executable original code)"
+      DDMODEL00000238:  "Germovsek 2017 gentamicin neonatal IOV (already in registry.yaml)"
+      DDMODEL00000243:  "TTE example"
+      DDMODEL00000247:  "Item Response Theory example"
+      DDMODEL00000248:  "Preterm-neonatal morphine/phenobarbital TDM"
+    justification: "Every DDMoRe model ships with (a) source or simulated data, (b) canonical NONMEM/Monolix run for byte-checkable ground truth, (c) qualification metadata. High-value for cross-paradigm ranking — BUT currently inaccessible. Do not promote until repository.ddmore.foundation returns 200."
+
+  metrum_merge_expo1_nonmem:
+    name: "Metrum MeRGE Expo 1 — NONMEM/FOCE reference workflow"
+    source: "Metrum Research Group"
+    url: "https://merge.metrumrg.com/expo/expo1-nonmem-foce/"
+    github: "https://github.com/metrumresearchgroup/expo1-nonmem-foce"
+    citation: "Metrum Research Group (2024) MeRGE Expo 1"
+    license: "UNSPECIFIED (no LICENSE file in repo)"
+    license_verified_via: "GitHub API returned license:null; no LICENSE|LICENSE.md at main"
+    access_tier: reference_only  # DOWNGRADED from `scripted` — no clear reuse license
+    access_verified: "live (repo + expo portal both 200 @ 2026-07-08)"
+    verified: true
+    fetch_command: "git clone --depth 1 https://github.com/metrumresearchgroup/expo1-nonmem-foce"
+    apmode_lanes: [submission]
+    apmode_role: "end-to-end integration reference for Submission lane"
+    licensing_caveat: "Absence of a LICENSE file means public-viewable but NOT redistributable. Fine to reproduce methodology + patterns; do not vendor code or data into APMODE without explicit permission from MetrumRG."
+    justification: "Metrum-quality reproducible workflow (pkgr + renv + MPN) for FOCE NONMEM. Reproducing Expo 1 headline PopPK model with APMODE is a defensible submission-lane acceptance test even if code cannot be redistributed."
+
+  metrum_merge_expo4_torsten:
+    name: "Metrum MeRGE Expo 4 — Stan/Torsten Bayesian PopPK workflow"
+    source: "Metrum Research Group"
+    url: "https://merge.metrumrg.com/expo/expo4-torsten-poppk/"
+    github: "https://github.com/metrumresearchgroup/expo4-torsten-poppk"
+    citation: "Metrum Research Group (2024) MeRGE Expo 4"
+    license: "UNSPECIFIED (no LICENSE file in repo)"
+    license_verified_via: "GitHub API returned license:null"
+    access_tier: reference_only
+    access_verified: "live (200 @ 2026-07-08)"
+    verified: true
+    fetch_command: "git clone --depth 1 https://github.com/metrumresearchgroup/expo4-torsten-poppk"
+    apmode_lanes: [submission]
+    apmode_role: "reference Bayesian PopPK workflow for the bayesian_stan backend (replaces BUGSModelLibrary)"
+    workflow_details:
+      package: "bbr.bayes (Metrum) + cmdstanr + Stan/Torsten"
+      data_file: "data/derived/pk.csv"
+      model_progression: "ppkexpo1 (centered) → ppkexpo2 (non-centered reparam) → ppkexpo3 (allometric scaling) → ppkexpo4 (eGFR/age/albumin on CL)"
+    justification: "REPLACES the dead bugs_model_library entry. Direct reference set for the bayesian_stan backend. Four iterative models let APMODE test its Gate-3 discrimination against a hand-tuned model progression."
+
+  metrum_torsten_library:
+    name: "Torsten — Stan pharmacometrics function library"
+    source: "Metrum Research Group"
+    url: "https://metrumresearchgroup.github.io/Torsten"
+    github: "https://github.com/metrumresearchgroup/Torsten"
+    citation: "Metrum Research Group / Stan Torsten"
+    license: "check LICENSE.txt (present per API); assumed BSD-3-Clause (Stan-compatible)"
+    access_tier: dependency
+    access_verified: "live (200 @ 2026-07-08)"
+    verified: true
+    fetch_command: "git clone https://github.com/metrumresearchgroup/Torsten"
+    apmode_lanes: [submission, discovery, optimization]
+    apmode_role: "runtime dependency for bayesian_stan backend (pkmodel, linODE, ODE compartment functions)"
+    justification: "The Torsten library provides the Stan-side compartmental PK/PD primitives APMODE's Bayesian backend depends on. Not a dataset per se, but ensures the runtime the datasets get evaluated in is correctly identified."
+
+  osp_observed_data:
+    name: "Open Systems Pharmacology observed-data database"
+    source: "Open-Systems-Pharmacology consortium (Bayer)"
+    url: "https://github.com/Open-Systems-Pharmacology/Database-for-observed-data"
+    github: "https://github.com/Open-Systems-Pharmacology/Database-for-observed-data"
+    citation: "OSP Suite consortium"
+    license: "UNSPECIFIED (no LICENSE file at HEAD)"
+    license_verified_via: "GitHub API returned license:null 2026-07-08"
+    access_tier: reference_only  # DOWNGRADED from `scripted` — no clear reuse license
+    access_verified: "live (200 @ 2026-07-08)"
+    verified: true
+    fetch_command: "git clone --depth 1 https://github.com/Open-Systems-Pharmacology/Database-for-observed-data"
+    apmode_lanes: [discovery]
+    apmode_role: "DDI + pediatric extrapolation qualification set"
+    files_of_interest:
+      - "ObsDataPK_OSP.xlsx"
+      - "DDI.csv"
+      - "Pediatrics.csv"
+    licensing_caveat: "OSP repo has no LICENSE at HEAD. May be governed by OSP consortium umbrella licensing — check individual sheet metadata before redistribution. Currently metadata-only reference."
+    justification: "Only curated observed-data set explicitly designed for qualification plans (DDI + special populations). Even reference-only use is valuable for constructing analogous Suite-C fixtures internally."
+
+  # ============================================================
+  # Tier 1: API-accessible curated database
+  # ============================================================
+
+  pkdb_api:
+    name: "PK-DB — open pharmacokinetics database (REST API)"
+    source: "Grzegorzewski & König, Humboldt-Universität"
+    url: "https://pk-db.com/"
+    api: "https://pk-db.com/api/v1/"
+    swagger: "https://pk-db.com/api/v1/swagger/"
+    github: "https://github.com/matthiaskoenig/pkdb"
+    citation: "Grzegorzewski J, Brandhorst J, Green K, et al. (2020) Nucleic Acids Research 49(D1):D1358-D1364"
+    doi: "10.1093/nar/gkaa990"
+    license_code: "MIT (github repo, verified via GitHub API 2026-07-08)"
+    license_data: "per-study — see licence field on each Study; ~7.5% marked `licence:open`, ~92.5% marked `licence:closed`"
+    access_tier: scripted
+    access_verified: "live (API 200, swagger 200 @ 2026-07-08)"
+    verified: true
+    fetch_command: "curl -s 'https://pk-db.com/api/v1/studies/?format=json&page=1&page_size=100' | jq '.data.data[]'"
+    api_pagination_note: "Returns wrapped structure: response.data.data[] with response.data.count total. Use next_page_url for pagination. Default page_size = ?"
+    apmode_lanes: [discovery, optimization]
+    apmode_role: "Evidence-Manifest stress test: variable richness, sparse/dense, ontology-annotated covariates"
+    verified_counts:
+      total_studies: 803
+      sampled_first: 200
+      sample_licence_open: 15    # → extrapolated open corpus ≈ 60 studies
+      sample_licence_closed: 185
+      sample_access_public: 200  # all studies have public metadata
+      sample_with_timecourse: 174
+      sample_with_individuals: 85
+    covariate_coverage:
+      - age
+      - bodyweight
+      - smoking_status
+      - CYP genotype
+      - co_medication
+      - oral_contraceptive_use
+    ontology_annotations:
+      substances: "ChEBI"
+      diseases: "ncit, hp, doid, mondo"
+    justification: "REVISED post-verification: usable OPEN corpus is ~60 studies (not ~500). All 803 studies have public metadata (parameters, study design, PMID); ~60 have redistributable concentration-time data. Still highest-leverage single addition — 60 richness-heterogeneous studies with ontology-annotated covariates directly stresses Data Profiler §4.2.1. Filter for `licence=open` in fetch."
+
+  # ============================================================
+  # Tier 2: NODE / Hybrid-ML benchmark fixtures (Phase 2)
+  # ============================================================
+
+  pmxnode_examples:
+    name: "pmxNODE reference examples (Bräm et al.)"
+    source: "braemd/pmxNODE R package"
+    url: "https://braemd.r-universe.dev/pmxNODE"
+    github: "https://github.com/braemd/pmxnode"
+    citation: "Bräm DS, Steiert B, Pfister M, Steffens B, Koch G. (2025) CPT Pharmacometrics Syst Pharmacol 14:5-16. doi:10.1002/psp4.13265"
+    doi: "10.1002/psp4.13265"
+    license: "GPL-3.0-only"
+    license_verified_via: "GitHub API 2026-07-08"
+    access_tier: scripted
+    access_verified: "live (r-universe + github both 200 @ 2026-07-08)"
+    verified: true
+    fetch_command: "R -e 'install.packages(\"pmxNODE\", repos=c(\"https://braemd.r-universe.dev\",\"https://cloud.r-project.org\")); pmxNODE::get_example_list()'"
+    apmode_lanes: [discovery]
+    apmode_role: "canonical benchmark for Bräm-style low-dimensional NODE with IIV (matches APMODE PRD §4.2.4 R6)"
+    coverage:
+      - PK (1-cpt with delayed absorption)
+      - PKPD (indirect response with NN-parameterised production inhibition)
+      - TMDD
+      - Survival
+    justification: "Exact upstream reference for APMODE's NODE backend. GPL-3 → compatible with APMODE's GPL-2-or-later stance. Matching Bräm 2025 demo datasets with APMODE lets you cite comparability without licence issues."
+
+  monolix_node_case_study:
+    name: "Monolix NODE case-study bundle (NODE_example.zip)"
+    source: "MonolixSuite Documentation"
+    url: "https://monolixsuite.slp-software.com/tutorials/2024R1/case-study-neural-odes"
+    citation: "MonolixSuite tutorial (2024R1) — accompanies Bräm 2025"
+    license: "Monolix demo (redistribution allowed for research per Monolix docs)"
+    access_tier: scripted
+    access_verified: "live (200 @ 2026-07-08)"
+    verified: false
+    apmode_lanes: [discovery]
+    apmode_role: "smallest reproducible NODE fixture (single-drug PKPD w/ indirect response)"
+    justification: "Data + model + Monolix project in one ZIP. Fastest possible smoke test for the NODE backend."
+
+  dalbavancin_node:
+    name: "Dalbavancin sparse-clinical NODE reference (Ranieri 2025)"
+    source: "MDPI Entropy 27(6):602"
+    url: "https://www.mdpi.com/1099-4300/27/6/602"
+    citation: "Ranieri et al. (2025) Entropy 27(6):602"
+    license: "CC-BY 4.0 (paper); check supplement for data availability"
+    access_tier: literature_only
+    access_verified: "403 bot-block on direct HEAD, but paper accessible via DOI resolver + PMC"
+    verified: false
+    apmode_lanes: [discovery, optimization]
+    apmode_role: "sparse-data NODE stress test — matches Evidence Manifest richness_category=sparse"
+    justification: "First published NODE eval on genuinely sparse clinical data. Direct comparator for APMODE's data_insufficient flag at Gate 2. Verify data supplement availability before promotion."
+
+  latent_node_tacrolimus:
+    name: "Latent NODE tacrolimus (arXiv 2602.03215)"
+    source: "arXiv preprint"
+    url: "https://arxiv.org/abs/2602.03215"
+    citation: "arXiv:2602.03215 — Latent NODE for MIPD"
+    license: "arXiv perpetual + revocable"
+    access_tier: literature_only
+    access_verified: "live (200 @ 2026-07-08)"
+    verified: true
+    apmode_lanes: [optimization]
+    apmode_role: "Optimization-lane LORO-CV comparator; ISBA/IT2B reference"
+    justification: "Uses the published ISBA benchmark for tacrolimus MIPD. Reproducible external LORO-CV comparator. Watch for peer-reviewed version before Phase-3 launch."
+
+  # ============================================================
+  # Tier 3: Regulatory-scale methodology references
+  # ============================================================
+
+  hoffert_tacrolimus_benchmark_2024:
+    name: "Hoffert 2024 tacrolimus MIPD benchmark study"
+    source: "Clinical Pharmacokinetics"
+    url: "https://link.springer.com/article/10.1007/s40262-024-01414-y"
+    doi: "10.1007/s40262-024-01414-y"
+    citation: "Hoffert Y, Dia N, Vanuytsel T, et al. (2024) Clin Pharmacokinet 63:1407-1421"
+    license: "paywalled — methodology reproducible from published equations"
+    access_tier: literature_only
+    access_verified: "unchecked (Springer paywall)"
+    verified: false
+    apmode_lanes: [optimization]
+    apmode_role: "Optimization-lane multi-model comparator protocol (7 MIPD tools + N PopPK models)"
+    tools_compared:
+      - "Rx Studio"
+      - "PrecisePK"
+      - "InsightRx Nova"
+      - "MwPharm"
+      - "DoseMeRX"
+      - "BestDose"
+      - "ISBA"
+    justification: "Definitive multi-model benchmark protocol for MIPD. APMODE's Optimization-lane LORO-CV output should be plot-comparable against this."
+
+  # ============================================================
+  # REMOVED entries — disqualified during verification (2026-07-08)
+  # ============================================================
+
+  _removed:
+    bugs_model_library:
+      status: REMOVED
+      reason: "Bitbucket URL https://bitbucket.org/metrumrg/bugsmodellibrary returns 404 — repository no longer exists."
+      replaced_by: [metrum_merge_expo4_torsten, metrum_torsten_library]
+      removed_at: "2026-07-08"
+
+  # ============================================================
+  # EXCLUDED (previously identified) — for auditability
+  # ============================================================
+
+  _excluded:
+    tdm1_lu2021:
+      status: EXCLUDED
+      reason: "Data restricted (Genentech patient-privacy). Code + methodology only usable."
+      url: "https://github.com/jameslu01/Neural_PK"
+      license: "MIT (verified via GitHub API 2026-07-08 — code only)"
+      citation: "Lu J, Deng K, Zhang X, Liu G, Guan Y. (2021) iScience 24(7):102804"
+      doi: "10.1016/j.isci.2021.102804"
+      role_if_reproduced: "gold-standard NODE cross-regimen generalisation eval"
+    drugbank_pk:
+      status: EXCLUDED
+      reason: "Parameter-level only (no concentration-time). Useful for prior elicitation, not model fitting."
+      url: "https://go.drugbank.com/indications/DBCOND0031919"
+    pkdb_pk_older:
+      status: EXCLUDED
+      reason: "Superseded by PK-DB; no active maintenance found."

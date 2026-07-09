@@ -35,7 +35,8 @@ Scope of this emitter:
   the underlying spec) in the top-left and covariate variances on the
   diagonal of the bottom-right block; off-diagonal PKxcovariate
   covariances initialize to zero and are estimated by nlmixr2.
-- CovariateLink entries in the spec are dropped because FREM replaces
+- ``spec.covariates`` (``CovariateLink`` entries, Formular sharpening plan
+  §4 Phase 1 P1.6 top-level list) are dropped because FREM replaces
   explicit covariate-on-parameter effects with the joint random-effect
   structure.
 """
@@ -50,9 +51,9 @@ import numpy as np
 from apmode.dsl.ast_models import (
     IIV,
     IOV,
-    CovariateLink,
     DSLSpec,
 )
+from apmode.dsl.capabilities import CapabilityTag
 from apmode.dsl.nlmixr2_emitter import (
     _emit_model,
     _emit_sigma_ini,
@@ -92,6 +93,63 @@ _DEFAULT_COV_EPS_SD: float = 0.01
 # are not useful FREM targets (degenerate); the emitter raises when that
 # happens so callers can drop the covariate explicitly.
 _MIN_COV_SD: float = 1e-6
+
+# Capability matrix (P0.7, docs/plans/2026-07-08-formular-sharpening-and-adoption-design.md
+# §4 Phase 0). FREM delegates absorption/distribution/elimination/observation
+# lowering to the shared nlmixr2_emitter helpers (``_emit_structural_ini`` /
+# ``_emit_model``), so it inherits that emitter's coverage on those four
+# axes verbatim. CovariateLink is deliberately stripped by
+# ``_strip_covariate_links`` — FREM replaces explicit covariate-on-parameter
+# effects with the joint random-effect (Omega) structure — so it is
+# explicitly unsupported here, not a silent gap.
+SUPPORTS: frozenset[CapabilityTag] = frozenset(
+    {
+        CapabilityTag.ABSORPTION_IV_BOLUS,
+        CapabilityTag.ABSORPTION_FIRST_ORDER,
+        CapabilityTag.ABSORPTION_ZERO_ORDER,
+        CapabilityTag.ABSORPTION_LAGGED_FIRST_ORDER,
+        CapabilityTag.ABSORPTION_TRANSIT,
+        CapabilityTag.ABSORPTION_MIXED_FIRST_ZERO,
+        CapabilityTag.ABSORPTION_ERLANG,
+        CapabilityTag.ABSORPTION_PARALLEL_FIRST_ORDER,
+        CapabilityTag.ABSORPTION_SUM_IG,
+        CapabilityTag.DISTRIBUTION_ONE_CMT,
+        CapabilityTag.DISTRIBUTION_TWO_CMT,
+        CapabilityTag.DISTRIBUTION_THREE_CMT,
+        CapabilityTag.DISTRIBUTION_TMDD_CORE,
+        CapabilityTag.DISTRIBUTION_TMDD_QSS,
+        CapabilityTag.ELIMINATION_LINEAR,
+        CapabilityTag.ELIMINATION_MICHAELIS_MENTEN,
+        CapabilityTag.ELIMINATION_PARALLEL_LINEAR_MM,
+        CapabilityTag.ELIMINATION_TIME_VARYING,
+        CapabilityTag.VARIABILITY_IIV,
+        CapabilityTag.VARIABILITY_IIV_BLOCK_STRUCTURE,
+        CapabilityTag.VARIABILITY_IOV,
+        CapabilityTag.OBSERVATION_PROPORTIONAL,
+        CapabilityTag.OBSERVATION_ADDITIVE,
+        CapabilityTag.OBSERVATION_COMBINED,
+        CapabilityTag.OBSERVATION_BLQ_M3,
+        CapabilityTag.OBSERVATION_BLQ_M4,
+    }
+)
+
+EXPLICITLY_UNSUPPORTED: frozenset[CapabilityTag] = frozenset(
+    {
+        CapabilityTag.ABSORPTION_NODE,
+        CapabilityTag.ELIMINATION_NODE,
+        CapabilityTag.VARIABILITY_COVARIATE_LINK,
+        CapabilityTag.VARIABILITY_COVARIATE_MATURATION_FORM,
+        # P1.7: FREM assigns each covariate-observation endpoint's DVID by
+        # declaration order (PK first = DVID 1, first covariate = DVID 2,
+        # ...) -- see `_emit_frem_model` docstring. A PK spec that itself
+        # declares multiple `observations:` endpoints with explicit dvids
+        # would collide with that auto-numbering in an unverified way, so
+        # this is rejected explicitly (Phase 2 gap; see
+        # `emit_nlmixr2_frem`'s entry guard) rather than risking a silent
+        # DVID clash.
+        CapabilityTag.OBSERVATION_MULTI_ANALYTE,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -686,15 +744,16 @@ def _emit_variability_ini_for_iov_only(item: IOV) -> list[str]:
 
 
 def _strip_covariate_links(spec: DSLSpec) -> DSLSpec:
-    """Return a copy of ``spec`` with CovariateLink entries removed.
+    """Return a copy of ``spec`` with the top-level ``covariates`` list cleared.
 
     FREM replaces explicit covariate-on-parameter effects with the joint
-    random-effect structure, so any CovariateLink in the input spec
+    random-effect structure, so any ``CovariateLink`` in the input spec
     would duplicate information and destabilize estimation. We keep IIV
-    and IOV intact — only the beta links are pruned.
+    and IOV (``spec.variability``) intact — only ``spec.covariates`` (P1.6:
+    formerly co-located inline in ``variability``, now its own top-level
+    list) is cleared.
     """
-    new_variability = [v for v in spec.variability if not isinstance(v, CovariateLink)]
-    return spec.model_copy(update={"variability": new_variability})
+    return spec.model_copy(update={"covariates": []})
 
 
 # ---------------------------------------------------------------------------
@@ -773,6 +832,14 @@ def emit_nlmixr2_frem(
         msg = (
             "FREM emitter does not support NODE modules. "
             "NODE + FREM is a research-branch topic — use the classical emitter for now."
+        )
+        raise NotImplementedError(msg)
+    if spec.observations is not None:
+        msg = (
+            "FREM emitter does not support multi-analyte observations: blocks "
+            "(interaction with FREM's own covariate DVID auto-numbering is "
+            "unverified — Phase 2 gap). Use the nlmixr2 backend directly, or "
+            "declare a single observation: block."
         )
         raise NotImplementedError(msg)
     if not covariates:

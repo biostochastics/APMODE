@@ -1,18 +1,13 @@
 {
   "model_id": "mavoglurant_wendling_2015_2cmt_oral",
   "absorption": {
-    "type": "FirstOrder",
-    "ka": 0.5
+    "type": "FirstOrder"
   },
   "distribution": {
-    "type": "TwoCmt",
-    "V1": 25.0,
-    "V2": 80.0,
-    "Q": 5.0
+    "type": "TwoCmt"
   },
   "elimination": {
-    "type": "Linear",
-    "CL": 4.0
+    "type": "Linear"
   },
   "variability": [
     {
@@ -30,6 +25,13 @@
   "observation": {
     "type": "Proportional",
     "sigma_prop": 0.2
+  },
+  "initial": {
+    "ka": 0.5,
+    "V1": 25.0,
+    "V2": 80.0,
+    "Q": 5.0,
+    "CL": 4.0
   },
   "priors": [],
   "source_meta": {}

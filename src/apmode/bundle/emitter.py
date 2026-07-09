@@ -60,11 +60,19 @@ from apmode.bundle.models import (
     SplitManifest,
 )
 from apmode.dsl.ast_models import DSLSpec  # noqa: TC001 — used at runtime
+from apmode.dsl.canonical import (
+    initial_fingerprint,
+    justification_hash,
+    spec_fingerprint,
+    structure_fingerprint,
+)
 from apmode.dsl.nlmixr2_emitter import emit_nlmixr2
 from apmode.dsl.priors import (
     PriorSpec,
     validate_prior_justification,
 )
+from apmode.dsl.serializer import serialize_spec
+from apmode.dsl.units import unit_coverage_report
 from apmode.ids import generate_run_id
 
 _SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_\-]+$")
@@ -551,12 +559,51 @@ class BundleEmitter:
         """Write compiled_specs/{candidate_id}.json and .R.
 
         NODE specs are written as JSON only (no R lowering in Phase 1).
+        Also writes compiled_specs/{candidate_id}_fingerprints.json —
+        content-based sha256 digests (structure/spec/initial/justification)
+        computed by ``apmode.dsl.canonical`` — so the bundle digest
+        includes deterministic fingerprints derived from this exact spec
+        (see docs/FINGERPRINT_MIGRATION.md). The same file carries the
+        spec's optional ``metadata:`` block (Formular sharpening plan §4
+        Phase 1, P1.2) under the ``"metadata"`` key — ``None`` when the
+        spec has no metadata block — so audit/report tooling can read
+        free-text provenance (title/intent/context_of_use/analyte/version)
+        without loading the full compiled spec JSON. It also carries the
+        spec's ``UnitCoverageReport`` (Formular sharpening plan §4 Phase 1,
+        P1.3) under the ``"units_coverage"`` key — ``{"status":
+        "not_declared", ...}`` when the spec has no ``units:`` block.
+
+        When ``spec.macros_used`` is non-empty (a top-level ``use <macro>``
+        statement expanded during compilation — Formular sharpening plan §4
+        Phase 2, P2.1), also writes
+        ``compiled_specs/{candidate_id}/expanded.formular``: the canonical
+        re-serialization (:func:`apmode.dsl.serializer.serialize_spec`) of
+        the *post-expansion* spec, so a reviewer can see exactly what the
+        `use` statement resolved to without recomputing the expansion
+        themselves. This is a normal pre-seal bundle artifact (unlike the
+        SBOM/SBC sidecars) — it IS covered by the sealed-bundle digest,
+        since it is part of what was actually run.
 
         Returns (json_path, r_path). r_path is None for NODE specs.
         """
         _validate_path_component(spec.model_id, "model_id")
         json_path = self._compiled_specs_dir / f"{spec.model_id}.json"
         self._write_text(json_path, spec.model_dump_json(indent=2))
+
+        if spec.macros_used:
+            expanded_path = self._compiled_specs_dir / spec.model_id / "expanded.formular"
+            self._write_text(expanded_path, serialize_spec(spec))
+
+        fingerprints_path = self._compiled_specs_dir / f"{spec.model_id}_fingerprints.json"
+        fingerprints = {
+            "structure_fingerprint": structure_fingerprint(spec),
+            "spec_fingerprint": spec_fingerprint(spec),
+            "initial_fingerprint": initial_fingerprint(spec),
+            "justification_hash": justification_hash(spec),
+            "metadata": spec.metadata.model_dump() if spec.metadata is not None else None,
+            "units_coverage": unit_coverage_report(spec).model_dump(),
+        }
+        self._write_text(fingerprints_path, json.dumps(fingerprints, indent=2, sort_keys=True))
 
         if spec.has_node_modules():
             return json_path, None

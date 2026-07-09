@@ -10,7 +10,7 @@
   [![Version](https://img.shields.io/badge/version-v0.6.1--rc1-blue)]()
   <!-- apmode:/AUTO:badge_version -->
   <!-- apmode:AUTO:badge_tests -->
-  [![Tests](https://img.shields.io/badge/tests-2581%20collected-success)]()
+  [![Tests](https://img.shields.io/badge/tests-3008%20collected-success)]()
   <!-- apmode:/AUTO:badge_tests -->
   [![License](https://img.shields.io/badge/license-GPL--2.0--or--later-green)](LICENSE)
   [![Python](https://img.shields.io/badge/python-3.12%E2%80%933.14-yellow)]()
@@ -33,9 +33,9 @@ APMODE is a **governed meta-system** that composes five population PK modeling p
 
 **Reproducibility is the unit of output.** Every run emits a versioned JSON bundle — data manifest, search trajectory, gate decisions, candidate lineage DAG, compiled specs — so any result can be audited or replayed.
 
-**Formular — a typed PK DSL — is the control surface.** Models are specified in [Formular](docs/FORMULAR.md), a five-block grammar (`Absorption × Distribution × Elimination × Variability × Observation`) plus a sixth semantic axis — `priors` — populated via the `SetPrior` transform rather than grammar text. Specs compile to a typed AST, are validated against pharmacometric constraints, and lower to backend-specific code (nlmixr2 R, Stan/Torsten, JAX/Diffrax). The agentic LLM backend (Phase 3) operates exclusively through the <!-- apmode:AUTO:transforms -->10<!-- apmode:/AUTO:transforms --> typed Formular transforms — including `SetPrior` for Bayesian workflows — it cannot emit raw code.
+**Formular — a typed PK DSL — is the control surface.** Models are specified in [Formular](docs/FORMULAR.md), an order-insensitive grammar of top-level blocks (`absorption`, `distribution`, `elimination`, `variability`, `observation`/`observations`, `covariates`, `priors`, `units`, `metadata`, `initial`) — structural declarations name parameters, a separate `initial: {}` block supplies calibration values, and `priors: {}` lets an author write priors directly in Formular text (in addition to the programmatic `SetPrior` transform). Specs compile to a typed AST, are validated against pharmacometric constraints, and lower to backend-specific code (nlmixr2 R, Stan/Torsten, JAX/Diffrax). The agentic LLM backend (Phase 3) operates exclusively through the <!-- apmode:AUTO:transforms -->10<!-- apmode:/AUTO:transforms --> typed Formular transforms — including `SetPrior` for Bayesian workflows — it cannot emit raw code.
 
-> **Status**: **<!-- apmode:AUTO:version_tag -->v0.6.1-rc1<!-- apmode:/AUTO:version_tag -->** (2026-04-25) — 0.6.1 release candidate. <!-- apmode:AUTO:tests_nonlive -->2564<!-- apmode:/AUTO:tests_nonlive --> tests passing (`-m "not live"`); `mypy --strict` clean; `ruff` clean. Supports Python 3.12–3.14. Gate policy schema <!-- apmode:AUTO:policy_gate -->0.6.0<!-- apmode:/AUTO:policy_gate -->; profiler policy <!-- apmode:AUTO:policy_profiler -->2.1.0<!-- apmode:/AUTO:policy_profiler --> (manifest_schema_version = <!-- apmode:AUTO:profiler_manifest -->2<!-- apmode:/AUTO:profiler_manifest -->). v0.6.1 ships the FastAPI HTTP API surface (`apmode serve`, `POST /runs`, cancellation lifecycle), Suite C Phase-1 MLE + Bayesian fixtures with weekly NPE scoring, SOTA absorption preview forms, and the RO-Crate projector hardening pass. Reproducibility bundles continue to carry a `_COMPLETE` sentinel with a SHA-256 digest; `apmode validate` refuses unsealed bundles. See [CHANGELOG.md](CHANGELOG.md) for the full release-candidate changes.
+> **Status**: **<!-- apmode:AUTO:version_tag -->v0.6.1-rc1<!-- apmode:/AUTO:version_tag -->** (2026-04-25) — 0.6.1 release candidate. <!-- apmode:AUTO:tests_nonlive -->2991<!-- apmode:/AUTO:tests_nonlive --> tests passing (`-m "not live"`); `mypy --strict` clean; `ruff` clean. Supports Python 3.12–3.14. Gate policy schema <!-- apmode:AUTO:policy_gate -->0.6.0<!-- apmode:/AUTO:policy_gate -->; profiler policy <!-- apmode:AUTO:policy_profiler -->2.1.0<!-- apmode:/AUTO:policy_profiler --> (manifest_schema_version = <!-- apmode:AUTO:profiler_manifest -->2<!-- apmode:/AUTO:profiler_manifest -->). v0.6.1 ships the FastAPI HTTP API surface (`apmode serve`, `POST /runs`, cancellation lifecycle), Suite C Phase-1 MLE + Bayesian fixtures with weekly NPE scoring, SOTA absorption preview forms, and the RO-Crate projector hardening pass. Reproducibility bundles continue to carry a `_COMPLETE` sentinel with a SHA-256 digest; `apmode validate` refuses unsealed bundles. See [CHANGELOG.md](CHANGELOG.md) for the full release-candidate changes.
 
 ### Capability status
 
@@ -97,12 +97,14 @@ APMODE ingests NONMEM-style CSV through a Pandera schema. To save first-run debu
 
 Datasets in the public registry (`apmode datasets`) ship pre-conformed; use them as schema templates.
 
+**Extended benchmark catalogue.** `benchmarks/datasets/` contains a 25-dataset research catalogue (`registry.yaml` in-tree + `candidates.yaml` extensions) covering the `nlmixr2data` ACOP-2016 grid (20 fixtures for MM elimination / PKPD turnover / infusion), R-base `Theoph` + `Indometh`, `saemix::theo.saemix` (covariate discovery), `npde::simwarfarinCov` (247k-row VPC/NPE calibration), the Bräm 2025 `pmxNODE` reference examples for the Phase-2 NODE backend, PK-DB REST (88 open-license studies), a DDMoRe Wayback fallback, and Metrum MeRGE Expo 1/4 reference workflows. Every entry has a reproducible `prepare.{R,py,sh}` script, verified license provenance (`manifest.json`, `CITATIONS.bib`), and an 80-record audit trail (`fetch_ledger.jsonl`). Start with `benchmarks/datasets/RETRIEVAL_SUMMARY.md`.
+
 ### A worked end-to-end walkthrough
 
 This is the canonical "first hour with APMODE" — it exercises the full pipeline front-to-back and lands you at a readable regulatory report.
 
 ```bash
-# 1. Browse the registry (14 datasets; 5 real + 9 simulated ground-truth)
+# 1. Browse the registry (9 in-tree + 16 candidate datasets — see benchmarks/datasets/)
 uv run apmode datasets
 
 # 2. Download a single-dose theophylline dataset
@@ -224,8 +226,8 @@ continues to point the policy loader at an alternative directory.
 ### Test + typecheck + lint
 
 ```bash
-uv run pytest tests/ -q                         # <!-- apmode:AUTO:tests -->2581<!-- apmode:/AUTO:tests --> collected
-uv run pytest tests/ -q -m "not live"           # <!-- apmode:AUTO:tests_nonlive -->2564<!-- apmode:/AUTO:tests_nonlive --> skip live LLM tests
+uv run pytest tests/ -q                         # <!-- apmode:AUTO:tests -->3008<!-- apmode:/AUTO:tests --> collected
+uv run pytest tests/ -q -m "not live"           # <!-- apmode:AUTO:tests_nonlive -->2991<!-- apmode:/AUTO:tests_nonlive --> skip live LLM tests
 uv run mypy src/apmode/ --strict                # type checking
 uv run ruff check src/apmode/ tests/            # linting
 uv run python scripts/sync_readme.py --check    # README ↔ codebase drift guard
@@ -246,33 +248,47 @@ uv run python scripts/bayesian_smoke_theophylline.py
 
 ```
 model {
-    absorption: Transit(n=4, ktr=2.0, ka=1.0)
-    distribution: TwoCmt(V1=30.0, V2=40.0, Q=5.0)
-    elimination: ParallelLinearMM(CL=2.0, Vmax=50.0, Km=5.0)
+    metadata: { title = "Example: transit absorption, 2-cmt, MM/linear elimination" }
+    absorption: Transit(n=4, ktr, ka)
+    distribution: TwoCmt(V1, V2, Q)
+    elimination: ParallelLinearMM(CL, Vmax, Km)
     variability: {
         IIV(params=[CL, V1, ka], structure=block)
-        CovariateLink(param=CL, covariate=WT, form=power)
+    }
+    covariates: {
+        CL <- WT.power(theta=0.75, ref=70)
     }
     observation: Combined(sigma_prop=0.1, sigma_add=0.5)
+    priors: {
+        CL ~ LogNormal(mu=log(4.0), sigma=0.25)
+    }
+    initial: { ktr = 2.0, ka = 1.0, V1 = 30.0, V2 = 40.0, Q = 5.0, CL = 2.0, Vmax = 50.0, Km = 5.0 }
 }
 ```
 
-**Compilation:** `Formular text → Lark parser (Earley) → DSLTransformer → DSLSpec (Pydantic AST) → Semantic validator → Backend emitter`
+Blocks may appear in any order — the grammar is order-insensitive; `apmode formular fmt` rewrites a spec into canonical order. Structural blocks declare parameter *names* only; every calibration value lives in the single `initial: {}` block (`apmode formular fmt --migrate` mechanically rewrites pre-0.7 specs that still inline values — see [`docs/FORMULAR_MIGRATION_v0.6_to_v0.7.md`](docs/FORMULAR_MIGRATION_v0.6_to_v0.7.md)).
+
+**Compilation:** `Formular text → Lark parser → block-cardinality check → DSLTransformer → DSLSpec (Pydantic AST) → Semantic validator → Backend emitter`
 
 **Entry point:** `apmode.dsl.grammar.compile_dsl(text) → DSLSpec`
 
 | DSL Axis | Supported Modules |
 |----------|-------------------|
-| **Absorption** | IVBolus, FirstOrder, ZeroOrder, LaggedFirstOrder, Transit(n), MixedFirstZero, NODE_Absorption |
+| **Absorption** | IVBolus, FirstOrder, ZeroOrder, LaggedFirstOrder, Transit(n), Erlang(n), MixedFirstZero, ParallelFirstOrder, SumIG(k), NODE_Absorption |
 | **Distribution** | OneCmt, TwoCmt, ThreeCmt, TMDD_Core, TMDD_QSS |
 | **Elimination** | Linear, MichaelisMenten, ParallelLinearMM, TimeVarying(kdecay, decay_fn), NODE_Elimination |
-| **Variability** | IIV (diagonal/block), IOV (ByStudy/ByVisit/ByDoseEpoch/Custom), CovariateLink (power/exponential/linear/categorical/maturation) |
-| **Observation** | Proportional, Additive, Combined, BLQ_M3, BLQ_M4 (with composable error_model) |
-| **Priors** (semantic axis; set via `SetPrior`, no grammar block) | Normal, LogNormal, HalfNormal, HalfCauchy, Gamma, InvGamma, Beta, LKJ, Mixture, HistoricalBorrowing (Schmidli 2014 robust MAP) |
+| **Variability** | IIV (diagonal/block), IOV (ByStudy/ByVisit/ByDoseEpoch/Custom) |
+| **Covariates** (top-level `covariates:` block, arrow syntax) | power (theta/ref), exponential (theta), linear (theta), categorical (reference), maturation (tm50/hill) |
+| **Observation** | Proportional, Additive, Combined, BLQ_M3, BLQ_M4 (with composable error_model); optional multi-analyte `observations: { name: {dvid, prediction, error} }` routing (nlmixr2 only — Stan/FREM reject multi-analyte specs today) |
+| **Priors** (`priors:` grammar block, or the `SetPrior` transform — both lower through the same `build_prior_spec` factory, byte-identical either way) | Normal, LogNormal, HalfNormal, HalfCauchy, Gamma, InvGamma, Beta, LKJ, Mixture, HistoricalBorrowing (Schmidli 2014 robust MAP) |
+| **Units** (optional `units: { time, amount, concentration, volume }`) | Dimensional-homogeneity check (not unit conversion) against inferred per-parameter roles; unchecked parameters and specs with no `units:` block are reported, not silently assumed correct |
+| **Metadata / Initial** | Optional `metadata: { title, intent, context_of_use, analyte, version }`; required `initial: { param = value, ... }` supplies every calibration value referenced by the structural blocks |
 
-**NODE constraint templates:** `monotone_increasing`, `monotone_decreasing`, `bounded_positive`, `saturable`, `unconstrained_smooth` — with lane-dependent dim ceilings (≤8 Discovery, ≤4 Optimization, excluded from Submission).
+**NODE constraint templates:** `monotone_increasing`, `monotone_decreasing`, `bounded_positive`, `saturable`, `unconstrained_smooth` — with lane-dependent dim ceilings (≤8 Discovery, ≤4 Optimization, excluded from Submission; requires an explicit `experimental: { node = true }` opt-in regardless of lane).
 
-**Formular transforms** (agentic LLM admissible operations): <!-- apmode:AUTO:transforms -->10<!-- apmode:/AUTO:transforms --> typed transforms produce new `DSLSpec` instances — `swap_module`, `add_covariate_link`, `adjust_variability`, `set_transit_n`, `toggle_lag`, `replace_with_node`, **`set_prior`**. `set_prior` is parameterization-schema validated: only HalfNormal/HalfCauchy/Gamma/InvGamma families are admissible on IIV ω and residual σ targets; only Normal/LogNormal/Mixture/HistoricalBorrowing on log-scale structural params; LKJ only on correlation matrices. Invalid pairs are rejected at compile time so the LLM cannot propose nonsense priors. The transform count badge above is auto-synced from `src/apmode/dsl/transforms.py` + `src/apmode/dsl/prior_transforms.py` — if the number drifts, `scripts/sync_readme.py --check` fails CI.
+**Formular transforms** (agentic LLM admissible operations): <!-- apmode:AUTO:transforms -->10<!-- apmode:/AUTO:transforms --> typed transforms produce new `DSLSpec` instances — `swap_module`, `add_covariate_link`, `adjust_variability`, `set_transit_n`, `toggle_lag`, `replace_with_node`, `convert_transit_to_erlang`, `add_parallel_route`, `set_sumig_components`, **`set_prior`**. `set_prior` is parameterization-schema validated: only HalfNormal/HalfCauchy/Gamma/InvGamma families are admissible on IIV ω and residual σ targets; only Normal/LogNormal/Mixture/HistoricalBorrowing on log-scale structural params; LKJ only on correlation matrices. Invalid pairs are rejected at compile time so the LLM cannot propose nonsense priors. The transform count badge above is auto-synced from `src/apmode/dsl/transforms.py` + `src/apmode/dsl/prior_transforms.py` — if the number drifts, `scripts/sync_readme.py --check` fails CI.
+
+**`apmode formular` CLI** — `fmt` (canonicalize block order, `--migrate` for pre-0.7 specs), `lint`/`validate` (span-anchored `FRM-*` diagnostics; `validate` composes any of the seven validation levels — syntax/ast/semantic/data-bound/lane-bound/backend-bound/policy-bound), `explain` (human-readable spec summary; `--equations` renders the derived symbolic ODE system), `diff` (order-insensitive structural diff), `lower --backend {nlmixr2,stan,frem}` (capability-checked emission — fails fast on an unsupported construct or a semantically invalid spec rather than emitting broken code), `compat` (per-backend capability matrix, code-derived from each emitter's declared `SUPPORTS`/`EXPLICITLY_UNSUPPORTED` tags, never hand-maintained), `signature` (compact one-line module-choice summary, e.g. `FO absorption | 1CMT | Linear CL | IIV(CL,V,ka) diag | Combined error`). A vetted `use pkstd.standard_iiv` / `pkstd.standard_priors` / `pkstd.standard_error_model` macro registry expands common boilerplate at compile time (`DSLSpec.macros_used` records provenance; see [`docs/FORMULAR_SEMANTICS.md`](docs/FORMULAR_SEMANTICS.md#macros)).
 
 ---
 
@@ -431,7 +447,7 @@ Empirically, the [benchmark-results table](#end-to-end-benchmark-results) shows 
 
 ### What About DSL Transforms?
 
-The DSL supports typed transforms (`add_iiv`, `change_absorption`, `add_covariate`, etc.) documented in [`docs/FORMULAR.md`](docs/FORMULAR.md). These are used by the **agentic LLM backend** (Phase 3 of APMODE, see [Agentic LLM Backend](#agentic-llm-backend-phase-3) below), which applies them iteratively based on LLM proposals up to `--max-iterations`. The **automated search engine does not apply transforms iteratively** — it only does the Phase 1 cross-product + Phase 3 warm-start children. If you want iterative transform-based exploration, enable the agentic backend with `apmode run --agentic --lane discovery`.
+The DSL supports typed transforms (`swap_module`, `adjust_variability`, `add_covariate_link`, etc. — the full <!-- apmode:AUTO:transforms -->10<!-- apmode:/AUTO:transforms --> under [Available Transforms](#available-transforms)) documented in [`docs/FORMULAR.md`](docs/FORMULAR.md). These are used by the **agentic LLM backend** (Phase 3 of APMODE, see [Agentic LLM Backend](#agentic-llm-backend-phase-3) below), which applies them iteratively based on LLM proposals up to `--max-iterations`. The **automated search engine does not apply transforms iteratively** — it only does the Phase 1 cross-product + Phase 3 warm-start children. If you want iterative transform-based exploration, enable the agentic backend with `apmode run --agentic --lane discovery`.
 
 ### Example: What This Produces on Mavoglurant
 
@@ -523,7 +539,7 @@ Formular text ──→ Lark parser ──→ AST ──→     Search Engine
 | Orchestrator | `src/apmode/orchestrator/` | Full pipeline: ingest → profile → NCA → search → gates → bundle → report |
 | Bundle emitter | `src/apmode/bundle/` | All reproducibility bundle artifacts per PRD §5 |
 | Report generator | `src/apmode/report/` | HTML + Markdown regulatory report with credibility framing |
-| Dataset registry | `src/apmode/data/datasets.py` | <!-- apmode:AUTO:datasets -->14<!-- apmode:/AUTO:datasets --> public PK datasets from nlmixr2data with auto-fetch |
+| Dataset registry | `src/apmode/data/datasets.py` | <!-- apmode:AUTO:datasets -->16<!-- apmode:/AUTO:datasets --> public PK datasets from nlmixr2data with auto-fetch |
 | Suite C literature loader | `src/apmode/benchmarks/literature_loader.py` | YAML → `LiteratureFixture` → `DSLSpec` traversal for the Phase-1 MLE + Bayesian benchmark roster |
 | Suite C Phase-1 scoring | `src/apmode/benchmarks/suite_c_phase1_scoring.py` + `suite_c_phase1_cli.py` | Pure-Python `score_fixture` + `aggregate_phase1_scorecard` (`fraction_beats_literature_median ≥ 60%` gate, `δ = 0.02` win margin); standalone `python -m` CLI driver consumed by the weekly `.github/workflows/suite_c_phase1.yml` |
 | HTTP API persistence | `src/apmode/api/store.py` | `RunStore` Protocol + `SQLiteRunStore` (WAL mode, `BEGIN IMMEDIATE` writes, idempotent startup-sweep of `RUNNING` rows) — backbone for the FastAPI surface |
@@ -690,7 +706,7 @@ reason, vote). `apmode inspect <bundle>` renders the per-signal table;
 
 ## Test Suite
 
-**<!-- apmode:AUTO:tests -->2581<!-- apmode:/AUTO:tests --> tests collected** (<!-- apmode:AUTO:tests_nonlive -->2564<!-- apmode:/AUTO:tests_nonlive --> non-live) across multiple strategies — all counts auto-synced by `scripts/sync_readme.py`:
+**<!-- apmode:AUTO:tests -->3008<!-- apmode:/AUTO:tests --> tests collected** (<!-- apmode:AUTO:tests_nonlive -->2991<!-- apmode:/AUTO:tests_nonlive --> non-live) across multiple strategies — all counts auto-synced by `scripts/sync_readme.py`:
 
 ```bash
 uv run pytest tests/unit/ -q               # unit tests
@@ -926,14 +942,14 @@ Please cite the individual papers listed under *Pharmacometric References* when 
 
 ## CLI Reference
 
-<!-- apmode:AUTO:cli_cmds -->16<!-- apmode:/AUTO:cli_cmds --> direct `@app.command` entries are auto-counted from `src/apmode/cli.py`; `apmode --help` also shows the registered `bundle` and `completion` command groups:
+<!-- apmode:AUTO:cli_cmds -->16<!-- apmode:/AUTO:cli_cmds --> direct `@app.command` entries are auto-counted from `src/apmode/cli.py`; `apmode --help` also shows the registered `bundle`, `completion`, and `formular` command groups:
 
 | Command | Description |
 |---------|-------------|
 | `apmode run <csv> --lane <lane>` | Full pipeline: ingest → profile → NCA → search → gates → bundle → report |
 | `apmode validate <bundle>` | Validate bundle completeness + JSONL integrity |
 | `apmode inspect <bundle>` | Print bundle summary + structured nonlinear-clearance signals panel |
-| `apmode datasets [name]` | Browse or download <!-- apmode:AUTO:datasets -->14<!-- apmode:/AUTO:datasets --> public PK datasets from nlmixr2data |
+| `apmode datasets [name]` | Browse or download <!-- apmode:AUTO:datasets -->16<!-- apmode:/AUTO:datasets --> public PK datasets from nlmixr2data |
 | `apmode explore <name-or-csv>` | Interactive wizard: step-by-step data exploration with optional pipeline launch |
 | `apmode diff <bundle-a> <bundle-b>` | Side-by-side comparison of evidence, rankings, gate pass rates |
 | `apmode log <bundle> --top N` | Show top-N ranked candidates; `--failed` / `--gate gate1` for failure triage |
@@ -947,6 +963,7 @@ Please cite the individual papers listed under *Pharmacometric References* when 
 | `apmode serve` | HTTP API behind uvicorn; loopback default (refuses non-loopback without `--allow-public`); 30 s graceful-shutdown budget; full endpoint contract under [HTTP API](#http-api) |
 | `apmode bundle ...` | Bundle operations: RO-Crate export/import/publish and CycloneDX SBOM sidecar generation |
 | `apmode completion ...` | Install, show, or uninstall shell completion |
+| `apmode formular ...` | Formular DSL tooling: `fmt`/`lint`/`validate`/`explain`/`diff`/`lower`/`compat`/`signature` (see [Formular — The PK DSL](#formular--the-pk-dsl)) |
 
 ### Key Options for `apmode run`
 
@@ -983,7 +1000,7 @@ Please cite the individual papers listed under *Pharmacometric References* when 
 
 ### Public Dataset Registry
 
-<!-- apmode:AUTO:datasets -->14<!-- apmode:/AUTO:datasets --> datasets available via `apmode datasets`, including 5 real clinical datasets:
+<!-- apmode:AUTO:datasets -->16<!-- apmode:/AUTO:datasets --> datasets available via `apmode datasets`, including 5 real clinical datasets:
 
 | Dataset | Subjects | Route | Elimination | Covariates |
 |---------|----------|-------|-------------|------------|
@@ -1044,6 +1061,9 @@ The LLM cannot write raw code — it can only propose these <!-- apmode:AUTO:tra
 | `set_transit_n` | Change transit compartment count | Increase transit N for delayed absorption |
 | `toggle_lag` | Enable/disable absorption lag time | Add tlag for delayed onset |
 | `replace_with_node` | Swap to Neural ODE (discovery/optimization only) | NODE absorption with dim=4 |
+| `convert_transit_to_erlang` | Transit → Erlang(n, ktr); requires current absorption is Transit | Locks n to an integer, drops the terminal ka step |
+| `add_parallel_route` | FirstOrder → ParallelFirstOrder(ka1, ka2, frac); requires current absorption is FirstOrder | Splits absorption into fast + slow parallel routes |
+| `set_sumig_components` | Set/update SumIG component parameters (MT_1/MT_2/RD2_1/RD2_2); requires current absorption is already SumIG | Adjust inverse-Gaussian mixture timing under the MT_1 < MT_2 guard |
 | `set_prior` | Declare/replace a typed prior (Bayesian workflows) | HalfNormal(0, 0.5) on IIV_CL ω |
 
 ### LLM Provider Support
@@ -1165,7 +1185,7 @@ Every CI run and every tagged release ships a [CycloneDX](https://cyclonedx.org/
 This README's numeric claims (version, test count, transform count, CLI-command count, dataset count, policy versions, profiler manifest version) are rewritten from the codebase by [`scripts/sync_readme.py`](scripts/sync_readme.py). Each auto-synced value sits between HTML comment markers like:
 
 ```
-<!-- apmode:AUTO:tests -->2581<!-- apmode:/AUTO:tests -->
+<!-- apmode:AUTO:tests -->3008<!-- apmode:/AUTO:tests -->
 ```
 
 Running the script:
@@ -1201,7 +1221,7 @@ User-facing constraints in `<!-- apmode:AUTO:version_tag -->v0.6.1-rc1<!-- apmod
 - **NODE random effects** *(planned)* — current NODE training is pooled-population NLL (no per-subject random effects). Laplace approximation on a ≤16×16 block of latent/input-layer parameters (block-diagonal Hessian primary; L-BFGS + ridge fallback) is the next milestone; full-NN-weight RE remains research-branch.
 - **NODE scaling** *(planned)* — the Python-list subject loop scales to ~50 subjects. The next release replaces it with `jax.lax.map` per subject plus a `jax.vmap` fastpath for uniform time grids (target memory ceiling on A100-40G ≈ 2000 subjects for a 4-compartment NODE).
 - **NODE posterior-predictive simulation** *(planned)* — `sample_posterior_predictive` is currently an inert stub returning `None` with `UserWarning`. The Laplace-RE landing draws random effects from the posterior and routes per-subject simulations through the canonical `build_predictive_diagnostics`.
-- **Stan maturation + IOV** *(planned)* — `NotImplementedError` on Emax maturation and IOV eta back-transform today. BLQ M3/M4 left-censored likelihood lowering is present in the Stan emitter.
+- **Stan maturation** *(planned)* — `NotImplementedError` on Emax maturation covariate form today. BLQ M3/M4 left-censored likelihood lowering is present in the Stan emitter. (IOV is fully supported in Stan — non-centered occasion-indexed back-transform, `capabilities.py` classifies `variability.iov` as supported for both nlmixr2 and Stan.)
 - **TMDD QSS coverage** *(planned)* — Suite A5 now has benchmark coverage and the nlmixr2 emitter supports TMDD QSS, but automated enumeration/profiler support remains limited. Planned: late-slope-steepening (LSS) profiler signal, `tmdd_qss` enumerator wiring, default to pure-MM (3 params) with `parallel-linear + MM` only when the profiler detects a linear clearance component. `KSS = KD + kint / kon` canonicalisation remains research-branch.
 - **TimeVaryingElim decay forms**: the nlmixr2 emitter supports all three `decay_fn ∈ {exponential, half_life, linear}`. Stan-side lowering is exponential-only pending the same Stan-emitter follow-on.
 - **Context of use** *(partial)* — the orchestrator auto-generates a COU statement for Gate 2.5; a `--context-of-use "<str>"` CLI override is planned.

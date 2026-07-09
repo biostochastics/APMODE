@@ -111,9 +111,9 @@ class _StubRunner:
 def _spec() -> DSLSpec:
     return DSLSpec(
         model_id="frem_compose_test",
-        absorption=FirstOrder(ka=1.0),
-        distribution=OneCmt(V=50.0),
-        elimination=LinearElim(CL=5.0),
+        absorption=FirstOrder(),
+        distribution=OneCmt(),
+        elimination=LinearElim(),
         variability=[IIV(params=["CL", "V"], structure="diagonal")],
         observation=Combined(sigma_prop=0.1, sigma_add=0.01),
     )

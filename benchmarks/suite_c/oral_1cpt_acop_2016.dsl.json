@@ -1,16 +1,13 @@
 {
   "model_id": "oral_1cpt_acop_2016_simulated",
   "absorption": {
-    "type": "FirstOrder",
-    "ka": 1.0
+    "type": "FirstOrder"
   },
   "distribution": {
-    "type": "OneCmt",
-    "V": 70.0
+    "type": "OneCmt"
   },
   "elimination": {
-    "type": "Linear",
-    "CL": 4.0
+    "type": "Linear"
   },
   "variability": [
     {
@@ -26,6 +23,11 @@
   "observation": {
     "type": "Proportional",
     "sigma_prop": 0.2
+  },
+  "initial": {
+    "ka": 1.0,
+    "V": 70.0,
+    "CL": 4.0
   },
   "priors": [],
   "source_meta": {}

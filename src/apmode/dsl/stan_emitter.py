@@ -14,9 +14,11 @@ IIV is modeled via log-normal random effects:
   theta_i = theta * exp(eta_i), eta_i ~ N(0, omega^2)
 
 NODE modules are not supported (Stan has no neural ODE support).
-BLQ M3/M4 left-censored likelihoods are implemented; IOV, maturation
-covariate links, and the v0.7 absorption preview forms still raise
-``NotImplementedError``.
+BLQ M3/M4 left-censored likelihoods and inter-occasion variability (IOV)
+are implemented; maturation covariate links and the v0.7 absorption
+preview forms still raise ``NotImplementedError``. Correlated
+(block-structure) IIV — including an LKJ prior on ``corr_iiv`` — is not
+yet lowered; only diagonal IIV is supported.
 """
 
 from __future__ import annotations
@@ -31,7 +33,6 @@ from apmode.dsl.ast_models import (
     TMDDQSS,
     Additive,
     Combined,
-    CovariateLink,
     DSLSpec,
     Erlang,
     FirstOrder,
@@ -52,6 +53,7 @@ from apmode.dsl.ast_models import (
     TwoCmt,
     ZeroOrder,
 )
+from apmode.dsl.capabilities import CapabilityTag
 from apmode.dsl.priors import (
     BetaPrior,
     GammaPrior,
@@ -65,6 +67,60 @@ from apmode.dsl.priors import (
     NormalPrior,
     PriorFamily,
     PriorSpec,
+)
+
+# Capability matrix (P0.7, docs/plans/2026-07-08-formular-sharpening-and-adoption-design.md
+# §4 Phase 0). Populated from the actual NotImplementedError raise sites in
+# ``emit_stan`` below plus what the ODE/analytical codegen paths handle.
+SUPPORTS: frozenset[CapabilityTag] = frozenset(
+    {
+        CapabilityTag.ABSORPTION_IV_BOLUS,
+        CapabilityTag.ABSORPTION_FIRST_ORDER,
+        CapabilityTag.ABSORPTION_LAGGED_FIRST_ORDER,
+        CapabilityTag.ABSORPTION_TRANSIT,
+        CapabilityTag.DISTRIBUTION_ONE_CMT,
+        CapabilityTag.DISTRIBUTION_TWO_CMT,
+        CapabilityTag.DISTRIBUTION_THREE_CMT,
+        CapabilityTag.DISTRIBUTION_TMDD_CORE,
+        CapabilityTag.DISTRIBUTION_TMDD_QSS,
+        CapabilityTag.ELIMINATION_LINEAR,
+        CapabilityTag.ELIMINATION_MICHAELIS_MENTEN,
+        CapabilityTag.ELIMINATION_PARALLEL_LINEAR_MM,
+        CapabilityTag.ELIMINATION_TIME_VARYING,
+        CapabilityTag.VARIABILITY_IIV,
+        CapabilityTag.VARIABILITY_IOV,
+        CapabilityTag.VARIABILITY_COVARIATE_LINK,
+        CapabilityTag.OBSERVATION_PROPORTIONAL,
+        CapabilityTag.OBSERVATION_ADDITIVE,
+        CapabilityTag.OBSERVATION_COMBINED,
+        CapabilityTag.OBSERVATION_BLQ_M3,
+        CapabilityTag.OBSERVATION_BLQ_M4,
+    }
+)
+
+EXPLICITLY_UNSUPPORTED: frozenset[CapabilityTag] = frozenset(
+    {
+        # Torsten user-defined ODE RHS lacks arbitrary t-forcing without
+        # time-varying covariate plumbing (ADR-0003 D4) — deferred to v0.7.1.
+        CapabilityTag.ABSORPTION_ZERO_ORDER,
+        CapabilityTag.ABSORPTION_MIXED_FIRST_ZERO,
+        CapabilityTag.ABSORPTION_ERLANG,
+        CapabilityTag.ABSORPTION_PARALLEL_FIRST_ORDER,
+        CapabilityTag.ABSORPTION_SUM_IG,
+        CapabilityTag.ABSORPTION_NODE,
+        CapabilityTag.ELIMINATION_NODE,
+        # Parameters/transformed-parameters blocks only declare independent
+        # per-parameter omegas (no LKJ correlation matrix); "block" IIV is
+        # rejected explicitly below rather than silently emitting a
+        # diagonal-only model.
+        CapabilityTag.VARIABILITY_IIV_BLOCK_STRUCTURE,
+        CapabilityTag.VARIABILITY_COVARIATE_MATURATION_FORM,
+        # P1.7: multi-analyte `observations:` would require per-endpoint
+        # data arrays, likelihood terms, and log_lik accumulation — a
+        # disproportionately large rewrite for this session (Phase 2 gap,
+        # see `emit_stan`'s entry guard).
+        CapabilityTag.OBSERVATION_MULTI_ANALYTE,
+    }
 )
 
 
@@ -83,8 +139,9 @@ def emit_stan(
         A Stan program string.
 
     Raises:
-        NotImplementedError: For NODE modules, IOV, maturation covariates,
-            or v0.7 absorption preview forms.
+        NotImplementedError: For NODE modules, maturation covariates, block
+            (correlated) IIV structure, an LKJ prior on ``corr_iiv``, or
+            v0.7 absorption preview forms.
     """
     if spec.has_node_modules():
         raise NotImplementedError(
@@ -92,11 +149,45 @@ def emit_stan(
             "NODE backends use the JAX/Diffrax emitter."
         )
 
-    # IOV: etas are declared but not applied in transformed parameters.
-    if any(isinstance(v, IOV) for v in spec.variability):
+    # P1.7: multi-analyte `observations:` blocks are not yet supported by
+    # the Stan emitter — every data/parameters/likelihood/log_lik helper
+    # below still reads the singular `spec.observation` field directly, and
+    # doing this correctly would need per-endpoint data arrays and
+    # likelihood terms (a disproportionately large rewrite for this
+    # session). Reject explicitly rather than silently emitting a program
+    # for only the first declared endpoint. Use the nlmixr2 backend for
+    # multi-analyte specs, or declare a single observation: block.
+    if spec.observations is not None:
         raise NotImplementedError(
-            "IOV is not yet fully implemented in Stan codegen. "
-            "IOV etas are declared but not applied to parameter back-transforms."
+            "Multi-analyte observations: blocks are not supported by the "
+            "Stan emitter yet (Phase 2 gap). Use the nlmixr2 backend, or "
+            "declare a single observation: block."
+        )
+
+    # Block (correlated) IIV structure: _emit_parameters_block /
+    # _emit_transformed_parameters_block only declare independent
+    # per-parameter omegas (no LKJ correlation matrix), so honouring a
+    # "block" request would require silently falling back to diagonal —
+    # reject explicitly instead (P0.6/P0.7 capability audit finding).
+    if any(isinstance(v, IIV) and v.structure == "block" for v in spec.variability):
+        raise NotImplementedError(
+            "Block (correlated) IIV structure is not yet implemented in Stan codegen. "
+            "Only diagonal IIV is supported; use the nlmixr2 backend for correlated IIV."
+        )
+
+    # An LKJ prior on corr_iiv is schema-valid (priors.py accepts it so
+    # agentic transforms can plan for correlated IIV ahead of the emitter
+    # supporting it) but the Stan emitter never declares a correlation
+    # matrix parameter for it — silently dropping a user-declared prior
+    # is a Gate 2 evidence-quality violation. Reject explicitly instead of
+    # letting it fall through unconsulted.
+    corr_iiv_prior = _find_prior(spec.priors, "corr_iiv")
+    if corr_iiv_prior is not None and isinstance(corr_iiv_prior.family, LKJPrior):
+        raise NotImplementedError(
+            "An LKJ prior was declared on corr_iiv, but correlated IIV lowering "
+            "is not yet implemented in Stan codegen and the prior is not "
+            "consulted. Only diagonal IIV is supported; remove the corr_iiv "
+            "prior or use the nlmixr2 backend for correlated IIV."
         )
 
     # Unsupported absorption types in ODE mode.
@@ -118,7 +209,13 @@ def emit_stan(
     blocks.append(f"// APMODE generated Stan model: {spec.model_id}")
     blocks.append("")
 
-    needs_ode = _needs_ode(spec)
+    # IOV requires occasion-varying kinetics within a subject's dosing
+    # history; the closed-form multi-dose superposition solutions in
+    # _emit_analytical_solve assume time-invariant per-subject parameters
+    # and cannot represent that, so IOV specs always route through the
+    # numerical ODE solver even when the structural model would otherwise
+    # be analytically solvable (e.g. 1-cmt first-order + linear elimination).
+    needs_ode = _needs_ode(spec) or _has_iov(spec)
 
     if needs_ode:
         blocks.append(_emit_functions_block(spec))
@@ -195,12 +292,6 @@ def _emit_user_prior(
 
     if isinstance(family, BetaPrior):
         return [f"{prefix}beta({family.alpha:.6f}, {family.beta:.6f});"]
-
-    if isinstance(family, LKJPrior):
-        # LKJ targets a correlation matrix. Emit lkj_corr; caller must ensure
-        # the Stan variable is declared as corr_matrix[K] (out of scope for v1
-        # since IIV correlation emission is planned for a follow-up).
-        return [f"{prefix}lkj_corr({family.eta:.6f});"]
 
     if isinstance(family, MixturePrior):
         return _emit_mixture_prior(stan_param, family, on_log_scale=on_log_scale)
@@ -412,7 +503,7 @@ def _emit_data_block(spec: DSLSpec) -> str:
             )
 
     # Covariates
-    cov_links = [v for v in spec.variability if isinstance(v, CovariateLink)]
+    cov_links = list(spec.covariates)
     cov_names = sorted({_sanitize_stan_name(c.covariate, context="covariate") for c in cov_links})
     for cov in cov_names:
         lines.append(f"  vector[N_subjects] {cov};")
@@ -479,10 +570,10 @@ def _emit_parameters_block(spec: DSLSpec) -> str:
         lines.append(f"  matrix[N_subjects * N_occ, {len(iov_params)}] eta_iov_raw;")
 
     # Residual error
-    lines.extend(_emit_sigma_params(spec, _is_blq(spec)))
+    lines.extend(_emit_sigma_params(spec))
 
     # Covariate coefficients
-    cov_links = [v for v in spec.variability if isinstance(v, CovariateLink)]
+    cov_links = list(spec.covariates)
     for cov in cov_links:
         p = _sanitize_stan_name(cov.param, context="covariate-target parameter")
         c = _sanitize_stan_name(cov.covariate, context="covariate")
@@ -503,10 +594,12 @@ def _emit_transformed_parameters_block(spec: DSLSpec, needs_ode: bool) -> str:
     lines.append("")
 
     iiv_params = _iiv_params(spec)
+    iov_params = _iov_params(spec)
+    has_iov = _has_iov(spec)
 
     lines.append("  for (i in 1:N_subjects) {")
 
-    # Back-transform structural params with IIV
+    # Back-transform structural params with IIV (+ IOV where declared)
     for name in spec.structural_param_names():
         eta_expr = ""
         if name in iiv_params:
@@ -515,7 +608,24 @@ def _emit_transformed_parameters_block(spec: DSLSpec, needs_ode: bool) -> str:
 
         # Covariate effects
         cov_expr = _covariate_expr(spec, name, "i")
-        lines.append(f"    real {name}_i = exp(log_{name}{eta_expr}{cov_expr});")
+
+        if has_iov and name in iov_params:
+            # Occasion-indexed back-transform (Metrum Torsten IOV idiom):
+            # theta[occ] = TV * covariates * exp(eta_iiv + eta_iov[occ]).
+            # eta_iov_raw is a matrix[N_subjects * N_occ, n_iov_params]
+            # (declared in _emit_parameters_block); row (i-1)*N_occ + o
+            # holds subject i's non-centered IOV draw for occasion o.
+            iov_idx = iov_params.index(name) + 1
+            lines.append(f"    array[N_occ] real {name}_i;")
+            lines.append("    for (occ_k in 1:N_occ) {")
+            lines.append(
+                f"      {name}_i[occ_k] = exp(log_{name}{eta_expr}{cov_expr}"
+                f" + omega_iov_{name}"
+                f" * eta_iov_raw[(i - 1) * N_occ + occ_k, {iov_idx}]);"
+            )
+            lines.append("    }")
+        else:
+            lines.append(f"    real {name}_i = exp(log_{name}{eta_expr}{cov_expr});")
 
     lines.append("")
 
@@ -582,8 +692,13 @@ def _emit_model_block(
 
     lines.append("")
 
-    # Priors on covariate coefficients
-    cov_links = [v for v in spec.variability if isinstance(v, CovariateLink)]
+    # Priors on covariate coefficients. Absent an explicit spec.priors
+    # override, the default prior is centered on the covariate's own
+    # ``theta``/``hill`` starting value (Formular sharpening plan §4
+    # P1.6) rather than a hardcoded constant; ``categorical`` has no
+    # configurable coefficient yet (Phase 2 candidate) and keeps the
+    # pre-P1.6 ``normal(0, 1)`` default.
+    cov_links = list(spec.covariates)
     for cov in cov_links:
         p = _sanitize_stan_name(cov.param, context="covariate-target parameter")
         c = _sanitize_stan_name(cov.covariate, context="covariate")
@@ -591,8 +706,10 @@ def _emit_model_block(
         user_prior = _find_prior(spec.priors, cov_target)
         if user_prior is not None:
             lines.extend(_emit_user_prior(cov_target, user_prior.family, on_log_scale=False))
-        elif cov.form == "power":
-            lines.append(f"  {cov_target} ~ normal(0.75, 0.5);")
+        elif cov.form in ("power", "exponential", "linear"):
+            lines.append(f"  {cov_target} ~ normal({cov.theta}, 0.5);")
+        elif cov.form == "maturation":
+            lines.append(f"  {cov_target} ~ normal({cov.hill}, 0.5);")
         else:
             lines.append(f"  {cov_target} ~ normal(0, 1);")
 
@@ -761,16 +878,21 @@ def _has_iov(spec: DSLSpec) -> bool:
     return any(isinstance(v, IOV) for v in spec.variability)
 
 
+def _theta_ref(name: str, spec: DSLSpec, occ_expr: str = "occ[n]") -> str:
+    """Reference the per-subject back-transformed value of structural param `name`.
+
+    `_emit_transformed_parameters_block` declares `{name}_i` as an
+    `array[N_occ] real` (occasion-indexed) when `name` carries IOV, and as a
+    plain `real` otherwise. Callers must only use this at a call site where
+    `occ_expr` (an occasion index into that array) is actually in scope.
+    """
+    if _has_iov(spec) and name in _iov_params(spec):
+        return f"{name}_i[{occ_expr}]"
+    return f"{name}_i"
+
+
 def _is_blq(spec: DSLSpec) -> bool:
     return isinstance(spec.observation, (BLQM3, BLQM4))
-
-
-def _blq_sigma_value(spec: DSLSpec) -> tuple[str, float]:
-    """Return (error_model, sigma_init) for BLQ observation models."""
-    obs = spec.observation
-    if isinstance(obs, (BLQM3, BLQM4)):
-        return obs.error_model, obs.sigma_prop
-    return "proportional", 0.1
 
 
 def _log(x: float) -> float:
@@ -782,13 +904,13 @@ def _log(x: float) -> float:
 def _covariate_expr(spec: DSLSpec, param: str, idx_var: str) -> str:
     """Build covariate effect expression for a parameter."""
     parts: list[str] = []
-    for v in spec.variability:
-        if isinstance(v, CovariateLink) and v.param == param:
+    for v in spec.covariates:
+        if v.param == param:
             p = _sanitize_stan_name(v.param, context="covariate-target parameter")
             c = _sanitize_stan_name(v.covariate, context="covariate")
             coeff = f"beta_{p}_{c}"
             if v.form == "power":
-                parts.append(f" + {coeff} * log({c}[{idx_var}] / 70)")
+                parts.append(f" + {coeff} * log({c}[{idx_var}] / {v.ref})")
             elif v.form in ("exponential", "categorical"):
                 parts.append(f" + {coeff} * {c}[{idx_var}]")
             elif v.form == "linear":
@@ -801,7 +923,7 @@ def _covariate_expr(spec: DSLSpec, param: str, idx_var: str) -> str:
     return "".join(parts)
 
 
-def _emit_sigma_params(spec: DSLSpec, is_blq: bool = False) -> list[str]:
+def _emit_sigma_params(spec: DSLSpec) -> list[str]:
     obs = spec.observation
     if isinstance(obs, (BLQM3, BLQM4)):
         if obs.error_model == "additive":
@@ -1143,11 +1265,18 @@ def _emit_ode_solve(spec: DSLSpec, indent: int = 4) -> list[str]:
     pad = " " * indent
     lines: list[str] = []
     n_states = _n_states(spec)
-    n_params = len(spec.structural_param_names())
+    param_names = spec.structural_param_names()
+    n_params = len(param_names)
+    iov_params = _iov_params(spec)
+    has_iov = _has_iov(spec)
 
-    # Pack theta
+    # Pack theta. IOV-carrying params are occasion-dependent and cannot be
+    # packed until an occasion index is in scope, so their slot is filled
+    # per-observation below instead (right after entering the obs loop).
     lines.append(f"{pad}array[{n_params}] real theta_i;")
-    for idx, name in enumerate(spec.structural_param_names(), 1):
+    for idx, name in enumerate(param_names, 1):
+        if has_iov and name in iov_params:
+            continue
         lines.append(f"{pad}theta_i[{idx}] = {name}_i;")
 
     # Initial state
@@ -1163,6 +1292,10 @@ def _emit_ode_solve(spec: DSLSpec, indent: int = 4) -> list[str]:
     lines.append(f"{pad}int e_idx = event_start[i];  // current dose event cursor")
     lines.append(f"{pad}if (obs_start[i] > 0) {{")
     lines.append(f"{pad}  for (n in obs_start[i]:obs_end[i]) {{")
+    if has_iov:
+        for idx, name in enumerate(param_names, 1):
+            if name in iov_params:
+                lines.append(f"{pad}    theta_i[{idx}] = {_theta_ref(name, spec)};")
     lines.append(f"{pad}    // Apply all pending dose events up to (and including) this obs time")
     lines.append(f"{pad}    while (e_idx >= 1 && e_idx <= event_end[i]")
     lines.append(f"{pad}           && event_time[e_idx] <= time[n]) {{")
@@ -1186,7 +1319,7 @@ def _emit_ode_solve(spec: DSLSpec, indent: int = 4) -> list[str]:
     lines.append(f"{pad}        if (event_cmt[e_idx] < 1 || event_cmt[e_idx] > {n_states})")
     lines.append(
         f'{pad}          reject("event_cmt=", event_cmt[e_idx], '
-        f'" out of range for model with n_states={n_states} "'
+        f'" out of range for model with n_states={n_states} ", '
         f'"(dose event index ", e_idx, "); mapping dataset CMT to state is required.");'
     )
     lines.append(f"{pad}        y_state[event_cmt[e_idx]] += event_amt[e_idx];")
@@ -1204,19 +1337,20 @@ def _emit_ode_solve(spec: DSLSpec, indent: int = 4) -> list[str]:
 
     centr = _centr_idx(spec)
     if isinstance(spec.distribution, TMDDQSS):
-        lines.append(f"{pad}    real Ctot_n = y_state[{centr}] / {vol}_i;")
+        vol_ref = _theta_ref(vol, spec)
+        kd_ref = _theta_ref("KD", spec)
+        lines.append(f"{pad}    real Ctot_n = y_state[{centr}] / {vol_ref};")
         lines.append(f"{pad}    real Rtot_n = y_state[{centr + 1}];")
         lines.append(
-            f"{pad}    f[n] = fmax(0.5 * ((Ctot_n - Rtot_n - KD_i)"
-            f" + sqrt(square(Ctot_n - Rtot_n - KD_i)"
-            f" + 4 * KD_i * Ctot_n)), 1e-10);"
+            f"{pad}    f[n] = fmax(0.5 * ((Ctot_n - Rtot_n - {kd_ref})"
+            f" + sqrt(square(Ctot_n - Rtot_n - {kd_ref})"
+            f" + 4 * {kd_ref} * Ctot_n)), 1e-10);"
         )
     else:
-        lines.append(f"{pad}    f[n] = fmax(y_state[{centr}] / {vol}_i, 1e-10);")
+        lines.append(f"{pad}    f[n] = fmax(y_state[{centr}] / {_theta_ref(vol, spec)}, 1e-10);")
 
-    lines.append(f"{pad}  }}")
-    lines.append(f"{pad}  }}")
-    lines.append(f"{pad}}}")
+    lines.append(f"{pad}  }}")  # closes for (n in obs_start[i]:obs_end[i])
+    lines.append(f"{pad}}}")  # closes if (obs_start[i] > 0)
 
     return lines
 

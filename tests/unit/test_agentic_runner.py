@@ -33,9 +33,9 @@ from apmode.dsl.ast_models import (
 def _base_spec() -> DSLSpec:
     return DSLSpec(
         model_id="base",
-        absorption=FirstOrder(ka=1.0),
-        distribution=OneCmt(V=30.0),
-        elimination=LinearElim(CL=2.0),
+        absorption=FirstOrder(),
+        distribution=OneCmt(),
+        elimination=LinearElim(),
         variability=[IIV(params=["CL", "V"], structure="diagonal")],
         observation=Proportional(sigma_prop=0.1),
     )
@@ -121,6 +121,8 @@ def _swap_response() -> LLMResponse:
                         "param": "CL",
                         "covariate": "WT",
                         "form": "power",
+                        "theta": 0.75,
+                        "ref": 70.0,
                     }
                 ],
                 "reasoning": "Add allometric weight scaling on CL.",
@@ -496,3 +498,120 @@ def test_agentic_config_rejects_iterations_above_25() -> None:
 def test_agentic_config_rejects_invalid_lane() -> None:
     with pytest.raises(ValueError, match="lane"):
         AgenticConfig(max_iterations=10, lane="invalid")
+
+
+def _base_spec_with_initial() -> DSLSpec:
+    """Same as _base_spec but with initial values so AddCovariateLink
+
+    validates cleanly (the plain _base_spec() has no ``initial:`` block, so
+    transforms there always fail post-transform DSL validation — fine for
+    tests that only check best-result tracking, but this test needs the
+    transform to actually apply so lineage gets recorded).
+    """
+    return _base_spec().model_copy(update={"initial": {"CL": 2.0, "V": 30.0, "ka": 1.0}})
+
+
+def _swap_response_with_rationale() -> LLMResponse:
+    """Same as _swap_response but with rationale/expected_diagnostic_effect (P2.2)."""
+    return LLMResponse(
+        raw_text=json.dumps(
+            {
+                "transforms": [
+                    {
+                        "type": "add_covariate_link",
+                        "param": "CL",
+                        "covariate": "WT",
+                        "form": "power",
+                        "theta": 0.75,
+                        "ref": 70.0,
+                        "rationale": "Wide body-weight range supports allometric scaling.",
+                        "expected_diagnostic_effect": ["reduces CL eta shrinkage"],
+                    }
+                ],
+                "reasoning": "Add allometric weight scaling on CL.",
+            }
+        ),
+        model_id="test",
+        model_version="v1",
+        input_tokens=100,
+        output_tokens=50,
+        cost_usd=0.001,
+        wall_time_seconds=1.0,
+        request_payload_hash="e" * 64,
+    )
+
+
+@pytest.mark.asyncio
+async def test_agentic_lineage_records_rationale_and_applied_at(tmp_path: Path) -> None:
+    """P2.2: agentic_lineage.json carries rationale/effect/applied_at pulled
+
+    from the FormularTransform object the LLM supplied, not re-invented.
+    """
+    inner_runner = AsyncMock()
+    inner_runner.run = AsyncMock(return_value=_mock_backend_result())
+
+    responses = [_swap_response_with_rationale(), _stop_response()]
+    mock_llm = AsyncMock()
+    mock_llm.complete = AsyncMock(side_effect=responses)
+
+    trace_dir = tmp_path / "agentic_trace"
+    config = AgenticConfig(max_iterations=25, lane="discovery")
+    runner = AgenticRunner(
+        inner_runner=inner_runner,
+        llm_client=mock_llm,
+        config=config,
+        trace_dir=trace_dir,
+    )
+
+    await runner.run(
+        spec=_base_spec_with_initial(),
+        data_manifest=_mock_data_manifest(),
+        initial_estimates={"CL": 2.0, "V": 30.0, "ka": 1.0},
+        seed=42,
+    )
+
+    lineage_path = trace_dir / "agentic_lineage.json"
+    assert lineage_path.exists()
+    data = json.loads(lineage_path.read_text())
+    entries = data["entries"]
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["rationale"] == "Wide body-weight range supports allometric scaling."
+    assert entry["expected_diagnostic_effect"] == ["reduces CL eta shrinkage"]
+    assert entry["applied_at"] is not None
+    # ISO-8601 round-trips via fromisoformat
+    from datetime import datetime
+
+    datetime.fromisoformat(entry["applied_at"])
+
+
+@pytest.mark.asyncio
+async def test_agentic_lineage_defaults_when_no_rationale_supplied(tmp_path: Path) -> None:
+    """Backward compat: omitting rationale/effect still produces a valid entry."""
+    inner_runner = AsyncMock()
+    inner_runner.run = AsyncMock(return_value=_mock_backend_result())
+
+    responses = [_swap_response(), _stop_response()]
+    mock_llm = AsyncMock()
+    mock_llm.complete = AsyncMock(side_effect=responses)
+
+    trace_dir = tmp_path / "agentic_trace"
+    config = AgenticConfig(max_iterations=25, lane="discovery")
+    runner = AgenticRunner(
+        inner_runner=inner_runner,
+        llm_client=mock_llm,
+        config=config,
+        trace_dir=trace_dir,
+    )
+
+    await runner.run(
+        spec=_base_spec_with_initial(),
+        data_manifest=_mock_data_manifest(),
+        initial_estimates={"CL": 2.0, "V": 30.0, "ka": 1.0},
+        seed=42,
+    )
+
+    entry = json.loads((trace_dir / "agentic_lineage.json").read_text())["entries"][0]
+    assert entry["rationale"] is None
+    assert entry["expected_diagnostic_effect"] == []
+    assert entry["applied_at"] is not None

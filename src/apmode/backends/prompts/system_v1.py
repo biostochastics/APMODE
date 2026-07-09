@@ -17,9 +17,12 @@ _TRANSFORM_DESCRIPTIONS: dict[str, str] = {
         "MichaelisMenten if CWRES show dose-dependent bias."
     ),
     "add_covariate_link": (
-        "add_covariate_link(param, covariate, form) — Add a covariate effect. "
-        "Forms: power, exponential, linear, categorical, maturation. "
-        "Example: allometric weight scaling on CL (power)."
+        "add_covariate_link(param, covariate, form, ...) — Add a covariate effect. "
+        "Each form requires its own named field(s): power(theta, ref), "
+        "exponential(theta), linear(theta), categorical(reference), "
+        "maturation(tm50, hill). "
+        "Example: allometric weight scaling on CL — "
+        "add_covariate_link(param=CL, covariate=WT, form=power, theta=0.75, ref=70)."
     ),
     "adjust_variability": (
         "adjust_variability(param, action) — Modify IIV structure. "
@@ -89,12 +92,24 @@ Respond with a JSON object:
 ```json
 {{
   "transforms": [
-    {{"type": "<transform_type>", ...transform-specific fields...}}
+    {{
+      "type": "<transform_type>",
+      ...transform-specific fields...,
+      "rationale": "Why this transform addresses the observed misfit (optional, encouraged).",
+      "expected_diagnostic_effect": ["e.g. reduces CWRES trend at low concentrations", "..."]
+    }}
   ],
   "reasoning": "Brief explanation of why these transforms address the observed misfit.",
   "stop": false
 }}
 ```
+
+Each transform accepts optional `rationale` (str) and `expected_diagnostic_effect`
+(list of short strings) fields in addition to its own required fields. Populate
+them — they become the reviewable narrative in the reproducibility bundle's
+lineage record for this candidate, not just a raw AST diff. (For `set_prior`,
+use `justification` instead of `rationale` — it already exists for that
+purpose.)
 
 To signal that the model is adequate and no further transforms are needed:
 ```json

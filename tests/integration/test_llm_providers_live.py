@@ -452,11 +452,12 @@ async def test_agentic_loop_live_one_iteration(tmp_path: object) -> None:
 
     spec = DSLSpec(
         model_id="live-test-base",
-        absorption=FirstOrder(ka=1.5),
-        distribution=OneCmt(V=70.0),
-        elimination=LinearElim(CL=5.0),
+        absorption=FirstOrder(),
+        distribution=OneCmt(),
+        elimination=LinearElim(),
         variability=[IIV(params=["CL", "V", "ka"], structure="diagonal")],
         observation=Proportional(sigma_prop=0.15),
+        initial={"ka": 1.5, "V": 70.0, "CL": 5.0},
     )
 
     manifest = DataManifest(

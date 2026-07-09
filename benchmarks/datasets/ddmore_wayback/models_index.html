@@ -1,0 +1,1099 @@
+
+
+
+
+<!doctype html>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<html>
+<head><script src="https://web-static.archive.org/_static/js/athena.js" type="text/javascript"></script>
+<script type="text/javascript">window.addEventListener('DOMContentLoaded',function(){var v=archive_analytics.values;v.service='wb';v.server_name='wwwb-app258.us.archive.org';v.server_ms=511;archive_analytics.send_pageview({});});</script>
+<script type="text/javascript" src="https://web-static.archive.org/_static/js/bundle-playback.js?v=2N_sDSC0" charset="utf-8"></script>
+<script type="text/javascript" src="https://web-static.archive.org/_static/js/wombat.js?v=o9P2E1FK" charset="utf-8"></script>
+<script>window.RufflePlayer=window.RufflePlayer||{};window.RufflePlayer.config={"autoplay":"on","unmuteOverlay":"hidden","showSwfDownload":true};</script>
+<script type="text/javascript" src="https://web-static.archive.org/_static/js/ruffle/ruffle.js"></script>
+<script type="text/javascript">
+    __wm.init("http://web.archive.org/web");
+  __wm.wombat("http://repository.ddmore.foundation/models","20250327075132","http://web.archive.org/","web","https://web-static.archive.org/_static/",
+	      "1743061892");
+</script>
+<link rel="stylesheet" type="text/css" href="https://web-static.archive.org/_static/css/banner-styles.css?v=1utQkbB3" />
+<link rel="stylesheet" type="text/css" href="https://web-static.archive.org/_static/css/iconochive.css?v=3PDvdIFv" />
+<!-- End Wayback Rewrite JS Include -->
+
+    <!-- Google Tag Manager -->
+    <script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+    new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+    j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+    'http://web.archive.org/web/20250327075132/https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+    })(window,document,'script','dataLayer','GTM-NLS3ZHD');</script>
+    <!-- End Google Tag Manager -->	<script src="/web/20250327075132js_/http://repository.ddmore.foundation/plugins/jquery-1.11.1/js/jquery/jquery-1.11.1.min.js" type="text/javascript" library="jquery"></script>
+
+    <script src="/web/20250327075132js_/http://repository.ddmore.foundation/js/jquery/jquery.i18n.properties-min-1.0.9.js" type="text/javascript"></script>
+
+    <script src="/web/20250327075132js_/http://repository.ddmore.foundation/js/jquery/jquery-ui-v1.10.3.js" type="text/javascript"></script>
+
+    <script type="text/javascript">
+
+    	$.appName = "model-repository";
+    	$.serverUrl = "http://web.archive.org/web/20250327075132/http://repository.ddmore.foundation/";
+    	$.i18n.properties({
+    		name: 'messages',
+    		path: "http://web.archive.org/web/20250327075132/http://repository.ddmore.foundation//js/i18n/",
+    		mode: "map"
+    	});
+    	var helpHidden=1;
+
+    	
+			var helpWidth=-1;
+			var maxWidth=-1;
+			var maxHelpWidth=800;
+			var minHelpWidth=50;
+			var stepWidth=30;
+			var syncResize=0;
+			function adjustWidth(newWidth) {
+				if (syncResize==1) {
+					var delta= helpWidth - newWidth;
+					var mainWidth=$("#mainframe" ).width();
+					if (maxWidth==-1) {
+						maxWidth=mainWidth;
+					}
+					if (maxWidth<mainWidth+delta) {
+						mainWidth=maxWidth;
+					}
+					else {
+						mainWidth+=delta;
+					}
+					$( "#mainframe" ).width(mainWidth);
+					helpWidth=newWidth;
+				}
+			}
+
+
+			function hideHelp() {
+			    $( "#helpPanel" ).removeClass("helpHeightWorkaround")
+				adjustWidth(0);
+				$( "#helpPanel" ).hide();
+				helpHidden=1;
+				helpWidth=-1;
+				$('#toggleHelp').text("Help");
+				$('#toggleHelp').attr("title", "Access help for this page");
+			}
+
+			function showHelp() {
+				$( "#helpPanel" ).addClass("helpHeightWorkaround")
+				helpWidth=-1;
+				$("html, body").animate({ scrollTop: 0 }, "medium");
+				$( "#helpPanel" ).width(400);
+				$( "#helpPanel" ).show();
+				adjustWidth(400);
+				$( "#helpPanel" ).position({
+					my: "right bottom",
+					at: "right bottom",
+					of: ".main-menu"
+				});
+				helpHidden=0;
+				$('#toggleHelp').text("Hide help");
+				$('#toggleHelp').attr("title", "Hide help");
+			}
+			var isDragged=false;
+		
+    	$(function() {
+    		
+    		
+				$( "#helpPanel" ).resizable({
+							handles: 'n,e,s,w',
+							maxWidth: maxHelpWidth,
+							animate: true,
+							resize: function( event, ui ) {
+								if (helpWidth==-1) {
+									helpWidth=ui.originalSize.width;
+								}
+								adjustWidth(ui.size.width);
+							}
+				});
+				$( "#helpPanel" ).draggable({ cursor: "move",
+											  revert: false,
+											  containment: "body",
+											  start: function() {
+												isDragged=true;
+											  },
+											  stop: function( event, ui ) {
+												isDragged=false;
+											  }
+											});
+				$( "#helpPanel" ).hide();
+
+				$("#toolbar").mouseleave(function() {
+					if (isDragged) {
+						$( "#helpPanel" ).draggable( "disable" );
+						$( "#helpPanel" ).draggable( "enable" );
+					}
+				})
+
+
+				$( "#expand" ).button({
+					text: false,
+					icons: {
+						primary: "ui-icon-circle-plus"
+					}
+				}).click(function() {
+					 helpWidth=$("#helpPanel" ).width();
+					if (maxHelpWidth<helpWidth+stepWidth) {
+						helpWidth=maxHelpWidth;
+					}
+					else {
+						helpWidth+=stepWidth;
+					}
+					var windowRight = document.body.getBoundingClientRect ().right
+					$( "#helpPanel" ).width(helpWidth);
+					var el= document.getElementById ("helpPanel");
+					var helpRight = el.getBoundingClientRect ().right
+					if (helpRight > windowRight) {
+						var offset = helpRight - windowRight + 10
+						$('#helpPanel').animate({
+							'marginLeft' : "-=" + offset + "px"
+						});
+					}
+
+				});
+				$( "#contract" ).button({
+					text: false,
+					icons: {
+						primary: "ui-icon-circle-minus"
+					}
+				}).click(function() {
+					 helpWidth=$("#helpPanel" ).width();
+					if (minHelpWidth>helpWidth-stepWidth) {
+						helpWidth=minHelpWidth
+					}
+					else {
+						helpWidth-=stepWidth;
+					}
+					$( "#helpPanel" ).width(helpWidth);
+					var addedPercentage = (helpWidth - 400) / 400
+					var basic = 99+addedPercentage;
+					$( "#helpFrame" ).width(basic+"%");
+				});
+				$( "#close" ).button({
+					text: false,
+					icons: {
+						primary: "ui-icon-circle-close"
+					}
+				}).click(function() {
+					hideHelp();
+				});
+
+				$( "#snap" ).button({
+					text: false,
+					icons: {
+						primary: "ui-icon-arrowrefresh-1-e"
+					}
+				}).click(function() {
+					hideHelp();
+					showHelp();
+				});
+				$( "#outlink" ).button({
+					text: false,
+					icons: {
+						primary: "ui-icon-extlink"
+					}
+				}).click(function() {
+					hideHelp();
+					window.open('http://web.archive.org/web/20250327075132/http://repository.ddmore.foundation:7999/model_browsing.html','_blank');
+				});
+				$('#toggleHelp').click(function(event) {
+					event.preventDefault();
+					if (helpHidden==1) {
+						showHelp();
+					}
+					else {
+						hideHelp();
+					}
+				});
+			
+    	});
+    
+</script>
+
+    <script src="/web/20250327075132js_/http://repository.ddmore.foundation/js/jummp.js" type="text/javascript"></script>
+
+    <script src="/web/20250327075132js_/http://repository.ddmore.foundation/js/notification.js" type="text/javascript"></script>
+
+    <script src="/web/20250327075132js_/http://repository.ddmore.foundation/js/jquery.cookiebar.js" type="text/javascript"></script>
+
+    <script type="text/javascript">
+
+        function get_browser(){
+            var ua = navigator.userAgent,
+                tem,
+                M = ua.match(/(opera|chrome|safari|firefox|msie|trident(?=\/))\/?\s*(\d+)/i) || [];
+            if (/trident/i.test(M[1])) {
+                tem = /\brv[ :]+(\d+)/g.exec(ua) || [];
+                return {name: 'IE', version: (tem[1]||'')};
+            }
+            if (M[1] === 'Chrome') {
+                tem = ua.match(/\bOPR\/(\d+)/)
+                if (tem != null)
+                {
+                    return {name: 'Opera', version: tem[1]};
+                }
+            }
+            M = M[2]? [M[1], M[2]] : [navigator.appName, navigator.appVersion, '-?'];
+            if ((tem = ua.match(/version\/(\d+)/i)) != null) {
+                M.splice(1,1,tem[1]);}
+            return {
+                name: M[0],
+                version: M[1]
+            };
+        }
+        $(document).ready(function() {
+            var browser = get_browser();
+            if ((browser.name === 'Chrome' && parseInt(browser.version) < 19) ||
+                (browser.name === 'Firefox' && parseInt(browser.version) < 10) ||
+                (browser.name === 'IE' && parseInt(browser.version) < 10) ||
+                (browser.name === 'Safari' && parseInt(browser.version) < 5) ||
+                (browser.name === 'Opera')) {
+                $.cookieBar({});
+            }
+        });
+    
+</script>
+
+    
+
+
+
+
+
+
+
+
+
+
+
+<meta charset="utf-8">
+
+  <!-- Use the .htaccess and remove these lines to avoid edge case issues.
+       More info: h5bp.com/b/378 -->
+  <!-- <meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1"> --> <!-- Not yet implemented -->
+
+  <title>DDMoRe Model Repository</title>
+  <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+  <link rel="shortcut icon" href="http://web.archive.org/web/20250327075132im_/http://www.ddmore.eu/sites/ddmore/themes/ddmore/favicon.ico" type="image/vnd.microsoft.icon"/>
+  <meta content="About DDMoRe" about="http://www.ddmore.eu/content/about-ddmore" property="dc:title"/>
+ 
+ <link rel="stylesheet" href="/web/20250327075132cs_/http://repository.ddmore.foundation/css/ddmore.css"/>
+ 
+  <!--[if lte IE 7]>
+<link type="text/css" rel="stylesheet" href="http://www.ddmore.eu/sites/ddmore/files/css/css_sIsRwCKuAMZS6YJIMFqPXNCtZHxV56wN2ePifCvkLYc.css" media="all" />
+<![endif]-->
+
+<!--[if lte IE 6]>
+<link type="text/css" rel="stylesheet" href="http://www.ddmore.eu/sites/ddmore/files/css/css_N0EHcRmGNgF6d_odKVbSBNnBtfyz9Ndtm25vvkPxWcQ.css" media="all" />
+<![endif]-->
+  
+
+    <link rel="stylesheet" href="/web/20250327075132cs_/http://repository.ddmore.foundation/css/notification.css"/>
+    <link rel="stylesheet" href="/web/20250327075132cs_/http://repository.ddmore.foundation/css/layout.css"/>
+    <link rel="stylesheet" href="/web/20250327075132cs_/http://repository.ddmore.foundation/css/jqueryui/smoothness/jquery-ui-1.10.3.custom.min.css"/>
+    <link rel="stylesheet" href="/web/20250327075132cs_/http://repository.ddmore.foundation/css/jquery.cookiebar.css"/>
+    
+        
+        <meta name="layout" content="main"/>
+        <link rel="stylesheet" href="http://web.archive.org/web/20250327075132cs_/http://repository.ddmore.foundation//css/datatablestyle.css"/>
+        <script src="/web/20250327075132js_/http://repository.ddmore.foundation/js/jquery/jquery-ui-v1.10.3.js" type="text/javascript"></script>
+
+    
+    
+<script type="text/javascript">
+    var _gaq = _gaq || [];
+    
+    _gaq.push(['_setAccount', 'UA-111431614-1']);
+    _gaq.push(['_trackPageview']);
+    
+(function() {
+  var ga = document.createElement('script'); ga.type = 'text/javascript'; ga.async = true;
+  ga.src = ('https:' == document.location.protocol ? 'http://web.archive.org/web/20250327075132/https://ssl' : 'http://web.archive.org/web/20250327075132/http://www') + '.google-analytics.com/ga.js';
+  var s = document.getElementsByTagName('script')[0]; s.parentNode.insertBefore(ga, s);
+})();
+</script>
+<script type="text/javascript">
+    var _gaq = _gaq || [];
+    
+    _gaq.push(['_setAccount', 'UA-111431614-2']);
+    _gaq.push(['_trackPageview']);
+    
+</script>
+</head>
+    
+
+
+
+    <body><!-- BEGIN WAYBACK TOOLBAR INSERT -->
+<script>__wm.rw(0);</script>
+<div id="wm-ipp-base" lang="en" style="display:none;direction:ltr;" toolbar-mode="auto">
+<div id="wm-ipp" style="position:fixed;left:0;top:0;right:0;">
+<div id="donato" style="position:relative;width:100%;height:0;">
+  <div id="donato-base">
+    <iframe id="donato-if" src="https://archive.org/includes/donate.php?as_page=1&amp;platform=wb&amp;referer=http%3A//web.archive.org/web/20250327075132/http%3A//repository.ddmore.foundation/models"
+	    scrolling="no" frameborder="0" style="width:100%; height:100%">
+    </iframe>
+  </div>
+</div><div id="wm-ipp-inside">
+  <div id="wm-toolbar" style="position:relative;display:flex;flex-flow:row nowrap;justify-content:space-between;" nav="async">
+    <div id="wm-logo" style="/*width:110px;*/padding-top:12px;">
+      <a href="/web/" title="Wayback Machine home page"><img src="https://web-static.archive.org/_static/images/toolbar/wayback-toolbar-logo-200.png" srcset="https://web-static.archive.org/_static/images/toolbar/wayback-toolbar-logo-100.png, https://web-static.archive.org/_static/images/toolbar/wayback-toolbar-logo-150.png 1.5x, https://web-static.archive.org/_static/images/toolbar/wayback-toolbar-logo-200.png 2x" alt="Wayback Machine" style="width:100px" border="0" /></a>
+    </div>
+    <div class="c" style="display:flex;flex-flow:column nowrap;justify-content:space-between;flex:1;">
+      <form class="u" style="display:flex;flex-direction:row;flex-wrap:nowrap;" target="_top" method="get" action="/web/submit" name="wmtb" id="wmtb"><input type="text" name="url" id="wmtbURL" value="http://repository.ddmore.foundation/models" onfocus="this.focus();this.select();" style="flex:1;"/><input type="hidden" name="type" value="replay" /><input type="hidden" name="date" value="20250327075132" /><input type="submit" value="Go" />
+      </form>
+      <div style="display:flex;flex-flow:row nowrap;align-items:flex-end;">
+                <div class="s" id="wm-nav-captures" style="flex:1;">
+                    <a class="t" href="/web/20250327075132*/http://repository.ddmore.foundation/models" title="See a list of every capture for this URL">17 captures</a>
+          <div class="r" title="Timespan for captures of this URL">03 Jun 2017 - 27 Mar 2025</div>
+          </div>
+        <div class="k">
+          <a href="" id="wm-graph-anchor">
+            <div id="wm-ipp-sparkline" title="Explore captures for this URL" style="position: relative">
+              <canvas id="wm-sparkline-canvas" width="775" height="27" border="0"></canvas>
+            </div>
+          </a>
+        </div>
+      </div>
+    </div>
+    <div class="n">
+      <table>
+        <tbody>
+          <!-- NEXT/PREV MONTH NAV AND MONTH INDICATOR -->
+          <tr class="m">
+            <td class="b" nowrap="nowrap">Feb</td>
+            <td class="c" id="displayMonthEl" title="You are here: 07:51:32 Mar 27, 2025">MAR</td>
+            <td class="f" nowrap="nowrap">Apr</td>
+          </tr>
+          <!-- NEXT/PREV CAPTURE NAV AND DAY OF MONTH INDICATOR -->
+          <tr class="d">
+            <td class="b" nowrap="nowrap"><span class="ta"></span></td>
+            <td class="c" id="displayDayEl" style="width:34px;font-size:22px;white-space:nowrap;" title="You are here: 07:51:32 Mar 27, 2025">27</td>
+            <td class="f" nowrap="nowrap"><span class="ta"></span></td>
+          </tr>
+          <!-- NEXT/PREV YEAR NAV AND YEAR INDICATOR -->
+          <tr class="y">
+            <td class="b" nowrap="nowrap">2024</td>
+            <td class="c" id="displayYearEl" title="You are here: 07:51:32 Mar 27, 2025">2025</td>
+            <td class="f" nowrap="nowrap">2026</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="r" style="display:flex;flex-flow:column nowrap;align-items:flex-end;justify-content:space-between;">
+      <div id="wm-btns" style="text-align:right;height:23px;">
+                <span class="xxs">
+          <div id="wm-save-snapshot-success">success</div>
+          <div id="wm-save-snapshot-fail">fail</div>
+          <a id="wm-save-snapshot-open" href="#" title="Share via My Web Archive" >
+            <span class="iconochive-web"></span>
+          </a>
+          <a href="https://archive.org/account/login.php" title="Sign In" id="wm-sign-in">
+            <span class="iconochive-person"></span>
+          </a>
+          <span id="wm-save-snapshot-in-progress" class="iconochive-web"></span>
+        </span>
+                <a class="xxs" href="https://help.archive.org/help/category/the-wayback-machine/" title="Get some help using the Wayback Machine" style="top:-6px;"><span class="iconochive-question" style="color:rgb(87,186,244);font-size:160%;"></span></a>
+        <a id="wm-tb-close" href="#close" style="top:-2px;" title="Close the toolbar"><span class="iconochive-remove-circle" style="color:#888888;font-size:240%;"></span></a>
+      </div>
+      <div id="wm-share" class="xxs">
+        <a href="/web/20250327075132/http://web.archive.org/screenshot/http://repository.ddmore.foundation/models"
+           id="wm-screenshot"
+           title="screenshot">
+          <span class="wm-icon-screen-shot"></span>
+        </a>
+        <a href="#" id="wm-video" title="video">
+          <span class="iconochive-movies"></span>
+        </a>
+        <a id="wm-share-facebook" href="#" data-url="http://web.archive.org/web/20250327075132/http://repository.ddmore.foundation/models" title="Share on Facebook" style="margin-right:5px;" target="_blank"><span class="iconochive-facebook" style="color:#3b5998;font-size:160%;"></span></a>
+        <a id="wm-share-twitter" href="#" data-url="http://web.archive.org/web/20250327075132/http://repository.ddmore.foundation/models" title="Share on Twitter" style="margin-right:5px;" target="_blank"><span class="iconochive-twitter" style="color:#1dcaff;font-size:160%;"></span></a>
+      </div>
+      <div style="padding-right:2px;text-align:right;white-space:nowrap;">
+        <a id="wm-expand" class="wm-btn wm-closed" href="#expand"><span id="wm-expand-icon" class="iconochive-down-solid"></span> <span class="xxs" style="font-size:80%;">About this capture</span></a>
+      </div>
+    </div>
+  </div>
+    <div id="wm-capinfo" style="border-top:1px solid #777;display:none; overflow: hidden">
+        <div id="wm-capinfo-notice" source="api"></div>
+                <div id="wm-capinfo-collected-by">
+    <div style="background-color:#666;color:#fff;font-weight:bold;text-align:center;padding:2px 0;">COLLECTED BY</div>
+    <div style="padding:3px;position:relative" id="wm-collected-by-content">
+      <div style="display:inline-block;vertical-align:top;width:49%;">
+			<span class="c-logo" style="background-image:url(https://archive.org/services/img/commoncrawl)"></span>
+		<div>Collection: <a style="color:#33f;" href="https://archive.org/details/commoncrawl" target="_new"><span class="wm-title">Common Crawl</span></a></div>
+		<div style="max-height:75px;overflow:hidden;position:relative;">
+	  <div style="position:absolute;top:0;left:0;width:100%;height:75px;background:linear-gradient(to bottom,rgba(255,255,255,0) 0%,rgba(255,255,255,0) 90%,rgba(255,255,255,255) 100%);"></div>
+	  Web crawl data from Common Crawl.
+	</div>
+	      </div>
+    </div>
+    </div>
+    <div id="wm-capinfo-timestamps">
+    <div style="background-color:#666;color:#fff;font-weight:bold;text-align:center;padding:2px 0;" title="Timestamps for the elements of this page">TIMESTAMPS</div>
+    <div>
+      <div id="wm-capresources" style="margin:0 5px 5px 5px;max-height:250px;overflow-y:scroll !important"></div>
+      <div id="wm-capresources-loading" style="text-align:left;margin:0 20px 5px 5px;display:none"><img src="https://web-static.archive.org/_static/images/loading.gif" alt="loading" /></div>
+    </div>
+    </div>
+  </div></div></div></div><div id="wm-ipp-print">The Wayback Machine - http://web.archive.org/web/20250327075132/http://repository.ddmore.foundation/models</div>
+<script type="text/javascript">//<![CDATA[
+__wm.bt(775,27,25,2,"web","http://repository.ddmore.foundation/models","20250327075132",1996,"https://web-static.archive.org/_static/",["https://web-static.archive.org/_static/css/banner-styles.css?v=1utQkbB3","https://web-static.archive.org/_static/css/iconochive.css?v=3PDvdIFv"], false);
+  __wm.rw(1);
+//]]></script>
+<!-- END WAYBACK TOOLBAR INSERT -->
+ 
+
+
+        <!-- Google Tag Manager (noscript) -->
+        <noscript><iframe src="http://web.archive.org/web/20250327075132if_/https://www.googletagmanager.com/ns.html?id=GTM-NLS3ZHD" height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+        <!-- End Google Tag Manager (noscript) -->    <div id="totality">
+        <div id="mainframe">
+            
+
+
+
+
+
+
+
+
+
+
+  <div id="skip-link">
+    <a href="#main-menu" class="element-invisible element-focusable">Jump to Navigation</a>
+  </div>
+
+  <div id="header-full">
+      <div id="header"><div class="section clearfix">
+
+          <a href="http://web.archive.org/web/20250327075132/http://repository.ddmore.foundation//" title="Home" rel="home" id="logo"><img src="/web/20250327075132im_/http://repository.ddmore.foundation/images/ddmore/logo.png" alt="DDMoRe Model Repository Logo"/></a>
+
+      <div class="region region-header">
+      	<div id="block-system-user-menu" class="block block-system user-menu block-menu first odd">
+      		<div class="content">
+      			<ul class="menu">
+      			
+      			
+                    
+      				<li class="first leaf">
+      					<a href="http://web.archive.org/web/20250327075132/http://repository.ddmore.foundation//registration">
+      						Register
+      					</a>
+      				</li>
+                    <li class="last leaf">
+                    
+      					<a href="http://web.archive.org/web/20250327075132/http://repository.ddmore.foundation//login">
+      						Login
+      					</a>
+      				</li>
+      			
+      			</ul>
+      		</div><!-- /.block -->
+      	</div>
+      <div id="block-search-form" class="block block-search search even">
+      	 <div class="content">
+      	 	<form action="/web/20250327075132/http://repository.ddmore.foundation/search/searchRedir" method="post">
+      	 	<div><div class="container-inline">
+      	 			<input title="Enter the terms you wish to search for." type="text" id="edit-search-block-form--2" name="search_block_form" value="" maxlength="256" class="form-text"/>
+      	 			<input type="submit" id="edit-submit" value="" class="form-submit"/>
+     		</div></div>
+    	 	</form>
+
+  </div>
+
+</div>
+
+<div id="block-system-main-menu" class="block block-system main-menu block-menu last odd">
+
+
+  <div class="content">
+    <ul class="menu">
+    	<li class="first expanded active-trail">
+    		<a href="/web/20250327075132/http://repository.ddmore.foundation/models" class="active-trail active" title="browse models">Browse</a>
+    	</li>
+    	<li class="expanded">
+    		<a href="/web/20250327075132/http://repository.ddmore.foundation/model/create" title="submit a model">Submit</a>
+    	</li>
+        
+        <li class="expanded">
+          <a href="/web/20250327075132/http://repository.ddmore.foundation/support">
+            Support</a>
+        </li>
+        <li class="expanded">
+            
+                <a href="http://web.archive.org/web/20250327075132/https://www.ddmore.foundation/request-model-certification/" target="_blank" title="Request DDMoRe certification of your model -- link opens in a new window">Request Certification</a>
+            
+        </li>
+    </ul>
+</div>
+<p></p>
+</div><!-- /.block -->
+  </div><!-- /.region -->
+
+  </div></div><!-- /.section, /#header -->
+
+</div>
+
+
+            
+
+
+
+
+
+
+
+
+
+
+
+<div id="center-full">
+
+  <div id="page-wrapper">
+    <div id="center-background">&nbsp;</div>
+    <div id="center-backgroundright">&nbsp;</div>
+    <div id="page">
+
+  <div id="main-wrapper"><div id="main" class="clearfix">
+
+    <div id="content" class="column"><div class="section">
+            
+                  
+            <a id="main-content"></a>
+                    <h1 class="title" id="page-title">
+                    	
+        Models
+    
+                    </h1>
+                    <div class="flashNotificationDiv">
+
+	
+		<script type="text/javascript">
+
+			hideNow()
+		
+</script>
+
+	
+
+
+</div>
+
+  		            <div class="content">
+                     </div>
+                                <div class="region region-content">
+    <div id="block-system-main" class="block block-system first last odd">
+
+      
+  <div class="content">
+    
+  	<div class="content pagecontent">
+  		
+  		
+        
+
+<div class="content">
+	<div class="view view-dom-id-9c00a92f557689f996511ded36a88594">
+        <div id="inline-list">
+            
+                
+            
+            <ul>
+                
+                    <li>
+                        
+                            <a href="/web/20250327075132/http://repository.ddmore.foundation/models?query=&amp;sortDir=desc&amp;sortBy=modified&amp;offset=0&amp;numResults=50">
+                                50
+                            </a>
+                        
+                    </li>
+                
+                    <li>
+                        
+                            <a href="/web/20250327075132/http://repository.ddmore.foundation/models?query=&amp;sortDir=desc&amp;sortBy=modified&amp;offset=0&amp;numResults=20">
+                                20
+                            </a>
+                        
+                    </li>
+                
+                    <li>
+                        
+                            10
+                        
+                    </li>
+                
+            </ul>
+        </div>
+        <div class="view-content">
+    		
+	 			<table id="modelTable">
+    	    	<thead>
+                <tr>
+                    
+<th>
+	<a href="/web/20250327075132/http://repository.ddmore.foundation/models?query=&amp;sortDir=asc&amp;sortBy=submissionId">
+	<b>Submission ID</b>
+		
+		
+	</a>
+</th>
+
+                    
+<th>
+	<a href="/web/20250327075132/http://repository.ddmore.foundation/models?query=&amp;sortDir=asc&amp;sortBy=name">
+	<b>Name</b>
+		
+		
+	</a>
+</th>
+
+                    
+<th>
+	<a href="/web/20250327075132/http://repository.ddmore.foundation/models?query=&amp;sortDir=asc&amp;sortBy=format">
+	<b>Format</b>
+		
+		
+	</a>
+</th>
+
+                    
+<th>
+	<a href="/web/20250327075132/http://repository.ddmore.foundation/models?query=&amp;sortDir=asc&amp;sortBy=submitter">
+	<b>Submitter</b>
+		
+		
+	</a>
+</th>
+
+                    
+<th>
+	<a href="/web/20250327075132/http://repository.ddmore.foundation/models?query=&amp;sortDir=asc&amp;sortBy=submitted">
+	<b>Submitted</b>
+		
+		
+	</a>
+</th>
+
+                    
+<th>
+	<a href="/web/20250327075132/http://repository.ddmore.foundation/models?query=&amp;sortDir=asc&amp;sortBy=modified">
+	<b>Modified</b>
+		
+		
+			<img src="http://web.archive.org/web/20250327075132im_/http://repository.ddmore.foundation//images/descend.gif" contextpath="" absolute="true" alt="Sort Ascending" plugincontextpath="/plugins/jummp-plugin-web-application-0.1"/>
+		
+	</a>
+</th>
+
+                    <th>Certification</th>
+                    
+                </tr>
+                </thead>
+                <tbody>
+                	
+                		<tr class="even">
+                            <td>
+                                <a href="/web/20250327075132/http://repository.ddmore.foundation/model/DDMODEL00000301">
+                                    DDMODEL00000301
+                                </a>
+                            </td>
+                			<td>
+                				<a href="/web/20250327075132/http://repository.ddmore.foundation/model/DDMODEL00000301">
+                					Meropenem popPK model
+                				</a>
+                			</td>
+                			<td>Original code</td>
+                			<td>Pauline THEMANS</td>
+                			<td>2019/07/24</td>
+                			<td>2021/03/27</td>
+                            <td style="text-align: center;">
+                                    
+                         <img style="margin-top:0;" title="This version of the model is not certified" alt="uncertified model" src="http://web.archive.org/web/20250327075132im_/http://repository.ddmore.foundation//images/star_empty.svg"/>
+                        </td>
+                            
+                		</tr>
+                	
+                		<tr class="odd">
+                            <td>
+                                <a href="/web/20250327075132/http://repository.ddmore.foundation/model/DDMODEL00000311">
+                                    DDMODEL00000311
+                                </a>
+                            </td>
+                			<td>
+                				<a href="/web/20250327075132/http://repository.ddmore.foundation/model/DDMODEL00000311">
+                					Translational PKPD of isoniazid from zebrafish to humans
+                				</a>
+                			</td>
+                			<td>Original code</td>
+                			<td>Rob Christiaan van Wijk</td>
+                			<td>2019/10/15</td>
+                			<td>2020/09/04</td>
+                            <td style="text-align: center;">
+                                    
+                         <img style="margin-top:0;" title="This version of the model is not certified" alt="uncertified model" src="http://web.archive.org/web/20250327075132im_/http://repository.ddmore.foundation//images/star_empty.svg"/>
+                        </td>
+                            
+                		</tr>
+                	
+                		<tr class="even">
+                            <td>
+                                <a href="/web/20250327075132/http://repository.ddmore.foundation/model/DDMODEL00000322">
+                                    DDMODEL00000322
+                                </a>
+                            </td>
+                			<td>
+                				<a href="/web/20250327075132/http://repository.ddmore.foundation/model/DDMODEL00000322">
+                					HCQ popPK model
+                				</a>
+                			</td>
+                			<td>Original code</td>
+                			<td>Pauline THEMANS</td>
+                			<td>2020/05/09</td>
+                			<td>2020/08/20</td>
+                            <td style="text-align: center;">
+                                    
+                         <img style="margin-top:0;" title="This version of the model is not certified" alt="uncertified model" src="http://web.archive.org/web/20250327075132im_/http://repository.ddmore.foundation//images/star_empty.svg"/>
+                        </td>
+                            
+                		</tr>
+                	
+                		<tr class="odd">
+                            <td>
+                                <a href="/web/20250327075132/http://repository.ddmore.foundation/model/DDMODEL00000323">
+                                    DDMODEL00000323
+                                </a>
+                            </td>
+                			<td>
+                				<a href="/web/20250327075132/http://repository.ddmore.foundation/model/DDMODEL00000323">
+                					Population pharmacokinetic plasma model of chloroquine in healthy volunteers
+                				</a>
+                			</td>
+                			<td>Original code</td>
+                			<td>Richard Hoglund</td>
+                			<td>2020/05/22</td>
+                			<td>2020/05/22</td>
+                            <td style="text-align: center;">
+                                    
+                         <img style="margin-top:0;" title="This version of the model is not certified" alt="uncertified model" src="http://web.archive.org/web/20250327075132im_/http://repository.ddmore.foundation//images/star_empty.svg"/>
+                        </td>
+                            
+                		</tr>
+                	
+                		<tr class="even">
+                            <td>
+                                <a href="/web/20250327075132/http://repository.ddmore.foundation/model/DDMODEL00000317">
+                                    DDMODEL00000317
+                                </a>
+                            </td>
+                			<td>
+                				<a href="/web/20250327075132/http://repository.ddmore.foundation/model/DDMODEL00000317">
+                					PK_Vancomycin_Obese
+                				</a>
+                			</td>
+                			<td>Original code</td>
+                			<td>Cornelis Smit</td>
+                			<td>2020/01/31</td>
+                			<td>2020/01/31</td>
+                            <td style="text-align: center;">
+                                    
+                         <img style="margin-top:0;" title="This version of the model is not certified" alt="uncertified model" src="http://web.archive.org/web/20250327075132im_/http://repository.ddmore.foundation//images/star_empty.svg"/>
+                        </td>
+                            
+                		</tr>
+                	
+                		<tr class="odd">
+                            <td>
+                                <a href="/web/20250327075132/http://repository.ddmore.foundation/model/DDMODEL00000315">
+                                    DDMODEL00000315
+                                </a>
+                            </td>
+                			<td>
+                				<a href="/web/20250327075132/http://repository.ddmore.foundation/model/DDMODEL00000315">
+                					PK_Gentamicin_Obese
+                				</a>
+                			</td>
+                			<td>Original code</td>
+                			<td>Cornelis Smit</td>
+                			<td>2020/01/31</td>
+                			<td>2020/01/31</td>
+                            <td style="text-align: center;">
+                                    
+                         <img style="margin-top:0;" title="This version of the model is not certified" alt="uncertified model" src="http://web.archive.org/web/20250327075132im_/http://repository.ddmore.foundation//images/star_empty.svg"/>
+                        </td>
+                            
+                		</tr>
+                	
+                		<tr class="even">
+                            <td>
+                                <a href="/web/20250327075132/http://repository.ddmore.foundation/model/DDMODEL00000316">
+                                    DDMODEL00000316
+                                </a>
+                            </td>
+                			<td>
+                				<a href="/web/20250327075132/http://repository.ddmore.foundation/model/DDMODEL00000316">
+                					PK_Tobramycin_Obese
+                				</a>
+                			</td>
+                			<td>Original code</td>
+                			<td>Cornelis Smit</td>
+                			<td>2020/01/31</td>
+                			<td>2020/01/31</td>
+                            <td style="text-align: center;">
+                                    
+                         <img style="margin-top:0;" title="This version of the model is not certified" alt="uncertified model" src="http://web.archive.org/web/20250327075132im_/http://repository.ddmore.foundation//images/star_empty.svg"/>
+                        </td>
+                            
+                		</tr>
+                	
+                		<tr class="odd">
+                            <td>
+                                <a href="/web/20250327075132/http://repository.ddmore.foundation/model/DDMODEL00000304">
+                                    DDMODEL00000304
+                                </a>
+                            </td>
+                			<td>
+                				<a href="/web/20250327075132/http://repository.ddmore.foundation/model/DDMODEL00000304">
+                					Executable_Simulated_FluconazolePretermInfantPBPK
+                				</a>
+                			</td>
+                			<td>Original code</td>
+                			<td>Jacqueline Gerhart</td>
+                			<td>2019/09/29</td>
+                			<td>2019/10/29</td>
+                            <td style="text-align: center;">
+                                    
+                         <img style="margin-top:0;" title="This version of the model is not certified" alt="uncertified model" src="http://web.archive.org/web/20250327075132im_/http://repository.ddmore.foundation//images/star_empty.svg"/>
+                        </td>
+                            
+                		</tr>
+                	
+                		<tr class="even">
+                            <td>
+                                <a href="/web/20250327075132/http://repository.ddmore.foundation/model/DDMODEL00000298">
+                                    DDMODEL00000298
+                                </a>
+                            </td>
+                			<td>
+                				<a href="/web/20250327075132/http://repository.ddmore.foundation/model/DDMODEL00000298">
+                					Executable_sultiame_nonlinear_PK
+                				</a>
+                			</td>
+                			<td>Original code</td>
+                			<td>Kim Dao</td>
+                			<td>2019/02/28</td>
+                			<td>2019/10/18</td>
+                            <td style="text-align: center;">
+                                    
+                         <img style="margin-top:0;" title="This version of the model is not certified" alt="uncertified model" src="http://web.archive.org/web/20250327075132im_/http://repository.ddmore.foundation//images/star_empty.svg"/>
+                        </td>
+                            
+                		</tr>
+                	
+                		<tr class="odd">
+                            <td>
+                                <a href="/web/20250327075132/http://repository.ddmore.foundation/model/DDMODEL00000310">
+                                    DDMODEL00000310
+                                </a>
+                            </td>
+                			<td>
+                				<a href="/web/20250327075132/http://repository.ddmore.foundation/model/DDMODEL00000310">
+                					Optimal dosing of dihydroartemisinin-piperaquine for seasonal malaria chemoprevention in young children
+                				</a>
+                			</td>
+                			<td>Original code</td>
+                			<td>Joel Tarning</td>
+                			<td>2019/10/03</td>
+                			<td>2019/10/03</td>
+                            <td style="text-align: center;">
+                                    
+                         <img style="margin-top:0;" title="This version of the model is not certified" alt="uncertified model" src="http://web.archive.org/web/20250327075132im_/http://repository.ddmore.foundation//images/star_empty.svg"/>
+                        </td>
+                            
+                		</tr>
+                	
+                </tbody>
+                <tfoot>
+                	<tr>
+                	</tr>
+                </tfoot>
+                </table>
+                
+                <div class="dataTables_info">
+                	Showing 1 to 10 of 151 models
+                </div>
+                <div class="dataTables_paginate">
+                    
+                        First
+                    
+                	
+                		<img src="http://web.archive.org/web/20250327075132im_/http://repository.ddmore.foundation//images/pagination/arrow-previous-disable.gif" absolute="true" contextpath="" alt="Previous" plugincontextpath="/plugins/jummp-plugin-web-application-0.1"/>
+                	
+                    
+                	
+                		<span class="pageNumbers">
+                			
+                				1
+                			
+                		</span>
+                	
+                		<span class="pageNumbers">
+                			
+                				<a href="/web/20250327075132/http://repository.ddmore.foundation/models?query=&amp;sortDir=desc&amp;sortBy=modified&amp;offset=10">
+                					2
+                				</a>
+                			
+                		</span>
+                	
+                		<span class="pageNumbers">
+                			
+                				<a href="/web/20250327075132/http://repository.ddmore.foundation/models?query=&amp;sortDir=desc&amp;sortBy=modified&amp;offset=20">
+                					3
+                				</a>
+                			
+                		</span>
+                	
+                		<span class="pageNumbers">
+                			
+                				<a href="/web/20250327075132/http://repository.ddmore.foundation/models?query=&amp;sortDir=desc&amp;sortBy=modified&amp;offset=30">
+                					4
+                				</a>
+                			
+                		</span>
+                	
+                		<span class="pageNumbers">
+                			
+                				<a href="/web/20250327075132/http://repository.ddmore.foundation/models?query=&amp;sortDir=desc&amp;sortBy=modified&amp;offset=40">
+                					5
+                				</a>
+                			
+                		</span>
+                	
+                	
+                		<a href="/web/20250327075132/http://repository.ddmore.foundation/models?query=&amp;sortDir=desc&amp;sortBy=modified&amp;offset=10">
+                			<img src="http://web.archive.org/web/20250327075132im_/http://repository.ddmore.foundation//images/pagination/arrow-next.gif" absolute="true" contextpath="" alt="Next" plugincontextpath="/plugins/jummp-plugin-web-application-0.1"/>
+                		</a>
+                	
+                    
+                        <a href="/web/20250327075132/http://repository.ddmore.foundation/models?query=&amp;sortDir=desc&amp;sortBy=modified&amp;offset=150">Last</a>
+                    
+                </div>
+            
+        </div>
+    </div>
+</div>
+
+    
+  	</div>
+  </div>
+
+  </div><!-- /.region -->
+          </div>
+
+    </div><!-- /.section, /#content -->
+
+    
+ 
+   
+    
+  </div>
+   
+ 
+  
+  </div><!-- /#main, /#main-wrapper -->
+  
+  
+
+
+            
+
+
+
+
+
+ <div id="content-bottom">
+    <div class="region region-content-bottom">
+    <div id="block-menu-menu-footer-menu" class="block block-menu footer-menu even">
+    	<div class="content">
+    		<ul class="menu">
+    						<li class="first leaf" style="margin-top:-100px">© 2012 - 2025</li>
+    						<li class="leaf"><a href="//web.archive.org/web/20250327075132/http://ddmore.eu/">DDMoRe</a>, all rights reserved.</li>
+    		</ul>
+    			<ul style="margin-top:1.3%;padding-left: 0.5em;">
+    						<li class="leaf"><a href="http://web.archive.org/web/20250327075132/http://efpia.eu/" rel="nofollow"><img src="/web/20250327075132im_/http://repository.ddmore.foundation/images/ddmore/EFPIA.jpg"/></a></li>
+    						<li class="leaf"><a href="http://web.archive.org/web/20250327075132/http://ec.europa.eu/research/index.cfm" rel="nofollow"><img src="/web/20250327075132im_/http://repository.ddmore.foundation/images/ddmore/EU.jpg"/></a></li>
+    						<li class="last leaf"><a href="http://web.archive.org/web/20250327075132/http://www.imi.europa.eu/#&amp;panel1-9" rel="nofollow"><img src="/web/20250327075132im_/http://repository.ddmore.foundation/images/ddmore/IMI.jpg"/></a></li>
+    		</ul>
+    		<div class="build">Build info: <a href="http://web.archive.org/web/20250327075132/https://bitbucket.org/jummp/jummp/commits/all?search=883dad825">883dad825</a> | Tue, 29 May 2018 18:40:51 </div>
+   
+    	</div>
+    </div><!-- /.block -->
+ </div><!-- /.region -->
+  <div class="clear">&nbsp;</div>
+  </div>
+    
+
+</div></div><!-- /#page, /#page-wrapper -->
+</div>
+
+
+</div><!-- /.block -->
+
+
+        </div>
+        
+            <div id="helpbutton">
+                <a id="toggleHelp" title="Access help for this page" href="#">Help</a>
+            </div>
+            <div id="helpPanel">
+                <div id="toolbar" class="ui-widget-header ui-corner-all">
+                    <button id="expand">Increase help size</button>
+                    <button id="contract">Decrease help size</button>
+                    <button id="snap">Reset help</button>
+                    <button id="outlink">Open in a new tab</button>
+                    <button id="close">Close</button>
+                </div>
+                <iframe id="helpFrame" src="http://web.archive.org/web/20250327075132if_/http://repository.ddmore.foundation:7999/model_browsing.html#contextSpecific/400"></iframe>
+            </div>
+        
+    </div>
+    </body>
+</html>
+<!--
+     FILE ARCHIVED ON 07:51:32 Mar 27, 2025 AND RETRIEVED FROM THE
+     INTERNET ARCHIVE ON 08:08:06 Jul 08, 2026.
+     JAVASCRIPT APPENDED BY WAYBACK MACHINE, COPYRIGHT INTERNET ARCHIVE.
+
+     ALL OTHER CONTENT MAY ALSO BE PROTECTED BY COPYRIGHT (17 U.S.C.
+     SECTION 108(a)(3)).
+-->
+<!--
+playback timings (ms):
+  captures_list: 0.456
+  exclusion.robots: 0.041
+  exclusion.robots.policy: 0.03
+  esindex: 0.01
+  cdx.remote: 5.746
+  LoadShardBlock: 334.983 (3)
+  PetaboxLoader3.datanode: 187.363 (4)
+  PetaboxLoader3.resolve: 172.285 (2)
+  load_resource: 143.357
+  nav: 0.13 (6)
+-->

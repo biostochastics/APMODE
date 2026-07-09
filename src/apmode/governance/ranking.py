@@ -38,6 +38,8 @@ from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 
+from apmode.dsl.lane import Lane
+
 if TYPE_CHECKING:
     from apmode.bundle.models import BackendResult
     from apmode.governance.policy import Gate3Config
@@ -799,7 +801,7 @@ def rank_by_scoring_contract(
     recommended_id: str | None = None
     recommended_idx: int | None = None
     warning: str | None = None
-    if lane == "submission":
+    if lane == Lane.SUBMISSION:
         grouped_for_rule: list[tuple[object, CrossParadigmRankingResult]] = list(
             zip([c for c, _ in buckets], rankings, strict=True)
         )

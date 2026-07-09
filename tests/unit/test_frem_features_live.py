@@ -60,11 +60,17 @@ _NLMIXR2 = _nlmixr2_available()
 def _simple_pk_spec(model_id: str = "frem_live_test") -> DSLSpec:
     return DSLSpec(
         model_id=model_id,
-        absorption=FirstOrder(ka=1.0),
-        distribution=OneCmt(V=50.0),
-        elimination=LinearElim(CL=5.0),
+        absorption=FirstOrder(),
+        distribution=OneCmt(),
+        elimination=LinearElim(),
         variability=[IIV(params=["CL", "V"], structure="diagonal")],
         observation=Combined(sigma_prop=0.1, sigma_add=0.01),
+        # P1.4 moved calibration off the structural modules onto this
+        # top-level dict. Values match the simulated truth (CL~5-7 L/h,
+        # V=50 L, ka=1.0 1/h) so FOCE-I starts near the optimum — the
+        # default fallback of 1.0 for every unset name is 5-50x off and
+        # made the binary-FREM live fit time out at 300s.
+        initial={"CL": 5.0, "V": 50.0, "ka": 1.0},
     )
 
 
@@ -641,9 +647,9 @@ cat('WROTE', nrow(df), 'rows,', length(unique(df$NMID)), 'subjects\\n')
     # NONMEM ref: CL ~ 2.8 L/h, V ~ 30 L, ka ~ 1.5 1/h on a 70 kg base).
     spec = DSLSpec(
         model_id="theo_frem",
-        absorption=FirstOrder(ka=1.5),
-        distribution=OneCmt(V=30.0),
-        elimination=LinearElim(CL=2.8),
+        absorption=FirstOrder(),
+        distribution=OneCmt(),
+        elimination=LinearElim(),
         variability=[IIV(params=["CL", "V"], structure="diagonal")],
         observation=Combined(sigma_prop=0.15, sigma_add=0.1),
     )

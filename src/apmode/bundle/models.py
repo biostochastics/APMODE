@@ -1076,6 +1076,14 @@ class CandidateLineageEntry(BaseModel):
     candidate_id: str
     parent_id: str | None = None
     transform: str | None = None
+    # P2.2 (Formular sharpening plan): provenance pulled FROM the
+    # FormularTransform object that produced this candidate, not
+    # re-invented ad hoc. `rationale` mirrors SetPrior's `justification`
+    # when the producing transform was a SetPrior. All three are optional
+    # so pre-P2.2 callers constructing this model unchanged keep working.
+    rationale: str | None = None
+    expected_diagnostic_effect: list[str] = Field(default_factory=list)
+    applied_at: str | None = None
 
 
 class CandidateLineage(BaseModel):
@@ -1109,6 +1117,11 @@ class SearchGraphEdge(BaseModel):
     parent_id: str
     child_id: str
     transform: str
+    # P2.2: same provenance triple as CandidateLineageEntry — optional so
+    # existing callers constructing this model unchanged keep working.
+    rationale: str | None = None
+    expected_diagnostic_effect: list[str] = Field(default_factory=list)
+    applied_at: str | None = None
 
 
 class SearchGraph(BaseModel):

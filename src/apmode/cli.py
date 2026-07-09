@@ -136,6 +136,13 @@ from apmode.cli_completion import completion_app  # noqa: E402
 
 app.add_typer(completion_app, name="completion")
 
+# Formular DSL sub-app — ``apmode formular {fmt,lint,validate,explain,diff,
+# lower,compat}`` (Formular sharpening plan §4 Phase 1, P1.9). Kept in its
+# own module so the DSL-facing CLI surface doesn't bloat cli.py.
+from apmode.cli_formular import formular_app  # noqa: E402
+
+app.add_typer(formular_app, name="formular")
+
 # Default model per provider for the agentic backend
 _DEFAULT_MODELS: dict[str, str] = {
     "anthropic": "claude-sonnet-4-20250514",
@@ -779,7 +786,7 @@ def run(
 
     # --- Agentic LLM backend (Phase 3) ---
     agentic_runner_instance = None
-    _agentic_enabled = agentic and lane.value in ("discovery", "optimization")
+    _agentic_enabled = agentic and lane in (Lane.DISCOVERY, Lane.OPTIMIZATION)
     if agentic and lane == Lane.SUBMISSION and not quiet:
         err_console.print(
             "[yellow]Note:[/] --agentic is not permitted in the submission lane "
@@ -3575,8 +3582,18 @@ def lineage(
     entries: list[dict[str, Any]] = lineage_data.get("entries", [])
 
     # Merge agentic lineage from each mode subdir (refine/, independent/) or
-    # legacy flat agentic_trace/ layout
-    existing_ids = {e.get("candidate_id") for e in entries}
+    # legacy flat agentic_trace/ layout.
+    #
+    # candidate_lineage.json's own agentic entries are deliberately coarse
+    # (orchestrator.__init__ hardcodes parent_id=None/rationale=None for
+    # them — the full per-transform chain lives only in agentic_lineage.json).
+    # So when the same candidate_id appears in both files, the
+    # agentic_lineage.json entry is strictly richer and must REPLACE the
+    # coarse one in `entries`/`by_id`, not be skipped — otherwise the exact
+    # candidate a reviewer most wants provenance for (the final adopted one)
+    # resolves to the hardcoded-None entry despite the richer data existing.
+    entry_index_by_id = {e.get("candidate_id"): i for i, e in enumerate(entries)}
+    existing_ids = set(entry_index_by_id)
     for mode, mode_dir in _discover_agentic_mode_dirs(bundle_dir).items():
         al_path = mode_dir / "agentic_lineage.json"
         if not al_path.exists():
@@ -3585,9 +3602,15 @@ def lineage(
         if not al_data:
             continue
         for ae in al_data.get("entries", []):
-            if ae.get("candidate_id") and ae["candidate_id"] not in existing_ids:
+            cid = ae.get("candidate_id")
+            if not cid:
+                continue
+            if cid in existing_ids:
+                entries[entry_index_by_id[cid]] = ae
+            else:
+                entry_index_by_id[cid] = len(entries)
                 entries.append(ae)
-                existing_ids.add(ae["candidate_id"])
+                existing_ids.add(cid)
 
     # Build parent map: candidate_id -> entry
     by_id: dict[str, dict[str, Any]] = {}
@@ -4224,6 +4247,15 @@ def ls_command(
         n_candidates_int = len(traj_rows) if traj_rows else (len(ranked) if ranked else None)
         n_candidates = str(n_candidates_int) if n_candidates_int is not None else "?"
         mtime = os.path.getmtime(dm_path)
+        # TODO(P2.4 follow-up): add a compact-signature column here via
+        # apmode.dsl.serializer.build_signature once best_id is known —
+        # deferred because it requires loading + Pydantic-validating
+        # compiled_specs/{best_id}.json per bundle row on every `apmode ls`
+        # call (this loop runs before --limit/--sort), plus defensive
+        # handling for a missing/malformed compiled_specs file, which is
+        # more plumbing than this fast, dependency-light directory scan
+        # currently does. See docs/plans/2026-07-08-formular-sharpening-and-adoption-design.md
+        # §4 Phase 2 P2.4.
         bundles.append(
             {
                 "name": entry.name,

@@ -275,11 +275,12 @@ def _run_dataset(cfg: dict[str, object], work_dir: Path) -> BenchmarkResult:
         augmented = prepare_frem_data(df, covs)
         spec = DSLSpec(
             model_id=f"{result.dataset}_frem",
-            absorption=FirstOrder(ka=1.0),
-            distribution=OneCmt(V=30.0),
-            elimination=LinearElim(CL=5.0),
+            absorption=FirstOrder(),
+            distribution=OneCmt(),
+            elimination=LinearElim(),
             variability=[IIV(params=["CL", "V"], structure="diagonal")],
             observation=Combined(sigma_prop=0.1, sigma_add=0.1),
+            initial={"ka": 1.0, "V": 30.0, "CL": 5.0},
         )
         model_code = emit_nlmixr2_frem(spec, covs)
         result.emit_seconds = time.monotonic() - t_emit

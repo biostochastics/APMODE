@@ -18,9 +18,11 @@ from apmode.backends.protocol import BackendRunner  # noqa: E402
 from apmode.bundle.models import ColumnMapping, DataManifest  # noqa: E402
 from apmode.dsl.ast_models import (  # noqa: E402
     IIV,
+    Additive,
     DSLSpec,
     FirstOrder,
     LinearElim,
+    ObservationEndpoint,
     OneCmt,
     Proportional,
 )
@@ -30,9 +32,9 @@ from apmode.errors import ConvergenceError, CrashError  # noqa: E402
 def _test_spec() -> DSLSpec:
     return DSLSpec(
         model_id="test_model_id_0000000",
-        absorption=FirstOrder(ka=1.0),
-        distribution=OneCmt(V=70.0),
-        elimination=LinearElim(CL=5.0),
+        absorption=FirstOrder(),
+        distribution=OneCmt(),
+        elimination=LinearElim(),
         variability=[IIV(params=["CL", "V"], structure="diagonal")],
         observation=Proportional(sigma_prop=0.1),
     )
@@ -383,6 +385,68 @@ class TestNlmixr2RunnerRequestCreation:
         # to what they wrote — only the in-runner copy is adapted.
         assert "NMID," in train_csv.read_text()
         assert "NMID," in test_csv.read_text()
+
+    @pytest.mark.asyncio
+    async def test_multi_analyte_spec_preserves_declared_dvid_rows(self, tmp_path: Path) -> None:
+        """DVID 2+ rows declared by observations: must survive runner adaptation."""
+        script = tmp_path / "noop.sh"
+        script.write_text(
+            "#!/bin/sh\n"
+            "cat > \"$3\" << 'RESP'\n"
+            '{"schema_version":"1.0","status":"error","error_type":"convergence",'
+            '"result":null,"r_session_info":{"r_version":"4.4.1",'
+            '"nlmixr2_version":"3.0.0","platform":"test","packages":{}},'
+            '"random_seed_state":null}\n'
+            "RESP\n"
+        )
+        script.chmod(0o755)
+        runner = Nlmixr2Runner(
+            work_dir=tmp_path / "work",
+            r_executable=str(script),
+            harness_path=Path("/dev/null"),
+        )
+        spec = _test_spec().model_copy(
+            update={
+                "observations": {
+                    "plasma": ObservationEndpoint(
+                        name="plasma",
+                        dvid=1,
+                        prediction="C_central",
+                        error=Proportional(sigma_prop=0.1),
+                    ),
+                    "target": ObservationEndpoint(
+                        name="target",
+                        dvid=2,
+                        prediction="C_central",
+                        error=Additive(sigma_add=0.2),
+                    ),
+                }
+            }
+        )
+        train_csv = tmp_path / "train.csv"
+        train_csv.write_text(
+            "NMID,TIME,DV,AMT,EVID,MDV,CMT,DVID\n"
+            "1,0.0,0,100,1,1,1,1\n"
+            "1,1.0,5,0,0,0,1,1\n"
+            "1,1.0,10,0,0,0,1,2\n"
+            "1,1.0,99,0,0,0,1,pca\n"
+        )
+
+        with pytest.raises(ConvergenceError):
+            await runner.run(
+                spec=spec,
+                data_manifest=_test_manifest(),
+                initial_estimates={"CL": 5.0, "V": 70.0},
+                seed=42,
+                data_path=train_csv,
+            )
+
+        work_dirs = list((tmp_path / "work").iterdir())
+        adapted = work_dirs[0] / "data_nlmixr2.csv"
+        adapted_text = adapted.read_text()
+        assert "DVID" in adapted_text.splitlines()[0]
+        assert ",2" in adapted_text
+        assert "pca" not in adapted_text
 
     @pytest.mark.asyncio
     async def test_test_data_path_must_be_absolute(self, tmp_path: Path) -> None:

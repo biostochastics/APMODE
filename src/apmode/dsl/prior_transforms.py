@@ -23,8 +23,8 @@ from apmode.dsl.priors import (
     PriorFamily,
     PriorSource,
     PriorSpec,
+    build_prior_spec,
     classify_target,
-    validate_prior_family,
 )
 from apmode.ids import generate_candidate_id
 
@@ -53,10 +53,19 @@ class SetPrior(BaseModel):
     source: PriorSource = "weakly_informative"
     justification: str = ""
     historical_refs: list[str] = Field(default_factory=list)
+    # No separate `rationale` field: `justification` already serves that role
+    # for SetPrior specifically (P2.2 — avoid a redundant duplicate field).
+    expected_diagnostic_effect: list[str] = Field(default_factory=list)
 
 
 def validate_set_prior(spec: DSLSpec, transform: SetPrior) -> list[str]:
-    """Validate a SetPrior transform against a spec. Returns errors."""
+    """Validate a SetPrior transform against a spec. Returns errors.
+
+    Delegates all PriorSpec-level invariants (target/family compatibility,
+    informative-source justification) to :func:`build_prior_spec` — see that
+    function's docstring for why the ``structural_params`` kwarg is required
+    here but optional for spec-context-free callers.
+    """
     errors: list[str] = []
     structural = set(spec.structural_param_names())
     kind = classify_target(transform.target, structural)
@@ -67,18 +76,14 @@ def validate_set_prior(spec: DSLSpec, transform: SetPrior) -> list[str]:
         )
         return errors
 
-    family_err = validate_prior_family(kind, transform.family)
-    if family_err:
-        errors.append(family_err)
-
-    # Construct-and-validate a PriorSpec to trigger justification rules
     try:
-        PriorSpec(
+        build_prior_spec(
             target=transform.target,
             family=transform.family,
             source=transform.source,
             justification=transform.justification,
             historical_refs=transform.historical_refs,
+            structural_params=structural,
         )
     except ValueError as exc:
         errors.append(str(exc))
@@ -96,12 +101,13 @@ def apply_set_prior(spec: DSLSpec, transform: SetPrior) -> DSLSpec:
     if errors:
         raise ValueError(f"SetPrior validation failed: {'; '.join(errors)}")
 
-    new_prior = PriorSpec(
+    new_prior = build_prior_spec(
         target=transform.target,
         family=transform.family,
         source=transform.source,
         justification=transform.justification,
         historical_refs=transform.historical_refs,
+        structural_params=set(spec.structural_param_names()),
     )
 
     # Idempotent replace-or-append semantics

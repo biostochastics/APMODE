@@ -26,7 +26,6 @@ from apmode.dsl.ast_models import (
     TMDDQSS,
     Additive,
     Combined,
-    CovariateLink,
     DSLSpec,
     Erlang,
     FirstOrder,
@@ -35,6 +34,7 @@ from apmode.dsl.ast_models import (
     LinearElim,
     MichaelisMenten,
     MixedFirstZero,
+    ObservationModule,
     OccasionByDoseEpoch,
     OccasionByStudy,
     OccasionByVisit,
@@ -51,9 +51,55 @@ from apmode.dsl.ast_models import (
     TwoCmt,
     ZeroOrder,
 )
+from apmode.dsl.capabilities import CapabilityTag
 
 # Valid R identifier pattern for name sanitization
 _R_IDENT_RE = re.compile(r"^[a-zA-Z_.][a-zA-Z0-9_.]*$")
+
+# Capability matrix (P0.7, docs/plans/2026-07-08-formular-sharpening-and-adoption-design.md
+# §4 Phase 0): every module-axis variant this emitter has a real lowering
+# path for, versus what it explicitly rejects. NODE modules are Phase 2
+# (JAX/Diffrax emitter) and raise via ``spec.has_node_modules()`` above.
+SUPPORTS: frozenset[CapabilityTag] = frozenset(
+    {
+        CapabilityTag.ABSORPTION_IV_BOLUS,
+        CapabilityTag.ABSORPTION_FIRST_ORDER,
+        CapabilityTag.ABSORPTION_ZERO_ORDER,
+        CapabilityTag.ABSORPTION_LAGGED_FIRST_ORDER,
+        CapabilityTag.ABSORPTION_TRANSIT,
+        CapabilityTag.ABSORPTION_MIXED_FIRST_ZERO,
+        CapabilityTag.ABSORPTION_ERLANG,
+        CapabilityTag.ABSORPTION_PARALLEL_FIRST_ORDER,
+        CapabilityTag.ABSORPTION_SUM_IG,
+        CapabilityTag.DISTRIBUTION_ONE_CMT,
+        CapabilityTag.DISTRIBUTION_TWO_CMT,
+        CapabilityTag.DISTRIBUTION_THREE_CMT,
+        CapabilityTag.DISTRIBUTION_TMDD_CORE,
+        CapabilityTag.DISTRIBUTION_TMDD_QSS,
+        CapabilityTag.ELIMINATION_LINEAR,
+        CapabilityTag.ELIMINATION_MICHAELIS_MENTEN,
+        CapabilityTag.ELIMINATION_PARALLEL_LINEAR_MM,
+        CapabilityTag.ELIMINATION_TIME_VARYING,
+        CapabilityTag.VARIABILITY_IIV,
+        CapabilityTag.VARIABILITY_IIV_BLOCK_STRUCTURE,
+        CapabilityTag.VARIABILITY_IOV,
+        CapabilityTag.VARIABILITY_COVARIATE_LINK,
+        CapabilityTag.VARIABILITY_COVARIATE_MATURATION_FORM,
+        CapabilityTag.OBSERVATION_PROPORTIONAL,
+        CapabilityTag.OBSERVATION_ADDITIVE,
+        CapabilityTag.OBSERVATION_COMBINED,
+        CapabilityTag.OBSERVATION_BLQ_M3,
+        CapabilityTag.OBSERVATION_BLQ_M4,
+        CapabilityTag.OBSERVATION_MULTI_ANALYTE,
+    }
+)
+
+EXPLICITLY_UNSUPPORTED: frozenset[CapabilityTag] = frozenset(
+    {
+        CapabilityTag.ABSORPTION_NODE,
+        CapabilityTag.ELIMINATION_NODE,
+    }
+)
 
 
 def _sanitize_r_name(name: str) -> str:
@@ -136,8 +182,10 @@ def _emit_structural_ini(
 ) -> list[str]:
     """Emit structural parameter initial estimates.
 
-    When initial_estimates is provided, override DSLSpec values for matching
-    parameter names (e.g. "CL" -> use override instead of spec.elimination.CL).
+    Calibration values come from ``spec.initial`` (Formular sharpening plan
+    §4 Phase 1, P1.4); when ``initial_estimates`` is also provided, those
+    values take precedence for matching parameter names (e.g. runtime
+    NCA-derived overrides beat the DSL-declared ``initial:`` block).
     """
     ov = initial_estimates or {}
     lines: list[str] = []
@@ -145,34 +193,37 @@ def _emit_structural_ini(
     dist_mod = spec.distribution
     elim_mod = spec.elimination
 
+    def val(name: str, default: float = 1.0) -> float:
+        return ov.get(name, spec.initial.get(name, default))
+
     # --- Absorption ---
     if isinstance(abs_mod, IVBolus):
         # IV bolus: no absorption parameters. Dose is routed directly to
         # the central compartment; depot is omitted by the structural emitter.
         pass
     elif isinstance(abs_mod, FirstOrder):
-        lines.append(f"lka <- log({ov.get('ka', abs_mod.ka)})")
+        lines.append(f"lka <- log({val('ka')})")
     elif isinstance(abs_mod, ZeroOrder):
-        lines.append(f"ldur <- log({ov.get('dur', abs_mod.dur)})")
+        lines.append(f"ldur <- log({val('dur')})")
     elif isinstance(abs_mod, LaggedFirstOrder):
-        lines.append(f"lka <- log({ov.get('ka', abs_mod.ka)})")
-        tlag = ov.get("tlag", abs_mod.tlag)
+        lines.append(f"lka <- log({val('ka')})")
+        tlag = val("tlag", 0.0)
         lines.append(f"ltlag <- log({tlag})" if tlag > 0 else "ltlag <- -10")
     elif isinstance(abs_mod, Transit):
-        lines.append(f"lka <- log({ov.get('ka', abs_mod.ka)})")
-        lines.append(f"lktr <- log({ov.get('ktr', abs_mod.ktr)})")
+        lines.append(f"lka <- log({val('ka')})")
+        lines.append(f"lktr <- log({val('ktr')})")
         # n is estimated as continuous via log/exp transform; rxode2's transit()
         # uses gamma-function interpolation for non-integer n values
         # (Savic et al. 2007, J Pharmacokinet Pharmacodyn 34:711-726)
         lines.append(f"ln <- log({ov.get('n', abs_mod.n)})")
     elif isinstance(abs_mod, MixedFirstZero):
-        lines.append(f"lka <- log({ov.get('ka', abs_mod.ka)})")
-        lines.append(f"ldur <- log({ov.get('dur', abs_mod.dur)})")
+        lines.append(f"lka <- log({val('ka')})")
+        lines.append(f"ldur <- log({val('dur')})")
         # #14: frac == 1.0 (perfect bioavailability) produced a
         # ZeroDivisionError on log(1 / 0) at emit time. Clamp to the
         # 99.99% ceiling and warn — the user can always drop the
         # ZeroOrder leg or use FirstOrder if they truly want fraction=1.
-        frac_raw = float(ov.get("frac", abs_mod.frac))
+        frac_raw = val("frac", 0.5)
         _frac_epsilon = 1e-4
         frac_clamped = min(max(frac_raw, _frac_epsilon), 1.0 - _frac_epsilon)
         if frac_clamped != frac_raw:
@@ -184,11 +235,11 @@ def _emit_structural_ini(
     elif isinstance(abs_mod, Erlang):
         # n is structural-integer (set by transform, not estimated). Only ktr
         # is exposed for IIV/priors/covariates. See ADR-0003 D2.
-        lines.append(f"lktr <- log({ov.get('ktr', abs_mod.ktr)})")
+        lines.append(f"lktr <- log({val('ktr')})")
     elif isinstance(abs_mod, ParallelFirstOrder):
-        lines.append(f"lka1 <- log({ov.get('ka1', abs_mod.ka1)})")
-        lines.append(f"lka2 <- log({ov.get('ka2', abs_mod.ka2)})")
-        frac_raw = float(ov.get("frac", abs_mod.frac))
+        lines.append(f"lka1 <- log({val('ka1')})")
+        lines.append(f"lka2 <- log({val('ka2')})")
+        frac_raw = val("frac", 0.5)
         _frac_epsilon = 1e-4
         frac_clamped = min(max(frac_raw, _frac_epsilon), 1.0 - _frac_epsilon)
         if frac_clamped != frac_raw:
@@ -200,12 +251,14 @@ def _emit_structural_ini(
         # Per-component params on log scale; weight_1 on logit scale.
         # Positive-difference parameterisation for MT_2 (delta = MT_2 - MT_1)
         # prevents label switching during FOCEI.
-        lines.append(f"lMT_1 <- log({ov.get('MT_1', abs_mod.MT_1)})")
-        delta = float(ov.get("MT_2", abs_mod.MT_2)) - float(ov.get("MT_1", abs_mod.MT_1))
+        mt_1 = val("MT_1")
+        mt_2 = val("MT_2")
+        lines.append(f"lMT_1 <- log({mt_1})")
+        delta = mt_2 - mt_1
         lines.append(f"ldelta_MT_2 <- log({max(delta, 1e-6)})  # MT_2 = MT_1 + exp(ldelta_MT_2)")
-        lines.append(f"lRD2_1 <- log({ov.get('RD2_1', abs_mod.RD2_1)})")
-        lines.append(f"lRD2_2 <- log({ov.get('RD2_2', abs_mod.RD2_2)})")
-        weight_raw = float(ov.get("weight_1", abs_mod.weight_1))
+        lines.append(f"lRD2_1 <- log({val('RD2_1')})")
+        lines.append(f"lRD2_2 <- log({val('RD2_2')})")
+        weight_raw = val("weight_1", 0.5)
         _weight_epsilon = 1e-4
         weight_clamped = min(max(weight_raw, _weight_epsilon), 1.0 - _weight_epsilon)
         if weight_clamped != weight_raw:
@@ -216,49 +269,56 @@ def _emit_structural_ini(
 
     # --- Distribution ---
     if isinstance(dist_mod, OneCmt):
-        lines.append(f"lV <- log({ov.get('V', dist_mod.V)})")
+        lines.append(f"lV <- log({val('V')})")
     elif isinstance(dist_mod, TwoCmt):
-        lines.append(f"lV1 <- log({ov.get('V1', dist_mod.V1)})")
-        lines.append(f"lV2 <- log({ov.get('V2', dist_mod.V2)})")
-        lines.append(f"lQ <- log({ov.get('Q', dist_mod.Q)})")
+        lines.append(f"lV1 <- log({val('V1')})")
+        lines.append(f"lV2 <- log({val('V2')})")
+        lines.append(f"lQ <- log({val('Q')})")
     elif isinstance(dist_mod, ThreeCmt):
-        lines.append(f"lV1 <- log({ov.get('V1', dist_mod.V1)})")
-        lines.append(f"lV2 <- log({ov.get('V2', dist_mod.V2)})")
-        lines.append(f"lV3 <- log({ov.get('V3', dist_mod.V3)})")
-        lines.append(f"lQ2 <- log({ov.get('Q2', dist_mod.Q2)})")
-        lines.append(f"lQ3 <- log({ov.get('Q3', dist_mod.Q3)})")
+        lines.append(f"lV1 <- log({val('V1')})")
+        lines.append(f"lV2 <- log({val('V2')})")
+        lines.append(f"lV3 <- log({val('V3')})")
+        lines.append(f"lQ2 <- log({val('Q2')})")
+        lines.append(f"lQ3 <- log({val('Q3')})")
     elif isinstance(dist_mod, TMDDCore):
-        lines.append(f"lV <- log({ov.get('V', dist_mod.V)})")
-        lines.append(f"lR0 <- log({ov.get('R0', dist_mod.R0)})")
-        lines.append(f"lkon <- log({ov.get('kon', dist_mod.kon)})")
-        lines.append(f"lkoff <- log({ov.get('koff', dist_mod.koff)})")
-        lines.append(f"lkint <- log({ov.get('kint', dist_mod.kint)})")
+        lines.append(f"lV <- log({val('V')})")
+        lines.append(f"lR0 <- log({val('R0')})")
+        lines.append(f"lkon <- log({val('kon')})")
+        lines.append(f"lkoff <- log({val('koff')})")
+        lines.append(f"lkint <- log({val('kint')})")
     elif isinstance(dist_mod, TMDDQSS):
-        lines.append(f"lV <- log({ov.get('V', dist_mod.V)})")
-        lines.append(f"lR0 <- log({ov.get('R0', dist_mod.R0)})")
-        lines.append(f"lKD <- log({ov.get('KD', dist_mod.KD)})")
-        lines.append(f"lkint <- log({ov.get('kint', dist_mod.kint)})")
+        lines.append(f"lV <- log({val('V')})")
+        lines.append(f"lR0 <- log({val('R0')})")
+        lines.append(f"lKD <- log({val('KD')})")
+        lines.append(f"lkint <- log({val('kint')})")
 
     # --- Elimination ---
     if isinstance(elim_mod, LinearElim):
-        lines.append(f"lCL <- log({ov.get('CL', elim_mod.CL)})")
+        lines.append(f"lCL <- log({val('CL')})")
     elif isinstance(elim_mod, MichaelisMenten):
-        lines.append(f"lVmax <- log({ov.get('Vmax', elim_mod.Vmax)})")
-        lines.append(f"lKm <- log({ov.get('Km', elim_mod.Km)})")
+        lines.append(f"lVmax <- log({val('Vmax')})")
+        lines.append(f"lKm <- log({val('Km')})")
     elif isinstance(elim_mod, ParallelLinearMM):
-        lines.append(f"lCL <- log({ov.get('CL', elim_mod.CL)})")
-        lines.append(f"lVmax <- log({ov.get('Vmax', elim_mod.Vmax)})")
-        lines.append(f"lKm <- log({ov.get('Km', elim_mod.Km)})")
+        lines.append(f"lCL <- log({val('CL')})")
+        lines.append(f"lVmax <- log({val('Vmax')})")
+        lines.append(f"lKm <- log({val('Km')})")
     elif isinstance(elim_mod, TimeVaryingElim):
         # All three decay forms (exponential | half_life | linear) are
         # supported as of v0.5.0 — the per-form ODE RHS is emitted by
         # ``_elim_rate_expr`` (see lines ~610-620). This block only
         # writes the log-parameter scaffolding shared by all forms.
-        lines.append(f"lCL <- log({ov.get('CL', elim_mod.CL)})")
-        lines.append(f"lkdecay <- log({ov.get('kdecay', elim_mod.kdecay)})")
+        lines.append(f"lCL <- log({val('CL')})")
+        lines.append(f"lkdecay <- log({val('kdecay', 0.1)})")
 
-    # Covariate coefficients
-    cov_links = [v for v in spec.variability if isinstance(v, CovariateLink)]
+    # Covariate coefficients. Initial/starting values come from the
+    # covariate declaration's own ``theta``/``hill``/``tm50`` fields
+    # (Formular sharpening plan §4 Phase 1, P1.6) rather than a hardcoded
+    # per-form constant — ``power``/``exponential``/``linear`` use
+    # ``theta``; ``maturation`` uses ``hill`` (coefficient) and ``tm50``.
+    # ``categorical`` has no configurable coefficient yet (Phase 2
+    # candidate; see ``CovariateLink`` docstring) and keeps the pre-P1.6
+    # hardcoded starting value of 0.
+    cov_links = list(spec.covariates)
     if cov_links:
         lines.append("")
         lines.append("# Covariate coefficients")
@@ -266,11 +326,11 @@ def _emit_structural_ini(
             p = _sanitize_r_name(cov.param)
             c = _sanitize_r_name(cov.covariate)
             coeff_name = f"beta_{p}_{c}"
-            if cov.form == "power":
-                lines.append(f"{coeff_name} <- 0.75")  # allometric default
+            if cov.form in ("power", "exponential", "linear"):
+                lines.append(f"{coeff_name} <- {cov.theta}")
             elif cov.form == "maturation":
-                lines.append(f"{coeff_name} <- 1")
-                lines.append(f"TM50_{p}_{c} <- 1")
+                lines.append(f"{coeff_name} <- {cov.hill}")
+                lines.append(f"TM50_{p}_{c} <- {cov.tm50}")
             else:
                 lines.append(f"{coeff_name} <- 0")
 
@@ -308,31 +368,62 @@ def _emit_variability_ini(spec: DSLSpec) -> list[str]:
     return lines
 
 
-def _emit_sigma_ini(spec: DSLSpec) -> list[str]:
-    """Emit residual error sigma definitions."""
-    obs = spec.observation
+def _endpoint_sigma_suffix(endpoint_name: str) -> str:
+    """Return the sigma-variable-name suffix for one multi-analyte endpoint.
 
+    Empty string for the synthetic single-endpoint case (``"default"`` —
+    see ``DSLSpec.observation_endpoints``) so single-endpoint specs keep
+    emitting the pre-P1.7 bare ``prop.sd``/``add.sd`` names unchanged; a
+    real ``.<name>`` suffix otherwise, so two endpoints never collide on
+    the same sigma variable in the ini block.
+    """
+    if endpoint_name == "default":
+        return ""
+    return f".{_sanitize_r_name(endpoint_name)}"
+
+
+def _emit_endpoint_sigma_ini(obs: ObservationModule, suffix: str) -> list[str]:
+    """Emit residual error sigma definitions for one endpoint's error module."""
     if isinstance(obs, Proportional):
-        return [f"prop.sd <- {obs.sigma_prop}"]
+        return [f"prop.sd{suffix} <- {obs.sigma_prop}"]
     elif isinstance(obs, Additive):
-        return [f"add.sd <- {obs.sigma_add}"]
+        return [f"add.sd{suffix} <- {obs.sigma_add}"]
     elif isinstance(obs, Combined):
         return [
-            f"prop.sd <- {obs.sigma_prop}",
-            f"add.sd <- {obs.sigma_add}",
+            f"prop.sd{suffix} <- {obs.sigma_prop}",
+            f"add.sd{suffix} <- {obs.sigma_add}",
         ]
     elif isinstance(obs, (BLQM3, BLQM4)):
         # BLQ composes with underlying error model; censoring is data-driven
         if obs.error_model == "proportional":
-            return [f"prop.sd <- {obs.sigma_prop}"]
+            return [f"prop.sd{suffix} <- {obs.sigma_prop}"]
         elif obs.error_model == "additive":
-            return [f"add.sd <- {obs.sigma_add}"]
+            return [f"add.sd{suffix} <- {obs.sigma_add}"]
         else:  # combined
             return [
-                f"prop.sd <- {obs.sigma_prop}",
-                f"add.sd <- {obs.sigma_add}",
+                f"prop.sd{suffix} <- {obs.sigma_prop}",
+                f"add.sd{suffix} <- {obs.sigma_add}",
             ]
     return []
+
+
+def _emit_sigma_ini(spec: DSLSpec) -> list[str]:
+    """Emit residual error sigma definitions for every observation endpoint.
+
+    Formular sharpening plan §4 Phase 1 (P1.7): iterates
+    ``spec.observation_endpoints()`` — the single unified accessor that
+    normalizes both the legacy singular ``observation:`` sugar and the
+    multi-analyte ``observations:`` block — rather than reading
+    ``spec.observation`` directly, so this emits identical R code to the
+    pre-P1.7 implementation for every existing single-endpoint spec (one
+    synthetic ``"default"`` endpoint, empty sigma suffix).
+    """
+    lines: list[str] = []
+    for endpoint in spec.observation_endpoints():
+        lines.extend(
+            _emit_endpoint_sigma_ini(endpoint.error, _endpoint_sigma_suffix(endpoint.name))
+        )
+    return lines
 
 
 # ---------------------------------------------------------------------------
@@ -407,7 +498,7 @@ def _emit_backtransform(spec: DSLSpec) -> list[str]:
         elif isinstance(item, IOV):
             iov_params.update(item.params)
 
-    cov_links = [v for v in spec.variability if isinstance(v, CovariateLink)]
+    cov_links = list(spec.covariates)
 
     def _bt(param: str, log_name: str) -> str:
         """Build back-transform expression with eta and covariate effects."""
@@ -420,9 +511,10 @@ def _emit_backtransform(spec: DSLSpec) -> list[str]:
             if cov.param == param:
                 coeff = f"beta_{cov.param}_{cov.covariate}"
                 if cov.form == "power":
-                    # 70 kg is the standard pharmacometric reference weight
-                    # (Anderson & Holford 2008, Clin Pharmacokinet 47:455-467)
-                    expr += f" + {coeff} * log({cov.covariate} / 70)"
+                    # ``ref`` is the covariate's fixed reference value
+                    # (Formular sharpening plan §4 P1.6, e.g. 70 kg per
+                    # Anderson & Holford 2008, Clin Pharmacokinet 47:455-467)
+                    expr += f" + {coeff} * log({cov.covariate} / {cov.ref})"
                 elif cov.form == "exponential":
                     expr += f" + {coeff} * {cov.covariate}"
                 elif cov.form == "linear":
@@ -447,7 +539,8 @@ def _emit_backtransform(spec: DSLSpec) -> list[str]:
         flattened to linear-additive on the logit scale. The functional
         forms below all target the *logit* (unbounded) scale so ``exp(expr)``
         is applied in the back-transform at the end; power uses the same
-        70-kg reference as in ``_bt`` (Anderson & Holford 2008).
+        ``cov.ref`` reference value as in ``_bt`` (Formular sharpening plan
+        §4 P1.6).
         """
         expr = logit_name
         if param in iiv_params:
@@ -456,7 +549,7 @@ def _emit_backtransform(spec: DSLSpec) -> list[str]:
             expr += f" + eta.iov.{param}"
         # Covariate effects on logit scale. The logit is unbounded so
         # each cov.form maps naturally from its _bt counterpart:
-        #   - power:      β·log(cov / 70)        (log-linear on odds)
+        #   - power:      β·log(cov / ref)        (log-linear on odds)
         #   - exponential: β·cov                   (linear on odds)
         #   - linear:     log(1 + β·cov)          (matches _bt — non-negative effect)
         #   - categorical: β·cov                   (indicator on odds)
@@ -465,7 +558,7 @@ def _emit_backtransform(spec: DSLSpec) -> list[str]:
             if cov.param == param:
                 coeff = f"beta_{cov.param}_{cov.covariate}"
                 if cov.form == "power":
-                    expr += f" + {coeff} * log({cov.covariate} / 70)"
+                    expr += f" + {coeff} * log({cov.covariate} / {cov.ref})"
                 elif cov.form == "exponential":
                     expr += f" + {coeff} * {cov.covariate}"
                 elif cov.form == "linear":
@@ -816,21 +909,30 @@ def _emit_tmdd_qss_odes(lines: list[str], abs_influx: str) -> None:
     lines.append("cp <- Cfree")
 
 
-def _emit_observation_model(spec: DSLSpec) -> list[str]:
-    """Emit the observation/residual error model.
+# Maps ObservationEndpoint.prediction -> the R variable name the nlmixr2
+# emitter's dynamics assign that prediction to (see DSLSpec.
+# known_prediction_variables for which names are valid and why). Only
+# consulted for the multi-endpoint path -- the single-endpoint path always
+# targets "cp" directly, matching every pre-P1.7 emission byte-for-byte.
+_PREDICTION_STATE_NAMES: dict[str, str] = {
+    "C_central": "cp",
+    "C_target_total": "Rtot",
+}
+
+
+def _emit_endpoint_residual(obs: ObservationModule, prediction_var: str, suffix: str) -> list[str]:
+    """Emit one endpoint's residual-error statement against its prediction variable.
 
     For BLQ M3/M4: censoring is handled via CENS/LIMIT data columns
     (not a model-block function). The model block uses standard residual
     error. Ref: nlmixr2 censoring documentation.
     """
-    obs = spec.observation
-
     if isinstance(obs, Proportional):
-        return ["cp ~ prop(prop.sd)"]
+        return [f"{prediction_var} ~ prop(prop.sd{suffix})"]
     elif isinstance(obs, Additive):
-        return ["cp ~ add(add.sd)"]
+        return [f"{prediction_var} ~ add(add.sd{suffix})"]
     elif isinstance(obs, Combined):
-        return ["cp ~ prop(prop.sd) + add(add.sd)"]
+        return [f"{prediction_var} ~ prop(prop.sd{suffix}) + add(add.sd{suffix})"]
     elif isinstance(obs, (BLQM3, BLQM4)):
         blq_type = "M3" if isinstance(obs, BLQM3) else "M4"
         if blq_type == "M3":
@@ -839,11 +941,11 @@ def _emit_observation_model(spec: DSLSpec) -> list[str]:
             comment = f"# BLQ M4: set CENS=1, DV=LLOQ={obs.loq_value}, LIMIT=0 in data"
         # Use the composed error model
         if obs.error_model == "proportional":
-            return [comment, "cp ~ prop(prop.sd)"]
+            return [comment, f"{prediction_var} ~ prop(prop.sd{suffix})"]
         elif obs.error_model == "additive":
-            return [comment, "cp ~ add(add.sd)"]
+            return [comment, f"{prediction_var} ~ add(add.sd{suffix})"]
         else:  # combined
-            return [comment, "cp ~ prop(prop.sd) + add(add.sd)"]
+            return [comment, f"{prediction_var} ~ prop(prop.sd{suffix}) + add(add.sd{suffix})"]
     # #28: catching every other ObservationModule with a silent
     # proportional fallback is how unknown AST nodes reach backends
     # unnoticed. Raise so unimplemented obs modules are caught at
@@ -854,3 +956,51 @@ def _emit_observation_model(spec: DSLSpec) -> list[str]:
         "relying on the proportional default."
     )
     raise NotImplementedError(msg)
+
+
+def _emit_observation_model(spec: DSLSpec) -> list[str]:
+    """Emit the observation/residual error model for every observation endpoint.
+
+    Formular sharpening plan §4 Phase 1 (P1.7): iterates
+    ``spec.observation_endpoints()``. The single-endpoint case (the
+    synthetic ``"default"`` endpoint every legacy ``observation:`` spec
+    normalizes to) emits ``cp ~ ...`` exactly as before P1.7. For a genuine
+    multi-analyte ``observations:`` block, each endpoint's ``prediction``
+    name is resolved to its emitter-internal R variable (see
+    ``_PREDICTION_STATE_NAMES`` / ``DSLSpec.known_prediction_variables``)
+    and a per-endpoint residual statement is emitted, with sigma names
+    suffixed by endpoint name so multiple endpoints never share a sigma
+    variable.
+
+    Routing observed data rows to the correct endpoint by ``dvid`` (e.g. via
+    a ``cmt``/DVID data column nlmixr2 matches against these prediction
+    names) is a data-adapter/runner concern, not this emitter's — see
+    ``apmode.data.adapters.PK_DVID_ALLOWLIST`` and the ``Nlmixr2Runner``
+    two-layer adapter contract (CLAUDE.md); wiring that end-to-end for
+    multi-analyte data is a Phase 2 candidate.
+    """
+    endpoints = spec.observation_endpoints()
+    if len(endpoints) == 1:
+        endpoint = endpoints[0]
+        return _emit_endpoint_residual(endpoint.error, "cp", "")
+
+    lines: list[str] = []
+    for endpoint in endpoints:
+        state = _PREDICTION_STATE_NAMES.get(endpoint.prediction)
+        if state is None:
+            # Unreachable when the spec passed through validate_dsl (which
+            # rejects unresolvable predictions via
+            # FrmCode.AST_OBSERVATIONS_PREDICTION_UNKNOWN before any emitter
+            # runs) -- fail loudly rather than emit broken R code for a
+            # caller that skipped validation.
+            msg = (
+                f"nlmixr2 emitter: endpoint '{endpoint.name}' references "
+                f"prediction {endpoint.prediction!r}, which is not in "
+                "_PREDICTION_STATE_NAMES — not in "
+                "DSLSpec.known_prediction_variables()."
+            )
+            raise NotImplementedError(msg)
+        suffix = _endpoint_sigma_suffix(endpoint.name)
+        lines.append(f"# endpoint '{endpoint.name}' (DVID={endpoint.dvid})")
+        lines.extend(_emit_endpoint_residual(endpoint.error, state, suffix))
+    return lines

@@ -10,24 +10,24 @@ from lark.exceptions import UnexpectedInput
 from apmode.dsl.grammar import load_grammar
 
 ABSORPTIONS = [
-    "FirstOrder(ka={v})",
-    "ZeroOrder(dur={v})",
-    "LaggedFirstOrder(ka={v}, tlag={v2})",
-    "Transit(n={n}, ktr={v}, ka={v2})",
-    "MixedFirstZero(ka={v}, dur={v2}, frac={v3})",
+    "FirstOrder(ka)",
+    "ZeroOrder(dur)",
+    "LaggedFirstOrder(ka, tlag)",
+    "Transit(n={n}, ktr, ka)",
+    "MixedFirstZero(ka, dur, frac)",
 ]
 
 DISTRIBUTIONS = [
-    "OneCmt(V={v})",
-    "TwoCmt(V1={v}, V2={v2}, Q={v3})",
-    "ThreeCmt(V1={v}, V2={v2}, V3={v3}, Q2={v4}, Q3={v5})",
-    "TMDD_Core(V={v}, R0={v2}, kon={v3}, koff={v4}, kint={v5})",
+    "OneCmt(V)",
+    "TwoCmt(V1, V2, Q)",
+    "ThreeCmt(V1, V2, V3, Q2, Q3)",
+    "TMDD_Core(V, R0, kon, koff, kint)",
 ]
 
 ELIMINATIONS = [
-    "Linear(CL={v})",
-    "MichaelisMenten(Vmax={v}, Km={v2})",
-    "ParallelLinearMM(CL={v}, Vmax={v2}, Km={v3})",
+    "Linear(CL)",
+    "MichaelisMenten(Vmax, Km)",
+    "ParallelLinearMM(CL, Vmax, Km)",
 ]
 
 OBSERVATIONS = [
@@ -50,17 +50,17 @@ def _pos_int() -> st.SearchStrategy[int]:
 @st.composite
 def valid_dsl_spec(draw: st.DrawFn) -> str:
     """Generate a syntactically valid DSL model spec."""
-    v1, v2, v3, v4, v5 = [draw(_pos_float()) for _ in range(5)]
+    v1, v2 = draw(_pos_float()), draw(_pos_float())
     n = draw(_pos_int())
 
     abs_template = draw(st.sampled_from(ABSORPTIONS))
-    absorption = abs_template.format(v=v1, v2=v2, v3=v3, n=n)
+    absorption = abs_template.format(n=n)
 
     dist_template = draw(st.sampled_from(DISTRIBUTIONS))
-    distribution = dist_template.format(v=v1, v2=v2, v3=v3, v4=v4, v5=v5)
+    distribution = dist_template
 
     elim_template = draw(st.sampled_from(ELIMINATIONS))
-    elimination = elim_template.format(v=v1, v2=v2, v3=v3)
+    elimination = elim_template
 
     obs_template = draw(st.sampled_from(OBSERVATIONS))
     observation = obs_template.format(v=v1, v2=v2)
@@ -69,14 +69,16 @@ def valid_dsl_spec(draw: st.DrawFn) -> str:
     structure = draw(st.sampled_from(["diagonal", "block"]))
     variability = f"IIV(params=[{params}], structure={structure})"
 
-    # Optionally add covariate links for multi-variability tests
+    # Optionally add a covariate link (P1.6: top-level covariates: block,
+    # arrow syntax, no longer embedded in variability:).
     add_cov = draw(st.booleans())
+    covariates_block = ""
     if add_cov:
         cov_form = draw(st.sampled_from(["power", "exponential", "linear"]))
-        variability = f"""{{
-            IIV(params=[{params}], structure={structure})
-            CovariateLink(param=CL, covariate=WT, form={cov_form})
-        }}"""
+        if cov_form == "power":
+            covariates_block = "covariates: { CL <- WT.power(theta=0.75, ref=70) }"
+        else:
+            covariates_block = f"covariates: {{ CL <- WT.{cov_form}(theta=0.5) }}"
 
     return f"""
     model {{
@@ -85,6 +87,7 @@ def valid_dsl_spec(draw: st.DrawFn) -> str:
         elimination: {elimination}
         variability: {variability}
         observation: {observation}
+        {covariates_block}
     }}
     """
 

@@ -7,6 +7,605 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — Formular review pass: multi-analyte runner routing, skipped validation levels, duplicate-key rejection
+
+Follow-up to the deep review of the v0.7 Formular/CLI/API changes.
+
+- **Multi-analyte nlmixr2 specs now preserve modeled DVID rows through the
+  runner data-adapter path.** `to_nlmixr2_format()` accepts an optional
+  `dvid_allowlist`; `Nlmixr2Runner.run()` derives that allowlist from
+  `DSLSpec.observations` for multi-analyte specs, so DVID 2+ endpoint rows
+  declared in `observations:` are no longer filtered as non-PK rows before
+  the R harness sees them. Single-endpoint specs keep the historical PK
+  allowlist behavior (`1`/`cp`/concentration) and still drop one-valued
+  DVID columns for nlmixr2 endpoint-count compatibility.
+- **`apmode formular validate` no longer reports skipped bound levels as
+  clean.** `ValidationReport` now carries `skipped_levels`, and `ok` is
+  false whenever a requested `data_bound`, `backend_bound`, or
+  `policy_bound` level lacks its required `--data`, `--backend`, or
+  `--policy` input. The CLI renderer prints each skipped level with the
+  reason, making `--level all` safe for CI instead of silently green when
+  bound checks did not run.
+- **Duplicate keyed DSL declarations are rejected before transformer
+  overwrite.** `compile_dsl()` now scans the raw parse tree for duplicate
+  `observations:` endpoint names, duplicate `initial:` parameter entries,
+  and duplicate `metadata:` fields, raising `FormularCompileError` with
+  `FRM-AST-011` before `DSLTransformer` can collapse them via Python dict
+  "last value wins" semantics. The error-code reference broadens
+  `FRM-AST-011` from duplicate singleton blocks to duplicate map-like
+  declaration keys.
+
+Pinned by `tests/unit/test_data_adapters.py`,
+`tests/unit/test_nlmixr2_runner.py`,
+`tests/unit/test_dsl_validation_levels.py`,
+`tests/unit/test_cli_formular.py`, and `tests/unit/test_dsl_grammar.py`.
+
+### Added — LKJ/`corr_iiv` dedicated rejection, sharper InvGamma diagnostics, IOV-aware routing filter, `add_iov`/`remove_iov` transform
+
+Follow-up to the Stan IOV back-transform work below, closing four adjacent gaps
+surfaced by the same capability-matrix audit.
+
+- **`corr_iiv` + `LKJPrior` now raises a dedicated, actionable error instead
+  of silently no-opping.** An `LKJPrior` declared on `corr_iiv` is
+  schema-valid (`priors.py` accepts it so agentic transforms can plan ahead
+  for correlated IIV before the emitter supports it), but `emit_stan` never
+  declared a correlation-matrix Stan parameter for it — the prior was
+  consulted nowhere in codegen and simply evaporated, a Gate 2
+  evidence-quality violation (a user-declared prior silently dropped rather
+  than honoured or rejected). `emit_stan` now looks up `corr_iiv`'s prior via
+  `_find_prior` before any codegen begins and raises `NotImplementedError`
+  naming the target and the remedy (remove the prior, or use the nlmixr2
+  backend for correlated IIV) whenever it is an `LKJPrior`. The dead
+  `_emit_user_prior` branch that used to emit `lkj_corr(eta)` against a
+  `corr_matrix` Stan variable the emitter never declares — code that could
+  never have compiled — is removed rather than left to bit-rot beside the new
+  guard. Correlated (block-structure) IIV emission itself remains
+  unimplemented; only diagonal IIV is lowered.
+- **InvGamma-on-SD-target rejection now explains the variance/SD mismatch and
+  points at the working path.** `validate_prior_family`'s error for
+  `InvGamma` on any SD-scale target kind (`iiv_sd`, `iov_sd`, `residual_sd`,
+  ...) previously read like every other family/kind mismatch ("not valid for
+  target kind X"), giving no hint that the actual defect is dimensional
+  (InvGamma parameterizes a variance, not an SD) or that `MixturePrior`
+  already accepts an `InvGammaPrior` component today. The message now names
+  both, so an agent or author hitting the rejection has an actionable next
+  step instead of a bare validity claim.
+- **Routing gains a capability-matrix-derived pre-flight filter.**
+  `routing.py::_capability_incompatible_backends` reads
+  `apmode.dsl.capabilities.registered_emitters()` dynamically (backend name →
+  emitter name via `_BACKEND_EMITTER_NAMES`) and is wired into the
+  `pooled-heterogeneous` protocol-heterogeneity branch of `route()`: that
+  branch forces every candidate to carry an IOV variability item (`force_iov`
+  in `search/candidates.py`), so any admissible backend whose emitter
+  explicitly cannot lower `VARIABILITY_IOV` must be pulled from
+  `DispatchDecision.backends` before dispatch rather than surfacing as a
+  compile-time `NotImplementedError` deep inside a run. Reading the matrix
+  dynamically instead of hardcoding "drop bayesian_stan" means the filter
+  self-corrects now that Stan lowers IOV (it removes nothing for the IOV case
+  today); the same helper is exercised directly against
+  `VARIABILITY_IIV_BLOCK_STRUCTURE` (still Stan-unsupported) to keep the
+  general mechanism under test independent of any one capability's status.
+- **New `add_iov`/`remove_iov` `AdjustVariability` actions.** The agentic
+  transform grammar's `AdjustVariability` (`param`, `action`) gains
+  `add_iov`/`remove_iov` alongside the pre-existing
+  `add`/`remove`/`upgrade_to_block`, plus an optional `occasions:
+  OccasionSpec` (defaulting to `OccasionByStudy()`, matching
+  `search/candidates.py`'s `force_iov` root-candidate default), so the LLM
+  backend can construct or tear down IOV on a candidate through the same
+  typed-transform path as every other structural change rather than an
+  out-of-band one. `add_iov` merges the param into an existing `IOV` item
+  that shares the same `occasions` spec, or creates a new item when none
+  matches; requesting `add_iov` under a *different* `occasions` spec than an
+  existing IOV item for the same param is rejected by `validate_transform`
+  rather than silently picking one, since a parameter cannot have two
+  occasion partitions at once. `remove_iov` drops the param from any `IOV`
+  item that has it and removes the item once its `params` list empties;
+  removing a param with no existing IOV is a no-op, mirroring the
+  pre-existing `remove` action's IIV semantics.
+
+Pinned by `tests/unit/test_stan_emitter.py::TestLKJCorrIIVRejection`,
+`tests/unit/test_priors.py::TestValidatePriorFamily` (InvGamma message
+assertions), `tests/unit/test_lane_router.py::TestCapabilityIncompatibleBackends`
++ `test_heterogeneous_excludes_iov_incompatible_backends`, and
+`tests/unit/test_dsl_transforms.py` (`test_add_iov_*`/`test_remove_iov_*`).
+
+### Added — Stan codegen applies IOV back-transform; capability matrix + tests updated
+
+`src/apmode/dsl/stan_emitter.py`'s Stan codegen previously *declared*
+inter-occasion-variability (IOV) parameters (`omega_iov_<param>` + a
+`matrix[N_subjects * N_occ, n_iov_params] eta_iov_raw` non-centered
+parameter) but raised `NotImplementedError` before applying them, since the
+back-transform application did not exist. This change implements it: a
+non-centered, occasion-indexed back-transform (Metrum Torsten idiom:
+`theta[occ] = TV * covariates * exp(eta_iiv + eta_iov[occ])`) in
+`_emit_transformed_parameters_block`, a new `_theta_ref` helper that
+resolves a structural parameter to its occasion-indexed or plain form
+depending on whether it carries IOV, and per-observation `theta_i` refresh
+plus forced ODE-solver routing in `_emit_ode_solve`/`emit_stan` (IOV specs
+can no longer use the closed-form analytical solve path, since it assumes
+time-invariant per-subject parameters). `CapabilityTag.VARIABILITY_IOV` is
+now correctly classified as `SUPPORTS` rather than `EXPLICITLY_UNSUPPORTED`.
+`test_dsl_capabilities.py` and `test_stan_emitter.py::TestIOVEmission`,
+which previously asserted the old pre-implementation behavior
+(`NotImplementedError` / `explicitly_unsupported`), are updated to cover the
+new code path: occasion-indexed back-transform emission, correct
+`(i - 1) * N_occ + occ_k` row indexing into `eta_iov_raw`, and non-IOV
+parameters staying plain `real` rather than occasion-indexed. This is the
+first exercise of this codegen path, so downstream refactors should
+re-verify it rather than assume it is battle-tested.
+`docs/FORMULAR_SEMANTICS.md` and `README.md`'s Known Limitations section
+updated to no longer list Stan IOV as unimplemented (Stan maturation
+covariate form remains a genuine, separate gap).
+
+### Added — Formular DSL sharpening, Phase 2 (macros, transform provenance, equations view)
+
+`docs/plans/2026-07-08-formular-sharpening-and-adoption-design.md` §4 Phase 2
+(P2.1–P2.6), landed on top of the Phase 1 grammar reboot below.
+
+- **Vetted standard-library macros via `use <dotted.name>` (P2.1).** A new
+  `use_block` grammar production (`DOTTED_NAME: NAME ("." NAME)*`) accepts
+  zero-or-more `use` statements per spec, expanded post-transform by
+  `apmode.dsl.macros.expand_macros` (invoked from `compile_dsl` after all
+  other `raw_*` folding, so a macro sees the fully-assembled spec including
+  hand-authored content). `MACRO_REGISTRY` is a closed, vetted set —
+  `pkstd.standard_iiv` (diagonal IIV on every uncovered structural
+  parameter), `pkstd.standard_priors` (weakly-informative prior, via
+  `build_prior_spec`, on every uncovered structural parameter; `Normal(0,1)`
+  rather than `LogNormal` for NODE input-layer weights, which may be
+  negative), and `pkstd.standard_error_model` (`HalfNormal(1.0)` on the
+  residual-error sigma(s) implied by the observation model; a documented
+  no-op for multi-analyte `observations:` specs, since
+  `apmode.dsl.priors.classify_target`'s `sigma_prop`/`sigma_add` namespace
+  is flat and has no per-endpoint disambiguation). All three are
+  idempotent-safe (no-op when already fully covered) but a duplicate `use`
+  of the *same* macro name in one spec is rejected
+  (`FrmCode.AST_MACRO_DUPLICATE_USE`, `FRM-AST-017`), as is an unknown macro
+  name (`FrmCode.AST_MACRO_UNKNOWN`, `FRM-AST-016`). Every expansion appends
+  `"{name}@{version}"` to the new `DSLSpec.macros_used: list[str]` field,
+  which `BundleEmitter.write_compiled_spec` uses to decide whether to also
+  write `compiled_specs/{model_id}/expanded.formular` (the post-expansion
+  spec re-serialized), a normal (non-digest-exempt) bundle artifact.
+  `macros_used` is deliberately excluded from both `structure_fingerprint`
+  and `spec_fingerprint` — `canonical.py`'s `_structure_dict`/`_spec_dict`
+  hand-build their projection dict from an explicit named-field allowlist,
+  so a new top-level `DSLSpec` field is excluded by construction unless
+  deliberately added — and this required no `CANONICAL_SCHEMA_VERSION` bump
+  (`canonical.py` module docstring documents the reasoning inline).
+- **Transform provenance fields (P2.2).** All 10 `FormularTransform` union
+  members gain `expected_diagnostic_effect: list[str] = []`; the 9 members
+  in `transforms.py` (`SwapModule`, `AddCovariateLink`, `AdjustVariability`,
+  `SetTransitN`, `ToggleLag`, `ReplaceWithNODE`, `ConvertTransitToErlang`,
+  `AddParallelRoute`, `SetSumIGComponents`) additionally gain
+  `rationale: str = ""`; `SetPrior` (`prior_transforms.py`) keeps its
+  pre-existing `justification` field as its rationale-equivalent rather
+  than gaining a redundant duplicate. Both fields are pure provenance —
+  `validate_transform`/`apply_transform` behavior is unchanged regardless
+  of whether they are populated. `CandidateLineageEntry` and
+  `SearchGraphEdge` (`bundle/models.py`) gain matching
+  `rationale: str | None`, `expected_diagnostic_effect: list[str]`, and
+  `applied_at: str | None` (ISO-8601, set when the lineage record is
+  written) fields; `AgenticRunner`'s `staged_lineage` construction sites
+  now pull `rationale`/`expected_diagnostic_effect` from the actual
+  transform object that produced each candidate (via a
+  `_transform_rationale()` helper falling back to `justification` for
+  `SetPrior`) rather than leaving them unset, so `agentic_lineage.json`
+  entries carry genuine per-transform provenance.
+- **Read-only symbolic ODE-system view (P2.3).** New
+  `src/apmode/dsl/equations.py` (`build_equations`/`render_equations`,
+  sympy-backed) mirrors `nlmixr2_emitter.py`'s dynamics line-for-line —
+  same compartment names, same rate expressions — without emitters ever
+  importing from it (one-way mirror; a bug here cannot affect backend code
+  generation). Wired into `apmode formular explain --equations`, replacing
+  the previous stub. Raises `NotImplementedError` for NODE modules,
+  mirroring `emit_nlmixr2`'s own `has_node_modules()` guard; `TMDDCore`/
+  `TMDDQSS` branches ignore `spec.elimination` entirely (matching the
+  emitter, verified even against a deliberately-incompatible elimination
+  module); `SumIG`/`ZeroOrder`/`IVBolus`/`Transit` non-ODE or opaque-function
+  mechanisms are documented as inline notes rather than silently faked as
+  closed-form differential terms.
+- **Compact one-line model signature (P2.4).** New `build_signature` in
+  `src/apmode/dsl/serializer.py` renders e.g. `"FO absorption | 1CMT |
+  Linear CL | IIV(CL,V,ka) diag | Combined error"`, wired into the new
+  `apmode formular signature <spec-file>` command. IIV summary is included
+  (omitted when no `IIV` items exist; `IOV` is out of scope for this
+  segment); multi-analyte `observations:` specs render as `"<n> endpoints
+  (<unique error-model codes>)"`. `apmode ls` does not yet surface this
+  column (documented `TODO(P2.4 follow-up)` in `cli.py` — would require
+  loading and validating each bundle's compiled spec inside what is
+  otherwise a fast summary-only directory scan).
+- **`docs/FORMULAR_SEMANTICS.md` Phase 2 documentation pass (P2.6).** New
+  "Macros", "Transforms Reference", "CLI: `explain --equations` and
+  `signature`", and "Formal Grammar Reference" sections (the last a
+  human-readable, faithful rendering of `pk_grammar.lark`, itself the
+  executable source of truth) fill in the Phase 2 scope; status header
+  updated Phase 1 → Phase 2.
+
+### Added — Formular DSL sharpening, Phase 1 (grammar reboot + CLI surface)
+
+Order-insensitive grammar, six new top-level blocks, a seven-level validator
+API, and the full `apmode formular` CLI tree
+(`docs/plans/2026-07-08-formular-sharpening-and-adoption-design.md`
+§4 Phase 1). Breaking by design — the old fixed-order, inline-calibration
+grammar is fully retired, not dual-supported; `apmode formular fmt --migrate`
+mechanically rewrites pre-0.7 specs
+(`docs/FORMULAR_MIGRATION_v0.6_to_v0.7.md`).
+
+- **Order-insensitive grammar (P1.1).** `model { ... }`'s five structural
+  blocks (`absorption`/`distribution`/`elimination`/`variability`/
+  `observation`) may now appear in any order; a post-parse cardinality
+  pass (`grammar.py::_validate_block_cardinality`) enforces exactly one
+  of each required block and zero-or-more `variability` entries, raising
+  `FormularCompileError` with `FRM-AST-010..013` rather than a raw Lark
+  parse error on a missing or duplicated block. `source_meta` positions
+  still track each block's true location in the source text regardless
+  of order; canonical reordering is a `formular fmt` concern, not a
+  parse-time one.
+- **Calibration values split from structural declarations (P1.4).**
+  Structural modules now name parameters without values
+  (`FirstOrder(ka)`, `Linear(CL)`); every calibration value moves to a
+  single top-level `initial: { ka = 1.2, CL = 4.1, ... }` block
+  (`DSLSpec.initial: dict[str, float]`, `DSLSpec.get_initial()`,
+  `DSLSpec.calibration_param_names()`). Topology fields that describe
+  *which* variant/shape a module is (`Transit.n`, `Erlang.n`, `SumIG.k`,
+  NODE `dim`/`constraint_template`) stay inline — only re-estimable
+  numbers move. The old inline-value syntax is rejected outright, not
+  silently accepted; `_validate_initial_values` cross-checks completeness
+  in both directions (every structural param has an `initial:` entry and
+  vice versa). `CANONICAL_SCHEMA_VERSION` bumped `1.0.0` → `2.0.0`;
+  `initial_fingerprint`/`spec_fingerprint` now hash `spec.initial`
+  directly instead of scanning inline module fields.
+- **Optional top-level `metadata: { title, intent, context_of_use,
+  analyte, version }` block (P1.2).** Written into
+  `compiled_specs/{id}_fingerprints.json` alongside the existing
+  structure/spec/initial/justification fingerprints.
+- **Human-authored `priors: { CL ~ LogNormal(mu=log(4.0), sigma=0.25)
+  source=... justification=... }` block (P1.5).** Every entry lowers
+  through the exact same `apmode.dsl.priors.build_prior_spec()` factory
+  the `SetPrior` transform uses — parity is proven by golden and
+  property-based tests (`tests/unit/test_dsl_priors_grammar.py`,
+  `tests/property/test_dsl_priors_grammar_property.py`) asserting the
+  grammar path, a direct `build_prior_spec()` call, and a `SetPrior` →
+  `apply_transform` call produce field-identical `PriorSpec` instances
+  for equivalent inputs. Supports all 10 `PriorFamily` variants and a
+  minimal `log(...)` numeric-expression rule so `mu=log(4.0)` parses to
+  the same float `math.log(4.0)` would produce. Activates the first
+  `FRM-PRIOR-001` code (evidence-quality/family-mismatch at the grammar
+  boundary) — `apmode.dsl.priors`'s own exception-based checks are
+  untouched, since a real textual entry point for priors now exists that
+  needs coded, span-carrying errors.
+- **Enriched `covariates: { CL <- WT.power(theta=0.75, ref=70), CL <-
+  SEX.categorical(reference="M"), CL <- PMA.maturation(tm50=45weeks,
+  hill=3) }` arrow syntax (P1.6).** `CovariateLink` relocated out of the
+  `variability:` item union into its own top-level `DSLSpec.covariates`
+  list — `variability:` now holds only IIV/IOV. Reference values
+  (`theta`/`ref`/`tm50`/`hill`) are explicit, named, first-class fields
+  per form, enforced by `_require_covariate_fields`; the old compact
+  `CovariateLink(param=..., ...)` syntax is grammar-rejected. Fingerprint
+  split: `param`/`covariate`/`form` are structural, `theta`/`ref`/
+  `tm50`/`hill` are calibration-like (spec-only, same treatment as
+  `sigma_prop`/`sigma_add`).
+- **Multi-analyte `observations: { plasma: { dvid=1, prediction=
+  C_central, error=Combined(...) }, metabolite: { dvid=2, ... } }`
+  routing (P1.7), additive to the existing single-endpoint
+  `observation:` sugar.** `DSLSpec.observation_endpoints()` normalizes
+  both forms into one accessor so downstream code needs only one code
+  path. `FRM-AST-014`/`FRM-AST-015` catch DVID collisions and references
+  to unknown prediction variables. nlmixr2 emits correct multi-endpoint
+  code; Stan and FREM explicitly raise `NotImplementedError` on a
+  multi-analyte spec rather than silently emitting partial/wrong output
+  — full multi-endpoint codegen for those two backends, end-to-end DVID
+  data-routing, and per-endpoint agentic transforms are documented Phase
+  2 gaps. `CANONICAL_SCHEMA_VERSION` bumped `2.0.0` → `2.2.0`.
+- **Seven-level `validate()` API (P1.8).** `validate(spec, *,
+  level=ValidationLevel.ALL, lane, data=None, backend=None,
+  policy=None) -> ValidationReport` composes `syntax`/`ast`/`semantic`/
+  `data_bound`/`lane_bound`/`backend_bound`/`policy_bound` — the first
+  four levels are `FrmCode`-taxon tags over the existing single
+  `validate_dsl` pass (no redundant re-traversal); `data_bound`/
+  `backend_bound`/`policy_bound` are genuinely new checks that run only
+  when their required input is supplied. `backend_bound` delegates
+  entirely to `apmode.dsl.capabilities.report()` — no duplicated
+  capability knowledge. `policy_bound` is an intentionally minimal first
+  pass (lane/policy match, NODE-vs-gate-eligibility); deeper
+  gate-threshold-vs-fitted-candidate validation needs a fitted result,
+  not just a compiled spec, and is a documented Phase 2 candidate. The
+  CLI (below) and any Python caller get identical results from this one
+  function — no parallel logic path.
+- **`apmode formular` CLI tree (P1.9): `fmt`/`lint`/`validate`/`explain`/
+  `diff`/`lower`/`compat`.** `fmt` canonicalizes block order (with a
+  stderr warning that this invalidates prior line-number references) and
+  a `--migrate` flag for pre-0.7 specs; `lint`/`validate` render
+  span-anchored `FRM-*` diagnostics from the same `validate()` call
+  `--level`/`--data`/`--backend`/`--policy` compose; `explain` prints a
+  human-readable spec summary (`--equations` is a Phase 2 stub); `diff`
+  canonicalizes before comparing so reordering never shows as a
+  difference; `lower --backend {nlmixr2,stan,frem}` runs the full
+  `ast`/`semantic`/`lane_bound`/`backend_bound` validation sweep before
+  attempting emission — **not just a capability-tag check** — so a
+  semantically invalid spec (e.g. negative `ka`, an oversized `Erlang.n`)
+  fails fast with the identical `lint`/`validate` diagnostics instead of
+  silently lowering to broken backend code; `compat` renders
+  `capabilities.report()` as a table, scoped to a spec or full-matrix.
+- **`docs/FORMULAR_MIGRATION_v0.6_to_v0.7.md` + working `fmt --migrate`
+  (P1.11).** A best-effort text-pattern rewriter
+  (`apmode.dsl.migration.migrate_v06_to_v07`) for the two breaking
+  syntax changes — inline calibration values → `initial: {}`, compact
+  `CovariateLink(...)` → arrow-syntax `covariates: {}` — reproducing the
+  exact pre-existing nlmixr2-emitter default reference values so a
+  migrated-then-compiled spec lowers to numerically identical backend
+  code. Deliberately a regex/text rewriter rather than a resurrected
+  second grammar; unrecognized constructs (categorical-form covariates
+  with no prior baseline-level name, multi-declaration source lines) emit
+  an explicit manual-review warning rather than guessing.
+- **`docs/FORMULAR_SEMANTICS.md`** filled for every new/changed block
+  (1386 → 1913 lines): structural-vs-calibration split per parameter,
+  `metadata:`/`units:`/`initial:`/`priors:`/`covariates:`/`observations:`
+  sections, and a consolidated "Phase 1 gaps carried forward" list.
+- **Optional top-level `units: { time, amount, concentration, volume }` block (P1.3).**
+  `apmode.dsl.ast_models.UnitsDeclaration` (frozen Pydantic) declares the
+  spec's GLOBAL measurement units — Formular has no per-parameter unit
+  annotation syntax. Parsed via a new `units_block`/`unit_expr` grammar
+  rule (`unit_expr` reuses `NAME` for both bare tokens like `h` and
+  compound `mass/volume` tokens like `ng/mL`, avoiding lexer-priority
+  conflicts with a dedicated terminal); `DSLSpec.units` is `None` for
+  specs with no `units:` block.
+- **`apmode.dsl.units`: a dimensional-homogeneity checker, not a
+  unit-conversion library (no Pint dependency).** Infers each calibration
+  parameter's expected dimension from its structural role (`CL` →
+  Clearance, `V`/`V1`/`V2`/`V3` → Volume, `ka`/`ktr`/`kdecay` → Rate,
+  `Vmax` → Amount/Time, `Km` → Concentration, `tlag`/`dur` → Time, `frac`
+  → Unitless, `sigma_prop` → Unitless, `sigma_add` → Concentration) and
+  checks that the declared `volume` is dimensionally reachable from
+  `amount`/`concentration` via `Volume = Amount / Concentration`,
+  recognizing standard metric mass (`g`/`mg`/`mcg`/`ug`/`ng`) and volume
+  (`L`/`mL`) prefixes. An unrecognized token is never treated as a
+  false-positive mismatch — it is reported as unresolved/unchecked, not
+  wrong.
+- **`FRM-SEM-010`** (`apmode.dsl.errors.FrmCode.SEM_UNITS_INCONSISTENT`):
+  `validate_dsl` rejects a `units:` block whose `volume`/`concentration`
+  resolve to a recognized-but-wrong category (e.g. `volume = "mg"`) or
+  whose `concentration` is not a `mass/volume` compound unit. A spec with
+  no `units:` block is unaffected.
+- **`UnitCoverageReport`** (`apmode.dsl.units.unit_coverage_report`):
+  `{status, checked, unchecked, mismatched, sigma_prop_warnings}` per
+  spec — `status="not_declared"` when no `units:` block is present.
+  Written into `compiled_specs/{id}_fingerprints.json` under the
+  `units_coverage` key by `BundleEmitter.write_compiled_spec`, alongside
+  the existing structure/spec/initial/justification fingerprints and
+  `metadata`.
+- **Documents the `sigma_prop`/`sigma_add` SD-vs-variance convention
+  explicitly.** Formular's sigma fields are standard-deviation scale (per
+  the Suite A benchmark simulator's existing note: "NONMEM's `SIGMA`
+  block uses variance; square before comparing"); a spec author porting a
+  NONMEM `$SIGMA` block must take the square root first.
+  `unit_coverage_report` emits a non-fatal `sigma_prop_warnings` entry
+  when `sigma_prop > 1.0` (an SD-scale fraction implying a residual SD
+  larger than the predicted concentration itself) as a narrowly-scoped
+  heuristic for this exact mix-up — never a hard error, since there is no
+  data-free way to distinguish "unusually large but intended" from
+  "mistaken."
+
+### Added — Formular DSL sharpening, Phase 0 (invariants)
+
+Nine foundational invariants ahead of the Phase 1 order-insensitive grammar
+and agentic-transform work (`docs/plans/2026-07-08-formular-sharpening-and-adoption-design.md`
+§4 Phase 0).
+
+- **`SourceSpan` on `ValidationError`.** `apmode.dsl.spans.SourceSpan(line_start,
+  col_start, line_end, col_end, text_excerpt)` is threaded through every
+  `validate_dsl` check via `source_meta`, so callers can map a validation
+  failure back to a line/column range in the user's source instead of a
+  bare message.
+- **`FRM-{TAXON}-NNN` structured error codes.** `apmode.dsl.errors.FrmCode`
+  defines the `SYN`/`AST`/`SEM`/`LANE`/`BE`/`DATA`/`PRIOR` taxonomy; every
+  `ValidationError` from `validate_dsl` carries a stable `code` plus a
+  `severity` and, where unambiguous, a `remediation` string. Registry and
+  per-code trigger examples live in `docs/FORMULAR_ERROR_CODES.md`;
+  `tests/unit/test_dsl_error_codes.py` fails CI if a code referenced in
+  `validator.py` is undocumented or vice versa. `FRM-BE`/`FRM-DATA`/
+  `FRM-PRIOR` are reserved taxons with no emitted members yet (Phase 1
+  backend-capability and data-bound checks, and a future `priors.py`
+  migration off its exception/`list[str]` return contract, respectively).
+- **Typed `Lane` enum.** `apmode.dsl.lane.Lane` (`StrEnum`) plus
+  `LANE_TAXONOMY_VERSION` replace ad-hoc lane string comparisons across the
+  validator and gate configs.
+- **Single canonical prior-lowering factory.** `apmode.dsl.priors.build_prior_spec`
+  is now the only path that constructs a `PriorSpec`; the `SetPrior` agentic
+  transform (`apmode.dsl.prior_transforms`) is routed through it instead of
+  duplicating construction logic, and is unioned into
+  `apmode.dsl.transforms.FormularTransform` — eliminating a
+  parser/transform drift risk where the two paths could diverge on
+  validation. Property tests (`tests/property/test_prior_spec_property.py`)
+  exercise generated `PriorSpec` instances against the factory.
+- **Deterministic structure/spec/initial/justification fingerprints.**
+  `apmode.dsl.canonical` ships `CANONICAL_SCHEMA_VERSION` plus
+  `structure_fingerprint`, `spec_fingerprint`, `initial_fingerprint`, and
+  `justification_hash`, each returning `{"schema": ..., "digest": ...}`
+  over a versioned canonicalization of the `DSLSpec`. All four are now
+  recorded on every bundle write (`apmode.bundle.emitter`) alongside the
+  existing sparkid. Migration/versioning notes in
+  `docs/FINGERPRINT_MIGRATION.md`.
+- **Emitter positional-indexing audit.** `emit_nlmixr2`, `emit_stan`, and
+  `emit_nlmixr2_frem` were audited for list-position access into `DSLSpec`
+  sub-blocks; any positional access is replaced with attribute-typed
+  access, the prerequisite for Phase 1's order-insensitive grammar.
+- **Code-derived backend capability matrix.** `apmode.dsl.capabilities`
+  declares a `CapabilityTag` enum plus `SUPPORTS`/`EXPLICITLY_UNSUPPORTED`
+  per emitter class, queryable via `apmode.dsl.capabilities.report()`.
+  `scripts/verify_capability_coverage.py` runs in CI so an emitter's
+  ad-hoc `NotImplementedError` can no longer silently drift out of sync
+  with its declared capability set.
+- **NODE experimental opt-in gate.** `DSLSpec.experimental` (`ExperimentalFlags`)
+  defaults NODE variants to disabled; `FRM-LANE-004` fires when a NODE
+  absorption/elimination module is used without `experimental.node=True`,
+  independent of and prior to the existing lane-admissibility/dim-ceiling
+  checks. The capability report tags NODE variants
+  `experimental:no_stable_backend` since no emitter has a working NODE
+  code path yet.
+- **`docs/FORMULAR_SEMANTICS.md` skeleton.** Per-module semantics doc
+  (state variables, parameters, ODE/observation contribution, backend
+  lowering notes, identifiability caveats, lane admissibility, supported
+  transforms, known limitations) stubbed for every Absorption × Distribution
+  × Elimination × Variability × Observation × Prior module; supersedes
+  `docs/FORMULAR.md` as the specification the compiler implements.
+
+### Changed — Suite A ground-truth simulator
+
+`benchmarks/suite_a/simulate_all.R` produces 8 known-truth PopPK CSVs
+(A1–A8) with observed Cmax within physical bounds (0.6–2.7× of dose/V).
+
+Usage: `Rscript benchmarks/suite_a/simulate_all.R [output_dir] [n_replicates]`.
+Default `n_replicates = 1`; passing 30 emits `_repNN`-suffixed files for
+recovery-rate confidence intervals.
+
+Simulator design:
+
+- Event tables passed to `rxSolve` are single-subject templates that
+  `rxSolve` replicates via `nSub`. Passing an N-subject event table
+  together with `nSub=N` causes N×N subject replication and physically
+  impossible concentrations. `iCov`-based scenarios (A6, A8) use an
+  expanded template with matching `id` column via `build_et_icov()`.
+- A8 clearance is `CL(t) = CL0·(CRCL/90)^0.75·exp(−δ·t/24)` — a
+  monotonic autoinduction term (not diurnal). Scenario named
+  `a8_1cmt_autoind_covariate`; `reference_params.json` records
+  `form: "monotonic_autoinduction"` with
+  `time_averaged_CL_over_48h_no_covariate = 3.872` (analytical integral
+  over 0–48 h) and `static_target_bias_pct = -13.66`.
+- Subject weight uses `pmax(rnorm(70, 15), 40)` so no subject has a
+  physically impossible mass.
+- Negative simulated DV becomes `NA` with `MDV=1`. Below-LLOQ
+  observations use M3-style imputation (`DV = LLOQ/2`, `BLQ=1`) when
+  the scenario configures an `lloq`.
+- `σ_prop` and `σ_add` in the simulator and `reference_params.json` are
+  standard deviations on the data scale. NONMEM's `SIGMA` block uses
+  variance; square before comparing.
+- Seeds are per-scenario, per-replicate:
+  `BASE_SEED + scenario_idx × 10000 + replicate_idx × 100 + salt`.
+  Scenarios never share stream state.
+- CMT convention: observations at `CMT=2` (central) for oral scenarios;
+  A2 (IV) and A5 (SC, central-tracking) keep obs at `CMT=1`.
+- Per-subject η draws are written to `<scenario>[_repNN]_eta.csv` for
+  η-recovery diagnostics.
+- `apmode.benchmarks.suite_a` exposes `SCENARIO_FILENAME_STEMS`,
+  `scenario_dataset_paths(suite_dir, scenario_id, *, include_eta=False)`,
+  and `suite_a_manifest(suite_dir)`. Downstream harnesses iterate over
+  the returned paths without knowing whether the simulator was invoked
+  in single- or multi-replicate mode; missing scenarios yield an empty
+  list, unknown scenarios raise `KeyError`.
+
+Model realism:
+
+- Absorption IIV on A3 (`ka`) and A7 (`Vmax_abs`, `Km_abs`).
+- Target-side IIV on A5 (`R0`, `KD`, `kint`).
+- Distribution IIV on A2 (`Q`) and A7 (`Q`).
+- A2 residual `σ_add = 0.05` so late-phase MM signal remains above the
+  additive noise floor.
+- A5 sampling grid `t ∈ {2, 6, 12, 18, 24, 72, 168, 336, 504, 672, 1008, 1344} h` covers `tmax ≈ 35 h` and constrains `ka`.
+- A6 and A8 `n_subjects = 100`.
+- A6 `SEX` is a covariate on clearance (`exp(0.1·SEX)`).
+
+References:
+
+- Boeckmann, Sheiner & Beal (1994). *NONMEM Users Guide.*
+- Gibiansky et al. (2008). *J Pharmacokinet Pharmacodyn* 35:573.
+  [doi:10.1007/s10928-008-9102-8](https://doi.org/10.1007/s10928-008-9102-8)
+- Comets, Brendel & Mentré (2008). *Comp Meth Prog Biomed* 90:154.
+  [doi:10.1016/j.cmpb.2007.12.002](https://doi.org/10.1016/j.cmpb.2007.12.002)
+- Duvnjak et al. (2024). *CPT:PSP*.
+  [doi:10.1002/psp4.13213](https://doi.org/10.1002/psp4.13213)
+- Richardson et al. (2025). *Commun Med*.
+  [doi:10.1038/s43856-025-01054-8](https://doi.org/10.1038/s43856-025-01054-8)
+
+### Added — Benchmark dataset registry expanded to 25 datasets with full provenance
+
+Extended `benchmarks/datasets/` from 9 in-registry entries to a **25-dataset
+catalogue with per-source manifest, ledger, citations, and reproducible
+retrieval scripts**. Every entry is either materialised on disk under
+`benchmarks/datasets/<id>/` or has a `prepare.{R,py,sh}` script that
+reproduces the fetch.
+
+New per-dataset directories with retrieval scripts:
+
+- `nlmixr2data_extended/` — 20 CSV fixtures (Bolus/Infusion/Oral × 1CPT/2CPT
+  × ±MM, wbcSim myelosuppression PKPD, nimoData, metabolite, Wang2007,
+  invgaussian absorption, rats, pump, nmtest, theo_md). Fills the DSL
+  Elimination-axis (Michaelis-Menten) and Observation-axis (turnover)
+  coverage gaps against `registry.yaml`. GPL-3, 5.4 MB.
+- `saemix_theo_covariate/` — `theo.saemix` (120 rows) with a *simulated*
+  Sex column, giving covariate discovery a known ground truth without
+  FDA-restricted data. GPL (≥ 2).
+- `npde_reference_sims/` — `theopp`, `warfarin_pk`, and
+  **`simwarfarinCov` (247,000 rows = 1000 sims × 247 obs)** as the
+  reference set for VPC/NPE calibration against Comets 2008. GPL (≥ 2).
+- `medicaldata_indometh/` — `indometh` (66 rows) + `indo_rct` (602 rows),
+  MIT-licensed cross-check for R-base Indometh.
+- `r_base_datasets/` — `Theoph` + `Indometh` from R core (GPL-2), covering
+  the missing IV-bolus 2-cpt biexponential anchor for Suite B.
+- `pmxnode_examples/` — Bräm 2025 NODE reference fixtures (4 examples ×
+  Monolix `.txt` + NONMEM `.ctl` + matched CSVs, 16 files). GPL-3.
+  Direct upstream reference for the Phase-2 NODE backend contract
+  (PRD §4.2.4 R6).
+- `pkdb_api/` — PK-DB fetcher pulling **88 open-license studies** (of 803
+  total; ~7.5% redistributable) with 70 full study payloads including
+  ontology-annotated covariates (ChEBI/ncit/hp/doid/mondo). Highest-
+  leverage single addition — one REST integration stresses the Data
+  Profiler across genuinely heterogeneous richness.
+- `ddmore_wayback/` — 7 HTML pages from the Internet Archive 2025-03-27
+  snapshot, fallback for the DDMoRe Model Repository which is currently
+  **503 sitewide** (verified via `repository.ddmore.foundation` and legacy
+  `repository.ddmore.eu`; Foundation home page still 200).
+- `metrum_expo1_nonmem/`, `metrum_expo4_torsten/`, `osp_observed_data/` —
+  `git clone`-based prepare scripts for Metrum MeRGE Expo 1 (NONMEM/FOCE
+  reference PopPK, pk.csv 4360×34×160), Expo 4 (Bayesian Torsten workflow,
+  byte-identical pk.csv), and OSP DDI (635 rows) + Pediatrics (277 rows).
+  All three upstream repos have **no LICENSE file** (verified via GitHub
+  API 2026-07-08) — cloned trees are `.gitignore`-d as reference-only.
+
+Companion artefacts:
+
+- `manifest.json` — machine-readable 25-dataset registry with per-entry
+  `verified: true|false` retrieval flags, `access_verified` HTTP status,
+  and `license_verified_via` provenance.
+- `CITATIONS.bib` — 32 BibTeX entries covering primary sources
+  (Boeckmann/Sheiner/Beal 1994 for Theoph + PHENO, Kwan 1976 for
+  Indomethacin, O'Reilly 1963/1968 for warfarin, Funaki 2018 for the
+  nlmixr2data curation, Grzegorzewski 2020 for PK-DB, Harnisch 2013 +
+  Bergmann 2017 for DDMoRe/PharmML, Bräm 2024/2025 for NODE,
+  Comets 2008/Brendel 2006 for NPE methodology, Hoffert 2024 for the
+  tacrolimus MIPD benchmark protocol).
+- `candidates.yaml` — schema-compatible extensions to `registry.yaml`,
+  ready for promotion once `prepare` scripts have been exercised.
+- `fetch_ledger.jsonl` — **80-record** audit trail: every URL HEAD-check,
+  GitHub API license lookup, R install verification, and full retrieval
+  execution logged with timestamp, tool, and confidence.
+- `JUSTIFICATIONS.md` — per-candidate justification cross-referenced to
+  APMODE PRD §§ and `CLAUDE.md` invariants, with revised promotion
+  sequence.
+- `RETRIEVAL_SUMMARY.md` — at-a-glance table of what is actually on disk
+  vs `prepare`-only vs deliberately excluded, plus reproduction commands.
+
+Verification-driven corrections landed in the same pass:
+
+- `medicaldata` license corrected from CC0-1.0 → **MIT + file LICENSE**
+  (verified via DESCRIPTION).
+- `matthiaskoenig/pkdb` code license corrected from LGPL-3 (the running
+  service's license, per paper) → **MIT** (verified via GitHub API).
+- Metrum Expo 1/4 + OSP observed-data licenses corrected from asserted
+  MIT/LGPL-3 → **UNSPECIFIED** (`.gitignore`-d as reference-only).
+- Bitbucket `metrumrg/bugsmodellibrary` removed — **404 dead**; replaced
+  by `metrum_merge_expo4_torsten` (bbr.bayes + Stan/Torsten workflow)
+  and `metrum_torsten_library` as the canonical Bayesian PK/PD references.
+- Row-count discrepancies with existing `registry.yaml` flagged for
+  reconciliation: `warfarin` 519→515, `mavoglurant` 2346→2678, `pheno_sd`
+  155→744 (the last suggests a mislabelled fixture — description matches
+  the NONMEM VII PHENO distribution, not `nlmixr2data::pheno_sd`).
+- PK-DB corpus size corrected from an estimated ~500 studies to a
+  verified **803 total** / **88 openly licensed for redistribution**.
+
+Total on disk: **89 MB** across `benchmarks/datasets/` (17 MB
+committable + 72 MB `.gitignore`-d clones). Reproduction is a single
+`Rscript`/`bash`/`python3` invocation per directory.
+
 ### Fixed — Undefined CWRES emits JSON `null`, not a fabricated `0/1` fallback
 
 Per ICH M15 §3 and Karlsson 2007 (the canonical CWRES diagnostic

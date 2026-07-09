@@ -4,8 +4,9 @@
 from __future__ import annotations
 
 from apmode.bundle.models import EvidenceManifest
+from apmode.dsl.capabilities import CapabilityTag, registered_emitters
 from apmode.governance.policy import MissingDataPolicy
-from apmode.routing import route
+from apmode.routing import _capability_incompatible_backends, route
 
 # Default policy used when a test needs the BLQ advisory string. All live
 # orchestrator calls pass a policy; the pre-v0.3 unversioned 0.20 literal
@@ -76,6 +77,34 @@ class TestLaneRouter:
         decision = route("submission", manifest)
         assert any("IOV" in c for c in decision.constraints)
 
+    def test_heterogeneous_excludes_iov_incompatible_backends(self) -> None:
+        """Backends whose emitter cannot lower VARIABILITY_IOV are dropped.
+
+        Derived from the live capability matrix rather than a hardcoded
+        "bayesian_stan is always excluded" expectation, so this stays
+        correct whether or not the Stan emitter has since gained real IOV
+        support (``CapabilityTag.VARIABILITY_IOV`` moved from
+        ``EXPLICITLY_UNSUPPORTED`` to ``SUPPORTS``).
+        """
+        manifest = _make_manifest(protocol_heterogeneity="pooled-heterogeneous")
+        decision = route("discovery", manifest)
+
+        stan = next(e for e in registered_emitters() if e.name == "stan")
+        stan_should_be_excluded = CapabilityTag.VARIABILITY_IOV in stan.explicitly_unsupported
+
+        assert ("bayesian_stan" in decision.backends) is not stan_should_be_excluded
+        if stan_should_be_excluded:
+            assert any(
+                "bayesian_stan removed" in c and "variability.iov" in c
+                for c in decision.constraints
+            )
+
+    def test_heterogeneous_keeps_capability_compatible_backends(self) -> None:
+        """nlmixr2 supports IOV, so it is never removed by the IOV filter."""
+        manifest = _make_manifest(protocol_heterogeneity="pooled-heterogeneous")
+        decision = route("discovery", manifest)
+        assert "nlmixr2" in decision.backends
+
     def test_submission_always_has_nlmixr2(self) -> None:
         decision = route("submission", _make_manifest())
         assert "nlmixr2" in decision.backends
@@ -145,6 +174,32 @@ class TestLaneRouter:
         )
         decision = route("submission", manifest)
         assert any("missingness" in c.lower() for c in decision.constraints)
+
+
+class TestCapabilityIncompatibleBackends:
+    """Direct tests of the generic capability-matrix-derived filter helper."""
+
+    def test_block_iiv_excludes_stan(self) -> None:
+        """VARIABILITY_IIV_BLOCK_STRUCTURE is a stable stan-unsupported tag
+        (untouched by the IOV emitter work), so this is a safe hardcoded
+        assertion target unlike the IOV case above.
+        """
+        incompatible = _capability_incompatible_backends(
+            ["nlmixr2", "bayesian_stan"],
+            frozenset({CapabilityTag.VARIABILITY_IIV_BLOCK_STRUCTURE}),
+        )
+        assert incompatible == ["bayesian_stan"]
+
+    def test_no_required_tags_excludes_nothing(self) -> None:
+        incompatible = _capability_incompatible_backends(["nlmixr2", "bayesian_stan"], frozenset())
+        assert incompatible == []
+
+    def test_backends_without_emitter_entry_are_never_flagged(self) -> None:
+        incompatible = _capability_incompatible_backends(
+            ["jax_node", "agentic_llm"],
+            frozenset({CapabilityTag.VARIABILITY_IIV_BLOCK_STRUCTURE}),
+        )
+        assert incompatible == []
 
 
 class TestRouteWithPolicy:

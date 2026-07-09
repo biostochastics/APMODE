@@ -3,6 +3,13 @@
 
 Constraint table enforcement: volumes > 0, rates >= 0, NODE dim <= lane ceiling,
 constraint_template max dim check, NODE not admissible in Submission lane.
+
+Formular sharpening plan §4 Phase 1 (P1.4): calibration values live in
+``DSLSpec.initial``; ``_make_spec``'s ``initial`` kwarg fully replaces the
+default ``{"ka": 1.0, "V": 70.0, "CL": 5.0}`` triple whenever a test swaps in
+a structural module needing different calibration names (e.g. TwoCmt needs
+V1/V2/Q, not V) — a stale leftover key would trip the new
+``initial_value_unused`` (FRM-AST-013) check.
 """
 
 from apmode.backends.protocol import Lane
@@ -11,10 +18,12 @@ from apmode.dsl.ast_models import (
     BLQM4,
     IIV,
     IOV,
+    TMDDQSS,
     Additive,
     Combined,
     CovariateLink,
     DSLSpec,
+    ExperimentalFlags,
     FirstOrder,
     LaggedFirstOrder,
     LinearElim,
@@ -22,6 +31,7 @@ from apmode.dsl.ast_models import (
     MixedFirstZero,
     NODEAbsorption,
     NODEElimination,
+    ObservationEndpoint,
     OccasionByStudy,
     OneCmt,
     ParallelLinearMM,
@@ -32,20 +42,31 @@ from apmode.dsl.ast_models import (
     TwoCmt,
     ZeroOrder,
 )
+from apmode.dsl.errors import FrmCode
 from apmode.dsl.validator import ValidationError, validate_dsl
+
+_DEFAULT_INITIAL = {"ka": 1.0, "V": 70.0, "CL": 5.0}
 
 
 def _make_spec(**overrides: object) -> DSLSpec:
-    """Build a valid baseline DSLSpec, overriding specific modules."""
+    """Build a valid baseline DSLSpec, overriding specific modules.
+
+    Pass ``initial=`` to fully replace the default calibration dict when
+    overriding a structural module that needs different calibration names.
+    """
+    initial_override = overrides.pop("initial", None)
     defaults: dict[str, object] = {
         "model_id": "test_id_000000000000",
-        "absorption": FirstOrder(ka=1.0),
-        "distribution": OneCmt(V=70.0),
-        "elimination": LinearElim(CL=5.0),
+        "absorption": FirstOrder(),
+        "distribution": OneCmt(),
+        "elimination": LinearElim(),
         "variability": [IIV(params=["CL", "V"], structure="diagonal")],
         "observation": Proportional(sigma_prop=0.1),
+        "initial": dict(_DEFAULT_INITIAL),
     }
     defaults.update(overrides)
+    if initial_override is not None:
+        defaults["initial"] = initial_override
     return DSLSpec(**defaults)  # type: ignore[arg-type]
 
 
@@ -59,32 +80,57 @@ class TestValidSpecsPass:
 
     def test_2cmt_submission(self) -> None:
         spec = _make_spec(
-            distribution=TwoCmt(V1=10.0, V2=20.0, Q=3.0),
-            elimination=ParallelLinearMM(CL=2.0, Vmax=50.0, Km=5.0),
+            distribution=TwoCmt(),
+            elimination=ParallelLinearMM(),
             variability=[IIV(params=["CL", "V1"], structure="diagonal")],
             observation=Combined(sigma_prop=0.1, sigma_add=0.5),
+            initial={
+                "ka": 1.0,
+                "V1": 10.0,
+                "V2": 20.0,
+                "Q": 3.0,
+                "CL": 2.0,
+                "Vmax": 50.0,
+                "Km": 5.0,
+            },
         )
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
         assert errors == []
 
     def test_3cmt_submission(self) -> None:
         spec = _make_spec(
-            absorption=LaggedFirstOrder(ka=1.5, tlag=0.3),
-            distribution=ThreeCmt(V1=10.0, V2=20.0, V3=5.0, Q2=3.0, Q3=1.0),
-            elimination=MichaelisMenten(Vmax=100.0, Km=10.0),
+            absorption=LaggedFirstOrder(),
+            distribution=ThreeCmt(),
+            elimination=MichaelisMenten(),
             variability=[IIV(params=["Vmax", "V1"], structure="diagonal")],
+            initial={
+                "ka": 1.5,
+                "tlag": 0.3,
+                "V1": 10.0,
+                "V2": 20.0,
+                "V3": 5.0,
+                "Q2": 3.0,
+                "Q3": 1.0,
+                "Vmax": 100.0,
+                "Km": 10.0,
+            },
         )
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
         assert errors == []
 
     def test_transit_absorption(self) -> None:
-        spec = _make_spec(absorption=Transit(n=4, ktr=2.0, ka=1.0))
+        spec = _make_spec(
+            absorption=Transit(n=4),
+            initial={"ktr": 2.0, "ka": 1.0, "V": 70.0, "CL": 5.0},
+        )
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
         assert errors == []
 
     def test_node_in_discovery_within_limits(self) -> None:
         spec = _make_spec(
             absorption=NODEAbsorption(dim=4, constraint_template="monotone_increasing"),
+            experimental=ExperimentalFlags(node=True),
+            initial={"V": 70.0, "CL": 5.0},
         )
         errors = validate_dsl(spec, lane=Lane.DISCOVERY)
         assert errors == []
@@ -93,6 +139,8 @@ class TestValidSpecsPass:
         spec = _make_spec(
             elimination=NODEElimination(dim=6, constraint_template="bounded_positive"),
             variability=[IIV(params=["ka", "V"], structure="diagonal")],
+            experimental=ExperimentalFlags(node=True),
+            initial={"ka": 1.0, "V": 70.0},
         )
         errors = validate_dsl(spec, lane=Lane.DISCOVERY)
         assert errors == []
@@ -100,6 +148,8 @@ class TestValidSpecsPass:
     def test_node_in_optimization_within_limits(self) -> None:
         spec = _make_spec(
             absorption=NODEAbsorption(dim=4, constraint_template="saturable"),
+            experimental=ExperimentalFlags(node=True),
+            initial={"V": 70.0, "CL": 5.0},
         )
         errors = validate_dsl(spec, lane=Lane.OPTIMIZATION)
         assert errors == []
@@ -120,17 +170,23 @@ class TestValidSpecsPass:
         assert errors == []
 
     def test_mixed_first_zero(self) -> None:
-        spec = _make_spec(absorption=MixedFirstZero(ka=1.0, dur=0.5, frac=0.6))
+        spec = _make_spec(
+            absorption=MixedFirstZero(),
+            initial={"ka": 1.0, "dur": 0.5, "frac": 0.6, "V": 70.0, "CL": 5.0},
+        )
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
         assert errors == []
 
     def test_zero_order(self) -> None:
-        spec = _make_spec(absorption=ZeroOrder(dur=0.5))
+        spec = _make_spec(
+            absorption=ZeroOrder(),
+            initial={"dur": 0.5, "V": 70.0, "CL": 5.0},
+        )
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
         assert errors == []
 
     def test_time_varying_elimination(self) -> None:
-        spec = _make_spec(elimination=TimeVaryingElim(CL=5.0, decay_fn="exponential"))
+        spec = _make_spec(elimination=TimeVaryingElim(decay_fn="exponential"))
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
         assert errors == []
 
@@ -139,14 +195,19 @@ class TestValidSpecsPass:
             variability=[
                 IIV(params=["CL", "V"], structure="block"),
                 IOV(params=["CL"], occasions=OccasionByStudy()),
-                CovariateLink(param="CL", covariate="WT", form="power"),
+            ],
+            covariates=[
+                CovariateLink(param="CL", covariate="WT", form="power", theta=0.75, ref=70.0)
             ],
         )
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
         assert errors == []
 
     def test_tlag_zero_is_valid(self) -> None:
-        spec = _make_spec(absorption=LaggedFirstOrder(ka=1.0, tlag=0.0))
+        spec = _make_spec(
+            absorption=LaggedFirstOrder(),
+            initial={"ka": 1.0, "tlag": 0.0, "V": 70.0, "CL": 5.0},
+        )
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
         assert errors == []
 
@@ -155,31 +216,31 @@ class TestPositivityConstraints:
     """Volumes must be > 0, rates must be > 0."""
 
     def test_negative_ka(self) -> None:
-        spec = _make_spec(absorption=FirstOrder(ka=-1.0))
+        spec = _make_spec(initial={"ka": -1.0, "V": 70.0, "CL": 5.0})
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
         assert len(errors) == 1
         assert "ka" in errors[0].param
         assert errors[0].constraint == "positive"
 
     def test_zero_ka(self) -> None:
-        spec = _make_spec(absorption=FirstOrder(ka=0.0))
+        spec = _make_spec(initial={"ka": 0.0, "V": 70.0, "CL": 5.0})
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
         assert len(errors) == 1
         assert "ka" in errors[0].param
 
     def test_negative_volume(self) -> None:
-        spec = _make_spec(distribution=OneCmt(V=-10.0))
+        spec = _make_spec(initial={"ka": 1.0, "V": -10.0, "CL": 5.0})
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
         assert len(errors) == 1
         assert "V" in errors[0].param
 
     def test_zero_volume(self) -> None:
-        spec = _make_spec(distribution=OneCmt(V=0.0))
+        spec = _make_spec(initial={"ka": 1.0, "V": 0.0, "CL": 5.0})
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
         assert len(errors) == 1
 
     def test_negative_cl(self) -> None:
-        spec = _make_spec(elimination=LinearElim(CL=-5.0))
+        spec = _make_spec(initial={"ka": 1.0, "V": 70.0, "CL": -5.0})
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
         assert len(errors) == 1
         assert "CL" in errors[0].param
@@ -203,44 +264,64 @@ class TestPositivityConstraints:
         assert "loq_value" in errors[0].param
 
     def test_negative_dur_zero_order(self) -> None:
-        spec = _make_spec(absorption=ZeroOrder(dur=-0.5))
+        spec = _make_spec(
+            absorption=ZeroOrder(),
+            initial={"dur": -0.5, "V": 70.0, "CL": 5.0},
+        )
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
         assert len(errors) == 1
         assert "dur" in errors[0].param
 
     def test_negative_tlag(self) -> None:
-        spec = _make_spec(absorption=LaggedFirstOrder(ka=1.0, tlag=-0.1))
+        spec = _make_spec(
+            absorption=LaggedFirstOrder(),
+            initial={"ka": 1.0, "tlag": -0.1, "V": 70.0, "CL": 5.0},
+        )
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
         assert len(errors) == 1
         assert "tlag" in errors[0].param
         assert errors[0].constraint == "non_negative"
 
     def test_negative_ktr(self) -> None:
-        spec = _make_spec(absorption=Transit(n=3, ktr=-1.0, ka=1.0))
+        spec = _make_spec(
+            absorption=Transit(n=3),
+            initial={"ktr": -1.0, "ka": 1.0, "V": 70.0, "CL": 5.0},
+        )
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
         assert len(errors) == 1
         assert "ktr" in errors[0].param
 
     def test_2cmt_negative_volumes(self) -> None:
         spec = _make_spec(
-            distribution=TwoCmt(V1=-10.0, V2=-20.0, Q=3.0),
+            distribution=TwoCmt(),
             variability=[IIV(params=["CL", "V1"], structure="diagonal")],
+            initial={"ka": 1.0, "V1": -10.0, "V2": -20.0, "Q": 3.0, "CL": 5.0},
         )
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
         assert len(errors) == 2
 
     def test_3cmt_negative_q(self) -> None:
         spec = _make_spec(
-            distribution=ThreeCmt(V1=10.0, V2=20.0, V3=5.0, Q2=-3.0, Q3=-1.0),
+            distribution=ThreeCmt(),
             variability=[IIV(params=["CL", "V1"], structure="diagonal")],
+            initial={
+                "ka": 1.0,
+                "V1": 10.0,
+                "V2": 20.0,
+                "V3": 5.0,
+                "Q2": -3.0,
+                "Q3": -1.0,
+                "CL": 5.0,
+            },
         )
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
         assert len(errors) == 2
 
     def test_mm_negative_vmax(self) -> None:
         spec = _make_spec(
-            elimination=MichaelisMenten(Vmax=-100.0, Km=10.0),
+            elimination=MichaelisMenten(),
             variability=[IIV(params=["Vmax", "V"], structure="diagonal")],
+            initial={"ka": 1.0, "V": 70.0, "Vmax": -100.0, "Km": 10.0},
         )
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
         assert len(errors) == 1
@@ -252,30 +333,45 @@ class TestPositivityConstraints:
         assert len(errors) == 2
 
     def test_frac_out_of_range_high(self) -> None:
-        spec = _make_spec(absorption=MixedFirstZero(ka=1.0, dur=0.5, frac=1.5))
+        spec = _make_spec(
+            absorption=MixedFirstZero(),
+            initial={"ka": 1.0, "dur": 0.5, "frac": 1.5, "V": 70.0, "CL": 5.0},
+        )
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
         assert len(errors) == 1
         assert "frac" in errors[0].param
         assert errors[0].constraint == "unit_interval"
 
     def test_frac_out_of_range_low(self) -> None:
-        spec = _make_spec(absorption=MixedFirstZero(ka=1.0, dur=0.5, frac=-0.1))
+        spec = _make_spec(
+            absorption=MixedFirstZero(),
+            initial={"ka": 1.0, "dur": 0.5, "frac": -0.1, "V": 70.0, "CL": 5.0},
+        )
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
         assert len(errors) == 1
         assert "frac" in errors[0].param
 
     def test_frac_zero_invalid(self) -> None:
-        spec = _make_spec(absorption=MixedFirstZero(ka=1.0, dur=0.5, frac=0.0))
+        spec = _make_spec(
+            absorption=MixedFirstZero(),
+            initial={"ka": 1.0, "dur": 0.5, "frac": 0.0, "V": 70.0, "CL": 5.0},
+        )
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
         assert any(e.param == "absorption.frac" for e in errors)
 
     def test_frac_one_invalid(self) -> None:
-        spec = _make_spec(absorption=MixedFirstZero(ka=1.0, dur=0.5, frac=1.0))
+        spec = _make_spec(
+            absorption=MixedFirstZero(),
+            initial={"ka": 1.0, "dur": 0.5, "frac": 1.0, "V": 70.0, "CL": 5.0},
+        )
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
         assert any(e.param == "absorption.frac" for e in errors)
 
     def test_transit_n_zero(self) -> None:
-        spec = _make_spec(absorption=Transit(n=0, ktr=2.0, ka=1.0))
+        spec = _make_spec(
+            absorption=Transit(n=0),
+            initial={"ktr": 2.0, "ka": 1.0, "V": 70.0, "CL": 5.0},
+        )
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
         assert len(errors) == 1
         assert "n" in errors[0].param
@@ -283,10 +379,8 @@ class TestPositivityConstraints:
     def test_multiple_errors_accumulated(self) -> None:
         """Validator should surface ALL violations, not fail-fast."""
         spec = _make_spec(
-            absorption=FirstOrder(ka=-1.0),
-            distribution=OneCmt(V=-70.0),
-            elimination=LinearElim(CL=-5.0),
             observation=Proportional(sigma_prop=-0.1),
+            initial={"ka": -1.0, "V": -70.0, "CL": -5.0},
         )
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
         assert len(errors) == 4
@@ -298,6 +392,8 @@ class TestNODEConstraints:
     def test_node_not_admissible_submission(self) -> None:
         spec = _make_spec(
             absorption=NODEAbsorption(dim=4, constraint_template="monotone_increasing"),
+            experimental=ExperimentalFlags(node=True),
+            initial={"V": 70.0, "CL": 5.0},
         )
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
         assert len(errors) == 1
@@ -307,6 +403,8 @@ class TestNODEConstraints:
         spec = _make_spec(
             elimination=NODEElimination(dim=4, constraint_template="bounded_positive"),
             variability=[IIV(params=["ka", "V"], structure="diagonal")],
+            experimental=ExperimentalFlags(node=True),
+            initial={"ka": 1.0, "V": 70.0},
         )
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
         assert len(errors) == 1
@@ -316,6 +414,8 @@ class TestNODEConstraints:
         """monotone_increasing has max dim 4 (PRD §4.2.5 table)."""
         spec = _make_spec(
             absorption=NODEAbsorption(dim=5, constraint_template="monotone_increasing"),
+            experimental=ExperimentalFlags(node=True),
+            initial={"V": 70.0, "CL": 5.0},
         )
         errors = validate_dsl(spec, lane=Lane.DISCOVERY)
         assert len(errors) == 1
@@ -325,6 +425,8 @@ class TestNODEConstraints:
         """Optimization lane ceiling is 4 (PRD §4.2.5)."""
         spec = _make_spec(
             absorption=NODEAbsorption(dim=5, constraint_template="bounded_positive"),
+            experimental=ExperimentalFlags(node=True),
+            initial={"V": 70.0, "CL": 5.0},
         )
         # bounded_positive max is 6, but optimization ceiling is 4
         errors = validate_dsl(spec, lane=Lane.OPTIMIZATION)
@@ -336,6 +438,7 @@ class TestNODEConstraints:
         spec = _make_spec(
             elimination=NODEElimination(dim=9, constraint_template="unconstrained_smooth"),
             variability=[IIV(params=["ka", "V"], structure="diagonal")],
+            initial={"ka": 1.0, "V": 70.0},
         )
         # unconstrained_smooth max is 8, so dim=9 exceeds template max too
         errors = validate_dsl(spec, lane=Lane.DISCOVERY)
@@ -345,6 +448,8 @@ class TestNODEConstraints:
         """dim == template max should be valid."""
         spec = _make_spec(
             absorption=NODEAbsorption(dim=4, constraint_template="monotone_increasing"),
+            experimental=ExperimentalFlags(node=True),
+            initial={"V": 70.0, "CL": 5.0},
         )
         errors = validate_dsl(spec, lane=Lane.DISCOVERY)
         assert errors == []
@@ -353,6 +458,8 @@ class TestNODEConstraints:
         """dim == lane ceiling should be valid."""
         spec = _make_spec(
             absorption=NODEAbsorption(dim=4, constraint_template="saturable"),
+            experimental=ExperimentalFlags(node=True),
+            initial={"V": 70.0, "CL": 5.0},
         )
         errors = validate_dsl(spec, lane=Lane.OPTIMIZATION)
         assert errors == []
@@ -363,6 +470,8 @@ class TestNODEConstraints:
             absorption=NODEAbsorption(dim=5, constraint_template="monotone_increasing"),
             elimination=NODEElimination(dim=5, constraint_template="monotone_decreasing"),
             variability=[IIV(params=["V"], structure="diagonal")],
+            experimental=ExperimentalFlags(node=True),
+            initial={"V": 70.0},
         )
         errors = validate_dsl(spec, lane=Lane.DISCOVERY)
         # Both exceed template max of 4
@@ -372,6 +481,8 @@ class TestNODEConstraints:
         spec = _make_spec(
             elimination=NODEElimination(dim=8, constraint_template="unconstrained_smooth"),
             variability=[IIV(params=["ka", "V"], structure="diagonal")],
+            experimental=ExperimentalFlags(node=True),
+            initial={"ka": 1.0, "V": 70.0},
         )
         errors = validate_dsl(spec, lane=Lane.DISCOVERY)
         assert errors == []
@@ -380,6 +491,8 @@ class TestNODEConstraints:
         spec = _make_spec(
             elimination=NODEElimination(dim=7, constraint_template="bounded_positive"),
             variability=[IIV(params=["ka", "V"], structure="diagonal")],
+            experimental=ExperimentalFlags(node=True),
+            initial={"ka": 1.0, "V": 70.0},
         )
         errors = validate_dsl(spec, lane=Lane.DISCOVERY)
         assert len(errors) == 1
@@ -388,6 +501,7 @@ class TestNODEConstraints:
     def test_node_dim_must_be_positive(self) -> None:
         spec = _make_spec(
             absorption=NODEAbsorption(dim=0, constraint_template="monotone_increasing"),
+            initial={"V": 70.0, "CL": 5.0},
         )
         errors = validate_dsl(spec, lane=Lane.DISCOVERY)
         assert any(e.constraint == "positive_int" for e in errors)
@@ -403,17 +517,17 @@ class TestTimeVaryingElimConstraints:
     """
 
     def test_exponential_decay_fn_valid(self) -> None:
-        spec = _make_spec(elimination=TimeVaryingElim(CL=5.0, decay_fn="exponential"))
+        spec = _make_spec(elimination=TimeVaryingElim(decay_fn="exponential"))
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
         assert errors == []
 
     def test_half_life_decay_fn_accepted(self) -> None:
-        spec = _make_spec(elimination=TimeVaryingElim(CL=5.0, decay_fn="half_life"))
+        spec = _make_spec(elimination=TimeVaryingElim(decay_fn="half_life"))
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
         assert errors == []
 
     def test_linear_decay_fn_accepted(self) -> None:
-        spec = _make_spec(elimination=TimeVaryingElim(CL=5.0, decay_fn="linear"))
+        spec = _make_spec(elimination=TimeVaryingElim(decay_fn="linear"))
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
         assert errors == []
 
@@ -423,7 +537,7 @@ class TestTimeVaryingElimConstraints:
         from pydantic import ValidationError as PydValError
 
         with pytest.raises(PydValError):
-            TimeVaryingElim(CL=5.0, decay_fn="weibull")  # type: ignore[arg-type]
+            TimeVaryingElim(decay_fn="weibull")  # type: ignore[arg-type]
 
 
 class TestVariabilityConstraints:
@@ -467,9 +581,9 @@ class TestCovariateLinkValidation:
 
     def test_valid_covariate_param(self) -> None:
         spec = _make_spec(
-            variability=[
-                IIV(params=["CL", "V"], structure="diagonal"),
-                CovariateLink(param="CL", covariate="WT", form="power"),
+            variability=[IIV(params=["CL", "V"], structure="diagonal")],
+            covariates=[
+                CovariateLink(param="CL", covariate="WT", form="power", theta=0.75, ref=70.0)
             ],
         )
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
@@ -477,9 +591,11 @@ class TestCovariateLinkValidation:
 
     def test_nonexistent_covariate_param(self) -> None:
         spec = _make_spec(
-            variability=[
-                IIV(params=["CL", "V"], structure="diagonal"),
-                CovariateLink(param="nonexistent", covariate="WT", form="power"),
+            variability=[IIV(params=["CL", "V"], structure="diagonal")],
+            covariates=[
+                CovariateLink(
+                    param="nonexistent", covariate="WT", form="power", theta=0.75, ref=70.0
+                )
             ],
         )
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
@@ -490,10 +606,10 @@ class TestCovariateLinkValidation:
     def test_covariate_on_derived_param_rejected(self) -> None:
         """kdecay is structural for TimeVaryingElim but CL is, so check both."""
         spec = _make_spec(
-            elimination=TimeVaryingElim(CL=5.0, decay_fn="exponential"),
-            variability=[
-                IIV(params=["CL"], structure="diagonal"),
-                CovariateLink(param="CL", covariate="WT", form="power"),
+            elimination=TimeVaryingElim(decay_fn="exponential"),
+            variability=[IIV(params=["CL"], structure="diagonal")],
+            covariates=[
+                CovariateLink(param="CL", covariate="WT", form="power", theta=0.75, ref=70.0)
             ],
         )
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
@@ -507,8 +623,17 @@ class TestTMDDEliminationCompatibility:
         from apmode.dsl.ast_models import TMDDCore
 
         spec = _make_spec(
-            distribution=TMDDCore(V=50.0, R0=10.0, kon=0.1, koff=0.01, kint=0.05),
+            distribution=TMDDCore(),
             variability=[IIV(params=["CL", "V"], structure="diagonal")],
+            initial={
+                "ka": 1.0,
+                "V": 50.0,
+                "R0": 10.0,
+                "kon": 0.1,
+                "koff": 0.01,
+                "kint": 0.05,
+                "CL": 5.0,
+            },
         )
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
         assert not any(e.constraint == "tmdd_requires_linear_elim" for e in errors)
@@ -517,9 +642,19 @@ class TestTMDDEliminationCompatibility:
         from apmode.dsl.ast_models import TMDDCore
 
         spec = _make_spec(
-            distribution=TMDDCore(V=50.0, R0=10.0, kon=0.1, koff=0.01, kint=0.05),
-            elimination=MichaelisMenten(Vmax=100.0, Km=10.0),
+            distribution=TMDDCore(),
+            elimination=MichaelisMenten(),
             variability=[IIV(params=["Vmax", "V"], structure="diagonal")],
+            initial={
+                "ka": 1.0,
+                "V": 50.0,
+                "R0": 10.0,
+                "kon": 0.1,
+                "koff": 0.01,
+                "kint": 0.05,
+                "Vmax": 100.0,
+                "Km": 10.0,
+            },
         )
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
         assert any(e.constraint == "tmdd_requires_linear_elim" for e in errors)
@@ -528,9 +663,18 @@ class TestTMDDEliminationCompatibility:
         from apmode.dsl.ast_models import TMDDQSS
 
         spec = _make_spec(
-            distribution=TMDDQSS(V=50.0, R0=10.0, KD=0.5, kint=0.05),
-            elimination=MichaelisMenten(Vmax=100.0, Km=10.0),
+            distribution=TMDDQSS(),
+            elimination=MichaelisMenten(),
             variability=[IIV(params=["Vmax", "V"], structure="diagonal")],
+            initial={
+                "ka": 1.0,
+                "V": 50.0,
+                "R0": 10.0,
+                "KD": 0.5,
+                "kint": 0.05,
+                "Vmax": 100.0,
+                "Km": 10.0,
+            },
         )
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
         assert any(e.constraint == "tmdd_requires_linear_elim" for e in errors)
@@ -539,9 +683,19 @@ class TestTMDDEliminationCompatibility:
         from apmode.dsl.ast_models import TMDDQSS
 
         spec = _make_spec(
-            distribution=TMDDQSS(V=50.0, R0=10.0, KD=0.5, kint=0.05),
-            elimination=ParallelLinearMM(CL=2.0, Vmax=50.0, Km=5.0),
+            distribution=TMDDQSS(),
+            elimination=ParallelLinearMM(),
             variability=[IIV(params=["CL", "V"], structure="diagonal")],
+            initial={
+                "ka": 1.0,
+                "V": 50.0,
+                "R0": 10.0,
+                "KD": 0.5,
+                "kint": 0.05,
+                "CL": 2.0,
+                "Vmax": 50.0,
+                "Km": 5.0,
+            },
         )
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
         assert any(e.constraint == "tmdd_requires_linear_elim" for e in errors)
@@ -576,10 +730,10 @@ class TestDuplicateCovariateLinks:
 
     def test_duplicate_covariate_link_rejected(self) -> None:
         spec = _make_spec(
-            variability=[
-                IIV(params=["CL", "V"], structure="diagonal"),
-                CovariateLink(param="CL", covariate="WT", form="power"),
-                CovariateLink(param="CL", covariate="WT", form="exponential"),
+            variability=[IIV(params=["CL", "V"], structure="diagonal")],
+            covariates=[
+                CovariateLink(param="CL", covariate="WT", form="power", theta=0.75, ref=70.0),
+                CovariateLink(param="CL", covariate="WT", form="exponential", theta=0.5),
             ],
         )
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
@@ -587,10 +741,10 @@ class TestDuplicateCovariateLinks:
 
     def test_different_param_covariate_ok(self) -> None:
         spec = _make_spec(
-            variability=[
-                IIV(params=["CL", "V"], structure="diagonal"),
-                CovariateLink(param="CL", covariate="WT", form="power"),
-                CovariateLink(param="V", covariate="WT", form="power"),
+            variability=[IIV(params=["CL", "V"], structure="diagonal")],
+            covariates=[
+                CovariateLink(param="CL", covariate="WT", form="power", theta=0.75, ref=70.0),
+                CovariateLink(param="V", covariate="WT", form="power", theta=1.0, ref=70.0),
             ],
         )
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
@@ -602,16 +756,18 @@ class TestTransitNVariability:
 
     def test_iiv_on_n_rejected(self) -> None:
         spec = _make_spec(
-            absorption=Transit(n=4, ktr=2.0, ka=1.0),
+            absorption=Transit(n=4),
             variability=[IIV(params=["CL", "n"], structure="diagonal")],
+            initial={"ktr": 2.0, "ka": 1.0, "V": 70.0, "CL": 5.0},
         )
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
         assert any(e.constraint == "no_variability_on_param" for e in errors)
 
     def test_iiv_on_ka_ktr_ok(self) -> None:
         spec = _make_spec(
-            absorption=Transit(n=4, ktr=2.0, ka=1.0),
+            absorption=Transit(n=4),
             variability=[IIV(params=["CL", "ka"], structure="diagonal")],
+            initial={"ktr": 2.0, "ka": 1.0, "V": 70.0, "CL": 5.0},
         )
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
         assert not any(e.constraint == "no_variability_on_param" for e in errors)
@@ -621,25 +777,32 @@ class TestKdecayValidation:
     """TimeVaryingElim kdecay should be validated as a first-class parameter."""
 
     def test_kdecay_positive_valid(self) -> None:
-        spec = _make_spec(elimination=TimeVaryingElim(CL=5.0, kdecay=0.1, decay_fn="exponential"))
+        spec = _make_spec(
+            elimination=TimeVaryingElim(decay_fn="exponential"),
+            initial={"ka": 1.0, "V": 70.0, "CL": 5.0, "kdecay": 0.1},
+        )
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
         assert not any("kdecay" in e.param for e in errors)
 
     def test_kdecay_negative_rejected(self) -> None:
-        spec = _make_spec(elimination=TimeVaryingElim(CL=5.0, kdecay=-0.1, decay_fn="exponential"))
+        spec = _make_spec(
+            elimination=TimeVaryingElim(decay_fn="exponential"),
+            initial={"ka": 1.0, "V": 70.0, "CL": 5.0, "kdecay": -0.1},
+        )
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
         assert any("kdecay" in e.param for e in errors)
 
     def test_kdecay_default_value(self) -> None:
-        elim = TimeVaryingElim(CL=5.0, decay_fn="exponential")
-        assert elim.kdecay == 0.1
+        """No kdecay key in initial: → validator/emitters fall back to 0.1."""
+        spec = _make_spec(elimination=TimeVaryingElim(decay_fn="exponential"))
+        assert spec.get_initial("kdecay", 0.1) == 0.1
 
 
 class TestValidationErrorStructure:
     """ValidationError should have module, param, constraint, and message."""
 
     def test_error_fields(self) -> None:
-        spec = _make_spec(absorption=FirstOrder(ka=-1.0))
+        spec = _make_spec(initial={"ka": -1.0, "V": 70.0, "CL": 5.0})
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
         err = errors[0]
         assert isinstance(err, ValidationError)
@@ -647,3 +810,130 @@ class TestValidationErrorStructure:
         assert err.param == "absorption.ka"
         assert err.constraint == "positive"
         assert "must be > 0" in err.message
+
+
+class TestObservationsMultiValidation:
+    """Multi-analyte `observations:` block validation (Formular sharpening plan §4 P1.7)."""
+
+    def test_dvid_collision_flagged(self) -> None:
+        spec = _make_spec(
+            observations={
+                "plasma": ObservationEndpoint(
+                    name="plasma",
+                    dvid=1,
+                    prediction="C_central",
+                    error=Proportional(sigma_prop=0.1),
+                ),
+                "metabolite": ObservationEndpoint(
+                    name="metabolite",
+                    dvid=1,
+                    prediction="C_central",
+                    error=Additive(sigma_add=0.2),
+                ),
+            }
+        )
+        errors = validate_dsl(spec, lane=Lane.SUBMISSION)
+        codes = {e.code for e in errors}
+        assert FrmCode.AST_OBSERVATIONS_DVID_COLLISION.value in codes
+
+    def test_no_collision_when_dvids_distinct(self) -> None:
+        spec = _make_spec(
+            observations={
+                "plasma": ObservationEndpoint(
+                    name="plasma",
+                    dvid=1,
+                    prediction="C_central",
+                    error=Proportional(sigma_prop=0.1),
+                ),
+                "metabolite": ObservationEndpoint(
+                    name="metabolite",
+                    dvid=2,
+                    prediction="C_central",
+                    error=Additive(sigma_add=0.2),
+                ),
+            }
+        )
+        errors = validate_dsl(spec, lane=Lane.SUBMISSION)
+        codes = {e.code for e in errors}
+        assert FrmCode.AST_OBSERVATIONS_DVID_COLLISION.value not in codes
+
+    def test_unknown_prediction_flagged(self) -> None:
+        spec = _make_spec(
+            observations={
+                "plasma": ObservationEndpoint(
+                    name="plasma",
+                    dvid=1,
+                    prediction="C_metabolite",
+                    error=Proportional(sigma_prop=0.1),
+                ),
+            }
+        )
+        errors = validate_dsl(spec, lane=Lane.SUBMISSION)
+        codes = {e.code for e in errors}
+        assert FrmCode.AST_OBSERVATIONS_PREDICTION_UNKNOWN.value in codes
+
+    def test_tmdd_qss_exposes_target_total_prediction(self) -> None:
+        """TMDD_QSS distribution makes ``C_target_total`` a valid prediction name."""
+        spec = _make_spec(
+            distribution=TMDDQSS(),
+            initial={"ka": 1.0, "CL": 5.0, "V": 70.0, "R0": 10.0, "KD": 1.0, "kint": 0.1},
+            observations={
+                "plasma": ObservationEndpoint(
+                    name="plasma",
+                    dvid=1,
+                    prediction="C_central",
+                    error=Combined(sigma_prop=0.12, sigma_add=0.2),
+                ),
+                "target": ObservationEndpoint(
+                    name="target",
+                    dvid=2,
+                    prediction="C_target_total",
+                    error=Proportional(sigma_prop=0.2),
+                ),
+            },
+        )
+        errors = validate_dsl(spec, lane=Lane.SUBMISSION)
+        codes = {e.code for e in errors}
+        assert FrmCode.AST_OBSERVATIONS_PREDICTION_UNKNOWN.value not in codes
+        assert FrmCode.AST_OBSERVATIONS_DVID_COLLISION.value not in codes
+
+    def test_target_total_unknown_without_tmdd_qss(self) -> None:
+        """``C_target_total`` is only valid under TMDD_QSS -- OneCmt rejects it."""
+        spec = _make_spec(
+            observations={
+                "target": ObservationEndpoint(
+                    name="target",
+                    dvid=1,
+                    prediction="C_target_total",
+                    error=Proportional(sigma_prop=0.2),
+                ),
+            }
+        )
+        errors = validate_dsl(spec, lane=Lane.SUBMISSION)
+        codes = {e.code for e in errors}
+        assert FrmCode.AST_OBSERVATIONS_PREDICTION_UNKNOWN.value in codes
+
+    def test_negative_sigma_inside_multi_block_flagged(self) -> None:
+        """Numeric checks (sigma positivity) apply identically inside observations: entries."""
+        spec = _make_spec(
+            observations={
+                "plasma": ObservationEndpoint(
+                    name="plasma",
+                    dvid=1,
+                    prediction="C_central",
+                    error=Proportional(sigma_prop=-0.1),
+                ),
+            }
+        )
+        errors = validate_dsl(spec, lane=Lane.SUBMISSION)
+        codes = {e.code for e in errors}
+        assert FrmCode.SEM_POSITIVE.value in codes
+
+    def test_no_observations_block_is_unaffected(self) -> None:
+        """A spec using only the legacy singular observation: field has no multi-block errors."""
+        spec = _make_spec()
+        assert spec.observations is None
+        errors = validate_dsl(spec, lane=Lane.SUBMISSION)
+        codes = {e.code for e in errors}
+        assert FrmCode.AST_OBSERVATIONS_DVID_COLLISION.value not in codes
+        assert FrmCode.AST_OBSERVATIONS_PREDICTION_UNKNOWN.value not in codes

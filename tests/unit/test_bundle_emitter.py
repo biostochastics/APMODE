@@ -34,9 +34,9 @@ from apmode.dsl.ast_models import (
 def _test_spec() -> DSLSpec:
     return DSLSpec(
         model_id="test_model_emitter_000",
-        absorption=FirstOrder(ka=1.0),
-        distribution=OneCmt(V=70.0),
-        elimination=LinearElim(CL=5.0),
+        absorption=FirstOrder(),
+        distribution=OneCmt(),
+        elimination=LinearElim(),
         variability=[IIV(params=["CL", "V"], structure="diagonal")],
         observation=Proportional(sigma_prop=0.1),
     )
@@ -130,6 +130,50 @@ class TestBundleEmitter:
         assert "ini({" in r_code
         assert "model({" in r_code
 
+    def test_write_compiled_spec_carries_metadata_into_fingerprints(self, tmp_path: Path) -> None:
+        """Metadata (P1.2) is written into fingerprints.json alongside digests."""
+        from apmode.dsl.ast_models import Metadata
+
+        emitter = BundleEmitter(tmp_path, run_id="test_run_spec_meta")
+        emitter.initialize()
+        spec = _test_spec().model_copy(
+            update={
+                "model_id": "test_model_emitter_meta",
+                "metadata": Metadata(title="Test model", analyte="drugX"),
+            }
+        )
+        emitter.write_compiled_spec(spec)
+
+        fingerprints_path = (
+            tmp_path
+            / "test_run_spec_meta"
+            / "compiled_specs"
+            / "test_model_emitter_meta_fingerprints.json"
+        )
+        assert fingerprints_path.exists()
+        data = json.loads(fingerprints_path.read_text())
+        assert data["metadata"] == {
+            "title": "Test model",
+            "intent": None,
+            "context_of_use": None,
+            "analyte": "drugX",
+            "version": None,
+        }
+
+    def test_write_compiled_spec_metadata_none_when_absent(self, tmp_path: Path) -> None:
+        emitter = BundleEmitter(tmp_path, run_id="test_run_spec_no_meta")
+        emitter.initialize()
+        emitter.write_compiled_spec(_test_spec())
+
+        fingerprints_path = (
+            tmp_path
+            / "test_run_spec_no_meta"
+            / "compiled_specs"
+            / "test_model_emitter_000_fingerprints.json"
+        )
+        data = json.loads(fingerprints_path.read_text())
+        assert data["metadata"] is None
+
     def test_write_policy_file(self, tmp_path: Path) -> None:
         emitter = BundleEmitter(tmp_path, run_id="test_run_policy")
         emitter.initialize()
@@ -145,17 +189,17 @@ class TestBundleEmitter:
 
         spec1 = DSLSpec(
             model_id="candidate_001_000000",
-            absorption=FirstOrder(ka=1.0),
-            distribution=OneCmt(V=70.0),
-            elimination=LinearElim(CL=5.0),
+            absorption=FirstOrder(),
+            distribution=OneCmt(),
+            elimination=LinearElim(),
             variability=[IIV(params=["CL", "V"], structure="diagonal")],
             observation=Proportional(sigma_prop=0.1),
         )
         spec2 = DSLSpec(
             model_id="candidate_002_000000",
-            absorption=FirstOrder(ka=2.0),
-            distribution=OneCmt(V=50.0),
-            elimination=LinearElim(CL=3.0),
+            absorption=FirstOrder(),
+            distribution=OneCmt(),
+            elimination=LinearElim(),
             variability=[IIV(params=["CL", "V"], structure="diagonal")],
             observation=Proportional(sigma_prop=0.15),
         )
@@ -166,8 +210,50 @@ class TestBundleEmitter:
         specs_dir = emitter.run_dir / "compiled_specs"
         json_files = list(specs_dir.glob("*.json"))
         r_files = list(specs_dir.glob("*.R"))
-        assert len(json_files) == 2
+        fingerprints_files = list(specs_dir.glob("*_fingerprints.json"))
+        # 2 candidates x (spec.json + fingerprints.json)
+        assert len(json_files) == 4
         assert len(r_files) == 2
+        assert len(fingerprints_files) == 2
+
+    def test_write_compiled_spec_no_macros_omits_expanded_formular(self, tmp_path: Path) -> None:
+        """No `expanded.formular` artifact when `macros_used` is empty (the common case)."""
+        emitter = BundleEmitter(tmp_path, run_id="test_run_no_macro")
+        emitter.initialize()
+        spec = _test_spec()
+        assert spec.macros_used == []
+        emitter.write_compiled_spec(spec)
+        expanded_path = emitter.run_dir / "compiled_specs" / spec.model_id / "expanded.formular"
+        assert not expanded_path.exists()
+
+    def test_write_compiled_spec_with_macros_writes_expanded_formular(
+        self, tmp_path: Path
+    ) -> None:
+        """`expanded.formular` is written iff `spec.macros_used` is non-empty (P2.1)."""
+        from apmode.dsl.grammar import compile_dsl
+        from apmode.dsl.serializer import serialize_spec
+
+        emitter = BundleEmitter(tmp_path, run_id="test_run_macro")
+        emitter.initialize()
+        spec = compile_dsl(
+            """
+            model {
+                absorption: FirstOrder(ka)
+                distribution: OneCmt(V)
+                elimination: Linear(CL)
+                observation: Proportional(sigma_prop=0.1)
+                initial: { ka = 1.0, V = 70.0, CL = 5.0 }
+                use pkstd.standard_iiv
+            }
+            """
+        )
+        assert spec.macros_used == ["pkstd.standard_iiv@v1"]
+        emitter.write_compiled_spec(spec)
+
+        expanded_path = emitter.run_dir / "compiled_specs" / spec.model_id / "expanded.formular"
+        assert expanded_path.exists()
+        assert expanded_path.read_text() == serialize_spec(spec)
+        assert "variability: {" in expanded_path.read_text()
 
     def test_write_compiled_spec_node_skips_r(self, tmp_path: Path) -> None:
         """NODE specs emit JSON only, no R code."""
@@ -176,8 +262,8 @@ class TestBundleEmitter:
         node_spec = DSLSpec(
             model_id="node_test_model_0000",
             absorption=NODEAbsorption(dim=4, constraint_template="monotone_increasing"),
-            distribution=OneCmt(V=70.0),
-            elimination=LinearElim(CL=5.0),
+            distribution=OneCmt(),
+            elimination=LinearElim(),
             variability=[IIV(params=["CL", "V"], structure="diagonal")],
             observation=Proportional(sigma_prop=0.1),
         )
@@ -205,8 +291,10 @@ class TestBundleEmitter:
         assert (run_dir / "seed_registry.json").exists()
         assert (run_dir / "backend_versions.json").exists()
         assert (run_dir / "policy_file.json").exists()
-        assert len(list((run_dir / "compiled_specs").glob("*.json"))) == 1
+        # spec.json + fingerprints.json for the single candidate
+        assert len(list((run_dir / "compiled_specs").glob("*.json"))) == 2
         assert len(list((run_dir / "compiled_specs").glob("*.R"))) == 1
+        assert (run_dir / "compiled_specs" / "test_model_emitter_000_fingerprints.json").exists()
 
     def test_write_seed_result(self, tmp_path: Path) -> None:
         """Seed stability results are persisted as {cid}_seed_{n}_result.json."""

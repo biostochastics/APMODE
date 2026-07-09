@@ -27,9 +27,9 @@ from apmode.search.engine import SearchEngine
 def _make_spec(model_id: str) -> DSLSpec:
     return DSLSpec(
         model_id=model_id,
-        absorption=FirstOrder(ka=1.0),
-        distribution=OneCmt(V=30.0),
-        elimination=LinearElim(CL=2.0),
+        absorption=FirstOrder(),
+        distribution=OneCmt(),
+        elimination=LinearElim(),
         variability=[IIV(params=["CL", "V"], structure="diagonal")],
         observation=Proportional(sigma_prop=0.1),
     )

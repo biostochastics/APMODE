@@ -1,0 +1,430 @@
+% SPDX-License-Identifier: GPL-2.0-or-later
+% APMODE Benchmark Dataset Citations
+% All entries verified 2026-07-08 via GitHub API, R package DESCRIPTION,
+% publisher DOI resolvers, PubMed PMID lookups, or direct local install.
+% Cross-referenced from: manifest.json (id:), candidates.yaml (id:),
+% JUSTIFICATIONS.md (§ refs), and registry.yaml (existing entries).
+
+% ============================================================
+% CANONICAL R DATA PACKAGES
+% ============================================================
+
+@Manual{nlmixr2data_pkg,
+  key       = {nlmixr2data-pkg},
+  title     = {nlmixr2data: Nonlinear Mixed Effects Models in Population PK/PD, Data},
+  author    = {Matthew Fidler and Rik Schoemaker and Kyle Baron and Thierry Wendling and Ted Grasela and Yaning Wang and Wenping Wang and others},
+  year      = {2024},
+  note      = {R package version 2.0.9},
+  url       = {https://cran.r-project.org/package=nlmixr2data},
+  license   = {GPL-3.0-only},
+  verified  = {2026-07-08 — local install R 4.5.3, 25 datasets present}
+}
+
+@InProceedings{schoemaker2016_acop_grid,
+  key       = {schoemaker-acop-2016},
+  author    = {Schoemaker, Rik and Xiong, Yuan and Wilkins, Justin and Laveille, Christophe and Wang, Wenping},
+  title     = {{nlmixr}: an open-source package for pharmacometric modelling in {R}},
+  booktitle = {Proceedings of the American Conference on Pharmacometrics (ACoP)},
+  year      = {2016},
+  note      = {Source of simulated datasets Bolus\_\{1CPT,2CPT,\_MM\}, Infusion\_*, Oral\_* in nlmixr2data package},
+  role_in_apmode = {Suite-A ground-truth recovery grid}
+}
+
+@Manual{saemix_pkg,
+  key       = {saemix-pkg},
+  title     = {saemix: Stochastic Approximation Expectation Maximization ({SAEM}) Algorithm},
+  author    = {Emmanuelle Comets and Audrey Lavenu and Marc Lavielle and Belhal Karimi},
+  year      = {2024},
+  note      = {R package},
+  url       = {https://cran.r-project.org/package=saemix},
+  license   = {GPL (>= 2)},
+  verified  = {2026-07-08 — installed locally, theo.saemix present (120 rows × 6 cols)}
+}
+
+@Manual{npde_pkg,
+  key       = {npde-pkg},
+  title     = {npde: Normalised Prediction Distribution Errors for Nonlinear Mixed-Effect Models},
+  author    = {Emmanuelle Comets and Karl Brendel and Thi Huyen Tram Nguyen and France Mentr\'e},
+  year      = {2024},
+  note      = {R package version 3.5},
+  url       = {https://cran.r-project.org/package=npde},
+  license   = {GPL (>= 2)},
+  verified  = {2026-07-08 — installed locally; theopp (132×5), warfarin (247×8), simwarfarinCov (247000×3)}
+}
+
+@Manual{medicaldata_pkg,
+  key       = {medicaldata-pkg},
+  title     = {medicaldata: Data Package for Medical Datasets},
+  author    = {Peter Higgins},
+  year      = {2024},
+  note      = {R package},
+  url       = {https://cran.r-project.org/package=medicaldata},
+  license   = {MIT + file LICENSE},
+  license_correction = {Earlier candidates.yaml v1 incorrectly claimed CC0-1.0; verified MIT via package DESCRIPTION 2026-07-08},
+  verified  = {2026-07-08 — installed locally, 15 datasets; indometh + indo\_rct both present}
+}
+
+% ============================================================
+% ORIGINAL PK DATASET PRIMARY SOURCES
+% ============================================================
+
+@TechReport{boeckmann1994_nonmem,
+  key       = {boeckmann-nonmem-1994},
+  author    = {Boeckmann, A. J. and Sheiner, L. B. and Beal, S. L.},
+  title     = {{NONMEM} Users Guide, Part V},
+  institution = {NONMEM Project Group, University of California, San Francisco},
+  year      = {1994},
+  note      = {Original source of Theophylline (12 subjects, 132 obs) and PHENO (59 neonates, 155 obs) datasets distributed with NONMEM},
+  role_in_apmode = {Reference intensive+sparse benchmark pair (Kim 2012 SE-EBE)}
+}
+
+@Article{kwan1976_indomethacin,
+  key       = {kwan-1976-indomethacin},
+  author    = {Kwan, K. C. and Breault, G. O. and Umbenhauer, E. R. and McMahon, F. G. and Duggan, D. E.},
+  title     = {Kinetics of {Indomethacin} absorption, elimination, and enterohepatic circulation in man},
+  journal   = {Journal of Pharmacokinetics and Biopharmaceutics},
+  year      = {1976},
+  volume    = {4},
+  pages     = {255--280},
+  doi       = {10.1007/BF01063615},
+  note      = {Source of R base datasets::Indometh (6 subjects, 66 obs)}
+}
+
+@Article{oreilly1968_warfarin,
+  key       = {oreilly-1968-warfarin},
+  author    = {O'Reilly, R. A. and Aggeler, P. M.},
+  title     = {Studies on coumarin anticoagulant drugs: Initiation of warfarin therapy without a loading dose},
+  journal   = {Circulation},
+  year      = {1968},
+  volume    = {38},
+  pages     = {169--177},
+  doi       = {10.1161/01.CIR.38.1.169}
+}
+
+@Article{oreilly1963_warfarin,
+  key       = {oreilly-1963-warfarin},
+  author    = {O'Reilly, R. A. and Aggeler, P. M. and Leong, L. S.},
+  title     = {Studies of the coumarin anticoagulant drugs: The pharmacodynamics of warfarin in man},
+  journal   = {Journal of Clinical Investigation},
+  year      = {1963},
+  volume    = {42},
+  number    = {10},
+  pages     = {1542--1551},
+  doi       = {10.1172/JCI104839}
+}
+
+@InProceedings{funaki2018_warfarin,
+  key       = {funaki-2018-warfarin},
+  author    = {Funaki, T. and Holford, N. and Fujita, S.},
+  title     = {Population {PKPD} analysis using nlmixr and {NONMEM}},
+  booktitle = {Proceedings PAGJA (Population Approach Group Japan)},
+  year      = {2018},
+  note      = {Source of nlmixr2data::warfarin curation (32 subjects, 515 rows verified local install)}
+}
+
+@Article{grasela1985_phenobarbital,
+  key       = {grasela-donn-1985-phenobarbital},
+  author    = {Grasela, T. H. and Donn, S. M.},
+  title     = {Neonatal population pharmacokinetics of phenobarbital derived from routine clinical data},
+  journal   = {Developmental Pharmacology and Therapeutics},
+  year      = {1985},
+  volume    = {8},
+  number    = {6},
+  pages     = {374--383},
+  pmid      = {4075995},
+  note      = {Source of NONMEM VII PHENO distribution (155 obs / 59 subjects). NOTE: nlmixr2data::pheno\_sd has 744 rows and appears to be a different fixture — reconcile with registry.yaml before use}
+}
+
+@Article{davidian1995_indomethacin,
+  key       = {davidian-giltinan-1995},
+  author    = {Davidian, Marie and Giltinan, David M.},
+  title     = {Nonlinear Models for Repeated Measurement Data},
+  publisher = {Chapman \& Hall},
+  year      = {1995},
+  note      = {Analyses Indometh + Theoph as canonical PopPK textbook examples (\S5.2.4)}
+}
+
+% ============================================================
+% METHODOLOGY REFERENCES
+% ============================================================
+
+@Article{comets2008_npde,
+  key       = {comets-2008-npde},
+  author    = {Comets, Emmanuelle and Brendel, Karl and Mentr\'e, France},
+  title     = {Computing normalised prediction distribution errors to evaluate nonlinear mixed-effect models: The npde add-on package for {R}},
+  journal   = {Computer Methods and Programs in Biomedicine},
+  year      = {2008},
+  volume    = {90},
+  number    = {2},
+  pages     = {154--166},
+  doi       = {10.1016/j.cmpb.2007.12.002},
+  note      = {Reference for VPC/NPE calibration; simwarfarinCov (247000 rows = 1000 sims × 247 obs) ships in npde CRAN package for calibration}
+}
+
+@Article{brendel2006_metrics,
+  key       = {brendel-2006-metrics},
+  author    = {Brendel, Karl and Comets, Emmanuelle and L\'evy, Christophe and Laveille, Christophe and Mentr\'e, France},
+  title     = {Metrics for external model evaluation with an application to the population pharmacokinetics of gliclazide},
+  journal   = {Pharmaceutical Research},
+  year      = {2006},
+  volume    = {23},
+  pages     = {2036--2049},
+  doi       = {10.1007/s11095-006-9067-5},
+  note      = {Cited in APMODE CLAUDE.md commit convention as governance basis alongside Comets 2008 and Huang 2025}
+}
+
+% ============================================================
+% PK-DB — 803 studies, 88 openly licensed
+% ============================================================
+
+@Article{grzegorzewski2020_pkdb,
+  key       = {grzegorzewski-2020-pkdb},
+  author    = {Grzegorzewski, Jan and Brandhorst, Janosch and Green, Kathleen and Eleftheriadou, Dimitra and Duport, Yannick and Barthorscht, Florian and K\"ohnlein, Adrian and Mosig, Axel and K\"onig, Matthias},
+  title     = {{PK-DB}: pharmacokinetics database for individualized and stratified computational modeling},
+  journal   = {Nucleic Acids Research},
+  year      = {2020},
+  volume    = {49},
+  number    = {D1},
+  pages     = {D1358--D1364},
+  doi       = {10.1093/nar/gkaa990},
+  pmid      = {33151293},
+  url       = {https://pk-db.com/},
+  api_root  = {https://pk-db.com/api/v1/},
+  license_code = {MIT (github.com/matthiaskoenig/pkdb, verified via GitHub API 2026-07-08)},
+  license_data = {Per-study — sample of 200 shows 15 licence:open (7.5\%)},
+  verified_counts = {803 total, 88 open (verified 2026-07-08 full enum), 70/88 with timecourse data, 87/88 with PMID, 18/88 with DOI},
+  role_in_apmode = {Discovery/Optimization lane; Evidence Manifest stress test on real heterogeneous data}
+}
+
+% ============================================================
+% DDMORE — currently 503 but archived
+% ============================================================
+
+@Article{harnisch2013_ddmore,
+  key       = {harnisch-2013-ddmore},
+  author    = {Harnisch, Lutz and Matthews, Ivan and Chard, Jonathan and Karlsson, Mats O.},
+  title     = {Drug and disease model resources: A consortium to create standards and tools to enhance model-based drug development},
+  journal   = {CPT: Pharmacometrics \& Systems Pharmacology},
+  year      = {2013},
+  volume    = {2},
+  pages     = {e34},
+  doi       = {10.1038/psp.2013.10},
+  url       = {http://repository.ddmore.foundation/models},
+  status    = {URL 503 as of 2026-07-08; Wayback snapshot 2025-03-27 available at web.archive.org/web/20250327075132/http://repository.ddmore.foundation/models},
+  note      = {123+ models catalogued; APMODE reserves 7 canonical IDs for cross-paradigm anchors (see candidates.yaml)}
+}
+
+@Article{bergmann2017_pharmml,
+  key       = {bergmann-2017-pharmml},
+  author    = {Bergmann, Florian T. and Hennig, Stefanie and Bulik, Sascha and Mentr\'e, France and Bertrand, Julie and Chan, Phylinda L. S. and Comets, Emmanuelle and Karlsson, Mats O. and Lavielle, Marc and Swat, Maciej J. and Wendling, Thierry and Yates, James W. T. and Steiert, Bernhard and Blaudez, Emilie and Aoki, Yasunori and Wilkins, Justin J. and Berkhout, Jaap and Yvon, Fran\c cois and Baltcheva, Irina and Ludden, Thomas M. and van Hasselt, Coen and Nyberg, Joakim and Lestini, Giulia and Manolis, Efthymios and Musuamba Tshinanu, Fl\'ora and Wang, Nan-Xu and Trocóniz, I\~naki F. and Ismail, S\'ergio and Sardu, Maria Luisa and van Wijk, Roeland C. and Perez Ruixo, Juan Jos\'e and Ambery, Claire and Wolstencroft, Katherine and Krause, Andreas and Moodie, Stuart L. and Hooker, Andrew C.},
+  title     = {{PharmML} in action: an interoperable language for modeling and simulation},
+  journal   = {CPT: Pharmacometrics \& Systems Pharmacology},
+  year      = {2017},
+  volume    = {6},
+  number    = {10},
+  pages     = {649--659},
+  doi       = {10.1002/psp4.12241}
+}
+
+% ============================================================
+% METRUM MERGE EXPOS — reference-only (no LICENSE file)
+% ============================================================
+
+@Misc{metrum_expo1_2024,
+  key       = {metrum-merge-expo1},
+  author    = {{Metrum Research Group}},
+  title     = {{MeRGE} {Expo 1}: {NONMEM/FOCE} population {PK} workflow},
+  year      = {2024},
+  howpublished = {\url{https://merge.metrumrg.com/expo/expo1-nonmem-foce/}, \url{https://github.com/metrumresearchgroup/expo1-nonmem-foce}},
+  license   = {UNSPECIFIED — no LICENSE file at repo HEAD; README has no license or copyright mention (verified 2026-07-08). Reference-only.},
+  verified_contents = {data/derived/pk.csv = 4360 rows × 34 cols × 160 subjects (byte-identical to expo4 pk.csv, MD5 84a596d0fd81c2d187a64bc62d96b433). Ships 8 iterative NONMEM control files (100-106, 200 parallel).}
+}
+
+@Misc{metrum_expo4_2024,
+  key       = {metrum-merge-expo4},
+  author    = {{Metrum Research Group}},
+  title     = {{MeRGE} {Expo 4}: Bayesian Population {PK} analysis using {Stan/Torsten}},
+  year      = {2024},
+  howpublished = {\url{https://merge.metrumrg.com/expo/expo4-torsten-poppk/}, \url{https://github.com/metrumresearchgroup/expo4-torsten-poppk}},
+  license   = {UNSPECIFIED — no LICENSE file at repo HEAD (verified 2026-07-08). Reference-only.},
+  verified_contents = {data/derived/pk.csv = 4360 rows × 34 cols × 160 subjects (MD5 84a596d0fd81c2d187a64bc62d96b433). Uses bbr.bayes + cmdstanr + Torsten. Model progression: ppkexpo1 (centered) → ppkexpo2 (non-centered reparam) → ppkexpo3 (allometric CL scaling) → ppkexpo4 (eGFR/age/albumin covariates on CL).},
+  replaces  = {bugs\_model\_library — dead Bitbucket 404}
+}
+
+@Misc{torsten_lib,
+  key       = {metrum-torsten},
+  author    = {{Metrum Research Group}},
+  title     = {Torsten — Stan pharmacometrics function library},
+  year      = {2021--present},
+  howpublished = {\url{https://github.com/metrumresearchgroup/Torsten}},
+  note      = {Runtime dependency for APMODE's bayesian\_stan backend. Provides pkmodel, linODE, and general compartment ODE functions matching NONMEM/PREDPP conventions.}
+}
+
+% ============================================================
+% OSP OBSERVED DATA — reference-only (no LICENSE file)
+% ============================================================
+
+@Misc{osp_observed_data,
+  key       = {osp-observed-data},
+  author    = {{Open Systems Pharmacology consortium}},
+  title     = {Database for observed data (OSP Suite)},
+  year      = {2019--present},
+  howpublished = {\url{https://github.com/Open-Systems-Pharmacology/Database-for-observed-data}},
+  license   = {UNSPECIFIED — no LICENSE file at repo HEAD (verified 2026-07-08). Reference-only.},
+  verified_contents = {ObsDataPK\_OSP.xlsx (master workbook), DDI.csv (635 rows, victim/perpetrator drug pairs with AUCR/CmaxR + PMID refs), Pediatrics.csv (277 rows, AUC/Cmax/CL parameter data with PMID refs), obsDataPK\_OSP\_DISL.docx (data item specification list). Each row cites its original PubMed source.},
+  note      = {README explicitly states "PK data have carefully been transferred and digitized from the referenced original sources" — the curation effort is unlicensed, but underlying data is public via the cited PMIDs.}
+}
+
+% ============================================================
+% NODE / HYBRID-ML BENCHMARKS
+% ============================================================
+
+@Article{braem2025_lowdim_node,
+  key       = {braem-2025-lowdim-node},
+  author    = {Br\"am, Dominic Stefan and Steiert, Bernhard and Pfister, Marc and Steffens, Britta and Koch, Gilbert},
+  title     = {Low-dimensional neural ordinary differential equations accounting for inter-individual variability implemented in {Monolix} and {NONMEM}},
+  journal   = {CPT: Pharmacometrics \& Systems Pharmacology},
+  year      = {2025},
+  volume    = {14},
+  pages     = {5--16},
+  doi       = {10.1002/psp4.13265},
+  pmid      = {39552211},
+  url       = {https://ascpt.onlinelibrary.wiley.com/doi/abs/10.1002/psp4.13265},
+  note      = {The paper APMODE's NODE backend (PRD \S4.2.4 R6) is derived from. Ships supplementary code for PK, PKPD, TMDD, survival Monolix demo datasets.}
+}
+
+@Article{braem2024_jpp_lowdim,
+  key       = {braem-2024-jpp-lowdim},
+  author    = {Br\"am, Dominic Stefan and Nahum, Uri and Schropp, Johannes and Pfister, Marc and Koch, Gilbert},
+  title     = {Low-dimensional neural {ODEs} and their application in pharmacokinetics},
+  journal   = {Journal of Pharmacokinetics and Pharmacodynamics},
+  year      = {2024},
+  volume    = {51},
+  pages     = {123--140},
+  doi       = {10.1007/s10928-023-09886-4}
+}
+
+@Manual{pmxnode_pkg,
+  key       = {pmxnode-pkg},
+  title     = {pmxNODE: Application of {NODEs} in {'Monolix'}, {'NONMEM'}, and {'nlmixr2'}},
+  author    = {Dominic Br\"am and Bernhard Steiert and Gilbert Koch and Matthew Fidler},
+  year      = {2025},
+  note      = {R package v0.1.0. Author ORCIDs: Br\"am 0000-0001-9094-8361, Fidler 0000-0001-8538-6691. Contact: domi.braem@hotmail.com},
+  url       = {https://github.com/braemd/pmxnode},
+  license   = {GPL (>= 3)},
+  verified  = {2026-07-08 — cloned locally. Ships 4 examples with matched Monolix .txt + NONMEM .ctl + data\_exampleN\_\{mlx,nm\}.csv files. Row counts: ex1/2/3 mlx=120 nm=140; ex4 mlx=240 nm=260 (PKPD with DVID column).}
+}
+
+@Article{ranieri2025_dalbavancin_node,
+  key       = {ranieri-2025-dalbavancin},
+  author    = {Ranieri, Roberto and others},
+  title     = {Leveraging Neural {ODEs} for population pharmacokinetics of dalbavancin in sparse clinical data},
+  journal   = {Entropy},
+  year      = {2025},
+  volume    = {27},
+  number    = {6},
+  pages     = {602},
+  doi       = {10.3390/e27060602},
+  url       = {https://www.mdpi.com/1099-4300/27/6/602},
+  license   = {CC-BY 4.0 (paper); check supplement for data},
+  status    = {URL bot-blocked (403) on direct HEAD but resolvable via DOI}
+}
+
+@Article{lu2021_neural_ode_pk,
+  key       = {lu-2021-neural-ode-pk},
+  author    = {Lu, James and Deng, Kaiwen and Zhang, Xinyuan and Liu, Gengbo and Guan, Yuanfang},
+  title     = {Neural-{ODE} for pharmacokinetics modeling and its advantage to alternative machine learning models in predicting new dosing regimens},
+  journal   = {iScience},
+  year      = {2021},
+  volume    = {24},
+  number    = {7},
+  pages     = {102804},
+  doi       = {10.1016/j.isci.2021.102804},
+  pmid      = {34308294},
+  code      = {https://github.com/jameslu01/Neural_PK (MIT-licensed, verified GitHub API 2026-07-08)},
+  data      = {RESTRICTED — Genentech patient-privacy; 9934 obs from 671 patients across TDM3569g/TDM4258g/TDM4374g/TDM4450g/TDM4370g},
+  status    = {EXCLUDED from candidates due to data restriction; methodology-only reference}
+}
+
+@Article{lu2014_tdm1_poppk,
+  key       = {lu-2014-tdm1-poppk},
+  author    = {Lu, Dan and Girish, Sandhya and Gao, Yuying and Wang, Bei and Yi, Joo-Hee and Guardino, Ellie and Jin, Jin and Anigbogu, Chinyere N. and Jin, Y. Jin},
+  title     = {Population pharmacokinetics of trastuzumab emtansine ({T-DM1}), a {HER2}-targeted antibody-drug conjugate, in patients with {HER2}-positive metastatic breast cancer: Clinical implications of the effect of covariates},
+  journal   = {Cancer Chemotherapy and Pharmacology},
+  year      = {2014},
+  volume    = {74},
+  number    = {2},
+  pages     = {399--410},
+  doi       = {10.1007/s00280-014-2500-2},
+  pmid      = {24939213},
+  license   = {CC-BY (open access — parameters/covariates/study design public even though raw data isn't)},
+  note      = {Use for prior elicitation / simulation-based T-DM1 fixtures when Lu 2021 data is unavailable}
+}
+
+@Misc{monolix_node_case_study,
+  key       = {monolix-node-tutorial},
+  author    = {{Monolix Suite Documentation}},
+  title     = {Case study: Using neural {ODEs} in {Monolix}},
+  year      = {2024},
+  howpublished = {\url{https://monolixsuite.slp-software.com/tutorials/2024R1/case-study-neural-odes}},
+  license   = {Monolix demo (research redistribution per Monolix docs)},
+  artefact  = {NODE\_example.zip},
+  note      = {Companion to Br\"am 2025; smallest self-contained NODE fixture (single-drug PKPD with indirect response)}
+}
+
+% ============================================================
+% OPTIMIZATION-LANE / MIPD COMPARATORS
+% ============================================================
+
+@Article{hoffert2024_tacrolimus,
+  key       = {hoffert-2024-tacrolimus},
+  author    = {Hoffert, Yannick and Dia, Nadia and Vanuytsel, Tim and Vos, Robin and Kuypers, Dirk and Van Cleemput, Johan and others},
+  title     = {Model-informed precision dosing of tacrolimus: A systematic review of population pharmacokinetic models and a benchmark study of software tools},
+  journal   = {Clinical Pharmacokinetics},
+  year      = {2024},
+  volume    = {63},
+  pages     = {1407--1421},
+  doi       = {10.1007/s40262-024-01414-y},
+  status    = {paywalled — methodology reproducible from published equations},
+  tools_compared = {Rx Studio, PrecisePK, InsightRx Nova, MwPharm, DoseMeRX, BestDose, ISBA},
+  role_in_apmode = {Optimization-lane multi-tool comparator protocol}
+}
+
+@Article{eleveld2018_propofol,
+  key       = {eleveld-2018-propofol},
+  author    = {Eleveld, Douglas J. and Colin, Pieter and Absalom, Anthony R. and Struys, Michel M. R. F.},
+  title     = {Pharmacokinetic-pharmacodynamic model for propofol for broad application in anaesthesia and sedation},
+  journal   = {British Journal of Anaesthesia},
+  year      = {2018},
+  volume    = {120},
+  number    = {5},
+  pages     = {942--959},
+  doi       = {10.1016/j.bja.2018.01.018},
+  note      = {Reference for OpenTCI propofol dataset already in registry.yaml (1033 subj, 3-cpt PK/PD)},
+  url       = {https://opentci.org/}
+}
+
+@Article{germovsek2017_gentamicin,
+  key       = {germovsek-2017-gentamicin},
+  author    = {Germovsek, Eva and Barker, Charlotte I. S. and Sharland, Mike and Standing, Joseph F.},
+  title     = {Pharmacokinetic-pharmacodynamic modeling in pediatric drug development, and the importance of standardized scaling of clearance},
+  journal   = {Antimicrobial Agents and Chemotherapy},
+  year      = {2017},
+  volume    = {61},
+  number    = {8},
+  pages     = {e00481-17},
+  doi       = {10.1128/AAC.00481-17},
+  note      = {Source of DDMoRe DDMODEL00000238 — gentamicin neonatal IOV, already in registry.yaml (unfetchable during DDMoRe 503)}
+}
+
+% ============================================================
+% ARCHIVED REFERENCE (fallback when live URLs down)
+% ============================================================
+
+@Misc{wayback_ddmore_2025,
+  key       = {wayback-ddmore-2025},
+  title     = {DDMoRe Model Repository — Wayback Machine snapshot},
+  year      = {2025},
+  howpublished = {\url{http://web.archive.org/web/20250327075132/http://repository.ddmore.foundation/models}},
+  note      = {Fallback for the 503 outage; snapshot from 2025-03-27 verified accessible 2026-07-08}
+}

@@ -80,9 +80,7 @@ class TestResolveDatasetCSV:
             fake_csv.write_text("ID,TIME,DV\n1,0,0\n")
             return fake_csv
 
-        monkeypatch.setattr(
-            "apmode.benchmarks.suite_b_runner.fetch_dataset", _fake_fetch_dataset
-        )
+        monkeypatch.setattr("apmode.benchmarks.suite_b_runner.fetch_dataset", _fake_fetch_dataset)
 
         out = resolve_dataset_csv(
             CASE_B10_BOLUS_1CPTMM_MISMATCH.dataset_id,

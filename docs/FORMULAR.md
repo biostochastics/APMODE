@@ -1,7 +1,7 @@
 # Formular — The APMODE PK Specification Language
 
-**Version:** 0.6.1 (tracks APMODE 0.6.1-rc1)
-**Status:** Current
+**Version:** 0.7 (tracks APMODE 0.6.1-rc1; sharpening plan Phase 1–2)
+**Status:** Phase 2 documentation available; see [`docs/FORMULAR_SEMANTICS.md`](FORMULAR_SEMANTICS.md) for the Phase 2 spec (macros, transform provenance, equations view, signatures). This document is retained for historical reference and provides an overview; the formal reference is now in FORMULAR_SEMANTICS.md.
 **Canonical source:** `src/apmode/dsl/` — grammar (`pk_grammar.lark`), AST (`ast_models.py`),
 validator (`validator.py`), transforms (`transforms.py` + `prior_transforms.py`), priors
 (`priors.py`), emitters (`nlmixr2_emitter.py`, `stan_emitter.py`, `frem_emitter.py`).
@@ -45,66 +45,95 @@ whiteboard, not what a programmer would write in R or Python.
 
 ## Shape of a Formular specification
 
-Formular has a **five-block grammar** (absorption, distribution, elimination,
-variability, observation) and a **sixth semantic axis** — `priors` — that is carried on
-the compiled `DSLSpec` but has no textual grammar block: priors are declared via the
-`SetPrior` transform (typed Python API) or defaulted by the Bayesian pipeline, never
-written in Formular text.
+Formular's top-level blocks may appear **in any order** (Formular sharpening plan §4
+Phase 1, P1.1): `absorption`, `distribution`, `elimination`, and `observation` are each
+required exactly once; `variability` may appear zero or more times (its items are
+concatenated in source order); `metadata` and `initial` are each optional and may
+appear at most once. A **seventh semantic axis** — `priors` — is carried on the
+compiled `DSLSpec`; it may be declared directly in Formular text via the optional
+`priors: { ... }` block (Formular sharpening plan §4 Phase 1, P1.5 — see
+[Priors](#priors--the-seventh-semantic-axis) below), via the `SetPrior` transform
+(typed Python API, for agentic authors), or defaulted by the Bayesian pipeline when
+none is supplied. Two further optional top-level blocks, `units:` and `observations:`,
+are covered in detail in `docs/FORMULAR_SEMANTICS.md` (`units:` declares the spec's
+global time/amount/concentration/volume units; `observations:` is the multi-analyte
+alternative to the singular `observation:` block).
+
+Structural declarations name calibration parameters **without values** — e.g.
+`absorption: FirstOrder(ka)`, `elimination: Linear(CL)`. Every calibration value used
+anywhere in the spec lives in exactly one place: the top-level `initial: { ... }`
+block (Formular sharpening plan §4 Phase 1, P1.4). Structural/topology fields that
+describe *which* model variant is in use (`Transit.n`, `Erlang.n`, `SumIG.k`, NODE
+`dim`/`constraint_template`, `TimeVarying.decay_fn`) stay inline, unchanged. Observation
+sigma values (`sigma_prop`, `sigma_add`, `loq_value`) and covariate `form` also stay
+inline — they are not calibration values in the P1.4 sense.
 
 ```
-                   ┌──────────────────────────────────────┐
-  TEXT:            │   model { absorption: …             │
-  5 grammar        │           distribution: …           │
-  blocks           │           elimination: …            │
-                   │           variability: { … }        │
-                   │           observation: … }          │
-                   └──────────────────┬───────────────────┘
-                                      │ Lark (Earley) + transformer
+                   ┌────────────────────────────────────────────┐
+  TEXT:            │   model { metadata: { ... }                │  (optional, ≤1)
+  order-           │           absorption: FirstOrder(ka)        │  (exactly 1)
+  insensitive      │           distribution: OneCmt(V)           │  (exactly 1)
+  blocks           │           elimination: Linear(CL)           │  (exactly 1)
+                   │           variability: { ... }              │  (0 or more)
+                   │           observation: Proportional(...)    │  (exactly 1)
+                   │           initial: { ka=1.0, V=70.0, ... }  │  (optional, ≤1)
+                   │         }                                   │
+                   └──────────────────┬───────────────────────────┘
+                                      │ Lark (Earley) + cardinality pass + transformer
                                       ▼
                    ┌──────────────────────────────────────┐
   AST:             │ DSLSpec(                             │
-  6 fields         │   model_id, absorption, distribution,│
+  9 fields         │   model_id, absorption, distribution,│
                    │   elimination, variability,          │
-                   │   observation,                       │
+                   │   observation, initial: dict[str,    │
+                   │     float], metadata: Metadata|None, │
                    │   priors: list[PriorSpec]  ← set via │
                    │                               SetPrior│
                    │ )                                    │
                    └──────────────────────────────────────┘
 ```
 
-Every AST field is required except `priors` (empty list by default — only populated
-when `SetPrior` fires or a Bayesian run emits a default prior manifest).
+Every AST field is required except `priors` (empty list by default), `initial` (empty
+dict by default), and `metadata` (`None` by default).
 
 ---
 
 ## Grammar reference
 
-A Formular model has five required blocks:
+A Formular model has four required blocks (in any order), plus zero-or-more
+`variability:` blocks and several optional at-most-one blocks (`metadata:`,
+`initial:`, `covariates:`):
 
 ```
 model {
-    absorption:  <absorption-module>
-    distribution: <distribution-module>
-    elimination:  <elimination-module>
-    variability:  { <variability-items...> }   # or a single item without braces
-    observation:  <observation-module>
+    absorption:  <absorption-module>       # exactly one, structural declaration only
+    distribution: <distribution-module>    # exactly one, structural declaration only
+    elimination:  <elimination-module>     # exactly one, structural declaration only
+    variability:  { <variability-items...> }   # zero or more; or a single item without braces (IIV/IOV only)
+    covariates:   { CL <- WT.power(theta=0.75, ref=70), ... }  # optional, at most one; zero or more entries
+    observation:  <observation-module>     # exactly one (sigma_prop/sigma_add/loq_value stay inline)
+    metadata:     { title = "...", ... }   # optional, at most one
+    initial:      { ka = 1.0, V = 70.0, ... }  # optional, at most one — all calibration values
 }
 ```
 
 ### Absorption
 
-| Module | Syntax | Parameters |
+Structural declarations name calibration parameters without values; `n` (Transit,
+Erlang) and `k` (SumIG) are structural and stay inline with their values.
+
+| Module | Syntax | Calibration values (in `initial:`) |
 |--------|--------|------------|
-| IV bolus | `IVBolus()` | dose enters central directly; no absorption phase |
-| First-order | `FirstOrder(ka=1.0)` | `ka`: absorption rate (h⁻¹) |
-| Zero-order | `ZeroOrder(dur=2.0)` | `dur`: infusion duration (h) |
-| Lagged first-order | `LaggedFirstOrder(ka=1.0, tlag=0.5)` | `ka`, `tlag` (h) |
-| Transit | `Transit(n=4, ktr=2.0, ka=1.0)` | `n`: compartments (≥1), `ktr` (h⁻¹), `ka` |
-| Mixed | `MixedFirstZero(ka=1.0, dur=2.0, frac=0.6)` | `frac ∈ (0, 1)` |
-| Erlang (v0.7) | `Erlang(n=3, ktr=1.5)` | integer `n` (1..7); chain with no terminal `ka` |
-| Parallel first-order (v0.7) | `ParallelFirstOrder(ka1=1.5, ka2=0.5, frac=0.6)` | two depots; `frac ∈ (0, 1)` |
-| SumIG (v0.7) | `SumIG(k=2, MT_1=2.0, MT_2=6.0, RD2_1=0.5, RD2_2=1.0, weight_1=0.6)` | closed-form IG sum; `MT_1 < MT_2`; Discovery+Optimization only |
-| NODE | `NODE_Absorption(dim=4, constraint_template=monotone_increasing)` | `dim`: hidden-layer width |
+| IV bolus | `IVBolus()` | none |
+| First-order | `FirstOrder(ka)` | `ka`: absorption rate (h⁻¹) |
+| Zero-order | `ZeroOrder(dur)` | `dur`: infusion duration (h) |
+| Lagged first-order | `LaggedFirstOrder(ka, tlag)` | `ka`, `tlag` (h) |
+| Transit | `Transit(n=4, ktr, ka)` | `n` structural (≥1); `ktr` (h⁻¹), `ka` calibrated |
+| Mixed | `MixedFirstZero(ka, dur, frac)` | `frac ∈ (0, 1)` |
+| Erlang (v0.7) | `Erlang(n=3, ktr)` | integer `n` (1..7) structural; chain with no terminal `ka`; `ktr` calibrated |
+| Parallel first-order (v0.7) | `ParallelFirstOrder(ka1, ka2, frac)` | two depots; `frac ∈ (0, 1)` |
+| SumIG (v0.7) | `SumIG(k=2, MT_1, MT_2, RD2_1, RD2_2, weight_1)` | `k` structural; closed-form IG sum; `MT_1 < MT_2`; Discovery+Optimization only |
+| NODE | `NODE_Absorption(dim=4, constraint_template=monotone_increasing)` | `dim`/`constraint_template` structural; no calibration values (NODE weights have no `initial:` entry) |
 
 `Erlang` lowers as an explicit n-compartment ODE chain in the nlmixr2 emitter (not
 via `rxode2::transit()` — see ADR-0003 D2). `ParallelFirstOrder` lowers as two
@@ -122,23 +151,23 @@ Weiss 2022). `SumIG` is blocked from the Submission lane.
 
 ### Distribution
 
-| Module | Syntax | Parameters |
+| Module | Syntax | Calibration values (in `initial:`) |
 |--------|--------|------------|
-| One-compartment | `OneCmt(V=30.0)` | `V` (L) |
-| Two-compartment | `TwoCmt(V1=30.0, V2=40.0, Q=5.0)` | `V1`, `V2`, `Q` (L/h) |
-| Three-compartment | `ThreeCmt(V1=..., V2=..., V3=..., Q2=..., Q3=...)` | |
-| TMDD full | `TMDD_Core(V=30.0, R0=10.0, kon=0.1, koff=0.01, kint=0.05)` | Mager & Jusko 2001 |
-| TMDD QSS | `TMDD_QSS(V=30.0, R0=10.0, KD=0.1, kint=0.05)` | Gibiansky 2008; KD ≈ KSS when `kint ≪ koff` |
+| One-compartment | `OneCmt(V)` | `V` (L) |
+| Two-compartment | `TwoCmt(V1, V2, Q)` | `V1`, `V2`, `Q` (L/h) |
+| Three-compartment | `ThreeCmt(V1, V2, V3, Q2, Q3)` | |
+| TMDD full | `TMDD_Core(V, R0, kon, koff, kint)` | Mager & Jusko 2001 |
+| TMDD QSS | `TMDD_QSS(V, R0, KD, kint)` | Gibiansky 2008; KD ≈ KSS when `kint ≪ koff` |
 
 ### Elimination
 
-| Module | Syntax | Parameters |
+| Module | Syntax | Calibration values (in `initial:`) |
 |--------|--------|------------|
-| Linear | `Linear(CL=2.0)` | `CL` (L/h) |
-| Michaelis–Menten | `MichaelisMenten(Vmax=50.0, Km=5.0)` | Saturable |
-| Parallel linear + MM | `ParallelLinearMM(CL=2.0, Vmax=50.0, Km=5.0)` | Mixed |
-| Time-varying | `TimeVarying(CL=2.0, kdecay=0.1, decay_fn=<fn>)` | `decay_fn ∈ {exponential, half_life, linear}`; `kdecay` optional (grammar accepts the 2-arg form and defaults) |
-| NODE | `NODE_Elimination(dim=4, constraint_template=bounded_positive)` | |
+| Linear | `Linear(CL)` | `CL` (L/h) |
+| Michaelis–Menten | `MichaelisMenten(Vmax, Km)` | Saturable |
+| Parallel linear + MM | `ParallelLinearMM(CL, Vmax, Km)` | Mixed |
+| Time-varying | `TimeVarying(CL, decay_fn=<fn>)` | `decay_fn ∈ {exponential, half_life, linear}` structural; `CL` calibrated; `kdecay` is an optional `initial:` entry defaulting to 0.1 when omitted |
+| NODE | `NODE_Elimination(dim=4, constraint_template=bounded_positive)` | none |
 
 **TimeVarying semantics (validator-enforced):**
 
@@ -150,13 +179,14 @@ linear:       CL(t) = max(CL · (1 - kdecay · t), 0)
 
 ### Variability
 
-Multiple items are grouped in braces; a single item can omit them:
+Multiple items are grouped in braces; a single item can omit them. `IIV`/`IOV` are the
+only `variability:` item kinds — covariate effects are a separate top-level block (see
+below).
 
 ```
 variability: {
     IIV(params=[CL, V1, ka], structure=block)
     IOV(params=[CL], occasions=ByStudy)
-    CovariateLink(param=CL, covariate=WT, form=power)
 }
 ```
 
@@ -164,7 +194,37 @@ variability: {
 |------|---------|
 | `IIV` | `structure`: `diagonal` or `block` (block requires ≥2 params) |
 | `IOV` | `occasions`: `ByStudy`, `ByVisit(col)`, `ByDoseEpoch(col)`, `Custom(col)` |
-| `CovariateLink` | `form`: `power`, `exponential`, `linear`, `categorical`, `maturation` |
+
+### Covariates (optional, at most one top-level block)
+
+Covariate effects on structural parameters are declared in a dedicated top-level
+`covariates: { ... }` block, using arrow syntax (`param <- covariate.form(...)`), one
+entry per `(param, covariate)` pair. Zero or more entries; the block itself is optional
+and may appear at most once (Formular sharpening plan §4 Phase 1, P1.6).
+
+```
+covariates: {
+    CL <- WT.power(theta=0.75, ref=70),
+    CL <- SEX.categorical(reference="M"),
+    CL <- PMA.maturation(tm50=45, hill=3)
+}
+```
+
+| Form | Syntax | Fields |
+|------|--------|--------|
+| `power` | `covariate.power(theta=<coef>, ref=<covariate value the formula centers on>)` | `theta`: coefficient's initial estimate; `ref`: fixed reference covariate value (e.g. 70 kg reference weight, Anderson & Holford 2008) |
+| `exponential` | `covariate.exponential(theta=<coef>)` | `theta` only — no reference-centering |
+| `linear` | `covariate.linear(theta=<coef>)` | `theta` only — no reference-centering |
+| `categorical` | `covariate.categorical(reference=<level name>)` | `reference`: the baseline level's name (a string) |
+| `maturation` | `covariate.maturation(tm50=<val>, hill=<val>)` | `tm50`, `hill`: initial estimates for the TM50 and Hill-exponent parameters |
+
+`theta`/`ref`/`tm50`/`hill` are calibration-like values: they participate in
+`spec_fingerprint` but are excluded from `structure_fingerprint` (same treatment as
+`sigma_prop`/`sigma_add`, see `apmode.dsl.canonical`). `reference` (the categorical
+baseline *level name*) is structural — it identifies which level the model defines as
+baseline, not a re-estimable numeric value — and so is part of both fingerprints.
+`param`/`covariate`/`form` are always structural. No duplicate `(param, covariate)`
+pair is permitted (case-insensitive on both sides).
 
 ### Observation
 
@@ -180,36 +240,94 @@ variability: {
 
 **BLQ composition.** `BLQ_M3` and `BLQ_M4` accept an `error_model ∈ {proportional, additive, combined}` argument that selects which residual form is composed with the likelihood-based BLQ correction (Beal 2001). The bare form defaults to proportional.
 
+### Metadata (optional)
+
+Free-text provenance carried on `DSLSpec.metadata` (a `Metadata` Pydantic model); it
+never affects compilation, validation, or emission. Written into the bundle's
+`compiled_specs/<model_id>_fingerprints.json` alongside the content-hash fingerprints
+(Formular sharpening plan §4 Phase 1, P1.2).
+
+```
+metadata: {
+    title = "1-cmt oral, allometric WT on CL",
+    intent = "Recover structural CL/V from Phase 1 PK data",
+    context_of_use = "exploratory",
+    analyte = "drugX",
+    version = "v1"
+}
+```
+
+All five fields (`title`, `intent`, `context_of_use`, `analyte`, `version`) are
+optional strings; a `metadata:` block with any subset (including none) is valid.
+
+### Initial estimates (optional but required-if-referenced)
+
+Flat `parameter_name = value` dict — the single source of truth for every
+calibration value used by the structural modules (Formular sharpening plan §4
+Phase 1, P1.4):
+
+```
+initial: { ka = 1.5, V = 70.0, CL = 5.0 }
+```
+
+The validator cross-checks this block against the calibration parameters actually
+referenced by `absorption`/`distribution`/`elimination`: a parameter used but absent
+from `initial:` is `FRM-AST-012` (missing); a value present in `initial:` but
+unreferenced by any structural module is `FRM-AST-013` (unused). Values are comma
+separated; order does not matter.
+
 ---
 
-## Complete example (5-block grammar)
+## Complete example (order-insensitive blocks)
 
 ```
 model {
-    absorption: Transit(n=4, ktr=2.0, ka=1.0)
-    distribution: TwoCmt(V1=30.0, V2=40.0, Q=5.0)
-    elimination: ParallelLinearMM(CL=2.0, Vmax=50.0, Km=5.0)
+    metadata: { title = "2cmt transit MM covariate example" }
     variability: {
         IIV(params=[CL, V1, ka], structure=block)
-        CovariateLink(param=CL, covariate=WT, form=power)
     }
+    covariates: {
+        CL <- WT.power(theta=0.75, ref=70)
+    }
+    absorption: Transit(n=4, ktr, ka)
+    elimination: ParallelLinearMM(CL, Vmax, Km)
+    distribution: TwoCmt(V1, V2, Q)
     observation: Combined(sigma_prop=0.1, sigma_add=0.5)
+    initial: { ktr = 2.0, ka = 1.0, V1 = 30.0, V2 = 40.0, Q = 5.0, CL = 2.0, Vmax = 50.0, Km = 5.0 }
 }
 ```
 
 Two-compartment, transit absorption, parallel linear + Michaelis–Menten elimination,
 block IIV on three parameters, allometric weight scaling on clearance, combined
-residual error.
+residual error. Blocks are shown out of their conventional order to illustrate that
+order does not matter — the compiled AST is identical regardless of source order.
 
 ---
 
-## Priors — the sixth (semantic) axis
+## Priors — the seventh (semantic) axis
 
-Priors are **not** written in Formular text. They live on `DSLSpec.priors` as a typed
-list of `PriorSpec` objects, populated in one of two ways:
+Priors live on `DSLSpec.priors` as a typed list of `PriorSpec` objects, populated in
+one of three ways:
 
-1. **Programmatic declaration** via the `SetPrior` transform (below).
-2. **Default injection** by the Bayesian pipeline (`apmode.bayes.harness`) when no
+1. **Direct declaration in Formular text** via the optional `priors: { ... }` top-level
+   block (Formular sharpening plan §4 Phase 1, P1.5):
+
+   ```
+   priors: {
+       CL ~ LogNormal(mu=log(4.0), sigma=0.25) source=historical_data
+           doi="10.1002/psp4.12345" justification="..."
+   }
+   ```
+
+   Each `prior_entry` lowers through `apmode.dsl.priors.build_prior_spec` — the same
+   canonical factory the `SetPrior` transform routes through — so a human-authored
+   prior produces an identical `PriorSpec` to the equivalent Python-API call. See
+   `docs/FORMULAR_SEMANTICS.md`'s
+   [`priors:` block](FORMULAR_SEMANTICS.md#priors-block-human-authored-prior-syntax)
+   section for the full grammar, error codes (`FRM-PRIOR-001`), and fingerprint scope.
+2. **Programmatic declaration** via the `SetPrior` transform (below) — the path used by
+   the agentic LLM backend, which cannot write raw Formular text.
+3. **Default injection** by the Bayesian pipeline (`apmode.bayes.harness`) when no
    explicit prior is supplied — weakly-informative `Normal(log_init, 2)` on structural
    parameters, `HalfCauchy(1)` on ω, `HalfCauchy(σ_init)` on residual σ, `LKJ(2)` on
    correlation matrices.
@@ -286,22 +404,28 @@ emit raw code.
 
 | Transform | Purpose | Payload |
 |---|---|---|
-| `swap_module` | Replace an absorption/distribution/elimination/observation module | `position`, `new_module` |
-| `add_covariate_link` | Add a covariate effect | `param`, `covariate`, `form ∈ {power, exponential, linear, categorical, maturation}` |
+| `swap_module` | Replace an absorption/distribution/elimination/observation module | `position`, `new_module` (structural only), `initial_overrides: dict[str, float]` |
+| `add_covariate_link` | Add a covariate effect | `param`, `covariate`, `form ∈ {power, exponential, linear, categorical, maturation}`, plus the form's required fields (`power`: `theta`+`ref`; `exponential`/`linear`: `theta`; `categorical`: `reference`; `maturation`: `tm50`+`hill`) |
 | `adjust_variability` | Add/remove an IIV term or upgrade diagonal → block | `param`, `action ∈ {add, remove, upgrade_to_block}` |
 | `set_transit_n` | Change transit compartment count | `n` |
 | `toggle_lag` | Enable/disable absorption `tlag` | `enabled`, optional `tlag` |
 | `replace_with_node` | Swap an axis to a NODE module (Discovery/Optimization only) | `position`, `dim`, `constraint_template` |
-| `convert_transit_to_erlang` (v0.7) | Convert `Transit(n, ktr, ka)` → `Erlang(n, ktr)` | `n` (1..7) |
-| `add_parallel_route` (v0.7) | Convert `FirstOrder(ka)` → `ParallelFirstOrder(ka1=ka, ka2, frac)` | `ka2`, `frac` |
-| `set_sumig_components` (v0.7) | Update SumIG params in-place | `MT_1`, `MT_2`, `RD2_1`, `RD2_2`, `weight_1` |
+| `convert_transit_to_erlang` (v0.7) | Convert `Transit(n)` → `Erlang(n)`; `ktr` carries forward under the same `initial:` key | `n` (1..7) |
+| `add_parallel_route` (v0.7) | Convert `FirstOrder(ka)` → `ParallelFirstOrder()`; sets `initial: {ka1=<old ka>, ka2, frac}` | `ka2`, `frac` |
+| `set_sumig_components` (v0.7) | Update SumIG calibration values in `initial:` (k unchanged) | `MT_1`, `MT_2`, `RD2_1`, `RD2_2`, `weight_1` |
 | `set_prior` | Declare or replace a prior (idempotent replace-or-append) | `target`, `family`, `source`, `justification`, `historical_refs` |
 
 **Semantics.** `apmode.dsl.transforms.apply_transform(spec, t)` returns a new
 `DSLSpec` with a fresh `model_id` (sparkid). Transforms are pure — the input spec is
 not mutated. `validate_transform(spec, t)` returns a list of string errors without
 applying; the agentic loop runs validate before apply and feeds failures back to the
-LLM for correction.
+LLM for correction. Every transform that changes structural modules re-derives the
+required `initial:` keys from `DSLSpec.calibration_param_names()`: unchanged names
+carry forward automatically from the prior spec's `initial:`, new names must be
+supplied via the transform's payload (`SwapModule.initial_overrides` for
+`swap_module`; dedicated fields for the v0.7 absorption transforms) or
+`apply_transform` raises `ValueError` — a spec can never leave `apply_transform` with
+a calibration parameter unresolved.
 
 **Safety boundary.** Preconditions (e.g., `set_transit_n` rejects on a spec whose
 absorption is not `Transit`; `set_prior` rejects nonsense (target, family) pairs via
@@ -354,7 +478,7 @@ separately so the lane can be varied without recompiling.
 
 | File | Role |
 |------|------|
-| `src/apmode/dsl/pk_grammar.lark` | Lark EBNF for the 5-block grammar |
+| `src/apmode/dsl/pk_grammar.lark` | Lark EBNF for the order-insensitive block grammar |
 | `src/apmode/dsl/grammar.py` | `compile_dsl` entry point + Earley parser wiring |
 | `src/apmode/dsl/transformer.py` | Parse tree → typed AST |
 | `src/apmode/dsl/ast_models.py` | `DSLSpec` + all module Pydantic nodes |
@@ -415,9 +539,17 @@ Pandera `lazy=True` philosophy) and returned as a `list[ValidationError]`.
 | No variability on Transit `n` | Transit `n` cannot have IIV/IOV/CovariateLink |
 | IIV/IOV/CovariateLink params exist | Must reference a structural parameter |
 | `TimeVarying.decay_fn` | Must be one of `{exponential, half_life, linear}` (Pydantic Literal) |
+| `initial:` value missing (FRM-AST-012) | A calibration parameter used by a structural module has no value in `initial:` |
+| `initial:` value unused (FRM-AST-013) | `initial:` declares a value no structural module references |
 | Prior target/family match | `(target_kind, family)` must appear in the admissibility matrix |
 | Prior target resolves | Target must be a known parameter name or pattern |
 | Informative-prior justification | `source ∈ {historical_data, expert_elicitation, meta_analysis}` requires non-empty `justification`; `historical_data` additionally requires `historical_refs` |
+
+Two block-cardinality checks (missing/duplicate `FRM-AST-010`/`FRM-AST-011`) run
+earlier, on the raw parse tree inside `apmode.dsl.grammar.compile_dsl` — before a
+`DSLSpec` exists — and raise `FormularCompileError` rather than appearing in
+`validate_dsl`'s returned list. See `docs/FORMULAR_ERROR_CODES.md` for the full
+registry.
 
 Covariate-column existence is **not** checked at validation time — it is a
 data-binding check that occurs when the emitter composes the spec with a concrete
@@ -426,10 +558,10 @@ dataset (the column may be absent in the current dataset but present in a later 
 ### Example rejections
 
 ```
-MixedFirstZero(ka=1.0, dur=2.0, frac=1.5)
+MixedFirstZero(ka, dur, frac) with initial: { ka=1.0, dur=2.0, frac=1.5 }
   → ValidationError: MixedFirstZero.frac must be in (0, 1), got 1.5
 
-Transit(n=0, ktr=2.0, ka=1.0)
+Transit(n=0, ktr, ka) with initial: { ktr=2.0, ka=1.0 }
   → ValidationError: Transit.n must be >= 1, got 0
 
 IIV(params=[CL], structure=block)
@@ -437,6 +569,18 @@ IIV(params=[CL], structure=block)
 
 NODE_Absorption(dim=6, constraint_template=monotone_increasing)  in Discovery
   → ValidationError: NODE dim 6 exceeds template max 4 for monotone_increasing
+
+absorption: FirstOrder(ka)  with no "ka" entry in initial:
+  → ValidationError [FRM-AST-012]: Parameter 'ka' is used by a structural module
+                     but has no value in the initial: block
+
+initial: { ka=1.0, V=70.0, CL=5.0, extra=1.0 }  where no module uses "extra"
+  → ValidationError [FRM-AST-013]: initial: declares a value for 'extra' but no
+                     structural module references it
+
+model { absorption: ... distribution: ... observation: ... }  (no elimination:)
+  → FormularCompileError [FRM-AST-010]: model { } is missing a required
+                     'elimination:' block
 
 SetPrior(target="omega_CL", family=Normal(mu=0, sigma=1))
   → ValidationError: family 'Normal' not valid for target kind 'iiv_sd'
@@ -455,11 +599,12 @@ The same spec:
 
 ```
 model {
-    absorption: FirstOrder(ka=1.0)
-    distribution: OneCmt(V=30.0)
-    elimination: Linear(CL=2.0)
+    absorption: FirstOrder(ka)
+    distribution: OneCmt(V)
+    elimination: Linear(CL)
     variability: IIV(params=[CL, V], structure=diagonal)
     observation: Proportional(sigma_prop=0.1)
+    initial: { ka = 1.0, V = 30.0, CL = 2.0 }
 }
 ```
 

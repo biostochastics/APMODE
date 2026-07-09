@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from apmode.dsl.priors import PriorSpec  # noqa: TC001 — Pydantic resolves type at runtime
 
@@ -48,93 +48,96 @@ class IVBolus(BaseModel):
 
 
 class FirstOrder(BaseModel):
-    """First-order absorption: ka."""
+    """First-order absorption. Calibration value ``ka`` lives in ``DSLSpec.initial``."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
     type: Literal["FirstOrder"] = "FirstOrder"
-    ka: float
 
 
 class ZeroOrder(BaseModel):
-    """Zero-order (constant-rate) absorption: dur."""
+    """Zero-order (constant-rate) absorption.
 
-    model_config = ConfigDict(frozen=True)
+    Calibration value ``dur`` lives in ``DSLSpec.initial``.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
     type: Literal["ZeroOrder"] = "ZeroOrder"
-    dur: float
 
 
 class LaggedFirstOrder(BaseModel):
-    """First-order absorption with lag time: ka, tlag."""
+    """First-order absorption with lag time.
 
-    model_config = ConfigDict(frozen=True)
+    Calibration values ``ka``, ``tlag`` live in ``DSLSpec.initial``.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
     type: Literal["LaggedFirstOrder"] = "LaggedFirstOrder"
-    ka: float
-    tlag: float
 
 
 class Transit(BaseModel):
-    """Transit compartment absorption: n transit compartments, ktr, ka.
+    """Transit compartment absorption: ``n`` transit compartments (structural).
 
     The transit chain (Savic et al. 2007) feeds into a depot compartment
-    with first-order transfer rate ka to the central compartment.
+    with first-order transfer rate ``ka`` to the central compartment.
     rxode2's transit(n, mtt) handles the chain; ka controls depot→central.
+    Calibration values ``ktr``, ``ka`` live in ``DSLSpec.initial``; ``n`` is
+    the structural chain length and stays inline.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
     type: Literal["Transit"] = "Transit"
     n: int
-    ktr: float
-    ka: float
 
 
 class MixedFirstZero(BaseModel):
-    """Mixed first-order + zero-order absorption: ka, dur, frac."""
+    """Mixed first-order + zero-order absorption.
 
-    model_config = ConfigDict(frozen=True)
+    Calibration values ``ka``, ``dur``, ``frac`` live in ``DSLSpec.initial``.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
     type: Literal["MixedFirstZero"] = "MixedFirstZero"
-    ka: float
-    dur: float
-    frac: float
 
 
 class Erlang(BaseModel):
-    """Erlang absorption: integer n transit compartments, shared ktr, no terminal ka.
+    """Erlang absorption: integer ``n`` transit compartments, shared ktr, no terminal ka.
 
-    Lowers to an explicit n-compartment ODE chain — *not* rxode2's
+    ``n`` is structural (chain length); lowers to an explicit
+    n-compartment ODE chain — *not* rxode2's
     ``transit(n, mtt)`` (which uses gamma interpolation and a terminal ka).
     See ADR-0003 D2. Validator caps ``n ≤ 7`` because longer chains add
-    little resolution and inflate state count quadratically.
+    little resolution and inflate state count quadratically. Calibration
+    value ``ktr`` lives in ``DSLSpec.initial``.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
     type: Literal["Erlang"] = "Erlang"
     n: int
-    ktr: float
 
 
 class ParallelFirstOrder(BaseModel):
-    """Two parallel first-order depots: fast (ka1) + slow (ka2), fraction frac to depot 1.
+    """Two parallel first-order depots: fast + slow, fraction to depot 1.
 
     Distinct from :class:`MixedFirstZero` (which is first+zero-order); this
     is two simultaneous first-order routes (Pumas PK43; Soufsaf 2021 PMX).
+    Calibration values ``ka1``, ``ka2``, ``frac`` live in ``DSLSpec.initial``.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
     type: Literal["ParallelFirstOrder"] = "ParallelFirstOrder"
-    ka1: float
-    ka2: float
-    frac: float
 
 
 class SumIG(BaseModel):
     """Sum of Inverse Gaussians absorption (Csajka 2005; Weiss & Wegner 2022).
 
-    v0.7 ships ``k=2`` only (validator restricts to k ∈ {1, 2}). The path to
-    k=3 is a validator-only change in a future release.
+    v0.7 ships ``k=2`` only (validator restricts to k ∈ {1, 2}) — ``k`` is
+    structural and stays inline. The path to k=3 is a validator-only change
+    in a future release.
 
-    Per-component MT, RD2 are flattened scalar fields so existing IIV /
+    Per-component ``MT_1``, ``MT_2``, ``RD2_1``, ``RD2_2``, ``weight_1`` are
+    calibration values that live in ``DSLSpec.initial`` so existing IIV /
     CovariateLink / Prior machinery resolves them as plain ``StanIdentifier``
-    strings (``MT_1``, ``MT_2``, ``RD2_1``, ``RD2_2``, ``w_1``).
+    strings.
 
     Label switching is prevented by the validator constraint
     ``MT_1 < MT_2`` (positive-difference parameterisation). The implicit
@@ -146,14 +149,9 @@ class SumIG(BaseModel):
     entries in ``DSLSpec.priors``. See ADR-0003 D5.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
     type: Literal["SumIG"] = "SumIG"
     k: int
-    MT_1: float
-    MT_2: float
-    RD2_1: float
-    RD2_2: float
-    weight_1: float
 
 
 class NODEAbsorption(BaseModel):
@@ -192,66 +190,62 @@ AbsorptionModule = Annotated[
 
 
 class OneCmt(BaseModel):
-    """One-compartment distribution: V."""
+    """One-compartment distribution.
 
-    model_config = ConfigDict(frozen=True)
+    Calibration value ``V`` lives in ``DSLSpec.initial``.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
     type: Literal["OneCmt"] = "OneCmt"
-    V: float
 
 
 class TwoCmt(BaseModel):
-    """Two-compartment distribution: V1, V2, Q."""
+    """Two-compartment distribution.
 
-    model_config = ConfigDict(frozen=True)
+    Calibration values ``V1``, ``V2``, ``Q`` live in ``DSLSpec.initial``.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
     type: Literal["TwoCmt"] = "TwoCmt"
-    V1: float
-    V2: float
-    Q: float
 
 
 class ThreeCmt(BaseModel):
-    """Three-compartment distribution: V1, V2, V3, Q2, Q3."""
+    """Three-compartment distribution.
 
-    model_config = ConfigDict(frozen=True)
+    Calibration values ``V1``, ``V2``, ``V3``, ``Q2``, ``Q3`` live in
+    ``DSLSpec.initial``.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
     type: Literal["ThreeCmt"] = "ThreeCmt"
-    V1: float
-    V2: float
-    V3: float
-    Q2: float
-    Q3: float
 
 
 class TMDDCore(BaseModel):
-    """Target-mediated drug disposition (full model): V, R0, kon, koff, kint.
+    """Target-mediated drug disposition (full model).
 
     Ref: Mager & Jusko (2001), J Pharmacokinet Pharmacodyn 28:507-532.
-    V is the central volume of distribution, required for dose→concentration
-    conversion and dimensional consistency of binding/elimination terms.
+    Calibration values ``V``, ``R0``, ``kon``, ``koff``, ``kint`` live in
+    ``DSLSpec.initial``. ``V`` is the central volume of distribution,
+    required for dose→concentration conversion and dimensional consistency
+    of binding/elimination terms.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
     type: Literal["TMDD_Core"] = "TMDD_Core"
-    V: float
-    R0: float
-    kon: float
-    koff: float
-    kint: float
 
 
 class TMDDQSS(BaseModel):
-    """TMDD quasi-steady-state approximation: V, R0, KD, kint.
+    """TMDD quasi-steady-state approximation.
 
     Ref: Gibiansky et al. (2008), J Pharmacokinet Pharmacodyn 35:573-591.
-    V is the central volume. KD ≈ koff/kon is the equilibrium dissociation
-    constant; note that KSS = (koff + kint)/kon differs from KD when kint > 0.
+    Calibration values ``V``, ``R0``, ``KD``, ``kint`` live in
+    ``DSLSpec.initial``. ``V`` is the central volume. ``KD`` ≈ koff/kon is
+    the equilibrium dissociation constant; note that ``KSS = (koff +
+    kint)/kon`` differs from ``KD`` when ``kint > 0``.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
     type: Literal["TMDD_QSS"] = "TMDD_QSS"
-    V: float
-    R0: float
-    KD: float
-    kint: float
 
 
 DistributionModule = Annotated[
@@ -266,43 +260,47 @@ DistributionModule = Annotated[
 
 
 class LinearElim(BaseModel):
-    """Linear (first-order) elimination: CL."""
+    """Linear (first-order) elimination.
 
-    model_config = ConfigDict(frozen=True)
+    Calibration value ``CL`` lives in ``DSLSpec.initial``.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
     type: Literal["Linear"] = "Linear"
-    CL: float
 
 
 class MichaelisMenten(BaseModel):
-    """Michaelis-Menten (saturable) elimination: Vmax, Km."""
+    """Michaelis-Menten (saturable) elimination.
 
-    model_config = ConfigDict(frozen=True)
+    Calibration values ``Vmax``, ``Km`` live in ``DSLSpec.initial``.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
     type: Literal["MichaelisMenten"] = "MichaelisMenten"
-    Vmax: float
-    Km: float
 
 
 class ParallelLinearMM(BaseModel):
-    """Parallel linear + Michaelis-Menten elimination: CL, Vmax, Km."""
+    """Parallel linear + Michaelis-Menten elimination.
 
-    model_config = ConfigDict(frozen=True)
+    Calibration values ``CL``, ``Vmax``, ``Km`` live in ``DSLSpec.initial``.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
     type: Literal["ParallelLinearMM"] = "ParallelLinearMM"
-    CL: float
-    Vmax: float
-    Km: float
 
 
 class TimeVaryingElim(BaseModel):
-    """Time-varying elimination: CL with decay function.
+    """Time-varying elimination: decay function shape (structural).
 
-    kdecay controls the rate of clearance change over time.
-    For exponential decay: CL(t) = CL * exp(-kdecay * t).
+    ``kdecay`` controls the rate of clearance change over time; for
+    exponential decay ``CL(t) = CL * exp(-kdecay * t)``. Calibration values
+    ``CL``, ``kdecay`` live in ``DSLSpec.initial`` — ``kdecay`` defaults to
+    0.1 there when omitted (see ``DSLSpec.get_initial``). ``decay_fn``
+    selects WHICH decay shape and is structural, so it stays inline.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
     type: Literal["TimeVarying"] = "TimeVarying"
-    CL: float
-    kdecay: float = 0.1
     decay_fn: Literal["exponential", "half_life", "linear"]
 
 
@@ -387,20 +385,121 @@ class IOV(BaseModel):
     occasions: OccasionSpec
 
 
-class CovariateLink(BaseModel):
-    """Covariate effect on a parameter."""
+VariabilityItem = Annotated[
+    IIV | IOV,
+    Field(discriminator="type"),
+]
 
-    model_config = ConfigDict(frozen=True)
+
+# ---------------------------------------------------------------------------
+# Covariates (Formular sharpening plan §4 Phase 1, P1.6)
+# ---------------------------------------------------------------------------
+#
+# Covariate effects moved out of the variability-item union entirely (they
+# are no longer IIV/IOV siblings) into their own top-level ``covariates:``
+# block/``DSLSpec.covariates`` list -- see ``CovariateLink`` docstring for
+# the rationale.
+
+_COVARIATE_FORM_REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
+    "power": ("theta", "ref"),
+    "exponential": ("theta",),
+    "linear": ("theta",),
+    "categorical": ("reference",),
+    "maturation": ("tm50", "hill"),
+}
+
+
+def _require_covariate_fields(
+    form: str,
+    *,
+    theta: float | None,
+    ref: float | None,
+    reference: str | None,
+    tm50: float | None,
+    hill: float | None,
+) -> None:
+    """Enforce the exact per-``form`` field shape for a covariate declaration.
+
+    Each ``form`` requires exactly the fields listed in
+    ``_COVARIATE_FORM_REQUIRED_FIELDS`` and no others (every field not
+    required by ``form`` must be ``None``) -- this keeps a compiled spec
+    from ever carrying a stray reference-value field a given form ignores,
+    and gives a fast, specific error at construction time rather than a
+    silent no-op in the emitter.
+    """
+    all_fields: dict[str, float | str | None] = {
+        "theta": theta,
+        "ref": ref,
+        "reference": reference,
+        "tm50": tm50,
+        "hill": hill,
+    }
+    required = _COVARIATE_FORM_REQUIRED_FIELDS[form]
+    missing = [name for name in required if all_fields[name] is None]
+    if missing:
+        msg = f"covariate form {form!r} requires field(s) {sorted(missing)} to be set"
+        raise ValueError(msg)
+    extraneous = sorted(
+        name for name, value in all_fields.items() if name not in required and value is not None
+    )
+    if extraneous:
+        msg = f"covariate form {form!r} does not accept field(s) {extraneous}"
+        raise ValueError(msg)
+
+
+class CovariateLink(BaseModel):
+    """A covariate effect on a structural parameter, with first-class reference values.
+
+    Formular sharpening plan §4 Phase 1 (P1.6): each ``form`` carries its
+    own explicit, named field set instead of the coefficient's starting
+    value and any reference constant being hardcoded inside the emitters
+    (previously ``power`` silently centered on a hardcoded 70 kg reference
+    weight -- Anderson & Holford 2008 -- and every form's coefficient
+    started from a hardcoded per-form constant). All numeric/string fields
+    below are calibration-like (excluded from ``structure_fingerprint``,
+    included in ``spec_fingerprint`` -- see ``apmode.dsl.canonical``) with
+    one exception: ``reference`` (the categorical baseline *level name*) is
+    treated as structural, since it identifies which level the model
+    defines as baseline rather than a re-estimable numeric value.
+
+    - ``power``: ``theta`` (coefficient's initial/starting estimate) and
+      ``ref`` (fixed reference covariate value the formula centers on,
+      e.g. ``ref=70`` for a 70 kg reference weight).
+    - ``exponential`` / ``linear``: ``theta`` only (no reference-centering
+      in either formula).
+    - ``categorical``: ``reference`` only (the baseline level's name; the
+      numeric 0/1 encoding of non-reference levels is a data-adapter
+      concern, not a DSL one -- see ``apmode.data.adapters``). The
+      coefficient itself is not yet configurable here (Phase 2 candidate).
+    - ``maturation``: ``tm50`` and ``hill`` (initial/starting estimates for
+      the TM50 and Hill-exponent parameters respectively).
+
+    Exactly the fields required by ``form`` may be set; every other field
+    must be ``None`` (enforced by :meth:`_check_field_shape`).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
     type: Literal["CovariateLink"] = "CovariateLink"
     param: StanIdentifier
     covariate: StanIdentifier
     form: Literal["power", "exponential", "linear", "categorical", "maturation"]
+    theta: float | None = None
+    ref: float | None = None
+    reference: str | None = None
+    tm50: float | None = None
+    hill: float | None = None
 
-
-VariabilityItem = Annotated[
-    IIV | IOV | CovariateLink,
-    Field(discriminator="type"),
-]
+    @model_validator(mode="after")
+    def _check_field_shape(self) -> CovariateLink:
+        _require_covariate_fields(
+            self.form,
+            theta=self.theta,
+            ref=self.ref,
+            reference=self.reference,
+            tm50=self.tm50,
+            hill=self.hill,
+        )
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -503,6 +602,103 @@ ObservationModule = Annotated[
 ]
 
 
+class ObservationEndpoint(BaseModel):
+    """One named analyte/endpoint of a multi-analyte ``observations:`` block.
+
+    Formular sharpening plan §4 Phase 1 (P1.7): introduced alongside the new
+    plural ``observations:`` grammar block so a spec can declare more than
+    one DVID-routed prediction/error-model pair -- e.g. free drug plus total
+    target for a TMDD assay design (Gibiansky et al. 2008). ``name`` is the
+    block's map key, kept on the model itself (not just as the
+    ``DSLSpec.observations`` dict key) so a flattened list view --
+    :meth:`DSLSpec.observation_endpoints` -- still carries it.
+
+    Two cross-entry invariants the Pydantic model itself cannot see are
+    checked by :func:`apmode.dsl.validator.validate_dsl` instead:
+    ``dvid`` must be unique across every entry in the same block
+    (``FrmCode.AST_OBSERVATIONS_DVID_COLLISION``), and ``prediction`` must
+    name one of :meth:`DSLSpec.known_prediction_variables`
+    (``FrmCode.AST_OBSERVATIONS_PREDICTION_UNKNOWN``).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    name: str
+    dvid: int
+    prediction: StanIdentifier
+    error: ObservationModule
+
+
+class ExperimentalFlags(BaseModel):
+    """Explicit opt-in flags for AST variants with no working backend yet.
+
+    Phase 0 P0.8 (Formular sharpening plan §4): ``NODEAbsorption`` /
+    ``NODEElimination`` exist in the AST but every registered emitter
+    (nlmixr2, Stan, FREM) raises ``NotImplementedError`` for them — there
+    is no working NODE solver backend today (see
+    ``apmode.dsl.capabilities`` NODE tags). Without an explicit gate, a
+    spec author could write a NODE variant and have downstream tooling
+    silently report "unsupported" with no signal that this is an
+    intentionally experimental, not-yet-backed feature rather than a bug.
+    ``node=True`` is the author's acknowledgement of that; ``validate_dsl``
+    fails closed with ``FrmCode.LANE_NODE_EXPERIMENTAL_GATE`` when a NODE
+    variant is present and this flag is unset, independent of lane.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    node: bool = False
+
+
+# ---------------------------------------------------------------------------
+# Metadata block (Formular sharpening plan §4 Phase 1, P1.2)
+# ---------------------------------------------------------------------------
+
+
+class Metadata(BaseModel):
+    """Optional top-level ``metadata: { ... }`` block — free-text spec provenance.
+
+    Every field is an optional string; none affects compilation, validation,
+    or emission. Purely descriptive context carried through to the
+    reproducibility bundle manifest (``BundleEmitter``) for human/audit
+    consumption.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    title: str | None = None
+    intent: str | None = None
+    context_of_use: str | None = None
+    analyte: str | None = None
+    version: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Units block (Formular sharpening plan §4 Phase 1, P1.3)
+# ---------------------------------------------------------------------------
+
+
+class UnitsDeclaration(BaseModel):
+    """Optional top-level ``units: { ... }`` block — GLOBAL measurement units.
+
+    This is *not* per-parameter unit annotation: Formular has no syntax to
+    attach a unit to an individual ``CL``/``V``/``ka`` value. Instead, this
+    block declares the four base/derived units the spec's data and
+    ``initial:`` values are conventionally expressed in, and
+    ``apmode.dsl.units`` uses it to (a) infer each calibration parameter's
+    *expected* dimension from its structural role and (b) check that
+    ``volume`` is dimensionally reachable from ``amount``/``concentration``
+    (``Volume = Amount / Concentration``). See that module's docstring for
+    the exact consistency algorithm and its documented limitations.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    time: str
+    amount: str
+    concentration: str
+    volume: str
+
+
 # ---------------------------------------------------------------------------
 # Top-level DSL Spec
 # ---------------------------------------------------------------------------
@@ -523,7 +719,48 @@ class DSLSpec(BaseModel):
     elimination: EliminationModule
     variability: list[VariabilityItem]
     observation: ObservationModule
+    # Formular sharpening plan §4 Phase 1 (P1.7): optional multi-analyte
+    # form, additive to the ``observation`` field above (never a
+    # replacement -- the legacy singular ``observation:`` sugar is still
+    # the common case and stays fully supported). ``None`` when the spec
+    # used only the singular form (the overwhelming majority of specs,
+    # pre- and post-P1.7). When a Formular ``observations:`` block is
+    # compiled, ``observation`` above is synthesized from the *first*
+    # entry (insertion order) so every pre-existing consumer that reads
+    # ``spec.observation`` directly (``apmode.dsl.canonical``,
+    # ``apmode.dsl.units``, ``apmode.bundle.scoring_contract``,
+    # ``apmode.backends.predictive_summary``) keeps working unchanged,
+    # treating that first entry as representative -- full multi-endpoint
+    # awareness in those modules is a Phase 2 candidate. Code that must see
+    # every endpoint regardless of which syntax form was used should call
+    # :meth:`observation_endpoints` instead of reading either field
+    # directly.
+    observations: dict[str, ObservationEndpoint] | None = None
+    # Formular sharpening plan §4 Phase 1 (P1.6): covariate effects live in
+    # their own top-level list, distinct from ``variability`` (whose sole
+    # item kinds are now IIV/IOV). See ``CovariateLink`` for the per-form
+    # field contract.
+    covariates: list[CovariateLink] = Field(default_factory=list)
     priors: list[PriorSpec] = Field(default_factory=list)
+    # Formular sharpening plan §4 Phase 1 (P1.4): flat parameter-name -> value
+    # dict for every calibration (initial-estimate) value used anywhere in
+    # the structural modules (absorption/distribution/elimination). See
+    # ``calibration_param_names()`` for exactly which names are expected.
+    # Structural/topology fields (Transit.n, Erlang.n, SumIG.k, NODE
+    # dim/constraint_template, TimeVaryingElim.decay_fn) stay inline on
+    # their module and are never present here. Observation sigmas and
+    # covariate theta/ref values also stay inline, never here.
+    initial: dict[str, float] = Field(default_factory=dict)
+    # Formular sharpening plan §4 Phase 1 (P1.2): optional free-text
+    # provenance block. None when the spec was built programmatically
+    # without a metadata: block, or by pre-Phase-1 callers.
+    metadata: Metadata | None = None
+    # Formular sharpening plan §4 Phase 1 (P1.3): optional global units
+    # declaration. ``None`` when the spec was built without a ``units:``
+    # block (pre-Phase-1 callers, or an author who has not yet opted in) --
+    # ``apmode.dsl.units.unit_coverage_report`` returns a
+    # ``status="not_declared"`` report in that case rather than raising.
+    units: UnitsDeclaration | None = None
     # #17: source_meta is populated by ``parse_dsl_with_source`` as a
     # sidecar map from AST node kind (``"absorption"`` / ``"distribution"``
     # / ``"elimination"`` / ``"observation"`` / ``"variability[i]"``) to
@@ -531,6 +768,87 @@ class DSLSpec(BaseModel):
     # when the spec was built programmatically (no parse tree). The
     # validator uses it to annotate error messages with ``file.pk:L:C``.
     source_meta: dict[str, tuple[int, int]] = Field(default_factory=dict)
+    # P0.8: experimental-feature opt-in gate. Defaults to all-False so
+    # every pre-existing DSLSpec construction call site (positional or
+    # keyword) keeps working unchanged; only specs that actually use a
+    # NODE variant need to set ``experimental.node=True``.
+    experimental: ExperimentalFlags = Field(default_factory=ExperimentalFlags)
+    # Formular sharpening plan §4 Phase 2 (P2.1): provenance trail for
+    # ``use <macro>`` statement expansion. Each entry is
+    # ``"{MacroDef.name}@{MacroDef.version}"`` (e.g.
+    # ``"pkstd.standard_iiv@v1"``) in the source order the `use`
+    # statements were expanded (see
+    # ``apmode.dsl.macros.expand_macros``). Empty for every spec that
+    # declares no `use` statement (the overwhelming majority, pre- and
+    # post-P2.1) or is built programmatically. Deliberately excluded from
+    # both ``apmode.dsl.canonical.structure_fingerprint`` and
+    # ``spec_fingerprint`` — macro expansion is sugar, not semantics, so
+    # two byte-identical-after-expansion specs must fingerprint
+    # identically whether or not either used a `use` shortcut (both
+    # canonical functions hand-build their projection dict from an
+    # explicit field allowlist rather than a raw ``model_dump``, so this
+    # field is excluded by construction — see that module's docstring).
+    macros_used: list[str] = Field(default_factory=list)
+
+    def get_initial(self, name: str, default: float | None = None) -> float | None:
+        """Look up a calibration value by name, falling back to ``default``.
+
+        ``kdecay`` on :class:`TimeVaryingElim` is the one calibration
+        parameter with a conventional non-error default (0.1) when omitted
+        from ``initial:`` — callers needing that behaviour pass
+        ``default=0.1`` explicitly; this method itself has no opinion on
+        per-name defaults.
+        """
+        return self.initial.get(name, default)
+
+    def observation_endpoints(self) -> list[ObservationEndpoint]:
+        """Return every observation endpoint, normalizing legacy and multi-analyte syntax.
+
+        The single unified accessor downstream code (emitters, scoring,
+        canonicalization) should prefer over branching on whether the spec
+        used the legacy singular ``observation:`` sugar or the plural
+        multi-analyte ``observations:`` block (Formular sharpening plan §4
+        Phase 1, P1.7). When ``observations`` is unset (the common case),
+        ``observation`` is wrapped in a single synthetic endpoint named
+        ``"default"`` with ``dvid=1`` (matching
+        ``apmode.data.adapters.PK_DVID_ALLOWLIST``'s numeric convention for
+        the sole PK endpoint) and ``prediction="C_central"`` (the canonical
+        name every distribution module's primary concentration prediction
+        is addressable by -- see :meth:`known_prediction_variables`).
+        """
+        if self.observations:
+            return list(self.observations.values())
+        return [
+            ObservationEndpoint(
+                name="default", dvid=1, prediction="C_central", error=self.observation
+            )
+        ]
+
+    def known_prediction_variables(self) -> frozenset[str]:
+        """Return the prediction-variable names an ``observations:`` entry may reference.
+
+        ``"C_central"`` is the canonical name for the primary disposition
+        compartment's concentration -- always available (it is the sole
+        observable when only the legacy singular ``observation:`` block is
+        used, and every emitter's central-concentration output, ``cp`` in
+        nlmixr2, is addressable by this name). ``TMDDQSS`` distribution
+        additionally exposes ``"C_target_total"``: the ``Rtot`` ODE state
+        (total target/receptor concentration) the nlmixr2 emitter already
+        integrates, giving a genuine second analyte for TMDD assay designs
+        that measure free drug plus total target (Gibiansky et al. 2008).
+        ``TMDDCore`` does not expose an equivalent single named state (total
+        target there is the sum of two separate states, ``R`` + ``RC``,
+        which no emitter currently synthesizes as one named output) and no
+        other structural module exposes a second named prediction state --
+        e.g. metabolite/parent-child compartment topology does not exist in
+        the DSL yet (Phase 2 candidate). An ``observations:`` entry naming
+        anything else is rejected by the validator with
+        ``FrmCode.AST_OBSERVATIONS_PREDICTION_UNKNOWN``.
+        """
+        names = {"C_central"}
+        if isinstance(self.distribution, TMDDQSS):
+            names.add("C_target_total")
+        return frozenset(names)
 
     def has_node_modules(self) -> bool:
         """Check if this spec uses any NODE modules."""
@@ -618,3 +936,18 @@ class DSLSpec(BaseModel):
             names.extend(f"node_elim_w{i}" for i in range(elim_mod.dim))
 
         return names
+
+    def calibration_param_names(self) -> list[str]:
+        """Return the subset of :meth:`structural_param_names` requiring an ``initial:`` value.
+
+        Excludes names that are structural-but-not-calibrated: Transit/Erlang
+        ``n`` (chain length — an integer topology choice, set by the
+        transform, not estimated) and NODE ``node_abs_w*``/``node_elim_w*``
+        weight names (no DSL primitive exists to give them an initial
+        value; that is a NODE-backend concern, not the ``initial:`` block).
+        """
+        return [
+            name
+            for name in self.structural_param_names()
+            if name != "n" and not name.startswith(("node_abs_w", "node_elim_w"))
+        ]

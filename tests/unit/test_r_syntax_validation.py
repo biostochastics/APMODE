@@ -44,9 +44,9 @@ from apmode.dsl.nlmixr2_emitter import emit_nlmixr2
 def _make_spec(**overrides: object) -> DSLSpec:
     defaults: dict[str, object] = {
         "model_id": "test_rsyntax_000000",
-        "absorption": FirstOrder(ka=1.0),
-        "distribution": OneCmt(V=70.0),
-        "elimination": LinearElim(CL=5.0),
+        "absorption": FirstOrder(),
+        "distribution": OneCmt(),
+        "elimination": LinearElim(),
         "variability": [IIV(params=["CL", "V"], structure="diagonal")],
         "observation": Proportional(sigma_prop=0.1),
     }
@@ -60,44 +60,49 @@ _ALL_SPECS: list[tuple[str, DSLSpec]] = [
     (
         "1cmt_fo_mm",
         _make_spec(
-            elimination=MichaelisMenten(Vmax=100.0, Km=10.0),
+            elimination=MichaelisMenten(),
             variability=[IIV(params=["Vmax", "V"], structure="diagonal")],
         ),
     ),
-    ("1cmt_fo_parallel_mm", _make_spec(elimination=ParallelLinearMM(CL=2.0, Vmax=50.0, Km=5.0))),
+    ("1cmt_fo_parallel_mm", _make_spec(elimination=ParallelLinearMM())),
     (
         "1cmt_fo_time_varying",
-        _make_spec(elimination=TimeVaryingElim(CL=5.0, decay_fn="exponential")),
+        _make_spec(elimination=TimeVaryingElim(decay_fn="exponential")),
     ),
-    ("1cmt_zo", _make_spec(absorption=ZeroOrder(dur=0.5))),
-    ("1cmt_lagged", _make_spec(absorption=LaggedFirstOrder(ka=1.5, tlag=0.3))),
-    ("1cmt_transit", _make_spec(absorption=Transit(n=4, ktr=2.0, ka=1.0))),
-    ("1cmt_mixed", _make_spec(absorption=MixedFirstZero(ka=1.0, dur=0.5, frac=0.6))),
+    ("1cmt_zo", _make_spec(absorption=ZeroOrder())),
+    (
+        "1cmt_lagged",
+        _make_spec(
+            absorption=LaggedFirstOrder(), initial={"ka": 1.5, "tlag": 0.3, "V": 70.0, "CL": 5.0}
+        ),
+    ),
+    ("1cmt_transit", _make_spec(absorption=Transit(n=4))),
+    ("1cmt_mixed", _make_spec(absorption=MixedFirstZero())),
     (
         "2cmt",
         _make_spec(
-            distribution=TwoCmt(V1=10.0, V2=20.0, Q=3.0),
+            distribution=TwoCmt(),
             variability=[IIV(params=["CL", "V1"], structure="diagonal")],
         ),
     ),
     (
         "3cmt",
         _make_spec(
-            distribution=ThreeCmt(V1=10.0, V2=20.0, V3=5.0, Q2=3.0, Q3=1.0),
+            distribution=ThreeCmt(),
             variability=[IIV(params=["CL", "V1"], structure="diagonal")],
         ),
     ),
     (
         "tmdd_core",
         _make_spec(
-            distribution=TMDDCore(V=50.0, R0=10.0, kon=0.1, koff=0.01, kint=0.05),
+            distribution=TMDDCore(),
             variability=[IIV(params=["CL", "R0"], structure="diagonal")],
         ),
     ),
     (
         "tmdd_qss",
         _make_spec(
-            distribution=TMDDQSS(V=50.0, R0=10.0, KD=0.5, kint=0.05),
+            distribution=TMDDQSS(),
             variability=[IIV(params=["CL", "R0"], structure="diagonal")],
         ),
     ),
@@ -120,30 +125,44 @@ _ALL_SPECS: list[tuple[str, DSLSpec]] = [
         _make_spec(
             variability=[
                 IIV(params=["CL", "V"], structure="diagonal"),
-                CovariateLink(param="CL", covariate="WT", form="power"),
-            ]
+            ],
+            covariates=[
+                CovariateLink(param="CL", covariate="WT", form="power", theta=0.75, ref=70.0),
+            ],
         ),
     ),
     (
         "complex_2cmt_mm_cov",
         _make_spec(
-            absorption=LaggedFirstOrder(ka=1.5, tlag=0.3),
-            distribution=TwoCmt(V1=30.0, V2=40.0, Q=5.0),
-            elimination=ParallelLinearMM(CL=2.0, Vmax=50.0, Km=5.0),
+            absorption=LaggedFirstOrder(),
+            distribution=TwoCmt(),
+            elimination=ParallelLinearMM(),
             variability=[
                 IIV(params=["CL", "V1", "ka"], structure="block"),
-                CovariateLink(param="CL", covariate="WT", form="power"),
-                CovariateLink(param="V1", covariate="WT", form="power"),
+            ],
+            covariates=[
+                CovariateLink(param="CL", covariate="WT", form="power", theta=0.75, ref=70.0),
+                CovariateLink(param="V1", covariate="WT", form="power", theta=1.0, ref=70.0),
             ],
             observation=Combined(sigma_prop=0.1, sigma_add=0.5),
+            initial={
+                "ka": 1.5,
+                "tlag": 0.3,
+                "V1": 30.0,
+                "V2": 40.0,
+                "Q": 5.0,
+                "CL": 2.0,
+                "Vmax": 50.0,
+                "Km": 5.0,
+            },
         ),
     ),
     (
         "complex_3cmt_transit_blq",
         _make_spec(
-            absorption=Transit(n=5, ktr=3.0, ka=1.5),
-            distribution=ThreeCmt(V1=15.0, V2=25.0, V3=8.0, Q2=4.0, Q3=1.5),
-            elimination=LinearElim(CL=3.5),
+            absorption=Transit(n=5),
+            distribution=ThreeCmt(),
+            elimination=LinearElim(),
             variability=[IIV(params=["CL", "V1", "ktr"], structure="diagonal")],
             observation=BLQM3(loq_value=0.05),
         ),

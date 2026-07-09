@@ -33,11 +33,12 @@ from apmode.dsl.transforms import apply_transform, validate_transform
 def _base_spec() -> DSLSpec:
     return DSLSpec(
         model_id="base",
-        absorption=FirstOrder(ka=1.0),
-        distribution=OneCmt(V=20.0),
-        elimination=LinearElim(CL=5.0),
+        absorption=FirstOrder(),
+        distribution=OneCmt(),
+        elimination=LinearElim(),
         variability=[IIV(params=["CL"], structure="diagonal")],
         observation=Proportional(sigma_prop=0.3),
+        initial={"ka": 1.0, "V": 70.0, "CL": 5.0},
     )
 
 
@@ -165,7 +166,11 @@ class TestPriorsSurviveStructuralSwap:
         assert {p.target for p in spec.priors} == {"CL", "omega_CL"}
 
         # Now swap distribution OneCmt -> TwoCmt (structural swap that triggers pruning)
-        swap = SwapModule(position="distribution", new_module=TwoCmt(V1=20, V2=30, Q=5))
+        swap = SwapModule(
+            position="distribution",
+            new_module=TwoCmt(),
+            initial_overrides={"V1": 35.0, "V2": 35.0, "Q": 5.0},
+        )
         new_spec = apply_transform(spec, swap)
 
         # CL is still a structural param, so its prior must be preserved.
@@ -186,7 +191,11 @@ class TestPriorsSurviveStructuralSwap:
         assert any(p.target == "V" for p in spec.priors)
 
         # Swap OneCmt -> TwoCmt: V is replaced by V1, V2, Q
-        swap = SwapModule(position="distribution", new_module=TwoCmt(V1=20, V2=30, Q=5))
+        swap = SwapModule(
+            position="distribution",
+            new_module=TwoCmt(),
+            initial_overrides={"V1": 35.0, "V2": 35.0, "Q": 5.0},
+        )
         new_spec = apply_transform(spec, swap)
 
         # V prior is orphaned — should be pruned.
@@ -239,3 +248,37 @@ class TestSetPriorWithExoticFamilies:
         assert errors == []
         new_spec = apply_set_prior(spec, t)
         assert isinstance(new_spec.priors[0].family, HistoricalBorrowingPrior)
+
+
+class TestSetPriorExpectedDiagnosticEffect:
+    """P2.2: SetPrior gains ``expected_diagnostic_effect`` for parity with the
+
+    other 9 FormularTransform variants. It does NOT gain a separate
+    ``rationale`` field — ``justification`` already serves that role.
+    """
+
+    def test_defaults_to_empty_list(self) -> None:
+        t = SetPrior(target="CL", family=NormalPrior(mu=1.5, sigma=0.5))
+        assert t.expected_diagnostic_effect == []
+        assert t.justification == ""
+
+    def test_populated_fields_do_not_affect_validation_or_application(self) -> None:
+        spec = _base_spec()
+        t_bare = SetPrior(target="CL", family=NormalPrior(mu=1.5, sigma=0.5))
+        t_annotated = SetPrior(
+            target="CL",
+            family=NormalPrior(mu=1.5, sigma=0.5),
+            justification="Informed by prior phase-2 estimate.",
+            expected_diagnostic_effect=["tightens CL posterior CI"],
+        )
+        assert validate_set_prior(spec, t_bare) == validate_set_prior(spec, t_annotated)
+        bare_result = apply_set_prior(spec, t_bare)
+        annotated_result = apply_set_prior(spec, t_annotated)
+        assert bare_result.priors[0].family == annotated_result.priors[0].family
+        assert t_annotated.expected_diagnostic_effect == ["tightens CL posterior CI"]
+
+    def test_no_transform_has_a_redundant_rationale_field(self) -> None:
+        """SetPrior must not silently accept an unused `rationale` kwarg."""
+        assert "rationale" not in SetPrior.model_fields
+        assert "justification" in SetPrior.model_fields
+        assert "expected_diagnostic_effect" in SetPrior.model_fields

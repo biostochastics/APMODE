@@ -344,10 +344,10 @@
       # Back-transform parameters
       ka <- exp(lka + eta.ka)
       tlag <- exp(ltlag)
-      V1 <- exp(lV1 + eta.V1 + beta_V1_WT * log(WT / 70))
+      V1 <- exp(lV1 + eta.V1 + beta_V1_WT * log(WT / 70.0))
       V2 <- exp(lV2)
       Q <- exp(lQ)
-      CL <- exp(lCL + eta.CL + beta_CL_WT * log(WT / 70))
+      CL <- exp(lCL + eta.CL + beta_CL_WT * log(WT / 70.0))
       Vmax <- exp(lVmax)
       Km <- exp(lKm)
       
@@ -768,8 +768,8 @@
     model({
       # Back-transform parameters
       ka <- exp(lka)
-      V <- exp(lV + eta.V + beta_V_WT * log(WT / 70))
-      CL <- exp(lCL + eta.CL + beta_CL_WT * log(WT / 70))
+      V <- exp(lV + eta.V + beta_V_WT * log(WT / 70.0))
+      CL <- exp(lCL + eta.CL + beta_CL_WT * log(WT / 70.0))
       
       # Compartment dynamics
       cp <- linCmt()

@@ -106,10 +106,10 @@ def _make_oral_2cpt_manifest() -> DataManifest:
 
 def _make_node_spec(*, n_cmt: int = 1, model_id: str = "test_node") -> DSLSpec:
     """Create a DSLSpec with NODE elimination."""
-    dist = OneCmt(V=30.0) if n_cmt == 1 else TwoCmt(V1=30.0, V2=40.0, Q=5.0)
+    dist = OneCmt() if n_cmt == 1 else TwoCmt()
     return DSLSpec(
         model_id=model_id,
-        absorption=FirstOrder(ka=1.0),
+        absorption=FirstOrder(),
         distribution=dist,
         elimination=NODEElimination(dim=3, constraint_template="bounded_positive"),
         variability=[],

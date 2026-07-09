@@ -40,16 +40,23 @@ from apmode.dsl.nlmixr2_emitter import emit_nlmixr2
 _MODEL_ID = "golden_test_model_id_0"
 
 
+_DEFAULT_INITIAL = {"ka": 1.0, "V": 70.0, "CL": 5.0}
+
+
 def _make_spec(**overrides: object) -> DSLSpec:
+    initial_override = overrides.pop("initial", None)
     defaults: dict[str, object] = {
         "model_id": _MODEL_ID,
-        "absorption": FirstOrder(ka=1.0),
-        "distribution": OneCmt(V=70.0),
-        "elimination": LinearElim(CL=5.0),
+        "absorption": FirstOrder(),
+        "distribution": OneCmt(),
+        "elimination": LinearElim(),
         "variability": [IIV(params=["CL", "V"], structure="diagonal")],
         "observation": Proportional(sigma_prop=0.1),
+        "initial": dict(_DEFAULT_INITIAL),
     }
     defaults.update(overrides)
+    if initial_override is not None:
+        defaults["initial"] = initial_override
     return DSLSpec(**defaults)  # type: ignore[arg-type]
 
 
@@ -73,19 +80,36 @@ class TestGoldenMasterAbsorptionVariants:
     """Golden master: different absorption mechanisms."""
 
     def test_zero_order(self, snapshot: SnapshotAssertion) -> None:
-        r_code = emit_nlmixr2(_make_spec(absorption=ZeroOrder(dur=0.5)))
+        r_code = emit_nlmixr2(
+            _make_spec(absorption=ZeroOrder(), initial={"dur": 0.5, "V": 70.0, "CL": 5.0})
+        )
         assert r_code == snapshot
 
     def test_lagged_first_order(self, snapshot: SnapshotAssertion) -> None:
-        r_code = emit_nlmixr2(_make_spec(absorption=LaggedFirstOrder(ka=1.5, tlag=0.3)))
+        r_code = emit_nlmixr2(
+            _make_spec(
+                absorption=LaggedFirstOrder(),
+                initial={"ka": 1.5, "tlag": 0.3, "V": 70.0, "CL": 5.0},
+            )
+        )
         assert r_code == snapshot
 
     def test_transit(self, snapshot: SnapshotAssertion) -> None:
-        r_code = emit_nlmixr2(_make_spec(absorption=Transit(n=4, ktr=2.0, ka=1.0)))
+        r_code = emit_nlmixr2(
+            _make_spec(
+                absorption=Transit(n=4),
+                initial={"ktr": 2.0, "ka": 1.0, "V": 70.0, "CL": 5.0},
+            )
+        )
         assert r_code == snapshot
 
     def test_mixed_first_zero(self, snapshot: SnapshotAssertion) -> None:
-        r_code = emit_nlmixr2(_make_spec(absorption=MixedFirstZero(ka=1.0, dur=0.5, frac=0.6)))
+        r_code = emit_nlmixr2(
+            _make_spec(
+                absorption=MixedFirstZero(),
+                initial={"ka": 1.0, "dur": 0.5, "frac": 0.6, "V": 70.0, "CL": 5.0},
+            )
+        )
         assert r_code == snapshot
 
 
@@ -93,19 +117,44 @@ class TestGoldenMasterDistributionVariants:
     """Golden master: multi-compartment and TMDD."""
 
     def test_2cmt(self, snapshot: SnapshotAssertion) -> None:
-        r_code = emit_nlmixr2(_make_spec(distribution=TwoCmt(V1=10.0, V2=20.0, Q=3.0)))
+        r_code = emit_nlmixr2(
+            _make_spec(
+                distribution=TwoCmt(),
+                initial={"ka": 1.0, "V1": 10.0, "V2": 20.0, "Q": 3.0, "CL": 5.0},
+            )
+        )
         assert r_code == snapshot
 
     def test_3cmt(self, snapshot: SnapshotAssertion) -> None:
         r_code = emit_nlmixr2(
-            _make_spec(distribution=ThreeCmt(V1=10.0, V2=20.0, V3=5.0, Q2=3.0, Q3=1.0))
+            _make_spec(
+                distribution=ThreeCmt(),
+                initial={
+                    "ka": 1.0,
+                    "V1": 10.0,
+                    "V2": 20.0,
+                    "V3": 5.0,
+                    "Q2": 3.0,
+                    "Q3": 1.0,
+                    "CL": 5.0,
+                },
+            )
         )
         assert r_code == snapshot
 
     def test_tmdd_core(self, snapshot: SnapshotAssertion) -> None:
         r_code = emit_nlmixr2(
             _make_spec(
-                distribution=TMDDCore(V=50.0, R0=10.0, kon=0.1, koff=0.01, kint=0.05),
+                distribution=TMDDCore(),
+                initial={
+                    "ka": 1.0,
+                    "V": 50.0,
+                    "R0": 10.0,
+                    "kon": 0.1,
+                    "koff": 0.01,
+                    "kint": 0.05,
+                    "CL": 5.0,
+                },
             )
         )
         assert r_code == snapshot
@@ -113,7 +162,15 @@ class TestGoldenMasterDistributionVariants:
     def test_tmdd_qss(self, snapshot: SnapshotAssertion) -> None:
         r_code = emit_nlmixr2(
             _make_spec(
-                distribution=TMDDQSS(V=50.0, R0=10.0, KD=0.5, kint=0.05),
+                distribution=TMDDQSS(),
+                initial={
+                    "ka": 1.0,
+                    "V": 50.0,
+                    "R0": 10.0,
+                    "KD": 0.5,
+                    "kint": 0.05,
+                    "CL": 5.0,
+                },
             )
         )
         assert r_code == snapshot
@@ -123,17 +180,25 @@ class TestGoldenMasterEliminationVariants:
     """Golden master: non-linear elimination."""
 
     def test_michaelis_menten(self, snapshot: SnapshotAssertion) -> None:
-        r_code = emit_nlmixr2(_make_spec(elimination=MichaelisMenten(Vmax=100.0, Km=10.0)))
+        r_code = emit_nlmixr2(
+            _make_spec(
+                elimination=MichaelisMenten(),
+                initial={"ka": 1.0, "V": 70.0, "Vmax": 100.0, "Km": 10.0},
+            )
+        )
         assert r_code == snapshot
 
     def test_parallel_linear_mm(self, snapshot: SnapshotAssertion) -> None:
-        r_code = emit_nlmixr2(_make_spec(elimination=ParallelLinearMM(CL=2.0, Vmax=50.0, Km=5.0)))
+        r_code = emit_nlmixr2(
+            _make_spec(
+                elimination=ParallelLinearMM(),
+                initial={"ka": 1.0, "V": 70.0, "CL": 2.0, "Vmax": 50.0, "Km": 5.0},
+            )
+        )
         assert r_code == snapshot
 
     def test_time_varying(self, snapshot: SnapshotAssertion) -> None:
-        r_code = emit_nlmixr2(
-            _make_spec(elimination=TimeVaryingElim(CL=5.0, decay_fn="exponential"))
-        )
+        r_code = emit_nlmixr2(_make_spec(elimination=TimeVaryingElim(decay_fn="exponential")))
         assert r_code == snapshot
 
 
@@ -170,11 +235,11 @@ class TestGoldenMasterVariability:
     def test_covariate_power(self, snapshot: SnapshotAssertion) -> None:
         r_code = emit_nlmixr2(
             _make_spec(
-                variability=[
-                    IIV(params=["CL", "V"], structure="diagonal"),
-                    CovariateLink(param="CL", covariate="WT", form="power"),
-                    CovariateLink(param="V", covariate="WT", form="power"),
-                ]
+                variability=[IIV(params=["CL", "V"], structure="diagonal")],
+                covariates=[
+                    CovariateLink(param="CL", covariate="WT", form="power", theta=0.75, ref=70.0),
+                    CovariateLink(param="V", covariate="WT", form="power", theta=0.75, ref=70.0),
+                ],
             )
         )
         assert r_code == snapshot
@@ -187,15 +252,25 @@ class TestGoldenMasterComplex:
         """2-compartment, parallel MM elimination, block IIV, covariates."""
         r_code = emit_nlmixr2(
             _make_spec(
-                absorption=LaggedFirstOrder(ka=1.5, tlag=0.3),
-                distribution=TwoCmt(V1=30.0, V2=40.0, Q=5.0),
-                elimination=ParallelLinearMM(CL=2.0, Vmax=50.0, Km=5.0),
-                variability=[
-                    IIV(params=["CL", "V1", "ka"], structure="block"),
-                    CovariateLink(param="CL", covariate="WT", form="power"),
-                    CovariateLink(param="V1", covariate="WT", form="power"),
+                absorption=LaggedFirstOrder(),
+                distribution=TwoCmt(),
+                elimination=ParallelLinearMM(),
+                variability=[IIV(params=["CL", "V1", "ka"], structure="block")],
+                covariates=[
+                    CovariateLink(param="CL", covariate="WT", form="power", theta=0.75, ref=70.0),
+                    CovariateLink(param="V1", covariate="WT", form="power", theta=0.75, ref=70.0),
                 ],
                 observation=Combined(sigma_prop=0.1, sigma_add=0.5),
+                initial={
+                    "ka": 1.5,
+                    "tlag": 0.3,
+                    "V1": 30.0,
+                    "V2": 40.0,
+                    "Q": 5.0,
+                    "CL": 2.0,
+                    "Vmax": 50.0,
+                    "Km": 5.0,
+                },
             )
         )
         assert r_code == snapshot
@@ -204,13 +279,23 @@ class TestGoldenMasterComplex:
         """3-compartment, transit absorption, BLQ M3."""
         r_code = emit_nlmixr2(
             _make_spec(
-                absorption=Transit(n=5, ktr=3.0, ka=1.5),
-                distribution=ThreeCmt(V1=15.0, V2=25.0, V3=8.0, Q2=4.0, Q3=1.5),
-                elimination=LinearElim(CL=3.5),
+                absorption=Transit(n=5),
+                distribution=ThreeCmt(),
+                elimination=LinearElim(),
                 variability=[
                     IIV(params=["CL", "V1", "ktr"], structure="diagonal"),
                 ],
                 observation=BLQM3(loq_value=0.05),
+                initial={
+                    "ktr": 3.0,
+                    "ka": 1.5,
+                    "V1": 15.0,
+                    "V2": 25.0,
+                    "V3": 8.0,
+                    "Q2": 4.0,
+                    "Q3": 1.5,
+                    "CL": 3.5,
+                },
             )
         )
         assert r_code == snapshot

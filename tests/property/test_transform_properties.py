@@ -30,11 +30,12 @@ from apmode.dsl.validator import validate_dsl
 def _base_spec() -> DSLSpec:
     return DSLSpec(
         model_id="prop-test",
-        absorption=FirstOrder(ka=1.0),
-        distribution=OneCmt(V=30.0),
-        elimination=LinearElim(CL=2.0),
+        absorption=FirstOrder(),
+        distribution=OneCmt(),
+        elimination=LinearElim(),
         variability=[IIV(params=["CL", "V"], structure="diagonal")],
         observation=Proportional(sigma_prop=0.1),
+        initial={"ka": 1.0, "V": 70.0, "CL": 5.0},
     )
 
 
@@ -57,17 +58,22 @@ def test_swap_observation_always_valid(obs_module: object) -> None:
     assert len(errors) == 0, f"Unexpected errors: {errors}"
 
 
+_COV_FORM_FIELDS: dict[str, dict[str, float | str]] = {
+    "power": {"theta": 0.75, "ref": 70.0},
+    "exponential": {"theta": 0.5},
+    "linear": {"theta": 0.5},
+    "categorical": {"reference": "0"},
+}
+
+
 @given(form=st.sampled_from(["power", "exponential", "linear", "categorical"]))
 @settings(max_examples=20)
 def test_add_covariate_to_valid_param(form: str) -> None:
     """Adding a covariate to a valid structural param should succeed."""
     spec = _base_spec()
-    t = AddCovariateLink(param="CL", covariate="WT", form=form)  # type: ignore[arg-type]
+    t = AddCovariateLink(param="CL", covariate="WT", form=form, **_COV_FORM_FIELDS[form])  # type: ignore[arg-type]
     new_spec = apply_transform(spec, t)
-    assert any(
-        hasattr(v, "covariate") and v.covariate == "WT"  # type: ignore[union-attr]
-        for v in new_spec.variability
-    )
+    assert any(v.covariate == "WT" for v in new_spec.covariates)
 
 
 def test_replace_with_node_fails_submission_lane() -> None:
@@ -101,4 +107,4 @@ def test_toggle_lag_roundtrip() -> None:
     assert isinstance(on_spec.absorption, LaggedFirstOrder)
     off_spec = apply_transform(on_spec, ToggleLag(on=False))
     assert isinstance(off_spec.absorption, FirstOrder)
-    assert off_spec.absorption.ka == spec.absorption.ka
+    assert off_spec.initial["ka"] == spec.initial["ka"]

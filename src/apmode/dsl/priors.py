@@ -353,11 +353,83 @@ def validate_prior_family(target_kind: TargetKind, family: PriorFamily) -> str |
     """Return error string if family doesn't match target kind; None otherwise."""
     allowed = _VALID_FAMILIES[target_kind]
     if family.type not in allowed:
+        if family.type == "InvGamma":
+            return (
+                f"Prior family 'InvGamma' is not valid for target kind {target_kind!r}: "
+                f"InvGamma is a variance-scale prior but {target_kind!r} is SD-scale, so "
+                f"applying it directly would silently mis-specify the model. InvGamma is "
+                f"usable today as a MixturePrior component; a direct variance-wrapper for "
+                f"InvGamma-on-SD targets is a known future enhancement, not yet implemented. "
+                f"Allowed: {sorted(allowed)}"
+            )
         return (
             f"Prior family {family.type!r} is not valid for target kind {target_kind!r}. "
             f"Allowed: {sorted(allowed)}"
         )
     return None
+
+
+def build_prior_spec(
+    target: str,
+    family: PriorFamily,
+    source: PriorSource = "weakly_informative",
+    justification: str = "",
+    doi: str | None = None,
+    historical_refs: list[str] | None = None,
+    *,
+    structural_params: set[str] | None = None,
+) -> PriorSpec:
+    """Single canonical factory for :class:`PriorSpec` (Formular DSL P0.4).
+
+    Every producer of a `PriorSpec` — direct construction and the `SetPrior`
+    transform (:mod:`apmode.dsl.prior_transforms`) — routes through this
+    function so the two paths cannot silently diverge in the invariants they
+    enforce.
+
+    Applies, in order:
+
+    1. Target/family compatibility (:func:`classify_target` +
+       :func:`validate_prior_family`), but only when ``structural_params`` is
+       supplied. `classify_target` needs a spec's structural-parameter
+       universe to resolve a bare name like ``"CL"`` to the ``"structural"``
+       target kind; a standalone factory call has no spec to draw that from.
+       Callers with a `DSLSpec` in scope (e.g. `SetPrior`'s validate/apply
+       path) must pass `spec.structural_param_names()` here to get full
+       enforcement; standalone callers (tests, benchmark fixtures, notebooks)
+       may omit it — family/target compatibility is re-verified at
+       spec-validation time by :func:`validate_priors` regardless, so nothing
+       silently escapes to a bundle.
+    2. `PriorSpec`'s own frozen-model construction, which raises for the FDA
+       Gate 2 non-empty-justification / historical_refs invariants on
+       informative sources (`justification_required_for_informative_sources`)
+       — unchanged from today's direct-construction behavior.
+
+    Raises:
+        ValueError: on family/target incompatibility (when ``structural_params``
+            is given) or on informative-source justification/historical_refs
+            violations. Message text matches today's `validate_prior_family` /
+            `PriorSpec` validator output so existing callers' error handling
+            (string matching on caught exceptions) is unaffected.
+    """
+    if structural_params is not None:
+        kind = classify_target(target, structural_params)
+        if kind is None:
+            raise ValueError(
+                f"Prior target {target!r} does not match any known pattern "
+                f"(structural params: {sorted(structural_params)})"
+            )
+        family_err = validate_prior_family(kind, family)
+        if family_err:
+            raise ValueError(family_err)
+
+    return PriorSpec(
+        target=target,
+        family=family,
+        source=source,
+        justification=justification,
+        doi=doi,
+        historical_refs=historical_refs if historical_refs is not None else [],
+    )
 
 
 def validate_priors(

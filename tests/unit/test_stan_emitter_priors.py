@@ -34,9 +34,9 @@ from apmode.dsl.stan_emitter import emit_stan
 def _one_cmt(priors: list[PriorSpec] | None = None) -> DSLSpec:
     return DSLSpec(
         model_id="test_model",
-        absorption=FirstOrder(ka=1.0),
-        distribution=OneCmt(V=20.0),
-        elimination=LinearElim(CL=5.0),
+        absorption=FirstOrder(),
+        distribution=OneCmt(),
+        elimination=LinearElim(),
         variability=[IIV(params=["CL", "V"], structure="diagonal")],
         observation=Proportional(sigma_prop=0.3),
         priors=priors or [],
@@ -46,12 +46,14 @@ def _one_cmt(priors: list[PriorSpec] | None = None) -> DSLSpec:
 def _two_cmt_with_covariate(priors: list[PriorSpec] | None = None) -> DSLSpec:
     return DSLSpec(
         model_id="test_model_cov",
-        absorption=FirstOrder(ka=1.0),
-        distribution=TwoCmt(V1=20.0, V2=30.0, Q=5.0),
-        elimination=LinearElim(CL=5.0),
+        absorption=FirstOrder(),
+        distribution=TwoCmt(),
+        elimination=LinearElim(),
         variability=[
             IIV(params=["CL", "V1"], structure="diagonal"),
-            CovariateLink(param="CL", covariate="WT", form="power"),
+        ],
+        covariates=[
+            CovariateLink(param="CL", covariate="WT", form="power", theta=0.75, ref=70.0),
         ],
         observation=Combined(sigma_prop=0.2, sigma_add=0.1),
         priors=priors or [],

@@ -128,6 +128,18 @@ async def _drain_pipe(
 _DEFAULT_HARNESS = Path(__file__).parent.parent / "r" / "harness.R"
 
 
+def _dvid_allowlist_for_spec(spec: DSLSpec) -> frozenset[str] | None:
+    """Return DSL-declared endpoint DVIDs for multi-analyte specs.
+
+    ``None`` means "use the adapter's default single-endpoint PK allowlist".
+    Multi-analyte ``observations:`` specs need their declared endpoint rows
+    preserved; otherwise the default adapter would drop DVID 2+ as non-PK.
+    """
+    if spec.observations is None:
+        return None
+    return frozenset(str(endpoint.dvid) for endpoint in spec.observations.values())
+
+
 class Nlmixr2Runner:
     """BackendRunner implementation for nlmixr2 via R subprocess.
 
@@ -255,12 +267,15 @@ class Nlmixr2Runner:
         # copy lives in this run's scratch ``run_dir``. The ``data_path``
         # field on RSubprocessRequest still points at the (adapted)
         # path the harness reads.
+        dvid_allowlist = _dvid_allowlist_for_spec(spec)
         adapted_data_path = run_dir / "data_nlmixr2.csv"
-        to_nlmixr2_format(pd.read_csv(data_path)).to_csv(adapted_data_path, index=False)
+        to_nlmixr2_format(pd.read_csv(data_path), dvid_allowlist=dvid_allowlist).to_csv(
+            adapted_data_path, index=False
+        )
         adapted_test_data_path: Path | None = None
         if test_data_path is not None:
             adapted_test_data_path = run_dir / "test_data_nlmixr2.csv"
-            to_nlmixr2_format(pd.read_csv(test_data_path)).to_csv(
+            to_nlmixr2_format(pd.read_csv(test_data_path), dvid_allowlist=dvid_allowlist).to_csv(
                 adapted_test_data_path, index=False
             )
 

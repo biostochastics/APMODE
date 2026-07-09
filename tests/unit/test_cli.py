@@ -574,6 +574,70 @@ class TestGraph:
         assert nested.exists()
 
 
+class TestLineageMerge:
+    """Regression: agentic_lineage.json must win over the coarse
+    orchestrator-written candidate_lineage.json entry for the same
+    candidate_id, not be silently shadowed by it."""
+
+    def test_agentic_lineage_enriches_coarse_orchestrator_entry(self, tmp_path: Path) -> None:
+        bundle = _make_minimal_bundle(tmp_path)
+        # Coarse entry as written by orchestrator.__init__ for an adopted
+        # agentic candidate: parent_id=None, rationale=None.
+        _write_json(
+            bundle / "candidate_lineage.json",
+            {
+                "entries": [
+                    {
+                        "candidate_id": "cand_final",
+                        "parent_id": None,
+                        "transform": "agentic_llm",
+                        "rationale": None,
+                        "expected_diagnostic_effect": [],
+                        "applied_at": "2026-01-01T00:00:00+00:00",
+                    }
+                ]
+            },
+        )
+        # Richer per-transform entry for the SAME candidate_id, as written
+        # by agentic_runner._write_agentic_lineage.
+        agentic_dir = bundle / "agentic_trace" / "refine"
+        (agentic_dir).mkdir(parents=True)
+        _write_json(agentic_dir / "iter_0_input.json", {})  # satisfies mode discovery glob
+        _write_json(
+            agentic_dir / "agentic_lineage.json",
+            {
+                "entries": [
+                    {
+                        "candidate_id": "cand_final",
+                        "parent_id": "cand_root",
+                        "transform": "SetPrior",
+                        "rationale": "narrow CL prior per literature",
+                        "expected_diagnostic_effect": ["lower AIC"],
+                        "applied_at": "2026-01-01T00:00:05+00:00",
+                    },
+                    {
+                        "candidate_id": "cand_root",
+                        "parent_id": None,
+                        "transform": None,
+                        "rationale": None,
+                        "expected_diagnostic_effect": [],
+                        "applied_at": "2026-01-01T00:00:00+00:00",
+                    },
+                ]
+            },
+        )
+        result = runner.invoke(app, ["lineage", str(bundle), "cand_final", "--json"])
+        assert result.exit_code == 0
+        entries = json.loads(result.output)
+        by_id = {e["candidate_id"]: e for e in entries}
+        assert by_id["cand_final"]["rationale"] == "narrow CL prior per literature"
+        assert by_id["cand_final"]["expected_diagnostic_effect"] == ["lower AIC"]
+        assert by_id["cand_final"]["parent_id"] == "cand_root"
+        # Chain now back-traces through the real parent instead of halting
+        # immediately at a hardcoded parent_id=None.
+        assert "cand_root" in by_id
+
+
 class TestDiff:
     def test_missing_bundle_a(self, tmp_path: Path) -> None:
         b = _make_minimal_bundle(tmp_path, name="b")

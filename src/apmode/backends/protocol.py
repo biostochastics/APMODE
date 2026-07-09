@@ -3,22 +3,19 @@
 
 from __future__ import annotations
 
-from enum import StrEnum
 from pathlib import Path  # noqa: TC003 — used at runtime in Protocol signature
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
+
+# Re-exported for backward compatibility: the canonical definition now
+# lives in ``apmode.dsl.lane`` (Formular sharpening plan §4 Phase 0, P0.3)
+# since Lane is a DSL/governance concept, not a backend one. Both names
+# refer to the same class object.
+from apmode.dsl.lane import Lane as Lane
 
 if TYPE_CHECKING:
     from apmode.bundle.models import BackendResult, DataManifest, NCASubjectDiagnostic
     from apmode.dsl.ast_models import DSLSpec
     from apmode.governance.policy import Gate3Config
-
-
-class Lane(StrEnum):
-    """Operating lanes per PRD §3."""
-
-    SUBMISSION = "submission"
-    DISCOVERY = "discovery"
-    OPTIMIZATION = "optimization"
 
 
 @runtime_checkable

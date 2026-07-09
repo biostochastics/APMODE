@@ -414,11 +414,17 @@ def add_candidate_lineage(
 
 
 def collect_candidate_ids(bundle_dir: Path) -> list[str]:
-    """Discover candidate ids from the compiled_specs/ directory."""
+    """Discover candidate ids from the compiled_specs/ directory.
+
+    Excludes the ``<id>_fingerprints.json`` sidecar written alongside each
+    ``<id>.json`` (see ``BundleEmitter.write_compiled_spec`` /
+    ``apmode.dsl.canonical``) — otherwise it would surface as a spurious
+    extra "candidate" with id ``<id>_fingerprints``.
+    """
     specs_dir = bundle_dir / "compiled_specs"
     if not specs_dir.is_dir():
         return []
-    ids = sorted(p.stem for p in specs_dir.glob("*.json"))
+    ids = sorted(p.stem for p in specs_dir.glob("*.json") if not p.stem.endswith("_fingerprints"))
     return ids
 
 

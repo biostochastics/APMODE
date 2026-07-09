@@ -55,6 +55,34 @@ class TestSearchGraphModels:
         rebuilt = SearchGraphEdge.model_validate(data)
         assert rebuilt == edge
 
+    def test_edge_pre_p2_2_construction_still_works(self) -> None:
+        """Backward compat: constructing with only the original 3 fields."""
+        edge = SearchGraphEdge(
+            parent_id="cand_001",
+            child_id="cand_002",
+            transform="swap_module(elimination, MichaelisMenten)",
+        )
+        assert edge.rationale is None
+        assert edge.expected_diagnostic_effect == []
+        assert edge.applied_at is None
+
+    def test_edge_p2_2_provenance_fields_roundtrip(self) -> None:
+        """P2.2: rationale/expected_diagnostic_effect/applied_at on SearchGraphEdge."""
+        edge = SearchGraphEdge(
+            parent_id="cand_001",
+            child_id="cand_002",
+            transform="swap_module(elimination, MichaelisMenten)",
+            rationale="CWRES show saturable elimination.",
+            expected_diagnostic_effect=["reduces CWRES trend at high dose"],
+            applied_at="2026-07-08T00:00:00+00:00",
+        )
+        data = edge.model_dump()
+        rebuilt = SearchGraphEdge.model_validate(data)
+        assert rebuilt == edge
+        assert rebuilt.rationale == "CWRES show saturable elimination."
+        assert rebuilt.expected_diagnostic_effect == ["reduces CWRES trend at high dose"]
+        assert rebuilt.applied_at == "2026-07-08T00:00:00+00:00"
+
     def test_graph_serialization(self) -> None:
         graph = SearchGraph(
             nodes=[
@@ -231,9 +259,9 @@ class TestSearchDAGPublicAPI:
         dag = SearchDAG()
         spec = DSLSpec(
             model_id="test_001",
-            absorption=FirstOrder(ka=1.0),
-            distribution=OneCmt(V=70.0),
-            elimination=LinearElim(CL=5.0),
+            absorption=FirstOrder(),
+            distribution=OneCmt(),
+            elimination=LinearElim(),
             variability=[IIV(params=["CL", "V"], structure="diagonal")],
             observation=Proportional(sigma_prop=0.1),
         )
@@ -256,9 +284,9 @@ class TestSearchDAGPublicAPI:
         dag = SearchDAG()
         spec = DSLSpec(
             model_id="root_001",
-            absorption=FirstOrder(ka=1.0),
-            distribution=OneCmt(V=70.0),
-            elimination=LinearElim(CL=5.0),
+            absorption=FirstOrder(),
+            distribution=OneCmt(),
+            elimination=LinearElim(),
             variability=[IIV(params=["CL", "V"], structure="diagonal")],
             observation=Proportional(sigma_prop=0.1),
         )

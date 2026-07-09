@@ -231,9 +231,9 @@ class MockNodeRunner:
 def _classical_spec(model_id: str = "classical_1cmt") -> DSLSpec:
     return DSLSpec(
         model_id=model_id,
-        absorption=FirstOrder(ka=1.0),
-        distribution=OneCmt(V=30.0),
-        elimination=LinearElim(CL=2.0),
+        absorption=FirstOrder(),
+        distribution=OneCmt(),
+        elimination=LinearElim(),
         variability=[IIV(params=["CL", "V"], structure="diagonal")],
         observation=Proportional(sigma_prop=0.1),
     )
@@ -242,8 +242,8 @@ def _classical_spec(model_id: str = "classical_1cmt") -> DSLSpec:
 def _node_spec(model_id: str = "node_elim_1cmt") -> DSLSpec:
     return DSLSpec(
         model_id=model_id,
-        absorption=FirstOrder(ka=1.0),
-        distribution=OneCmt(V=30.0),
+        absorption=FirstOrder(),
+        distribution=OneCmt(),
         elimination=NODEElimination(dim=3, constraint_template="bounded_positive"),
         variability=[IIV(params=["CL", "V"], structure="diagonal")],
         observation=Proportional(sigma_prop=0.1),

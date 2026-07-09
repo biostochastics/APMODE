@@ -1,16 +1,13 @@
 {
   "model_id": "theophylline_boeckmann_1992_1cmt_oral",
   "absorption": {
-    "type": "FirstOrder",
-    "ka": 1.5
+    "type": "FirstOrder"
   },
   "distribution": {
-    "type": "OneCmt",
-    "V": 32.0
+    "type": "OneCmt"
   },
   "elimination": {
-    "type": "Linear",
-    "CL": 2.83
+    "type": "Linear"
   },
   "variability": [
     {
@@ -27,6 +24,11 @@
     "type": "Combined",
     "sigma_prop": 0.1,
     "sigma_add": 0.1
+  },
+  "initial": {
+    "ka": 1.5,
+    "V": 32.0,
+    "CL": 2.83
   },
   "priors": [],
   "source_meta": {}

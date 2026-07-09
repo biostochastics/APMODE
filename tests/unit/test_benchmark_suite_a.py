@@ -143,8 +143,7 @@ class TestSuiteASpecific:
 
     def test_a6_has_covariates(self) -> None:
         spec = scenario_a6()
-        cov_links = [v for v in spec.variability if v.type == "CovariateLink"]
-        assert len(cov_links) == 3  # WT on CL, WT on V, RENAL on CL
+        assert len(spec.covariates) == 3  # WT on CL, WT on V, RENAL on CL
 
     def test_a7_is_node_absorption(self) -> None:
         spec = scenario_a7()
@@ -157,11 +156,11 @@ class TestSuiteASpecific:
         """
         spec = scenario_a8()
         assert not spec.has_node_modules()
-        cov_links = [v for v in spec.variability if v.type == "CovariateLink"]
+        cov_links = list(spec.covariates)
         assert len(cov_links) == 1
         link = cov_links[0]
         assert (link.param, link.covariate, link.form) == ("CL", "CRCL", "power")
-        for key in ("theta_crcl", "delta_diurnal"):
+        for key in ("theta_crcl", "delta_autoind"):
             assert key in A8_COVARIATE_MODEL_NOTES
 
     def test_all_scenarios_have_iiv(self) -> None:

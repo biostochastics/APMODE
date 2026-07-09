@@ -14,7 +14,8 @@ def test_parse_json_single_transform() -> None:
                 {
                     "type": "swap_module",
                     "position": "elimination",
-                    "new_module": {"type": "MichaelisMenten", "Vmax": 50.0, "Km": 5.0},
+                    "new_module": {"type": "MichaelisMenten"},
+                    "initial_overrides": {"Vmax": 50.0, "Km": 5.0},
                 },
             ],
             "reasoning": "CWRES show time-dependent bias in elimination phase.",
@@ -33,9 +34,17 @@ def test_parse_json_compound_transforms() -> None:
                 {
                     "type": "swap_module",
                     "position": "elimination",
-                    "new_module": {"type": "MichaelisMenten", "Vmax": 50.0, "Km": 5.0},
+                    "new_module": {"type": "MichaelisMenten"},
+                    "initial_overrides": {"Vmax": 50.0, "Km": 5.0},
                 },
-                {"type": "add_covariate_link", "param": "CL", "covariate": "WT", "form": "power"},
+                {
+                    "type": "add_covariate_link",
+                    "param": "CL",
+                    "covariate": "WT",
+                    "form": "power",
+                    "theta": 0.75,
+                    "ref": 70.0,
+                },
             ],
             "reasoning": "MM elimination + weight effect on CL.",
         }
@@ -128,6 +137,83 @@ def test_parse_set_prior_round_trip() -> None:
 
     assert isinstance(result.transforms[0], SetPrior)
     assert result.transforms[0].target == "CL"
+
+
+def test_parse_threads_rationale_and_expected_diagnostic_effect() -> None:
+    """P2.2: LLM-supplied rationale/expected_diagnostic_effect reach the
+
+    typed transform object, not just the Pydantic model defaults.
+    """
+    raw = json.dumps(
+        {
+            "transforms": [
+                {
+                    "type": "add_covariate_link",
+                    "param": "CL",
+                    "covariate": "WT",
+                    "form": "power",
+                    "theta": 0.75,
+                    "ref": 70.0,
+                    "rationale": "Wide body-weight range supports allometric scaling.",
+                    "expected_diagnostic_effect": ["reduces CL eta shrinkage"],
+                },
+            ],
+            "reasoning": "Add allometric weight scaling on CL.",
+        }
+    )
+    result = parse_llm_response(raw)
+    assert result.success, result.errors
+    t = result.transforms[0]
+    assert isinstance(t, AddCovariateLink)
+    assert t.rationale == "Wide body-weight range supports allometric scaling."
+    assert t.expected_diagnostic_effect == ["reduces CL eta shrinkage"]
+
+
+def test_parse_omits_rationale_defaults_cleanly() -> None:
+    """Backward compat: LLM responses without rationale/effect still parse."""
+    raw = json.dumps(
+        {
+            "transforms": [
+                {"type": "toggle_lag", "on": True},
+            ],
+            "reasoning": "Delayed absorption visible.",
+        }
+    )
+    result = parse_llm_response(raw)
+    assert result.success, result.errors
+    t = result.transforms[0]
+    assert t.rationale == ""
+    assert t.expected_diagnostic_effect == []
+
+
+def test_parse_set_prior_threads_expected_diagnostic_effect() -> None:
+    """SetPrior gets expected_diagnostic_effect but keeps using justification
+
+    as its rationale-equivalent (no redundant `rationale` field).
+    """
+    raw = json.dumps(
+        {
+            "transforms": [
+                {
+                    "type": "set_prior",
+                    "target": "CL",
+                    "family": {"type": "Normal", "mu": 0.0, "sigma": 1.0},
+                    "source": "weakly_informative",
+                    "justification": "Regularize toward literature value.",
+                    "expected_diagnostic_effect": ["tightens CL posterior CI"],
+                }
+            ],
+            "reasoning": "Regularize CL.",
+        }
+    )
+    result = parse_llm_response(raw)
+    assert result.success, result.errors
+    from apmode.dsl.prior_transforms import SetPrior
+
+    t = result.transforms[0]
+    assert isinstance(t, SetPrior)
+    assert t.justification == "Regularize toward literature value."
+    assert t.expected_diagnostic_effect == ["tightens CL posterior CI"]
 
 
 def test_transform_parser_registry_covers_formular_union() -> None:

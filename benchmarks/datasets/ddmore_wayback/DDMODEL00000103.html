@@ -1,0 +1,1727 @@
+
+
+
+
+
+
+<!doctype html>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<html>
+<head><script src="https://web-static.archive.org/_static/js/athena.js" type="text/javascript"></script>
+<script type="text/javascript">window.addEventListener('DOMContentLoaded',function(){var v=archive_analytics.values;v.service='wb';v.server_name='wwwb-app218.us.archive.org';v.server_ms=242;archive_analytics.send_pageview({});});</script>
+<script type="text/javascript" src="https://web-static.archive.org/_static/js/bundle-playback.js?v=2N_sDSC0" charset="utf-8"></script>
+<script type="text/javascript" src="https://web-static.archive.org/_static/js/wombat.js?v=o9P2E1FK" charset="utf-8"></script>
+<script>window.RufflePlayer=window.RufflePlayer||{};window.RufflePlayer.config={"autoplay":"on","unmuteOverlay":"hidden","showSwfDownload":true};</script>
+<script type="text/javascript" src="https://web-static.archive.org/_static/js/ruffle/ruffle.js"></script>
+<script type="text/javascript">
+    __wm.init("http://web.archive.org/web");
+  __wm.wombat("http://repository.ddmore.foundation/model/DDMODEL00000103","20250417204749","http://web.archive.org/","web","https://web-static.archive.org/_static/",
+	      "1744922869");
+</script>
+<link rel="stylesheet" type="text/css" href="https://web-static.archive.org/_static/css/banner-styles.css?v=1utQkbB3" />
+<link rel="stylesheet" type="text/css" href="https://web-static.archive.org/_static/css/iconochive.css?v=3PDvdIFv" />
+<!-- End Wayback Rewrite JS Include -->
+
+    <!-- Google Tag Manager -->
+    <script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+    new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+    j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+    'http://web.archive.org/web/20250417204749/https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+    })(window,document,'script','dataLayer','GTM-NLS3ZHD');</script>
+    <!-- End Google Tag Manager -->	<script src="/web/20250417204749js_/http://repository.ddmore.foundation/plugins/jquery-1.11.1/js/jquery/jquery-1.11.1.min.js" type="text/javascript" library="jquery"></script>
+
+    <script src="/web/20250417204749js_/http://repository.ddmore.foundation/js/jquery/jquery.i18n.properties-min-1.0.9.js" type="text/javascript"></script>
+
+    <script src="/web/20250417204749js_/http://repository.ddmore.foundation/js/jquery/jquery-ui-v1.10.3.js" type="text/javascript"></script>
+
+    <script type="text/javascript">
+
+    	$.appName = "model-repository";
+    	$.serverUrl = "http://web.archive.org/web/20250417204749/http://repository.ddmore.foundation/";
+    	$.i18n.properties({
+    		name: 'messages',
+    		path: "http://web.archive.org/web/20250417204749/http://repository.ddmore.foundation//js/i18n/",
+    		mode: "map"
+    	});
+    	var helpHidden=1;
+
+    	
+			var helpWidth=-1;
+			var maxWidth=-1;
+			var maxHelpWidth=800;
+			var minHelpWidth=50;
+			var stepWidth=30;
+			var syncResize=0;
+			function adjustWidth(newWidth) {
+				if (syncResize==1) {
+					var delta= helpWidth - newWidth;
+					var mainWidth=$("#mainframe" ).width();
+					if (maxWidth==-1) {
+						maxWidth=mainWidth;
+					}
+					if (maxWidth<mainWidth+delta) {
+						mainWidth=maxWidth;
+					}
+					else {
+						mainWidth+=delta;
+					}
+					$( "#mainframe" ).width(mainWidth);
+					helpWidth=newWidth;
+				}
+			}
+
+
+			function hideHelp() {
+			    $( "#helpPanel" ).removeClass("helpHeightWorkaround")
+				adjustWidth(0);
+				$( "#helpPanel" ).hide();
+				helpHidden=1;
+				helpWidth=-1;
+				$('#toggleHelp').text("Help");
+				$('#toggleHelp').attr("title", "Access help for this page");
+			}
+
+			function showHelp() {
+				$( "#helpPanel" ).addClass("helpHeightWorkaround")
+				helpWidth=-1;
+				$("html, body").animate({ scrollTop: 0 }, "medium");
+				$( "#helpPanel" ).width(400);
+				$( "#helpPanel" ).show();
+				adjustWidth(400);
+				$( "#helpPanel" ).position({
+					my: "right bottom",
+					at: "right bottom",
+					of: ".main-menu"
+				});
+				helpHidden=0;
+				$('#toggleHelp').text("Hide help");
+				$('#toggleHelp').attr("title", "Hide help");
+			}
+			var isDragged=false;
+		
+    	$(function() {
+    		
+    		
+				$( "#helpPanel" ).resizable({
+							handles: 'n,e,s,w',
+							maxWidth: maxHelpWidth,
+							animate: true,
+							resize: function( event, ui ) {
+								if (helpWidth==-1) {
+									helpWidth=ui.originalSize.width;
+								}
+								adjustWidth(ui.size.width);
+							}
+				});
+				$( "#helpPanel" ).draggable({ cursor: "move",
+											  revert: false,
+											  containment: "body",
+											  start: function() {
+												isDragged=true;
+											  },
+											  stop: function( event, ui ) {
+												isDragged=false;
+											  }
+											});
+				$( "#helpPanel" ).hide();
+
+				$("#toolbar").mouseleave(function() {
+					if (isDragged) {
+						$( "#helpPanel" ).draggable( "disable" );
+						$( "#helpPanel" ).draggable( "enable" );
+					}
+				})
+
+
+				$( "#expand" ).button({
+					text: false,
+					icons: {
+						primary: "ui-icon-circle-plus"
+					}
+				}).click(function() {
+					 helpWidth=$("#helpPanel" ).width();
+					if (maxHelpWidth<helpWidth+stepWidth) {
+						helpWidth=maxHelpWidth;
+					}
+					else {
+						helpWidth+=stepWidth;
+					}
+					var windowRight = document.body.getBoundingClientRect ().right
+					$( "#helpPanel" ).width(helpWidth);
+					var el= document.getElementById ("helpPanel");
+					var helpRight = el.getBoundingClientRect ().right
+					if (helpRight > windowRight) {
+						var offset = helpRight - windowRight + 10
+						$('#helpPanel').animate({
+							'marginLeft' : "-=" + offset + "px"
+						});
+					}
+
+				});
+				$( "#contract" ).button({
+					text: false,
+					icons: {
+						primary: "ui-icon-circle-minus"
+					}
+				}).click(function() {
+					 helpWidth=$("#helpPanel" ).width();
+					if (minHelpWidth>helpWidth-stepWidth) {
+						helpWidth=minHelpWidth
+					}
+					else {
+						helpWidth-=stepWidth;
+					}
+					$( "#helpPanel" ).width(helpWidth);
+					var addedPercentage = (helpWidth - 400) / 400
+					var basic = 99+addedPercentage;
+					$( "#helpFrame" ).width(basic+"%");
+				});
+				$( "#close" ).button({
+					text: false,
+					icons: {
+						primary: "ui-icon-circle-close"
+					}
+				}).click(function() {
+					hideHelp();
+				});
+
+				$( "#snap" ).button({
+					text: false,
+					icons: {
+						primary: "ui-icon-arrowrefresh-1-e"
+					}
+				}).click(function() {
+					hideHelp();
+					showHelp();
+				});
+				$( "#outlink" ).button({
+					text: false,
+					icons: {
+						primary: "ui-icon-extlink"
+					}
+				}).click(function() {
+					hideHelp();
+					window.open('http://web.archive.org/web/20250417204749/http://repository.ddmore.foundation:7999/model_display.html','_blank');
+				});
+				$('#toggleHelp').click(function(event) {
+					event.preventDefault();
+					if (helpHidden==1) {
+						showHelp();
+					}
+					else {
+						hideHelp();
+					}
+				});
+			
+    	});
+    
+</script>
+
+    <script src="/web/20250417204749js_/http://repository.ddmore.foundation/js/jummp.js" type="text/javascript"></script>
+
+    <script src="/web/20250417204749js_/http://repository.ddmore.foundation/js/notification.js" type="text/javascript"></script>
+
+    <script src="/web/20250417204749js_/http://repository.ddmore.foundation/js/jquery.cookiebar.js" type="text/javascript"></script>
+
+    <script type="text/javascript">
+
+        function get_browser(){
+            var ua = navigator.userAgent,
+                tem,
+                M = ua.match(/(opera|chrome|safari|firefox|msie|trident(?=\/))\/?\s*(\d+)/i) || [];
+            if (/trident/i.test(M[1])) {
+                tem = /\brv[ :]+(\d+)/g.exec(ua) || [];
+                return {name: 'IE', version: (tem[1]||'')};
+            }
+            if (M[1] === 'Chrome') {
+                tem = ua.match(/\bOPR\/(\d+)/)
+                if (tem != null)
+                {
+                    return {name: 'Opera', version: tem[1]};
+                }
+            }
+            M = M[2]? [M[1], M[2]] : [navigator.appName, navigator.appVersion, '-?'];
+            if ((tem = ua.match(/version\/(\d+)/i)) != null) {
+                M.splice(1,1,tem[1]);}
+            return {
+                name: M[0],
+                version: M[1]
+            };
+        }
+        $(document).ready(function() {
+            var browser = get_browser();
+            if ((browser.name === 'Chrome' && parseInt(browser.version) < 19) ||
+                (browser.name === 'Firefox' && parseInt(browser.version) < 10) ||
+                (browser.name === 'IE' && parseInt(browser.version) < 10) ||
+                (browser.name === 'Safari' && parseInt(browser.version) < 5) ||
+                (browser.name === 'Opera')) {
+                $.cookieBar({});
+            }
+        });
+    
+</script>
+
+    
+
+
+
+
+
+
+
+
+
+
+
+<meta charset="utf-8">
+
+  <!-- Use the .htaccess and remove these lines to avoid edge case issues.
+       More info: h5bp.com/b/378 -->
+  <!-- <meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1"> --> <!-- Not yet implemented -->
+
+  <title>DDMoRe Model Repository</title>
+  <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+  <link rel="shortcut icon" href="http://web.archive.org/web/20250417204749im_/http://www.ddmore.eu/sites/ddmore/themes/ddmore/favicon.ico" type="image/vnd.microsoft.icon"/>
+  <meta content="About DDMoRe" about="http://www.ddmore.eu/content/about-ddmore" property="dc:title"/>
+ 
+ <link rel="stylesheet" href="/web/20250417204749cs_/http://repository.ddmore.foundation/css/ddmore.css"/>
+ 
+  <!--[if lte IE 7]>
+<link type="text/css" rel="stylesheet" href="http://www.ddmore.eu/sites/ddmore/files/css/css_sIsRwCKuAMZS6YJIMFqPXNCtZHxV56wN2ePifCvkLYc.css" media="all" />
+<![endif]-->
+
+<!--[if lte IE 6]>
+<link type="text/css" rel="stylesheet" href="http://www.ddmore.eu/sites/ddmore/files/css/css_N0EHcRmGNgF6d_odKVbSBNnBtfyz9Ndtm25vvkPxWcQ.css" media="all" />
+<![endif]-->
+  
+
+    <link rel="stylesheet" href="/web/20250417204749cs_/http://repository.ddmore.foundation/css/notification.css"/>
+    <link rel="stylesheet" href="/web/20250417204749cs_/http://repository.ddmore.foundation/css/layout.css"/>
+    <link rel="stylesheet" href="/web/20250417204749cs_/http://repository.ddmore.foundation/css/jqueryui/smoothness/jquery-ui-1.10.3.custom.min.css"/>
+    <link rel="stylesheet" href="/web/20250417204749cs_/http://repository.ddmore.foundation/css/jquery.cookiebar.css"/>
+    
+        
+        <link rel="stylesheet" href="/web/20250417204749cs_/http://repository.ddmore.foundation/css/jqueryui/smoothness/jquery-ui-1.10.3.custom.min.css"/>
+
+    <script type="text/x-mathjax-config">
+        MathJax.Hub.Config({
+            tex2jax: { inlineMath: [['$','$'],['\\(','\\)']] }
+        });
+    </script>
+    <script type="text/javascript" src="http://web.archive.org/web/20250417204749js_/http://repository.ddmore.foundation//js/MathJax-2.6.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML">
+    </script>
+        <script src="/web/20250417204749js_/http://repository.ddmore.foundation/js/jstree/jquery.jstree.js" type="text/javascript"></script>
+
+        <script src="/web/20250417204749js_/http://repository.ddmore.foundation/js/equalize.js" type="text/javascript"></script>
+
+        <script src="/web/20250417204749js_/http://repository.ddmore.foundation/js/syntax/shCore.js" type="text/javascript"></script>
+
+        <script src="/web/20250417204749js_/http://repository.ddmore.foundation/js/syntax/shBrushMdl.js" type="text/javascript"></script>
+
+        <script src="/web/20250417204749js_/http://repository.ddmore.foundation/js/syntax/shBrushXml.js" type="text/javascript"></script>
+
+        <script src="/web/20250417204749js_/http://repository.ddmore.foundation/js/jquery.handsontable.full.js" type="text/javascript"></script>
+
+        <style>
+            
+            .ui-button {
+                border-left: none;
+                margin: 0;
+            }
+        </style>
+        <link rel="stylesheet" href="/web/20250417204749cs_/http://repository.ddmore.foundation/css/jquery.handsontable.full.min.css"/>
+        <link rel="stylesheet" href="/web/20250417204749cs_/http://repository.ddmore.foundation/css/jstree.css"/>
+        <link rel="stylesheet" href="/web/20250417204749cs_/http://repository.ddmore.foundation/css/filegrid.css"/>
+        <link rel="stylesheet" href="/web/20250417204749cs_/http://repository.ddmore.foundation/css/syntax/shCore.css"/>
+        <link rel="stylesheet" href="/web/20250417204749cs_/http://repository.ddmore.foundation/css/syntax/shThemeDefault.css"/>
+
+        <script>function readablizeBytes(bytes) {
+			var s = ['bytes', 'kB', 'MB', 'GB', 'TB', 'PB'];
+			var e = Math.floor(Math.log(bytes) / Math.log(1024));
+			return (bytes / Math.pow(1024, e)).toFixed(2) + " " + s[e];
+		}var fileData=new Array();fileData["Command.txt"]=new Object();fileData["Command.txt"].Name='Command.txt';fileData["Command.txt"].Size=window.readablizeBytes(2427);fileData["Command.txt"].showPreview=false;;fileData["Command.txt"].Description='command file';fileData["Command.txt"].mime='text/plain';fileData["Command.txt"].isInternal=false;fileData["Simulated_Trefz_2015_noMixture.csv"]=new Object();fileData["Simulated_Trefz_2015_noMixture.csv"].Name='Simulated_Trefz_2015_noMixture.csv';fileData["Simulated_Trefz_2015_noMixture.csv"].Size=window.readablizeBytes(52932);fileData["Simulated_Trefz_2015_noMixture.csv"].showPreview=false;;fileData["Simulated_Trefz_2015_noMixture.csv"].Description='Simulated dataset';fileData["Simulated_Trefz_2015_noMixture.csv"].mime='text/plain';fileData["Simulated_Trefz_2015_noMixture.csv"].isInternal=false;fileData["DDMODEL00000103.rdf"]=new Object();fileData["DDMODEL00000103.rdf"].Name='DDMODEL00000103.rdf';fileData["DDMODEL00000103.rdf"].Size=window.readablizeBytes(2288);fileData["DDMODEL00000103.rdf"].showPreview=false;;fileData["DDMODEL00000103.rdf"].Description='This file contains annotations which make this model more easily findable.';fileData["DDMODEL00000103.rdf"].mime='text/plain';fileData["DDMODEL00000103.rdf"].isInternal=false;fileData["Output_simulated_Trefz_2015_noMixture.lst"]=new Object();fileData["Output_simulated_Trefz_2015_noMixture.lst"].Name='Output_simulated_Trefz_2015_noMixture.lst';fileData["Output_simulated_Trefz_2015_noMixture.lst"].Size=window.readablizeBytes(13698);fileData["Output_simulated_Trefz_2015_noMixture.lst"].showPreview=false;;fileData["Output_simulated_Trefz_2015_noMixture.lst"].Description='output .lst file';fileData["Output_simulated_Trefz_2015_noMixture.lst"].mime='text/plain';fileData["Output_simulated_Trefz_2015_noMixture.lst"].isInternal=false;fileData["Model_Accommodations.txt"]=new Object();fileData["Model_Accommodations.txt"].Name='Model_Accommodations.txt';fileData["Model_Accommodations.txt"].Size=window.readablizeBytes(760);fileData["Model_Accommodations.txt"].showPreview=false;;fileData["Model_Accommodations.txt"].Description='Model Accommodations file';fileData["Model_Accommodations.txt"].mime='text/plain';fileData["Model_Accommodations.txt"].isInternal=false;fileData["Output_simulated_SEEalpha_NM_Trefz_2015_noMixture.zip"]=new Object();fileData["Output_simulated_SEEalpha_NM_Trefz_2015_noMixture.zip"].Name='Output_simulated_SEEalpha_NM_Trefz_2015_noMixture.zip';fileData["Output_simulated_SEEalpha_NM_Trefz_2015_noMixture.zip"].Size=window.readablizeBytes(166105);fileData["Output_simulated_SEEalpha_NM_Trefz_2015_noMixture.zip"].showPreview=true;;fileData["Output_simulated_SEEalpha_NM_Trefz_2015_noMixture.zip"].Description='zipped folder with SO and linked-SO files';fileData["Output_simulated_SEEalpha_NM_Trefz_2015_noMixture.zip"].mime='application/zip';fileData["Output_simulated_SEEalpha_NM_Trefz_2015_noMixture.zip"].isInternal=false;fileData["Output_simulated_SEEalpha_NM_Trefz_2015_noMixture.zip/Output_simulated_SEEalpha_NM_Trefz_2015_noMixture/Trefz_2015_noMixture.SO.xml"]=new Object();fileData["Output_simulated_SEEalpha_NM_Trefz_2015_noMixture.zip/Output_simulated_SEEalpha_NM_Trefz_2015_noMixture/Trefz_2015_noMixture.SO.xml"].isInternal=true;fileData["Output_simulated_SEEalpha_NM_Trefz_2015_noMixture.zip/Output_simulated_SEEalpha_NM_Trefz_2015_noMixture/Trefz_2015_noMixture.SO.xml"].Name='Trefz_2015_noMixture.SO.xml';fileData["Output_simulated_SEEalpha_NM_Trefz_2015_noMixture.zip/Output_simulated_SEEalpha_NM_Trefz_2015_noMixture/Trefz_2015_noMixture.SO.xml"].Size=window.readablizeBytes(948025);;fileData["Output_simulated_SEEalpha_NM_Trefz_2015_noMixture.zip/Output_simulated_SEEalpha_NM_Trefz_2015_noMixture/Trefz_2015_noMixture.SO.xml"].Last_Modified='Wed Dec 09 11:30:42 UTC 2015';fileData["Output_simulated_SEEalpha_NM_Trefz_2015_noMixture.zip/Output_simulated_SEEalpha_NM_Trefz_2015_noMixture/Trefz_2015_noMixture.ext"]=new Object();fileData["Output_simulated_SEEalpha_NM_Trefz_2015_noMixture.zip/Output_simulated_SEEalpha_NM_Trefz_2015_noMixture/Trefz_2015_noMixture.ext"].isInternal=true;fileData["Output_simulated_SEEalpha_NM_Trefz_2015_noMixture.zip/Output_simulated_SEEalpha_NM_Trefz_2015_noMixture/Trefz_2015_noMixture.ext"].Name='Trefz_2015_noMixture.ext';fileData["Output_simulated_SEEalpha_NM_Trefz_2015_noMixture.zip/Output_simulated_SEEalpha_NM_Trefz_2015_noMixture/Trefz_2015_noMixture.ext"].Size=window.readablizeBytes(1922);;fileData["Output_simulated_SEEalpha_NM_Trefz_2015_noMixture.zip/Output_simulated_SEEalpha_NM_Trefz_2015_noMixture/Trefz_2015_noMixture.ext"].Last_Modified='Wed Dec 09 11:30:41 UTC 2015';fileData["Output_simulated_SEEalpha_NM_Trefz_2015_noMixture.zip/Output_simulated_SEEalpha_NM_Trefz_2015_noMixture/sdtab"]=new Object();fileData["Output_simulated_SEEalpha_NM_Trefz_2015_noMixture.zip/Output_simulated_SEEalpha_NM_Trefz_2015_noMixture/sdtab"].isInternal=true;fileData["Output_simulated_SEEalpha_NM_Trefz_2015_noMixture.zip/Output_simulated_SEEalpha_NM_Trefz_2015_noMixture/sdtab"].Name='sdtab';fileData["Output_simulated_SEEalpha_NM_Trefz_2015_noMixture.zip/Output_simulated_SEEalpha_NM_Trefz_2015_noMixture/sdtab"].Size=window.readablizeBytes(424217);;fileData["Output_simulated_SEEalpha_NM_Trefz_2015_noMixture.zip/Output_simulated_SEEalpha_NM_Trefz_2015_noMixture/sdtab"].Last_Modified='Wed Dec 09 11:30:41 UTC 2015';fileData["Output_simulated_SEEalpha_NM_Trefz_2015_noMixture.zip/Output_simulated_SEEalpha_NM_Trefz_2015_noMixture/patab"]=new Object();fileData["Output_simulated_SEEalpha_NM_Trefz_2015_noMixture.zip/Output_simulated_SEEalpha_NM_Trefz_2015_noMixture/patab"].isInternal=true;fileData["Output_simulated_SEEalpha_NM_Trefz_2015_noMixture.zip/Output_simulated_SEEalpha_NM_Trefz_2015_noMixture/patab"].Name='patab';fileData["Output_simulated_SEEalpha_NM_Trefz_2015_noMixture.zip/Output_simulated_SEEalpha_NM_Trefz_2015_noMixture/patab"].Size=window.readablizeBytes(230915);;fileData["Output_simulated_SEEalpha_NM_Trefz_2015_noMixture.zip/Output_simulated_SEEalpha_NM_Trefz_2015_noMixture/patab"].Last_Modified='Wed Dec 09 11:30:40 UTC 2015';fileData["Output_simulated_SEEalpha_NM_Trefz_2015_noMixture.zip/Output_simulated_SEEalpha_NM_Trefz_2015_noMixture/Output_simulated_Trefz_2015_noMixture.lst"]=new Object();fileData["Output_simulated_SEEalpha_NM_Trefz_2015_noMixture.zip/Output_simulated_SEEalpha_NM_Trefz_2015_noMixture/Output_simulated_Trefz_2015_noMixture.lst"].isInternal=true;fileData["Output_simulated_SEEalpha_NM_Trefz_2015_noMixture.zip/Output_simulated_SEEalpha_NM_Trefz_2015_noMixture/Output_simulated_Trefz_2015_noMixture.lst"].Name='Output_simulated_Trefz_2015_noMixture.lst';fileData["Output_simulated_SEEalpha_NM_Trefz_2015_noMixture.zip/Output_simulated_SEEalpha_NM_Trefz_2015_noMixture/Output_simulated_Trefz_2015_noMixture.lst"].Size=window.readablizeBytes(13698);;fileData["Output_simulated_SEEalpha_NM_Trefz_2015_noMixture.zip/Output_simulated_SEEalpha_NM_Trefz_2015_noMixture/Output_simulated_Trefz_2015_noMixture.lst"].Last_Modified='Wed Dec 09 11:30:41 UTC 2015';fileData["Executable_Trefz_2015_noMixture.xml"]=new Object();fileData["Executable_Trefz_2015_noMixture.xml"].Name='Executable_Trefz_2015_noMixture.xml';fileData["Executable_Trefz_2015_noMixture.xml"].Size=window.readablizeBytes(21089);fileData["Executable_Trefz_2015_noMixture.xml"].showPreview=false;;fileData["Executable_Trefz_2015_noMixture.xml"].mime='application/xml';fileData["Executable_Trefz_2015_noMixture.xml"].isInternal=false;fileData["Executable_Trefz_2015_noMixture.mdl"]=new Object();fileData["Executable_Trefz_2015_noMixture.mdl"].Name='Executable_Trefz_2015_noMixture.mdl';fileData["Executable_Trefz_2015_noMixture.mdl"].Size=window.readablizeBytes(2106);fileData["Executable_Trefz_2015_noMixture.mdl"].showPreview=false;;fileData["Executable_Trefz_2015_noMixture.mdl"].Description='MDL file';fileData["Executable_Trefz_2015_noMixture.mdl"].mime='text/plain';fileData["Executable_Trefz_2015_noMixture.mdl"].isInternal=false;</script>
+        <script>
+        $(function() {
+            $( "#tabs" ).tabs({
+                fx: { opacity: 'toggle' },
+                select: function(event, ui) {
+                    jQuery(this).css('height', jQuery(this).height());
+                    jQuery(this).css('overflow', 'hidden');
+                },
+                show: function(event, ui) {
+                    jQuery(this).css('height', 'auto');
+                    jQuery(this).css('overflow', 'visible');
+                    }
+            });
+            $("#tabs ul li a").click(function (e) {
+                var anchor=$(this).attr('href');
+                var anchorClass = $(this).attr('class');
+                var anchorId = $(this).attr('id');
+                if (anchorClass=="versionDownload" || anchorClass=="publicationLink") {
+                    $.jummp.openPage(anchor);
+                } else if (anchorClass == "ui-tabs-anchor") {
+                    e.preventDefault();
+                    location.hash = anchor;
+                    var toggleHelp=0;
+                    if (helpHidden!=1) {
+                        toggleHelp=1;
+                    }
+                    if (toggleHelp==1) {
+                        hideHelp();
+                    }
+                    window.scrollTo(0, 0);
+                    if (toggleHelp==1) {
+                        showHelp();
+                    }
+                    if (anchor.startsWith("#mdl") && anchor.length == 14) {
+                        hideQuestionMark();
+                    }
+                }
+            });
+            $( "#dialog-confirm" ).dialog({
+                    resizable: false,
+                    autoOpen: false,
+                    height:250,
+                    modal: true,
+                    buttons: {
+                        "Confirm Delete": function() {
+                            $.jummp.openPage('/model/delete/DDMODEL00000103');
+                            $( this ).dialog( "close" );
+                        },
+                        Cancel: function() {
+                            $( this ).dialog( "close" );
+                        }
+                    }
+            });
+
+        });
+
+        function getCSVData(data) {
+            var lines=data.match(/[^\r\n]+/g);
+            /*var content=[];
+            content.push("<table>");*/
+            var data = [];
+            for (var line in lines) {
+                var fields=lines[line].split(",");
+                data.push(fields);
+            }
+            return data;
+        }
+
+        function addPreviewNotification(showNotification, fileProps) {
+            if (showNotification) {
+                $("#notificationgoeshere").html("As this is a large file, only a part of it is loaded below. " +
+                    "<a id='loadFileCompletely' href=''>Click here</a> " +
+                    "to load the file completely. Please be warned that this may be slow.");
+                $("#loadFileCompletely").click( function(event) {
+                        event.preventDefault();
+                        fileProps.showPreview = false;
+                        updateFileDetailsPanel(fileProps);
+                });
+            }
+            else {
+                $("#notificationgoeshere").hide();
+            }
+        }
+
+        function updateFileDetailsPanel(fileProps) {
+            if (typeof(fileProps) != "undefined") {
+                var formats=["text","txt","xml","pdf", "jpg","jpeg", "gif", "png", "bmp"];
+                var mimeType=fileProps["mime"];
+                var content=[];
+                var makeAjaxCall=false;
+                var imageType=false;
+                var mdlType=false;
+                var xmlType=false;
+                var csvType=false;
+                content.push("<div class='ui-widget-content ui-corner-all'><div class='padleft padright padtop'><h3>")
+                content.push(fileProps["Name"])
+                var fileLink="/model/download/DDMODEL00000103.15"
+                                        +"?filename="+encodeURIComponent(fileProps.Name)
+                content.push("<a title='Download ",fileProps.Name, "'","href='",fileLink);
+                fileLink=fileLink+"&inline=true";
+                content.push("'><img style='width:20px;margin-left:10px;float:none' alt='Download' " +
+                    "src='http://web.archive.org/web/20250417204749/http://repository.ddmore.foundation//images/download.png'/></a></h3></div>");
+                if (mimeType!=null) {
+                    for (var format in formats) {
+                        var matching=formats[format];
+                        if (mimeType.indexOf(matching) !=-1) {
+                            makeAjaxCall=true
+                            if (matching=="jpg" || matching=="jpeg" || matching=="gif" || matching=="png" || matching=="bmp") {
+                                imageType=true;
+                            }
+                            if (matching=="txt" || matching=="text" || matching=="xml") {
+                                if (fileProps.Name.indexOf('.mdl') !=-1) {
+                                    mdlType=true;
+                                }
+                                if (fileProps.Name.indexOf('.xml')!=-1) {
+                                    xmlType=true;
+                                }
+                                if (fileProps.Name.indexOf('.csv')!=-1) {
+                                    csvType=true;
+                                }
+                            }
+                            content.push("<div id='notificationgoeshere' class='padleft padbottom'></div>" +
+                                "<div id='filegoeshere' class='padright padbottom")
+                            if (!mdlType && !xmlType) {
+                                content.push(" padleft")
+                            }
+                            content.push("'>")
+                            if (matching=="pdf") {
+                                content.push("<iframe width='100%' height='500' src='")
+                                content.push(fileLink)
+                                content.push("'/>")
+                            }
+                            content.push("</div>")
+                        }
+                    }
+                }
+                content.push("<div class='metapanel'><div id='tableGoesHere' class='padleft padright padbottom'>")
+                if (!fileProps.isInternal) {
+                    var detailsURL = "/model/getFileDetails/DDMODEL00000103.15"
+                                            +"?filename="+encodeURIComponent(fileProps.Name)
+                    //console.log(detailsURL);
+                    $.ajax({
+                        url: detailsURL,
+                        dataType: "text",
+                        success: function(data) {
+                            //console.log(data);
+                            data=JSON.parse(data);
+                            var tcontent=[];
+                            tcontent.push("<table cellpadding='2' cellspacing='5'>")
+                            for (var prop in fileProps) {
+                                if (prop!="isInternal" && prop!="Name" && fileProps[prop]
+                                    && fileProps[prop]!="null" && prop!="mime" && prop!="showPreview") {
+                                    tcontent.push("<tr><td><b>",prop.replace("_"," "),"</b></td><td>",fileProps[prop])
+                                    tcontent.push("</td></tr>");
+                                }
+                            }
+                            tcontent.push("<tr><td><b>Submitted</b></td><td>",new Date(data[0].commit))
+                            tcontent.push("</td></tr>")
+                            tcontent.push("<tr><td><b>Last Modified</b></td><td>",new Date(data[data.length-1].commit))
+                            tcontent.push("</td></tr>")
+
+                            tcontent.push("</table>");
+                            $("#tableGoesHere").html(tcontent.join(""));
+                            $("#Files").equalize({reset: true});
+                        },
+                        error: function(jq, status, errorThrown) {
+                            alert(status+".."+errorThrown);
+                        }
+                    });
+                }
+                else {
+                    content.push("<table cellpadding='2' cellspacing='5'>")
+                    for (var prop in fileProps) {
+                        if (prop!="isInternal" && prop!="Name" && fileProps[prop] && fileProps[prop]!="null" && prop!="mime") {
+                            content.push("<tr><td><b>",prop.replace("_"," "),"</b></td><td>",fileProps[prop])
+                            content.push("</td></tr>");
+                        }
+                    }
+                    content.push("</table>");
+                }
+                content.push("</div></div></div>");
+                $("#Files #detailsBox").html(content.join(""));
+                if (makeAjaxCall) {
+                    if (mdlType) {
+                        $.ajax({
+                            url : fileLink+"&preview="+encodeURIComponent(fileProps.showPreview),
+                            dataType: "text",
+                            success : function (data) {
+                                var brush=new SyntaxHighlighter.brushes.mdl()
+                                brush.init({ toolbar: false });
+                                var html=brush.getHtml(data)
+                                $("#filegoeshere").html(html);
+                                addPreviewNotification(fileProps.showPreview, fileProps);
+                                $("#Files").equalize({reset: true});
+                                $(".syntaxhighlighter").css({'max-height': (screen.height * 0.45)+'px'});
+                            }
+                        });
+                    }
+                    else if (xmlType) {
+                        $.ajax({
+                            url : fileLink+"&preview="+encodeURIComponent(fileProps.showPreview),
+                            dataType: "text",
+                            success : function (data) {
+                                var brush=new SyntaxHighlighter.brushes.Xml()
+                                brush.init({ toolbar: false });
+                                var html=brush.getHtml(data)
+                                $("#filegoeshere").html(html);
+                                addPreviewNotification(fileProps.showPreview, fileProps);
+                                $("#Files").equalize({reset: true});
+                                $(".syntaxhighlighter").css({'max-height': (screen.height * 0.45)+'px'});
+                            }
+                        });
+                    }
+                    else if (csvType) {
+                        $.ajax({
+                            url : fileLink+"&preview="+encodeURIComponent(fileProps.showPreview),
+                            dataType: "text",
+                            success : function (data) {
+                                var plottingData=getCSVData(data)
+                                //$("#filegoeshere").html(plottingData);
+                                $("#filegoeshere").handsontable({
+                                                        data: plottingData,
+                                                        width: 625,
+                                                        height: 300,
+                                                        stretchH: 'all',
+                                                        readOnly: true,
+                                                        colHeaders: true,
+                                });
+                                addPreviewNotification(fileProps.showPreview, fileProps);
+                                $("#Files").equalize({reset: true});
+                            }
+                        });
+                    }
+                    else if (mimeType.indexOf("txt") != -1 || mimeType.indexOf("text") != -1) {
+                        $.ajax({
+                            url : fileLink+"&preview="+encodeURIComponent(fileProps.showPreview),
+                            dataType: "text",
+                            success : function (data) {
+                                $("#filegoeshere").text(data);
+                                $("#filegoeshere").html($("#filegoeshere").html().replace(/(\r\n|\n|\r)/gm,'<br/>'));
+                                addPreviewNotification(fileProps.showPreview, fileProps);
+                                $("#Files").equalize({reset: true});
+                            }
+                        });
+                    }
+                    else if (imageType) {
+                        var img = $("<img style='width:100%;' />").attr('src', fileLink)
+                                    .load(function() {
+                                        if (!this.complete || typeof this.naturalWidth == "undefined" || this.naturalWidth == 0) {
+                                            $("#filegoeshere").text("Image could not be loaded")
+                                        } else {
+                                            $("#filegoeshere").append(img);
+                                            $("#Files").equalize({reset: true});
+                                        }
+                        });
+                    }
+                }
+            }
+            else {
+                $("#Files #detailsBox").html("");
+            }
+            $("#Files").equalize({reset: true});
+        }
+
+        $(document).ready(function() {
+            // Handler for .ready() called.
+            $("#Files #treeView").bind("select_node.jstree", function(event, data) {
+                    var clickedOn=$(data.args[0]).attr('title')
+                    if (clickedOn!=null) {
+                        clickedOn = clickedOn.replace(/^\s+|\s+$/g,'')
+                        var fileProps=fileData[clickedOn]
+                        updateFileDetailsPanel(fileProps)
+                    }
+                    else {
+                        $("#Files #detailsBox").html("");
+                    }
+                }).jstree({
+                "ui" : {
+                    "select_limit" : 1
+                },
+                "themes" : {
+                        "theme" : "classic",
+                        "icons" : false
+                },
+                "plugins" : [ "themes", "html_data", "ui"]
+            });
+            var tree = $("#Files #treeView");
+            tree.bind("loaded.jstree", function (event, data) {
+                tree.jstree("open_all");
+            });
+            $('#confirm-model-publish').dialog({
+                resizable: false,
+                autoOpen: false,
+                height: 300,
+                width: 500,
+                modal: true,
+                buttons: {
+                    Confirm: function() {
+                        $.jummp.openPage("/model/publish?id=DDMODEL00000103.15");
+                        $( this ).dialog( "close" );
+                    },
+                    Cancel: function() {
+                        $( this ).dialog( "close" );
+                    }
+                }
+            });
+            $('#confirm-model-notify').dialog({
+                resizable: false,
+                autoOpen: false,
+                height: 200,
+                width: 525,
+                modal: true,
+                buttons: {
+                    Confirm: function() {
+                        $.jummp.openPage("/model/submitForPublication/DDMODEL00000103.15");
+                        $( this ).dialog( "close" );
+                    },
+                    Cancel: function() {
+                        $( this ).dialog( "close" );
+                    }
+                }
+            });
+            $("body").append("<div id='modelToolbar' class='collapsibleContainer' title='Model Toolbar'>" +
+                "<button title='Expand Toolbar' data-showing='0' id='panelToggle'>Expand</button></div>	");
+            $("#buttonContainer").prependTo("#modelToolbar");
+            $("#panelToggle").click(function (evt){
+                    displayToolbar($("#panelToggle").data("showing") == '0', true);
+            });
+            $( "#download" ).button({
+                    text:false,
+                    icons: {
+                        primary:"ui-icon-arrowthickstop-1-s"
+                    }
+            }).removeClass('ui-corner-all').css({ width: '45px', 'padding-top': '10px', 'padding-bottom': '10px' });
+            $( "#peer-review" ).button({
+                text:false,
+                icons: {
+                    primary:"ui-icon-signal-diag"
+                }
+            }).removeClass('ui-corner-all').css({ width: '45px', 'padding-top': '10px', 'padding-bottom': '10px' });
+            $( "#update" ).button({
+                    text:false,
+                    icons: {
+                        primary:"ui-icon-refresh"
+                    }
+            }).removeClass('ui-corner-all').css({ width: '45px', 'padding-top': '10px', 'padding-bottom': '10px' });
+            $( "#delete" ).button({
+                    text:false,
+                    icons: {
+                        primary:"ui-icon-trash"
+                    }
+            }).removeClass('ui-corner-all').css({ width: '45px', 'padding-top': '10px', 'padding-bottom': '10px' });
+            $( "#publish" ).button({
+                    text:false,
+                    icons: {
+                        primary:"ui-icon-unlocked"
+                    }
+            }).removeClass('ui-corner-all').css({ width: '45px', 'padding-top': '10px', 'padding-bottom': '10px' });
+            $( "#share" ).button({
+                    text:false,
+                    icons: {
+                        primary:"ui-icon-person"
+                    }
+            }).removeClass('ui-corner-all').css({ width: '45px', 'padding-top': '10px', 'padding-bottom': '10px' });
+            $("#annotate").button({
+                text: false,
+                icons: {
+                    primary: "ui-icon-tag"
+                }
+            }).removeClass('ui-corner-all').css({ width: '45px', 'padding-top': '10px', 'padding-bottom': '10px' });
+            $("#certify").button({
+                text: false,
+                icons: {
+                    primary: "ui-icon-star"
+                }
+            }).removeClass('ui-corner-all').css({ width: '45px', 'padding-top': '10px', 'padding-bottom': '10px' });
+            $("#panelToggle").button({
+                    text:false,
+                    icons: {
+                        primary: "ui-icon-circle-arrow-e"
+                    }
+            }).removeClass('ui-corner-all').css({ width: '45px', 'padding-top': '10px', 'padding-bottom': '10px', 'float':'right'  });
+        });
+        displayToolbar(false, false);
+
+        function displayToolbar(show, firstTime) {
+            if (show) {
+                    $("#panelToggle").data("showing", '1');
+                    $(".pagecontent").width("95%");
+                    $(".pagecontent").css('margin-left', '80px');
+                    $(".buttonLabel").show();
+                    $("#modelToolbar").width("120px");
+                    $( "#panelToggle" ).button("option", {
+                            icons: { primary: "ui-icon-circle-arrow-w" }
+                    });
+                    $( ".toolbutton" ).button("option", "text", true);
+                    $( ".toolbutton" ).css({ width: '120px', 'padding-top': '10px', 'padding-bottom': '10px' });
+            }
+            else {
+                    $("#panelToggle").data("showing", '0');
+                    $(".pagecontent").width("100%");
+                    $(".pagecontent").css('margin-left', '5px');
+                    $(".buttonLabel").hide();
+                    $("#modelToolbar").width("45px");
+                    $( ".toolbutton" ).button("option", "text", false);
+                    if (firstTime) {
+                        $( "#panelToggle" ).button("option", {
+                            icons: { primary: "ui-icon-circle-arrow-e" }
+                        });
+                    }
+                    $( ".toolbutton" ).css({ width: '45px', 'padding-top': '10px', 'padding-bottom': '10px' });
+            }
+        }
+/*        function displayStar(nbStar) {
+            if (nbStar == 1) {
+                <img style="float:right;margin-top:0;" title="This version of the model is certified"
+                     alt="certified model"
+                     src="http://web.archive.org/web/20250417204749/http://repository.ddmore.foundation//images/icons/yellowfilledinstar.png"/>
+                <img style="float:right;margin-top:0;" title="This version of the model is certified"
+                alt="certified model"
+                src="http://web.archive.org/web/20250417204749/http://repository.ddmore.foundation//images/icons/star.png"/>
+
+            } else {
+
+            }
+            <img style="float:right;margin-top:0;" title="This version of the model is certified"
+                 alt="certified model"
+                 src="http://web.archive.org/web/20250417204749/http://repository.ddmore.foundation//images/icons/star.png"/>
+        }*/
+    </script>
+    
+    <meta name="layout" content="modelDisplay"/>
+    <style>
+        td, th {
+            padding: 5px;
+        }
+        th {
+            text-align: center;
+            vertical-align: middle;
+        }
+        .default {
+            margin:0;
+        }
+        .bold {
+            font-weight: bold;
+        }
+        .italic {
+            font-style: italic;
+        }
+    </style>
+
+    
+    
+<script type="text/javascript">
+    var _gaq = _gaq || [];
+    
+    _gaq.push(['_setAccount', 'UA-111431614-1']);
+    _gaq.push(['_trackPageview']);
+    
+(function() {
+  var ga = document.createElement('script'); ga.type = 'text/javascript'; ga.async = true;
+  ga.src = ('https:' == document.location.protocol ? 'http://web.archive.org/web/20250417204749/https://ssl' : 'http://web.archive.org/web/20250417204749/http://www') + '.google-analytics.com/ga.js';
+  var s = document.getElementsByTagName('script')[0]; s.parentNode.insertBefore(ga, s);
+})();
+</script>
+<script type="text/javascript">
+    var _gaq = _gaq || [];
+    
+    _gaq.push(['_setAccount', 'UA-111431614-2']);
+    _gaq.push(['_trackPageview']);
+    
+</script>
+</head>
+    
+
+
+
+    <body><!-- BEGIN WAYBACK TOOLBAR INSERT -->
+<script>__wm.rw(0);</script>
+<div id="wm-ipp-base" lang="en" style="display:none;direction:ltr;" toolbar-mode="auto">
+<div id="wm-ipp" style="position:fixed;left:0;top:0;right:0;">
+<div id="donato" style="position:relative;width:100%;height:0;">
+  <div id="donato-base">
+    <iframe id="donato-if" src="https://archive.org/includes/donate.php?as_page=1&amp;platform=wb&amp;referer=http%3A//web.archive.org/web/20250417204749/http%3A//repository.ddmore.foundation/model/DDMODEL00000103"
+	    scrolling="no" frameborder="0" style="width:100%; height:100%">
+    </iframe>
+  </div>
+</div><div id="wm-ipp-inside">
+  <div id="wm-toolbar" style="position:relative;display:flex;flex-flow:row nowrap;justify-content:space-between;" nav="async">
+    <div id="wm-logo" style="/*width:110px;*/padding-top:12px;">
+      <a href="/web/" title="Wayback Machine home page"><img src="https://web-static.archive.org/_static/images/toolbar/wayback-toolbar-logo-200.png" srcset="https://web-static.archive.org/_static/images/toolbar/wayback-toolbar-logo-100.png, https://web-static.archive.org/_static/images/toolbar/wayback-toolbar-logo-150.png 1.5x, https://web-static.archive.org/_static/images/toolbar/wayback-toolbar-logo-200.png 2x" alt="Wayback Machine" style="width:100px" border="0" /></a>
+    </div>
+    <div class="c" style="display:flex;flex-flow:column nowrap;justify-content:space-between;flex:1;">
+      <form class="u" style="display:flex;flex-direction:row;flex-wrap:nowrap;" target="_top" method="get" action="/web/submit" name="wmtb" id="wmtb"><input type="text" name="url" id="wmtbURL" value="http://repository.ddmore.foundation/model/DDMODEL00000103" onfocus="this.focus();this.select();" style="flex:1;"/><input type="hidden" name="type" value="replay" /><input type="hidden" name="date" value="20250417204749" /><input type="submit" value="Go" />
+      </form>
+      <div style="display:flex;flex-flow:row nowrap;align-items:flex-end;">
+                <div class="s" id="wm-nav-captures" style="flex:1;">
+                    <a class="t" href="/web/20250417204749*/http://repository.ddmore.foundation/model/DDMODEL00000103" title="See a list of every capture for this URL">14 captures</a>
+          <div class="r" title="Timespan for captures of this URL">18 Jul 2019 - 11 Jul 2025</div>
+          </div>
+        <div class="k">
+          <a href="" id="wm-graph-anchor">
+            <div id="wm-ipp-sparkline" title="Explore captures for this URL" style="position: relative">
+              <canvas id="wm-sparkline-canvas" width="775" height="27" border="0"></canvas>
+            </div>
+          </a>
+        </div>
+      </div>
+    </div>
+    <div class="n">
+      <table>
+        <tbody>
+          <!-- NEXT/PREV MONTH NAV AND MONTH INDICATOR -->
+          <tr class="m">
+            <td class="b" nowrap="nowrap">Mar</td>
+            <td class="c" id="displayMonthEl" title="You are here: 20:47:49 Apr 17, 2025">APR</td>
+            <td class="f" nowrap="nowrap">May</td>
+          </tr>
+          <!-- NEXT/PREV CAPTURE NAV AND DAY OF MONTH INDICATOR -->
+          <tr class="d">
+            <td class="b" nowrap="nowrap"><span class="ta"></span></td>
+            <td class="c" id="displayDayEl" style="width:34px;font-size:22px;white-space:nowrap;" title="You are here: 20:47:49 Apr 17, 2025">17</td>
+            <td class="f" nowrap="nowrap"><span class="ta"></span></td>
+          </tr>
+          <!-- NEXT/PREV YEAR NAV AND YEAR INDICATOR -->
+          <tr class="y">
+            <td class="b" nowrap="nowrap">2024</td>
+            <td class="c" id="displayYearEl" title="You are here: 20:47:49 Apr 17, 2025">2025</td>
+            <td class="f" nowrap="nowrap">2026</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="r" style="display:flex;flex-flow:column nowrap;align-items:flex-end;justify-content:space-between;">
+      <div id="wm-btns" style="text-align:right;height:23px;">
+                <span class="xxs">
+          <div id="wm-save-snapshot-success">success</div>
+          <div id="wm-save-snapshot-fail">fail</div>
+          <a id="wm-save-snapshot-open" href="#" title="Share via My Web Archive" >
+            <span class="iconochive-web"></span>
+          </a>
+          <a href="https://archive.org/account/login.php" title="Sign In" id="wm-sign-in">
+            <span class="iconochive-person"></span>
+          </a>
+          <span id="wm-save-snapshot-in-progress" class="iconochive-web"></span>
+        </span>
+                <a class="xxs" href="https://help.archive.org/help/category/the-wayback-machine/" title="Get some help using the Wayback Machine" style="top:-6px;"><span class="iconochive-question" style="color:rgb(87,186,244);font-size:160%;"></span></a>
+        <a id="wm-tb-close" href="#close" style="top:-2px;" title="Close the toolbar"><span class="iconochive-remove-circle" style="color:#888888;font-size:240%;"></span></a>
+      </div>
+      <div id="wm-share" class="xxs">
+        <a href="/web/20250417204749/http://web.archive.org/screenshot/http://repository.ddmore.foundation/model/DDMODEL00000103"
+           id="wm-screenshot"
+           title="screenshot">
+          <span class="wm-icon-screen-shot"></span>
+        </a>
+        <a href="#" id="wm-video" title="video">
+          <span class="iconochive-movies"></span>
+        </a>
+        <a id="wm-share-facebook" href="#" data-url="http://web.archive.org/web/20250417204749/http://repository.ddmore.foundation/model/DDMODEL00000103" title="Share on Facebook" style="margin-right:5px;" target="_blank"><span class="iconochive-facebook" style="color:#3b5998;font-size:160%;"></span></a>
+        <a id="wm-share-twitter" href="#" data-url="http://web.archive.org/web/20250417204749/http://repository.ddmore.foundation/model/DDMODEL00000103" title="Share on Twitter" style="margin-right:5px;" target="_blank"><span class="iconochive-twitter" style="color:#1dcaff;font-size:160%;"></span></a>
+      </div>
+      <div style="padding-right:2px;text-align:right;white-space:nowrap;">
+        <a id="wm-expand" class="wm-btn wm-closed" href="#expand"><span id="wm-expand-icon" class="iconochive-down-solid"></span> <span class="xxs" style="font-size:80%;">About this capture</span></a>
+      </div>
+    </div>
+  </div>
+    <div id="wm-capinfo" style="border-top:1px solid #777;display:none; overflow: hidden">
+        <div id="wm-capinfo-notice" source="api"></div>
+                <div id="wm-capinfo-collected-by">
+    <div style="background-color:#666;color:#fff;font-weight:bold;text-align:center;padding:2px 0;">COLLECTED BY</div>
+    <div style="padding:3px;position:relative" id="wm-collected-by-content">
+      <div style="display:inline-block;vertical-align:top;width:49%;">
+			<span class="c-logo" style="background-image:url(https://archive.org/services/img/commoncrawl)"></span>
+		<div>Collection: <a style="color:#33f;" href="https://archive.org/details/commoncrawl" target="_new"><span class="wm-title">Common Crawl</span></a></div>
+		<div style="max-height:75px;overflow:hidden;position:relative;">
+	  <div style="position:absolute;top:0;left:0;width:100%;height:75px;background:linear-gradient(to bottom,rgba(255,255,255,0) 0%,rgba(255,255,255,0) 90%,rgba(255,255,255,255) 100%);"></div>
+	  Web crawl data from Common Crawl.
+	</div>
+	      </div>
+    </div>
+    </div>
+    <div id="wm-capinfo-timestamps">
+    <div style="background-color:#666;color:#fff;font-weight:bold;text-align:center;padding:2px 0;" title="Timestamps for the elements of this page">TIMESTAMPS</div>
+    <div>
+      <div id="wm-capresources" style="margin:0 5px 5px 5px;max-height:250px;overflow-y:scroll !important"></div>
+      <div id="wm-capresources-loading" style="text-align:left;margin:0 20px 5px 5px;display:none"><img src="https://web-static.archive.org/_static/images/loading.gif" alt="loading" /></div>
+    </div>
+    </div>
+  </div></div></div></div><div id="wm-ipp-print">The Wayback Machine - http://web.archive.org/web/20250417204749/http://repository.ddmore.foundation/model/DDMODEL00000103</div>
+<script type="text/javascript">//<![CDATA[
+__wm.bt(775,27,25,2,"web","http://repository.ddmore.foundation/model/DDMODEL00000103","20250417204749",1996,"https://web-static.archive.org/_static/",["https://web-static.archive.org/_static/css/banner-styles.css?v=1utQkbB3","https://web-static.archive.org/_static/css/iconochive.css?v=3PDvdIFv"], false);
+  __wm.rw(1);
+//]]></script>
+<!-- END WAYBACK TOOLBAR INSERT -->
+ 
+
+
+        <!-- Google Tag Manager (noscript) -->
+        <noscript><iframe src="http://web.archive.org/web/20250417204749if_/https://www.googletagmanager.com/ns.html?id=GTM-NLS3ZHD" height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+        <!-- End Google Tag Manager (noscript) -->    <div id="totality">
+        <div id="mainframe">
+            
+
+
+
+
+
+
+
+
+
+
+  <div id="skip-link">
+    <a href="#main-menu" class="element-invisible element-focusable">Jump to Navigation</a>
+  </div>
+
+  <div id="header-full">
+      <div id="header"><div class="section clearfix">
+
+          <a href="http://web.archive.org/web/20250417204749/http://repository.ddmore.foundation//" title="Home" rel="home" id="logo"><img src="/web/20250417204749im_/http://repository.ddmore.foundation/images/ddmore/logo.png" alt="DDMoRe Model Repository Logo"/></a>
+
+      <div class="region region-header">
+      	<div id="block-system-user-menu" class="block block-system user-menu block-menu first odd">
+      		<div class="content">
+      			<ul class="menu">
+      			
+      			
+                    
+      				<li class="first leaf">
+      					<a href="http://web.archive.org/web/20250417204749/http://repository.ddmore.foundation//registration">
+      						Register
+      					</a>
+      				</li>
+                    <li class="last leaf">
+                    
+      					<a href="http://web.archive.org/web/20250417204749/http://repository.ddmore.foundation//login">
+      						Login
+      					</a>
+      				</li>
+      			
+      			</ul>
+      		</div><!-- /.block -->
+      	</div>
+      <div id="block-search-form" class="block block-search search even">
+      	 <div class="content">
+      	 	<form action="/web/20250417204749/http://repository.ddmore.foundation/search/searchRedir" method="post">
+      	 	<div><div class="container-inline">
+      	 			<input title="Enter the terms you wish to search for." type="text" id="edit-search-block-form--2" name="search_block_form" value="" maxlength="256" class="form-text"/>
+      	 			<input type="submit" id="edit-submit" value="" class="form-submit"/>
+     		</div></div>
+    	 	</form>
+
+  </div>
+
+</div>
+
+<div id="block-system-main-menu" class="block block-system main-menu block-menu last odd">
+
+
+  <div class="content">
+    <ul class="menu">
+    	<li class="first expanded active-trail">
+    		<a href="/web/20250417204749/http://repository.ddmore.foundation/models" title="browse models">Browse</a>
+    	</li>
+    	<li class="expanded">
+    		<a href="/web/20250417204749/http://repository.ddmore.foundation/model/create" title="submit a model">Submit</a>
+    	</li>
+        
+        <li class="expanded">
+          <a href="/web/20250417204749/http://repository.ddmore.foundation/support">
+            Support</a>
+        </li>
+        <li class="expanded">
+            
+                <a href="http://web.archive.org/web/20250417204749/https://www.ddmore.foundation/request-model-certification/" target="_blank" title="Request DDMoRe certification of your model -- link opens in a new window">Request Certification</a>
+            
+        </li>
+    </ul>
+</div>
+<p></p>
+</div><!-- /.block -->
+  </div><!-- /.region -->
+
+  </div></div><!-- /.section, /#header -->
+
+</div>
+
+
+            
+
+
+
+
+
+
+
+
+
+
+
+<div id="center-full">
+
+  <div id="page-wrapper">
+    <div id="center-background">&nbsp;</div>
+    <div id="center-backgroundright">&nbsp;</div>
+    <div id="page">
+
+  <div id="main-wrapper"><div id="main" class="clearfix">
+
+    <div id="content" class="column"><div class="section">
+            
+                  
+            <a id="main-content"></a>
+                    <h1 class="title" id="page-title">
+                    	
+                    </h1>
+                    <div class="flashNotificationDiv">
+
+	
+		<script type="text/javascript">
+
+			hideNow()
+		
+</script>
+
+	
+
+
+</div>
+
+  		            <div class="content">
+                     </div>
+                                <div class="region region-content">
+    <div id="block-system-main" class="block block-system first last odd">
+
+      
+  <div class="content">
+    
+  	<div class="content pagecontent">
+  		
+  		
+        <div id="buttonContainer" style="display:inline">
+                <ul id="toolbarList"><li>
+                <button class="toolbutton" id="download" onclick="return $.jummp.openPage('/model/download/DDMODEL00000103.15')">Download</button></li>
+                <li>
+                
+                
+                
+                
+                
+                
+                    
+                </ul>
+         </div>
+        <div class="ebiLayout_reduceWidth">
+        
+        
+        <div id="topBar">
+            <div style="float:left;width:75%;">
+                <h1>DDMODEL00000103: Trefz_2015_metabolism_Kuvan_TurnoverKPD</h1>
+            </div>
+            <div style="float:right;margin-top:10px;">
+                
+                <span>&nbsp;</span>
+                
+                    <img style="float:right;margin-top:0;" title="This version of the model is public" alt="public model" src="http://web.archive.org/web/20250417204749im_/http://repository.ddmore.foundation//images/unlock.png"/>
+                
+            </div>
+        </div>
+     <div id="tablewrapper">
+     <div id="tabs">
+     <ul class="modelTabs">
+        <li><a href="#Overview">Overview</a></li>
+        <li><a href="#Files">Files</a></li>
+        <li><a href="#History">History</a></li>
+        
+    <li><a href="#modelDefinition">Model Definition</a></li>
+<li><a href="#estimationSteps">Estimation Steps</a></li>
+
+
+    </ul>
+      <div id="Overview">
+          
+              <span class="bold">Short description:</span>
+          
+          <div style="margin-left: 30px;">
+              Tetrahydrobiopterin (BH4) responsiveness in neonates with hyperphenylalaninemia: A semi-mechanistically-based, nonlinear mixed-effect modeling.
+Assess the individual BH4 responsiveness in neonates suffering from phenylalanine hydroxylase (PAH).
+It is a pharmacodynamic turnover model (stimulation of loss) of Phenylalanine in blood disposition. The K-PD approach is used to describe BH4 kinetics. Mixture population approach is used to differentiate BH4 sensitive and non-sensitive patients.
+          </div>
+        <table style="margin-top:30px">
+        <tr>
+            <td><label>Format:</label></td>
+            <td><div class="spaced">PharmML (0.6.1)</div></td>
+        </tr>
+        
+        
+            <tr>
+                <td><label>Related Publication:</label></td>
+                <td>
+                    <div class="spaced">
+                        
+
+
+
+
+
+
+
+
+
+
+
+
+	<div>
+		<style>
+			.hiddenContent {display:none;}
+		</style>
+    	<ul style="list-style-type: none;margin: 0px;padding:0px;">
+		<li><a title="View publication - this will open an external site" class="publicationLink" href="http://web.archive.org/web/20250417204749/http://identifiers.org/doi/10.1016/j.ymgme.2015.01.013">
+			<b>Tetrahydrobiopterin (BH4) responsiveness in neonates with</b></a>
+		<a class="expander" title="Click to see more" href="#">
+			<span>
+				<img style="width:12px;margin:2px;float:none" src="http://web.archive.org/web/20250417204749im_/http://repository.ddmore.foundation//images/expand.png"/>
+			</span>
+		</a>
+		
+			</li>		
+		<li>F. Trefz, O. Lichtenberger, N. Blau, A. C. Muntau, F. Feillet, A. Bélanger-Quintana, F. van Spronsen, A. Munafo</li>
+    	<li><i>Molecular Genetics and Metabolism</i>, 1/2015</li>
+ 		<div class="hiddenContent">
+ 			
+ 				<li><label>Affiliation: </label> Outpatient Medical Centre for Women, Children and Adolescents, Kreiskliniken Reutlingen GmbH, 72501 Gammertingen, Marktstrasse 4, Germany
+Merck KGaA, Darmstadt, Germany
+University Children's Hospital, Im Neuenheimer Feld 430, 69120 Heidelberg, Germany</li>
+ 			
+ 			
+    			<li><label>Abstract: </label>Neonatal loading studies with tetrahydrobiopterin (BH4) are used to detect hyperphenylalaninemia due to BH4
+deficiency by evaluating decreases in blood phenylalanine (Phe) concentrations post BH4 load. BH4 responsiveness
+in phenylalanine hydroxylase (PAH)-deficient patients introduced a new diagnostic aspect for this test. In
+older children, a broad spectrum of different levels of responsiveness has been described. The primary objective
+of this study was to develop a pharmacodynamic model to improve the description of individual sensitivity to
+BH4 in the neonatal period. Secondary objectives were to evaluate BH4 responsiveness in a large number of
+PAH-deficient patients from a neonatal screening program and in patients with various confirmed BH4 deficiencies
+from the BIODEF database.
+Descriptive statistics in patientswith PAH deficiency with 0–24-h data available showed that 129 of 340 patients
+(37.9%) had a N30% decrease in Phe levels post load. Patientswith dihydropteridine reductase deficiency (n=53)
+could not be differentiated from BH4-responsive patients with PAH deficiency. The pharmacologic turnover
+model, “stimulation of loss” of Phe following BH4 load, fitted the data best. Using the model, 193 of 194 (99.5%)
+patients with a proven BH4 synthesis deficiency or recycling defect were classified as BH4 sensitive. Among
+patients with PAH deficiency, 216 of 375 (57.6%) patients showed sensitivity to BH4, albeit with a pronounced
+variability; PAH-deficient patientswith blood Phe b1200 ?mol/L at time 0 showed higher sensitivity than patients
+with blood Phe levels N1200 ?mol/L. External validation showed good correlation between the present approach,
+using 0–24-h blood Phe data, and the published 48-h prognostic test.
+Pharmacodynamic modeling of Phe levels following a BH4 loading test is sufficiently powerful to detect a wide
+range of responsiveness, interpretable as a measure of sensitivity to BH4. However, the clinical relevance of small
+responses needs to be evaluated by further studies of their relationship to long-term response to BH4 treatment.</li>
+    		
+    	</div>
+    	</ul>
+    	<script src="/web/20250417204749js_/http://repository.ddmore.foundation/js/simple-expand.js" type="text/javascript"></script>
+
+    	<script>
+			$('.expander').simpleexpand({'defaultTarget':'div.hiddenContent'});
+		</script>
+		</div>
+
+
+                    </div>
+                </td>
+            </tr>
+        
+        <tr>
+            <td><label>Contributors:</label></td>
+            <td>
+                <div class="spaced">
+                    Nadia Terranova, Kheizurane_ElMekki
+                </div>
+            </td>
+        </tr>
+        </table>
+        
+    
+
+<table>
+    
+        
+            <tr>
+                <td class="bold">Context of model development:</td>
+                <td>
+                    
+
+
+    
+        
+            <span>Patient Population Selection and Bridging between Population (Pediatrics, Elderly, Obese);</span>
+        
+    
+
+
+                </td>
+            </tr>
+        
+            <tr>
+                <td class="bold">Discrepancy between implemented model and original publication:</td>
+                <td>
+                    
+
+
+    
+        
+            <span>The model implemented in the original publication is a mixture model, including two population: sensitive to BH4 ( the SLOP parameter is assumed lognormally distributed) and non-sensitive to BH4 (the SLOP parameter is assumed to be equal to zero).;</span>
+        
+    
+
+
+                </td>
+            </tr>
+        
+            <tr>
+                <td class="bold">Long technical model description:</td>
+                <td>
+                    
+
+
+    
+        
+            <span>Pharmacodynamic turnover model with stimulation of loss describing the Phenylalanine in blood (Phe) disposition. A K-PD approach was used to describe the kinetics of BH4. The model includes a mixture approaches to distinguish BH4 sensitive to non sensitive patients.;</span>
+        
+    
+
+
+                </td>
+            </tr>
+        
+            <tr>
+                <td class="bold">Model compliance with original publication:</td>
+                <td>
+                    
+
+
+    
+        
+            <span>No;</span>
+        
+    
+
+
+                </td>
+            </tr>
+        
+            <tr>
+                <td class="bold">Model implementation requiring submitter’s additional knowledge:</td>
+                <td>
+                    
+
+
+    
+        
+            <span>No;</span>
+        
+    
+
+
+                </td>
+            </tr>
+        
+            <tr>
+                <td class="bold">Modelling context description:</td>
+                <td>
+                    
+
+
+    
+        
+            <span>Pharmacodynamic model to improve the description of individual sensitivity to BH4 in neonatal period;</span>
+        
+    
+
+
+                </td>
+            </tr>
+        
+            <tr>
+                <td class="bold">Modelling task in scope:</td>
+                <td>
+                    
+
+
+    
+        
+            <span>estimation;</span>
+        
+    
+
+
+                </td>
+            </tr>
+        
+            <tr>
+                <td class="bold">Nature of research:</td>
+                <td>
+                    
+
+
+    
+        
+            <span>Clinical research &amp; Therapeutic use;</span>
+        
+    
+
+
+                </td>
+            </tr>
+        
+            <tr>
+                <td class="bold">Therapeutic/disease area:</td>
+                <td>
+                    
+
+
+    
+        
+            <span>Metabolism;</span>
+        
+    
+
+
+                </td>
+            </tr>
+        
+    
+</table>
+
+
+
+          <table style="margin-top:30px">
+              <tr>
+                  <td><label>Validation Status:</label></td>
+                  <td><div class="spaced">Annotations are correct.</div></td>
+              </tr>
+              <tr>
+                  <td><label>Certification Comment:</label></td>
+                  <td><div class="spaced">This model is not certified.</div></td>
+              </tr>
+          </table>
+
+      </div>
+      <div id="Files" class="filegrid">
+        <div class="filecol-1-3">
+            <!--table>
+                <tr>
+                    <td>
+                        
+                            <a>Mandatory file</a>
+                        
+                    </td>
+                    <td>
+                        <ul>
+                            <li rel="file"><a title="Executable_Trefz_2015_noMixture.xml"><span class="pointerhere">Executable_Trefz_2015_noMixture.xml</span></a></li>
+                        </ul>
+                    </td>
+                </tr>
+                
+                    <tr>
+                        <td>
+                    <li><a>Additional Files</a>
+                        <ul>
+                            <li rel="file"><a title="Command.txt"><span class="pointerhere">Command.txt</span></a></li><li rel="file"><a title="Simulated_Trefz_2015_noMixture.csv"><span class="pointerhere">Simulated_Trefz_2015_noMixture.csv</span></a></li><li rel="file"><a title="DDMODEL00000103.rdf"><span class="pointerhere">DDMODEL00000103.rdf</span></a></li><li rel="file"><a title="Output_simulated_Trefz_2015_noMixture.lst"><span class="pointerhere">Output_simulated_Trefz_2015_noMixture.lst</span></a></li><li rel="file"><a title="Model_Accommodations.txt"><span class="pointerhere">Model_Accommodations.txt</span></a></li><li rel="file"><a title="Output_simulated_SEEalpha_NM_Trefz_2015_noMixture.zip"><span class="pointerhere">Output_simulated_SEEalpha_NM_Trefz_2015_noMixture.zip</span></a><ul><li><a><span class="pointerhere">Output_simulated_SEEalpha_NM_Trefz_2015_noMixture.zip/Output_simulated_SEEalpha_NM_Trefz_2015_noMixture/Trefz_2015_noMixture.SO.xml</span></a></li><li><a><span class="pointerhere">Output_simulated_SEEalpha_NM_Trefz_2015_noMixture.zip/Output_simulated_SEEalpha_NM_Trefz_2015_noMixture/Trefz_2015_noMixture.ext</span></a></li><li><a><span class="pointerhere">Output_simulated_SEEalpha_NM_Trefz_2015_noMixture.zip/Output_simulated_SEEalpha_NM_Trefz_2015_noMixture/sdtab</span></a></li><li><a><span class="pointerhere">Output_simulated_SEEalpha_NM_Trefz_2015_noMixture.zip/Output_simulated_SEEalpha_NM_Trefz_2015_noMixture/patab</span></a></li><li><a><span class="pointerhere">Output_simulated_SEEalpha_NM_Trefz_2015_noMixture.zip/Output_simulated_SEEalpha_NM_Trefz_2015_noMixture/Output_simulated_Trefz_2015_noMixture.lst</span></a></li></ul></li><li rel="file"><a title="Executable_Trefz_2015_noMixture.mdl"><span class="pointerhere">Executable_Trefz_2015_noMixture.mdl</span></a></li>
+                        </ul>
+                    </li>
+                        </td>
+                    </tr>
+                
+            </table-->
+            <div id="treeView">
+                <ul>
+                    <li rel="folder">
+                    
+                        <a>Mandatory file</a>
+                    
+                    <ul>
+                        <li rel="file"><a title="Executable_Trefz_2015_noMixture.xml"><span class="pointerhere">Executable_Trefz_2015_noMixture.xml</span></a></li>
+                    </ul>
+                    </li>
+                </ul>
+                <ul>
+                    
+                    <li><a>Additional Files</a>
+                        <ul>
+                            <li rel="file"><a title="Command.txt"><span class="pointerhere">Command.txt</span></a></li><li rel="file"><a title="Simulated_Trefz_2015_noMixture.csv"><span class="pointerhere">Simulated_Trefz_2015_noMixture.csv</span></a></li><li rel="file"><a title="DDMODEL00000103.rdf"><span class="pointerhere">DDMODEL00000103.rdf</span></a></li><li rel="file"><a title="Output_simulated_Trefz_2015_noMixture.lst"><span class="pointerhere">Output_simulated_Trefz_2015_noMixture.lst</span></a></li><li rel="file"><a title="Model_Accommodations.txt"><span class="pointerhere">Model_Accommodations.txt</span></a></li><li rel="file"><a title="Output_simulated_SEEalpha_NM_Trefz_2015_noMixture.zip"><span class="pointerhere">Output_simulated_SEEalpha_NM_Trefz_2015_noMixture.zip</span></a><ul><li><a><span class="pointerhere">Output_simulated_SEEalpha_NM_Trefz_2015_noMixture.zip/Output_simulated_SEEalpha_NM_Trefz_2015_noMixture/Trefz_2015_noMixture.SO.xml</span></a></li><li><a><span class="pointerhere">Output_simulated_SEEalpha_NM_Trefz_2015_noMixture.zip/Output_simulated_SEEalpha_NM_Trefz_2015_noMixture/Trefz_2015_noMixture.ext</span></a></li><li><a><span class="pointerhere">Output_simulated_SEEalpha_NM_Trefz_2015_noMixture.zip/Output_simulated_SEEalpha_NM_Trefz_2015_noMixture/sdtab</span></a></li><li><a><span class="pointerhere">Output_simulated_SEEalpha_NM_Trefz_2015_noMixture.zip/Output_simulated_SEEalpha_NM_Trefz_2015_noMixture/patab</span></a></li><li><a><span class="pointerhere">Output_simulated_SEEalpha_NM_Trefz_2015_noMixture.zip/Output_simulated_SEEalpha_NM_Trefz_2015_noMixture/Output_simulated_Trefz_2015_noMixture.lst</span></a></li></ul></li><li rel="file"><a title="Executable_Trefz_2015_noMixture.mdl"><span class="pointerhere">Executable_Trefz_2015_noMixture.mdl</span></a></li>
+                       </ul>
+                    </li>
+                    
+            </ul>
+        </div>
+        </div>
+        <div class="filecol-2-3">
+            <div id="detailsBox" class="detailsBox"></div>
+        </div>
+      </div>
+      <div id="History">
+        
+        <ul>
+            <li>Model owner: Nadia Terranova</li>
+            <li>Submitted: Dec 11, 2015 4:59:26 PM</li>
+            <li>Last Modified: Jul 18, 2016 12:07:40 PM</li>
+        </ul>
+        <h5>Revisions</h5>
+        <ul>
+             
+                <li style="background-color:#FFFFCC;margin-top:5px">
+                    Version: 15
+                    
+                            <img style="width:12px;margin:2px;float:none;" title="This version of the model is public" alt="public model" src="http://web.archive.org/web/20250417204749im_/http://repository.ddmore.foundation//images/unlock.png"/>
+                    
+                    
+                            <a class="versionDownload" title="download" href="/web/20250417204749/http://repository.ddmore.foundation/model/download/DDMODEL00000103.15">
+                                <img alt="Download this version" style="width:15px;float:none" src="http://web.archive.org/web/20250417204749im_/http://repository.ddmore.foundation//images/download.png"/>
+                            </a>
+                        <ul>
+                            <li>Submitted on: Jul 18, 2016 12:07:40 PM</li>
+                            <li>Submitted by: Nadia Terranova</li>
+                            <li>With comment: Updated model annotations.</li>
+                        </ul>
+                </li>
+             
+                <li style="margin-top:5px">
+                    Version: 6
+                    
+                            <img style="width:12px;margin:2px;float:none;" title="This version of the model is public" alt="public model" src="http://web.archive.org/web/20250417204749im_/http://repository.ddmore.foundation//images/unlock.png"/>
+                    
+                    
+                        <a class="versionDownload" title="go to version 6" href="/web/20250417204749/http://repository.ddmore.foundation/model/DDMODEL00000103.6">
+                            <img style="width:12px;margin:2px;float:none" src="http://web.archive.org/web/20250417204749im_/http://repository.ddmore.foundation//images/external_link.png"/>
+                        </a>
+                    
+                            <a class="versionDownload" title="download" href="/web/20250417204749/http://repository.ddmore.foundation/model/download/DDMODEL00000103.6">
+                                <img alt="Download this version" style="width:15px;float:none" src="http://web.archive.org/web/20250417204749im_/http://repository.ddmore.foundation//images/download.png"/>
+                            </a>
+                        <ul>
+                            <li>Submitted on: Dec 11, 2015 4:59:26 PM</li>
+                            <li>Submitted by: Kheizurane_ElMekki</li>
+                            <li>With comment: Edited model metadata online.</li>
+                        </ul>
+                </li>
+             
+        </ul>
+      </div>
+      
+    <div id="modelDefinition">
+<p><strong>Independent variable</strong>&nbsp;T</p>
+
+
+    <h3>Function Definitions</h3>
+    
+        <div><math display="inline"><mstyle><mi>combinedError2</mi><mo>(</mo><mi>additive</mi><mo>,</mo><mi>proportional</mi><mo>,</mo><mi>f</mi><mo>)</mo><mo>=</mo><msqrt><mo>(</mo><msup><mrow><mi>proportional</mi></mrow><mrow><mi>2</mi></mrow></msup><mo>+</mo><mo>(</mo><msup><mrow><mi>additive</mi></mrow><mrow><mi>2</mi></mrow></msup><mo> &times;</mo><msup><mrow><mi>f</mi></mrow><mrow><mi>2</mi></mrow></msup><mo>)</mo><mo>)</mo></msqrt></mstyle></math></div>
+    
+
+
+<h3>Structural Model <span class="italic">sm</span></h3>
+
+
+    <p class="bold">Variable definitions</p>
+    <div>
+        
+<div>
+    <div>
+        
+            <div><math display="inline"><mstyle><mfrac><mi>dDEPOT</mi><mi>dT</mi></mfrac><mo>=</mo><mo>(</mo><mo>-</mo><mi>KDE</mi><mo> &times;</mo><mi>DEPOT</mi><mo>)</mo></mstyle></math></div>
+        
+            <div><math display="inline"><mstyle><mi>EFF</mi><mo>=</mo><mo>(</mo><mi>SLOP</mi><mo> &times;</mo><mi>DEPOT</mi><mo>)</mo></mstyle></math></div>
+        
+            <div><math display="inline"><mstyle><mfrac><mi>dPD</mi><mi>dT</mi></mfrac><mo>=</mo><mo>(</mo><mi>KOUT</mi><mo>-</mo><mo>(</mo><mo>(</mo><mi>KOUT</mi><mo> &times;</mo><mo>(</mo><mi>1</mi><mo>+</mo><mi>EFF</mi><mo>)</mo><mo>)</mo><mo> &times;</mo><mi>PD</mi><mo>)</mo><mo>)</mo></mstyle></math></div>
+        
+    </div>
+    
+        <p class="bold">Initial conditions</p>
+        <div>
+
+    <div><math display="inline"><mstyle><mi>DEPOT</mi><mo>=</mo><mi>0</mi></mstyle></math></div>
+
+    <div><math display="inline"><mstyle><mi>PD</mi><mo>=</mo><mi>1</mi></mstyle></math></div>
+
+</div>
+    
+</div>
+
+    </div>
+
+
+
+
+<h3>Variability Model</h3>
+
+<table class="views-table cols-2">
+    <thead>
+        <tr>
+            <th>Level</th>
+            <th>Type</th>
+        </tr>
+    </thead>
+    <tbody>
+        
+            <tr>
+                <td>
+                    
+<p class="default">DV</p>
+
+                </td>
+                <td>residualError</td>
+            </tr>
+        
+            <tr>
+                <td>
+                    
+<p class="default">ID</p>
+
+                </td>
+                <td>parameterVariability</td>
+            </tr>
+        
+    </tbody>
+</table>
+<h3>Parameter Model</h3><span class="bold">Parameters </span><div class="spaced-top-bottom"><div class="spaced-top-bottom"><span><math display="inline"><mstyle><mo>POP_KOUT</mo></mstyle></math>;&nbsp;</span>
+<span><math display="inline"><mstyle><mo>POP_KDE</mo></mstyle></math>;&nbsp;</span>
+<span><math display="inline"><mstyle><mo>POP_SLOP</mo></mstyle></math>;&nbsp;</span>
+<span><math display="inline"><mstyle><mo>PERR</mo></mstyle></math>;&nbsp;</span>
+<span><math display="inline"><mstyle><mo>AERR</mo></mstyle></math>;&nbsp;</span>
+<span><math display="inline"><mstyle><mo>OMEGA_KOUT</mo></mstyle></math>;&nbsp;</span>
+<span><math display="inline"><mstyle><mo>OMEGA_KDE</mo></mstyle></math>;&nbsp;</span>
+<span><math display="inline"><mstyle><mo>OMEGA_SLOP</mo></mstyle></math>;&nbsp;</span>
+</div><div><math display="inline"><mstyle><mi>ETA_KOUT</mi><mo>&sim;</mo><mi>N</mi><mo>(</mo><mi>0.0</mi><mo>,</mo><mi>OMEGA_KOUT</mi><mo>)</mo></mstyle></math>&nbsp;&mdash;&nbsp;ID</div>
+<div><math display="inline"><mstyle><mi>ETA_KDE</mi><mo>&sim;</mo><mi>N</mi><mo>(</mo><mi>0.0</mi><mo>,</mo><mi>OMEGA_KDE</mi><mo>)</mo></mstyle></math>&nbsp;&mdash;&nbsp;ID</div>
+<div><math display="inline"><mstyle><mi>ETA_SLOP</mi><mo>&sim;</mo><mi>N</mi><mo>(</mo><mi>0.0</mi><mo>,</mo><mi>OMEGA_SLOP</mi><mo>)</mo></mstyle></math>&nbsp;&mdash;&nbsp;ID</div>
+<div><math display="inline"><mstyle><mi>EPS_Y</mi><mo>&sim;</mo><mi>N</mi><mo>(</mo><mi>0.0</mi><mo>,</mo><mi>1.0</mi><mo>)</mo></mstyle></math>&nbsp;&mdash;&nbsp;DV</div>
+<div class="spaced-top-bottom">
+<div><math display="inline"><mstyle><mo>log</mo><mo>(</mo><mi>KOUT</mi><mo>)</mo><mo>=</mo><mo>(</mo><mo>log</mo><mo>(</mo><mi>POP_KOUT</mi><mo>)</mo><mo>+</mo><mi>ETA_KOUT</mi><mo>)</mo></mstyle></math></div>
+
+<div><math display="inline"><mstyle><mo>log</mo><mo>(</mo><mi>KDE</mi><mo>)</mo><mo>=</mo><mo>(</mo><mo>log</mo><mo>(</mo><mi>POP_KDE</mi><mo>)</mo><mo>+</mo><mi>ETA_KDE</mi><mo>)</mo></mstyle></math></div>
+
+<div><math display="inline"><mstyle><mo>log</mo><mo>(</mo><mi>SLOP</mi><mo>)</mo><mo>=</mo><mo>(</mo><mo>log</mo><mo>(</mo><mi>POP_SLOP</mi><mo>)</mo><mo>+</mo><mi>ETA_SLOP</mi><mo>)</mo></mstyle></math></div>
+</div></div><h3>Observation Model</h3><h4>Observation Y<br/><span class="italic">Continuous / Residual Data</span></h4><span class="bold">Parameters </span><div class="spaced-top-bottom"></div><div class="spaced-top-bottom"><math display="inline"><mstyle><mi>Y</mi><mo>=</mo><mo>(</mo><mi>PD</mi><mo>+</mo><mo>(</mo><mo>combinedError2</mo><mo>(</mo><mi>AERR</mi><mo>,</mo><mi>PERR</mi><mo>,</mo><mi>PD</mi><mo>)</mo><mo> &times;</mo><mi>EPS_Y</mi><mo>)</mo><mo>)</mo></mstyle></math></div> </div>
+
+
+    
+
+    <div id="estimationSteps"><h3>Estimation Steps</h3>
+<h4>Estimation Step estimStep_1</h4>
+<div><h5>Estimation parameters</h5>
+<p class="bold">Initial estimates for non-fixed parameters</p>
+<ul><li><math display="inline"><mstyle><mi>POP_KOUT</mi><mo>=</mo><mi>0.0388</mi></mstyle></math></li>
+<li><math display="inline"><mstyle><mi>POP_KDE</mi><mo>=</mo><mi>0.067</mi></mstyle></math></li>
+<li><math display="inline"><mstyle><mi>POP_SLOP</mi><mo>=</mo><mi>0.205</mi></mstyle></math></li>
+<li><math display="inline"><mstyle><mi>PERR</mi><mo>=</mo><mi>0.447</mi></mstyle></math></li>
+<li><math display="inline"><mstyle><mi>AERR</mi><mo>=</mo><mi>1</mi></mstyle></math></li>
+<li><math display="inline"><mstyle><mi>OMEGA_KOUT</mi><mo>=</mo><mi>0.2</mi></mstyle></math></li>
+<li><math display="inline"><mstyle><mi>OMEGA_KDE</mi><mo>=</mo><mi>0.2</mi></mstyle></math></li>
+<li><math display="inline"><mstyle><mi>OMEGA_SLOP</mi><mo>=</mo><mi>0.2</mi></mstyle></math></li>
+</ul>
+</div><h5>Estimation operations</h5>
+<div><span class="bold">1) Estimate the population parameters</span>
+<div></div>
+<ul></ul>
+
+<span>Algorithm FOCEI</span>
+</div><h3>Step Dependencies</h3>
+<ul><li>estimStep_1</li>
+</ul></div>
+
+    </div>
+    </div>
+    </div>
+
+
+  	</div>
+  </div>
+
+  </div><!-- /.region -->
+          </div>
+
+    </div><!-- /.section, /#content -->
+
+    
+ 
+   
+    
+  </div>
+   
+ 
+  
+  </div><!-- /#main, /#main-wrapper -->
+  
+  
+
+
+            
+
+
+
+
+
+ <div id="content-bottom">
+    <div class="region region-content-bottom">
+    <div id="block-menu-menu-footer-menu" class="block block-menu footer-menu even">
+    	<div class="content">
+    		<ul class="menu">
+    						<li class="first leaf" style="margin-top:-100px">© 2012 - 2025</li>
+    						<li class="leaf"><a href="//web.archive.org/web/20250417204749/http://ddmore.eu/">DDMoRe</a>, all rights reserved.</li>
+    		</ul>
+    			<ul style="margin-top:1.3%;padding-left: 0.5em;">
+    						<li class="leaf"><a href="http://web.archive.org/web/20250417204749/http://efpia.eu/" rel="nofollow"><img src="/web/20250417204749im_/http://repository.ddmore.foundation/images/ddmore/EFPIA.jpg"/></a></li>
+    						<li class="leaf"><a href="http://web.archive.org/web/20250417204749/http://ec.europa.eu/research/index.cfm" rel="nofollow"><img src="/web/20250417204749im_/http://repository.ddmore.foundation/images/ddmore/EU.jpg"/></a></li>
+    						<li class="last leaf"><a href="http://web.archive.org/web/20250417204749/http://www.imi.europa.eu/#&amp;panel1-9" rel="nofollow"><img src="/web/20250417204749im_/http://repository.ddmore.foundation/images/ddmore/IMI.jpg"/></a></li>
+    		</ul>
+    		<div class="build">Build info: <a href="http://web.archive.org/web/20250417204749/https://bitbucket.org/jummp/jummp/commits/all?search=883dad825">883dad825</a> | Tue, 29 May 2018 18:40:51 </div>
+   
+    	</div>
+    </div><!-- /.block -->
+ </div><!-- /.region -->
+  <div class="clear">&nbsp;</div>
+  </div>
+    
+
+</div></div><!-- /#page, /#page-wrapper -->
+</div>
+
+
+</div><!-- /.block -->
+
+
+        </div>
+        
+            <div id="helpbutton">
+                <a id="toggleHelp" title="Access help for this page" href="#">Help</a>
+            </div>
+            <div id="helpPanel">
+                <div id="toolbar" class="ui-widget-header ui-corner-all">
+                    <button id="expand">Increase help size</button>
+                    <button id="contract">Decrease help size</button>
+                    <button id="snap">Reset help</button>
+                    <button id="outlink">Open in a new tab</button>
+                    <button id="close">Close</button>
+                </div>
+                <iframe id="helpFrame" src="http://web.archive.org/web/20250417204749if_/http://repository.ddmore.foundation:7999/model_display.html#contextSpecific/400"></iframe>
+            </div>
+        
+    </div>
+    </body>
+</html>
+
+<!--
+     FILE ARCHIVED ON 20:47:49 Apr 17, 2025 AND RETRIEVED FROM THE
+     INTERNET ARCHIVE ON 08:08:11 Jul 08, 2026.
+     JAVASCRIPT APPENDED BY WAYBACK MACHINE, COPYRIGHT INTERNET ARCHIVE.
+
+     ALL OTHER CONTENT MAY ALSO BE PROTECTED BY COPYRIGHT (17 U.S.C.
+     SECTION 108(a)(3)).
+-->
+<!--
+playback timings (ms):
+  captures_list: 0.508
+  exclusion.robots: 0.052
+  exclusion.robots.policy: 0.042
+  esindex: 0.007
+  cdx.remote: 14.599
+  LoadShardBlock: 105.122 (3)
+  PetaboxLoader3.datanode: 85.195 (4)
+  PetaboxLoader3.resolve: 71.639 (2)
+  load_resource: 102.93
+  nav: 0.113 (6)
+-->

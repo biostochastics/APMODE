@@ -1,0 +1,307 @@
+{
+  "$schema": "apmode-dataset-manifest/v2",
+  "generated_at": "2026-07-08",
+  "verified_at": "2026-07-08",
+  "generator": "manual Exa+Tavily research pass + curl + R spot-check",
+  "verification_summary": {
+    "urls_head_checked": 21,
+    "urls_live_200": 17,
+    "urls_503": 5,
+    "urls_404": 1,
+    "urls_403_botblock": 1,
+    "github_repos_license_verified": 6,
+    "r_packages_installed_verified": 2,
+    "notes": [
+      "PK-DB API returns 803 studies; ~7.5% openly licensed for redistribution (~60 open).",
+      "DDMoRe Model Repository is 503 sitewide — likely deployment outage, not sunset.",
+      "Bitbucket BUGSModelLibrary is 404 — dead. Replaced by Torsten + MeRGE Expo 4.",
+      "Metrum + OSP repos have NO LICENSE file → reference-only, not redistributable."
+    ]
+  },
+  "datasets": [
+    {
+      "id": "nlmixr2data_schoemaker",
+      "tier": "in_registry",
+      "family": "nlmixr2data",
+      "license_spdx": "GPL-3.0-only",
+      "license_verified": true,
+      "urls": {"cran": "https://cran.r-project.org/web/packages/nlmixr2data/", "github": "https://github.com/nlmixr2/nlmixr2data"},
+      "retrieval": {"method": "R_install", "command": "install.packages('nlmixr2data')", "verified": true, "verified_at": "2026-07-08", "verified_result": "25 datasets installed as of nlmixr2data v2.0.9"}
+    },
+    {
+      "id": "nlmixr2data_theophylline",
+      "tier": "in_registry",
+      "family": "nlmixr2data",
+      "license_spdx": "GPL-3.0-only",
+      "retrieval": {"method": "R_data", "command": "data(theo_sd, package='nlmixr2data')", "verified": true, "verified_result": {"rows": 144, "cols": ["ID","TIME","DV","AMT","EVID","CMT","WT"]}}
+    },
+    {
+      "id": "nlmixr2data_warfarin",
+      "tier": "in_registry",
+      "family": "nlmixr2data",
+      "license_spdx": "GPL-3.0-only",
+      "urls": {"github": "https://github.com/nlmixr2/nlmixr2data/blob/HEAD/R/data_warfarin.R"},
+      "retrieval": {"method": "R_data", "command": "data(warfarin, package='nlmixr2data')", "verified": true, "verified_result": {"rows": 515, "subjects": 32, "cols": ["id","time","amt","dv","dvid","evid","wt","age","sex"], "registry_yaml_discrepancy": "registry.yaml says 519 rows"}},
+      "cite": "Funaki T, Holford N, Fujita S (2018). PAGJA."
+    },
+    {
+      "id": "nlmixr2data_mavoglurant",
+      "tier": "in_registry",
+      "family": "nlmixr2data",
+      "license_spdx": "GPL-3.0-only",
+      "retrieval": {"method": "R_data", "command": "data(mavoglurant, package='nlmixr2data')", "verified": true, "verified_result": {"rows": 2678, "cols": ["ID","CMT","EVID","MDV","DV","AMT","TIME","DOSE","OCC","RATE","AGE","SEX","WT","HT"], "registry_yaml_discrepancy": "registry.yaml says 2346 rows"}}
+    },
+    {
+      "id": "nlmixr2data_phenobarbital",
+      "tier": "in_registry",
+      "family": "nlmixr2data",
+      "license_spdx": "GPL-3.0-only",
+      "retrieval": {"method": "R_data", "command": "data(pheno_sd, package='nlmixr2data')", "verified": true, "verified_result": {"rows": 744, "cols": ["ID","TIME","AMT","WT","APGR","DV","MDV","EVID"], "registry_yaml_discrepancy": "registry.yaml says 155 rows / 59 subjects — this appears to be a different dataset (NONMEM VII PHENO), NOT nlmixr2data::pheno_sd"}},
+      "cite": "Grasela TH, Donn SM (1985). Dev Pharmacol Ther 8(6):374-383."
+    },
+    {
+      "id": "nlmixr2data_oral_1cpt",
+      "tier": "in_registry",
+      "family": "nlmixr2data",
+      "license_spdx": "GPL-3.0-only",
+      "retrieval": {"method": "R_data", "command": "data(Oral_1CPT, package='nlmixr2data')", "verified": true, "verified_result": {"rows": 7920}}
+    },
+    {
+      "id": "nlmixr2data_extended_grid",
+      "tier": "candidate",
+      "family": "nlmixr2data",
+      "license_spdx": "GPL-3.0-only",
+      "license_verified": true,
+      "urls": {"cran_pdf": "https://cran.r-project.org/web/packages/nlmixr2data/nlmixr2data.pdf"},
+      "retrieval": {"method": "R_data_batch", "verified": true, "verified_at": "2026-07-08"},
+      "covered_and_verified": [
+        {"name":"Oral_2CPT","rows":7920},
+        {"name":"Bolus_1CPT","rows":7920},
+        {"name":"Bolus_1CPTMM","rows":7920},
+        {"name":"Infusion_2CPT","rows":7920},
+        {"name":"wbcSim","rows":280},
+        {"name":"nimoData","rows":441},
+        {"name":"metabolite","rows":10},
+        {"name":"Wang2007","rows":20},
+        {"name":"invgaussian","rows":14},
+        {"name":"rats","rows":32},
+        {"name":"pump","rows":10},
+        {"name":"nmtest","rows":7157},
+        {"name":"theo_md","rows":348}
+      ],
+      "additional_available": ["Bolus_2CPT","Bolus_2CPTMM","Oral_1CPTMM","Oral_2CPTMM","Infusion_1CPT","Infusion_1CPTMM","Infusion_2CPTMM"]
+    },
+    {
+      "id": "saemix_theo_covariate",
+      "tier": "candidate",
+      "family": "cran_package",
+      "license_spdx": "GPL-2.0-or-later",
+      "urls": {"docs": "https://rdrr.io/cran/saemix/man/theo.saemix.html"},
+      "retrieval": {"method": "R_data", "command": "data(theo.saemix, package='saemix')", "verified": false, "verification_note": "saemix not installed at time of check"}
+    },
+    {
+      "id": "npde_reference_sims",
+      "tier": "candidate",
+      "family": "cran_package",
+      "license_spdx": "GPL-2.0-or-later",
+      "urls": {"docs": "https://rdrr.io/cran/npde/man/warfarin.html", "sim_base_gh": "https://github.com/ecomets/npde30/blob/main/keep/data/simwarfarinBase.tab"},
+      "retrieval": {"method": "R_data + git_raw", "verified": false, "verification_note": "npde not installed at time of check"}
+    },
+    {
+      "id": "r_base_datasets",
+      "tier": "candidate",
+      "family": "r_core",
+      "license_spdx": "GPL-2.0-only",
+      "retrieval": {"method": "R_builtin", "command": "data(Theoph); data(Indometh)", "verified": true, "verified_result": {"Theoph":{"rows":132,"subjects":12},"Indometh":{"rows":66,"subjects":6}}},
+      "cite_indometh": "Kwan, Breault, Umbenhauer, McMahon, Duggan (1976). J Pharmacokinet Biopharm 4:255-280."
+    },
+    {
+      "id": "medicaldata_indometh",
+      "tier": "candidate",
+      "family": "cran_package",
+      "license_spdx": "CC0-1.0",
+      "urls": {"index": "https://vincentarelbundock.github.io/Rdatasets/datasets.html"},
+      "retrieval": {"method": "R_data", "command": "data(indometh, package='medicaldata')", "verified": false}
+    },
+    {
+      "id": "ddmore_gentamicin",
+      "tier": "in_registry",
+      "family": "ddmore_repository",
+      "urls": {"model": "http://repository.ddmore.eu/model/DDMODEL00000238"},
+      "access_verified": "503 SERVICE UNAVAILABLE @ 2026-07-08",
+      "cite": "Germovsek et al. (2017) AAC 61(8):e00481-17",
+      "verification_note": "Bulk repository outage. Data may still be accessible via other channels (paper supplement, direct request). Re-verify before promotion runs."
+    },
+    {
+      "id": "ddmore_repository_index",
+      "tier": "candidate_blocked",
+      "family": "ddmore_repository",
+      "license_spdx": "Apache-2.0 (PharmML spec); per-model varies",
+      "urls": {"repo": "http://repository.ddmore.foundation/models", "legacy": "http://repository.ddmore.eu/models", "foundation_home": "https://www.ddmore.foundation/"},
+      "retrieval": {"method": "http", "command": "curl -s http://repository.ddmore.foundation/api/v1/models", "verified": false, "verified_result": "503 across all repository URLs on 2026-07-08. Foundation home page is 200 and still links to the repository as active. Deployment outage rather than sunset."},
+      "canonical_model_ids": [
+        {"id": "DDMODEL00000003", "topic": "diabetes tesaglitazar (Hamren 2008)"},
+        {"id": "DDMODEL00000103", "topic": "PKU Kuvan turnover-KPD (Trefz 2015)"},
+        {"id": "DDMODEL00000130", "topic": "colistin CMS PK (Karaiskos 2015)"},
+        {"id": "DDMODEL00000238", "topic": "gentamicin neonatal IOV — already in-registry"},
+        {"id": "DDMODEL00000243", "topic": "time-to-event example"},
+        {"id": "DDMODEL00000247", "topic": "item-response-theory example"},
+        {"id": "DDMODEL00000248", "topic": "preterm-neonatal morphine + phenobarbital"}
+      ]
+    },
+    {
+      "id": "metrum_merge_expo1_nonmem",
+      "tier": "candidate_reference_only",
+      "family": "metrum",
+      "license_spdx": "NO_LICENSE",
+      "license_verified": true,
+      "license_note": "GitHub API returns license:null; no LICENSE|LICENSE.md at main.",
+      "urls": {"portal": "https://merge.metrumrg.com/expo/expo1-nonmem-foce/", "github": "https://github.com/metrumresearchgroup/expo1-nonmem-foce"},
+      "access_verified": "live 200 @ 2026-07-08",
+      "retrieval": {"method": "git_clone", "command": "git clone --depth 1 https://github.com/metrumresearchgroup/expo1-nonmem-foce", "verified": true, "restriction": "reference-only — no code redistribution"}
+    },
+    {
+      "id": "metrum_merge_expo4_torsten",
+      "tier": "candidate_reference_only",
+      "family": "metrum",
+      "license_spdx": "NO_LICENSE",
+      "license_verified": true,
+      "urls": {"portal": "https://merge.metrumrg.com/expo/expo4-torsten-poppk/", "github": "https://github.com/metrumresearchgroup/expo4-torsten-poppk"},
+      "access_verified": "live 200 @ 2026-07-08",
+      "retrieval": {"method": "git_clone", "command": "git clone --depth 1 https://github.com/metrumresearchgroup/expo4-torsten-poppk", "verified": true, "restriction": "reference-only"},
+      "role": "Replaces dead bugs_model_library — reference Bayesian PopPK workflow"
+    },
+    {
+      "id": "metrum_torsten_library",
+      "tier": "dependency",
+      "family": "metrum",
+      "license_spdx": "check LICENSE.txt",
+      "urls": {"portal": "https://metrumresearchgroup.github.io/Torsten", "github": "https://github.com/metrumresearchgroup/Torsten"},
+      "access_verified": "live 200 @ 2026-07-08",
+      "retrieval": {"method": "git_clone", "command": "git clone https://github.com/metrumresearchgroup/Torsten", "verified": true}
+    },
+    {
+      "id": "osp_observed_data",
+      "tier": "candidate_reference_only",
+      "family": "open_systems_pharmacology",
+      "license_spdx": "NO_LICENSE",
+      "license_verified": true,
+      "license_note": "GitHub API returns license:null.",
+      "urls": {"github": "https://github.com/Open-Systems-Pharmacology/Database-for-observed-data"},
+      "access_verified": "live 200 @ 2026-07-08",
+      "retrieval": {"method": "git_clone", "command": "git clone --depth 1 https://github.com/Open-Systems-Pharmacology/Database-for-observed-data", "verified": true, "restriction": "metadata-only reference"},
+      "files": ["ObsDataPK_OSP.xlsx", "DDI.csv", "Pediatrics.csv"]
+    },
+    {
+      "id": "pkdb_api",
+      "tier": "candidate",
+      "family": "pkdb_curated",
+      "license_code_spdx": "MIT",
+      "license_code_verified": true,
+      "license_data": "per-study (open|closed field on each Study; sampled ~7.5% open)",
+      "urls": {
+        "portal": "https://pk-db.com/",
+        "api_root": "https://pk-db.com/api/v1/",
+        "swagger": "https://pk-db.com/api/v1/swagger/",
+        "code": "https://github.com/matthiaskoenig/pkdb"
+      },
+      "access_verified": "live 200 @ 2026-07-08 (API + swagger both responding)",
+      "retrieval": {"method": "rest", "command": "curl -s 'https://pk-db.com/api/v1/studies/?format=json&page=1&page_size=100' | jq '.data.data[]'", "verified": true, "pagination_note": "response.data.data[] with response.data.count total"},
+      "verified_counts": {"total_studies": 803, "sampled": 200, "sample_open": 15, "sample_closed": 185, "sample_with_timecourse": 174, "extrapolated_open_corpus": 60},
+      "cite": "Grzegorzewski et al. (2020) NAR 49(D1):D1358-D1364",
+      "doi": "10.1093/nar/gkaa990"
+    },
+    {
+      "id": "opentci_propofol",
+      "tier": "in_registry",
+      "family": "opentci",
+      "urls": {"portal": "https://opentci.org/"},
+      "access_verified": "live 200 @ 2026-07-08",
+      "cite": "Eleveld et al. (2018) Br J Anaesth 120(5):942-959"
+    },
+    {
+      "id": "mimic_vancomycin",
+      "tier": "in_registry",
+      "family": "physionet",
+      "license_spdx": "PhysioNet Credentialed",
+      "urls": {"portal": "https://physionet.org/content/mimiciv/"},
+      "ci_policy": "never"
+    },
+    {
+      "id": "pmxnode_examples",
+      "tier": "candidate",
+      "family": "node_benchmarks",
+      "license_spdx": "GPL-3.0-only",
+      "license_verified": true,
+      "urls": {"r_universe": "https://braemd.r-universe.dev/pmxNODE", "github": "https://github.com/braemd/pmxnode"},
+      "access_verified": "live 200 @ 2026-07-08",
+      "retrieval": {"method": "R_install", "command": "install.packages('pmxNODE', repos=c('https://braemd.r-universe.dev','https://cloud.r-project.org'))", "verified": false, "verification_note": "URLs live; install command not exercised"},
+      "cite": "Bräm et al. (2025) CPT:PSP 14:5-16",
+      "doi": "10.1002/psp4.13265"
+    },
+    {
+      "id": "monolix_node_case_study",
+      "tier": "candidate",
+      "family": "node_benchmarks",
+      "license_spdx": "Monolix demo (research redistribution)",
+      "urls": {"tutorial": "https://monolixsuite.slp-software.com/tutorials/2024R1/case-study-neural-odes"},
+      "access_verified": "live 200 @ 2026-07-08",
+      "retrieval": {"method": "zip_download", "artefact": "NODE_example.zip", "verified": false}
+    },
+    {
+      "id": "dalbavancin_node",
+      "tier": "candidate",
+      "family": "node_benchmarks",
+      "license_spdx": "CC-BY-4.0 (paper)",
+      "urls": {"paper": "https://www.mdpi.com/1099-4300/27/6/602"},
+      "access_verified": "403 bot-block @ 2026-07-08 (paper still resolvable via DOI + PMC)",
+      "retrieval": {"method": "supplement_download", "verified": false},
+      "cite": "Ranieri et al. (2025) Entropy 27(6):602"
+    },
+    {
+      "id": "latent_node_tacrolimus",
+      "tier": "candidate",
+      "family": "node_benchmarks",
+      "license_spdx": "arXiv default",
+      "urls": {"preprint": "https://arxiv.org/abs/2602.03215"},
+      "access_verified": "live 200 @ 2026-07-08",
+      "note": "Preprint — watch for peer-reviewed publication before promotion."
+    },
+    {
+      "id": "hoffert_tacrolimus_benchmark_2024",
+      "tier": "literature_reference",
+      "family": "regulatory",
+      "urls": {"paper": "https://link.springer.com/article/10.1007/s40262-024-01414-y"},
+      "doi": "10.1007/s40262-024-01414-y",
+      "access_verified": "unchecked (Springer paywall)",
+      "cite": "Hoffert Y, Dia N, Vanuytsel T, et al. (2024) Clin Pharmacokinet 63:1407-1421",
+      "role": "Optimization-lane multi-tool comparator protocol (not a dataset)"
+    }
+  ],
+  "removed": [
+    {
+      "id": "bugs_model_library",
+      "reason": "Bitbucket URL https://bitbucket.org/metrumrg/bugsmodellibrary returns 404 — repository dead.",
+      "replaced_by": ["metrum_merge_expo4_torsten", "metrum_torsten_library"],
+      "removed_at": "2026-07-08"
+    }
+  ],
+  "excluded": [
+    {
+      "id": "tdm1_lu2021",
+      "reason": "Data restricted (Genentech patient privacy). Code + methodology only.",
+      "urls": {"code": "https://github.com/jameslu01/Neural_PK"},
+      "license_code_spdx": "MIT (verified via GitHub API 2026-07-08)",
+      "doi": "10.1016/j.isci.2021.102804"
+    },
+    {
+      "id": "drugbank_pk_endpoints",
+      "reason": "Parameter-level only, no concentration-time curves.",
+      "urls": {"portal": "https://go.drugbank.com/"}
+    },
+    {
+      "id": "pkdb_older_1200",
+      "reason": "Superseded by PK-DB; no active maintenance."
+    }
+  ]
+}

@@ -37,6 +37,9 @@ from apmode.bundle.models import (
     PriorDataConflict,
     PriorManifest,
     PriorSensitivity,
+    SearchGraph,
+    SearchGraphEdge,
+    SearchGraphNode,
     SeedRegistry,
 )
 from apmode.data.initial_estimates import NCAEstimator, build_initial_estimates_bundle
@@ -128,6 +131,7 @@ class RunOutcome:
     search_outcome: SearchOutcome | None = None
     gate1_results: list[tuple[str, bool]] = field(default_factory=list)
     gate2_results: list[tuple[str, bool]] = field(default_factory=list)
+    gate2_5_results: list[tuple[str, bool]] = field(default_factory=list)
     recommended: list[str] = field(default_factory=list)
     ranked: list[str] = field(default_factory=list)
 
@@ -549,11 +553,19 @@ class Orchestrator:
             else:
                 lineage_entries = []
         else:
+            # Classical search DAG entries carry a descriptive string
+            # (e.g. "warm_start_TIMEOUT"), not a FormularTransform object —
+            # only the agentic backend proposes typed transforms with
+            # rationale/expected_diagnostic_effect, so those fields are left
+            # at their defaults here (None/[]). `applied_at` still records
+            # when this lineage entry was written into the bundle.
+            _lineage_written_at = datetime.now(tz=UTC).isoformat()
             lineage_entries = [
                 CandidateLineageEntry(
                     candidate_id=e["candidate_id"],
                     parent_id=e["parent_id"],
                     transform=e["transform"],
+                    applied_at=_lineage_written_at,
                 )
                 for e in search_outcome.dag.to_lineage_entries()
             ]
@@ -563,9 +575,11 @@ class Orchestrator:
                 lineage_entries.append(
                     CandidateLineageEntry(
                         candidate_id=ar.candidate_id,
-                        # Full chain is in agentic_trace/<mode>/agentic_lineage.json
+                        # Full chain (per-transform rationale/effect/applied_at)
+                        # is in agentic_trace/<mode>/agentic_lineage.json.
                         parent_id=None,
                         transform="agentic_llm",
+                        applied_at=datetime.now(tz=UTC).isoformat(),
                     )
                 )
                 dag_ids.add(ar.candidate_id)
@@ -835,6 +849,7 @@ class Orchestrator:
                 # Gate 2.5 writes ``gate2_5_<id>.json`` to match the
                 # ``gate2_5_*.json`` glob the inspect / diff CLIs use.
                 emitter.write_gate_decision(g25, gate_number="2_5")
+                outcome.gate2_5_results.append((sr_result.model_id, g25.passed))
 
                 if not g25.passed:
                     emitter.append_failed_candidate(
@@ -889,6 +904,62 @@ class Orchestrator:
                     n_survivors=len(ranked),
                 )
                 emitter.write_ranking(ranking)
+
+        # --- Stage 6d: Search graph (candidate + gate status DAG) ---
+        # ``search/candidates.py::SearchDAG.iter_nodes``/``to_edges`` exist
+        # specifically "for graph building" per their docstrings, but had no
+        # production caller — search_graph.json was never emitted, so
+        # `apmode graph` always reported "No search graph found" for a real
+        # run. Built from the same lineage_entries used for
+        # candidate_lineage.json (so classical DAG nodes and the
+        # coarse agentic fallback entries both appear), enriched with gate
+        # pass/fail + rank from the state already collected above.
+        result_by_id = {sr.candidate_id: sr for sr in search_outcome.results}
+        gate1_map = dict(outcome.gate1_results)
+        gate2_map = dict(outcome.gate2_results)
+        gate2_5_map = dict(outcome.gate2_5_results)
+        rank_map: dict[str, int] = (
+            {rc.candidate_id: rc.rank for rc in ranking.ranked_candidates}
+            if ranking is not None
+            else {}
+        )
+        graph_nodes: list[SearchGraphNode] = []
+        graph_edges: list[SearchGraphEdge] = []
+        for lineage_entry in lineage_entries:
+            cid = lineage_entry.candidate_id
+            matched_result = result_by_id.get(cid)
+            graph_nodes.append(
+                SearchGraphNode(
+                    candidate_id=cid,
+                    parent_id=lineage_entry.parent_id,
+                    backend=(
+                        matched_result.result.backend
+                        if matched_result is not None and matched_result.result
+                        else "nlmixr2"
+                    ),
+                    converged=matched_result.converged if matched_result is not None else False,
+                    bic=matched_result.bic if matched_result is not None else None,
+                    aic=matched_result.aic if matched_result is not None else None,
+                    n_params=matched_result.n_params if matched_result is not None else 0,
+                    gate1_passed=gate1_map.get(cid),
+                    gate2_passed=gate2_map.get(cid),
+                    gate2_5_passed=gate2_5_map.get(cid),
+                    rank=rank_map.get(cid),
+                )
+            )
+            if lineage_entry.parent_id is not None:
+                graph_edges.append(
+                    SearchGraphEdge(
+                        parent_id=lineage_entry.parent_id,
+                        child_id=cid,
+                        transform=lineage_entry.transform or "",
+                        rationale=lineage_entry.rationale,
+                        expected_diagnostic_effect=lineage_entry.expected_diagnostic_effect,
+                        applied_at=lineage_entry.applied_at,
+                    )
+                )
+        if graph_nodes:
+            emitter.write_search_graph(SearchGraph(nodes=graph_nodes, edges=graph_edges))
 
         # --- Stage 7: Render human-readable report ---
         if gate12_survivors:
@@ -1086,19 +1157,20 @@ class Orchestrator:
         )
         from apmode.ids import generate_candidate_id
 
-        base_spec = DSLSpec(
-            model_id=generate_candidate_id(),
-            absorption=FirstOrder(ka=nca_estimates.get("ka", 1.0)),
-            distribution=OneCmt(V=nca_estimates.get("V", 50.0)),
-            elimination=LinearElim(CL=nca_estimates.get("CL", 3.0)),
-            variability=[IIV(params=["CL", "V"], structure="diagonal")],
-            observation=Proportional(sigma_prop=0.15),
-        )
         base_estimates = {
             "ka": nca_estimates.get("ka", 1.0),
             "V": nca_estimates.get("V", 50.0),
             "CL": nca_estimates.get("CL", 3.0),
         }
+        base_spec = DSLSpec(
+            model_id=generate_candidate_id(),
+            absorption=FirstOrder(),
+            distribution=OneCmt(),
+            elimination=LinearElim(),
+            variability=[IIV(params=["CL", "V"], structure="diagonal")],
+            observation=Proportional(sigma_prop=0.15),
+            initial=dict(base_estimates),
+        )
         logger.info("Agentic independent: starting from base 1-cmt oral spec")
         try:
             with agentic.with_trace_dir(base_trace_dir / "independent"):

@@ -10,6 +10,8 @@ from typing import Literal, Self
 
 from pydantic import BaseModel, Field, model_validator
 
+from apmode.dsl.lane import Lane
+
 
 class PolicyError(ValueError):
     """Raised when a candidate violates a versioned lane policy invariant.
@@ -550,7 +552,7 @@ class GatePolicy(BaseModel):
     """
 
     policy_version: str
-    lane: Literal["submission", "discovery", "optimization"]
+    lane: Lane
     gate1: Gate1Config
     gate1_bayesian: Gate1BayesianConfig = Field(default_factory=Gate1BayesianConfig)
     gate2: Gate2Config
@@ -562,7 +564,7 @@ class GatePolicy(BaseModel):
     @model_validator(mode="after")
     def submission_excludes_node(self) -> Self:
         """PRD §3 hard rule: NODE models not eligible in Submission lane."""
-        if self.lane == "submission" and self.gate2.node_eligible:
+        if self.lane == Lane.SUBMISSION and self.gate2.node_eligible:
             msg = (
                 "NODE models are not eligible in the Submission lane "
                 "(PRD §3 hard rule). Set gate2.node_eligible=false."

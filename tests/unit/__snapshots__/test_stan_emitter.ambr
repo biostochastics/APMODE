@@ -1,0 +1,98 @@
+# serializer version: 1
+# name: TestStanGoldenMasterNoIOV.test_1cmt_oral_linear_no_iov
+  '''
+  // APMODE generated Stan model: test_model
+  
+  data {
+    int<lower=1> N;              // total observations
+    int<lower=1> N_subjects;     // number of subjects
+    array[N] int<lower=1,upper=N_subjects> subject;  // subject index
+    vector[N] time;              // observation times
+    vector<lower=0>[N] dv;       // observed concentrations
+  
+    // Multi-dose event schedule
+    int<lower=0> N_events;       // total dose/reset events across all subjects
+    array[N_events] int<lower=1,upper=N_subjects> event_subject;
+    vector[N_events] event_time;  // event times
+    vector[N_events] event_amt;   // dose amounts (0 for resets)
+    array[N_events] int event_cmt; // compartment
+    array[N_events] int event_evid; // 1=dose, 3=reset, 4=reset+dose
+    vector[N_events] event_rate;   // infusion rate (0=bolus)
+    // Per-subject event index ranges (1-indexed, inclusive)
+    array[N_subjects] int event_start;  // first event index for subject
+    array[N_subjects] int event_end;    // last event index for subject
+  }
+  transformed data {
+    array[0] real x_r;
+    array[0] int x_i;
+    array[N_subjects] int obs_start = rep_array(0, N_subjects);
+    array[N_subjects] int obs_end = rep_array(0, N_subjects);
+    for (n in 1:N) {
+      int s = subject[n];
+      if (obs_start[s] == 0) obs_start[s] = n;
+      obs_end[s] = n;
+    }
+  }
+  parameters {
+    real log_ka;
+    real log_V;
+    real log_CL;
+    real<lower=0> sigma_prop;
+  }
+  transformed parameters {
+    vector<lower=0>[N] f;  // predicted concentrations
+  
+    for (i in 1:N_subjects) {
+      real ka_i = exp(log_ka);
+      real V_i = exp(log_V);
+      real CL_i = exp(log_CL);
+  
+      // Analytical solution with superposition for multi-dose
+      // Track last reset time to invalidate prior dose contributions
+      real t_last_reset = 0.0;
+      if (event_start[i] > 0) {
+        for (e in event_start[i]:event_end[i]) {
+          if (event_evid[e] == 3 || event_evid[e] == 4)
+            t_last_reset = event_time[e];
+        }
+      }
+      for (n in 1:N) {
+        if (subject[n] == i) {
+          real t_obs = time[n];
+          real conc = 0.0;
+          real ke = CL_i / V_i;
+          // Superposition: sum contributions from doses after last reset
+          if (event_start[i] > 0) {
+            for (e in event_start[i]:event_end[i]) {
+              if (event_evid[e] == 1 && event_time[e] <= t_obs && event_time[e] >= t_last_reset) {
+                real t_since_dose = t_obs - event_time[e];
+                conc += event_amt[e] * ka_i / (V_i * (ka_i - ke)) * (exp(-ke * t_since_dose) - exp(-ka_i * t_since_dose));
+              }
+            }
+          }
+          f[n] = fmax(conc, 1e-10);
+        }
+      }
+    }
+  }
+  model {
+    // Priors on structural parameters
+    log_ka ~ normal(0, 2);
+    log_V ~ normal(0, 2);
+    log_CL ~ normal(0, 2);
+  
+  
+    sigma_prop ~ cauchy(0, 0.15);
+  
+    // Likelihood
+    for (n in 1:N)
+      dv[n] ~ normal(f[n], sigma_prop * f[n]);
+  }
+  generated quantities {
+    vector[N] log_lik;
+    for (n in 1:N) {
+      log_lik[n] = normal_lpdf(dv[n] | f[n], sigma_prop * f[n]);
+    }
+  }
+  '''
+# ---

@@ -48,11 +48,12 @@ def build_theophylline_spec() -> DSLSpec:
     """1-cmt first-order absorption + linear elimination + proportional error."""
     return DSLSpec(
         model_id="theophylline_1cpt_po",
-        absorption=FirstOrder(ka=1.5),
-        distribution=OneCmt(V=35.0),
-        elimination=LinearElim(CL=2.8),
+        absorption=FirstOrder(),
+        distribution=OneCmt(),
+        elimination=LinearElim(),
         variability=[IIV(params=["CL", "V", "ka"], structure="diagonal")],
         observation=Proportional(sigma_prop=0.1),
+        initial={"ka": 1.5, "V": 35.0, "CL": 2.8},
         priors=[
             # Structural priors on log scale, centered on literature values.
             PriorSpec(

@@ -1,4 +1,10 @@
 {
+  "_meta": {
+    "generated_at": "2026-07-08",
+    "sigma_convention": "SD on data scale (not variance)",
+    "replicates_generated": 1,
+    "seed_base": 20260413
+  },
   "A1": {
     "ka": 1.5,
     "V": 70,
@@ -22,11 +28,12 @@
     "omega": {
       "CL": 0.09,
       "V1": 0.04,
+      "Q": 0.04,
       "Vmax": 0.09
     },
     "sigma": {
       "prop": 0.1,
-      "add": 0.5
+      "add": 0.05
     }
   },
   "A3": {
@@ -38,7 +45,8 @@
     "omega": {
       "CL": 0.09,
       "V": 0.04,
-      "ktr": 0.09
+      "ktr": 0.09,
+      "ka": 0.04
     },
     "sigma": {
       "prop": 0.12
@@ -56,8 +64,9 @@
     },
     "sigma": {
       "prop": 0.1,
-      "add": 0.3
-    }
+      "add": 0.03
+    },
+    "lloq": 0.02
   },
   "A5": {
     "ka": 0.02,
@@ -69,11 +78,15 @@
     "omega": {
       "ka": 0.04,
       "V": 0.04,
-      "CL": 0.09
+      "CL": 0.09,
+      "R0": 0.06,
+      "KD": 0.04,
+      "kint": 0.06
     },
     "sigma": {
       "prop": 0.15
-    }
+    },
+    "lloq": 0.01
   },
   "A6": {
     "ka": 1.5,
@@ -91,8 +104,14 @@
         "reference": 70
       },
       "RENAL_on_CL": {
-        "form": "categorical",
-        "factor": 0.6
+        "form": "categorical_multiplicative",
+        "factor": 0.6,
+        "prevalence": 0.3
+      },
+      "SEX_on_CL": {
+        "form": "exp_theta",
+        "theta": 0.1,
+        "encoding": "0=F, 1=M"
       }
     },
     "omega": {
@@ -116,11 +135,14 @@
     },
     "omega": {
       "CL": 0.09,
-      "V1": 0.04
+      "V1": 0.04,
+      "Q": 0.04,
+      "Vmax_abs": 0.06,
+      "Km_abs": 0.06
     },
     "sigma": {
       "prop": 0.1,
-      "add": 0.3
+      "add": 0.03
     }
   },
   "A8": {
@@ -134,22 +156,21 @@
         "reference": 90
       },
       "time_on_CL": {
-        "form": "diurnal",
+        "form": "monotonic_autoinduction",
         "rate": 0.15,
-        "period_hr": 24
+        "note": "CL(t) = CL0 * exp(-rate*t/24). Monotonic decay, NOT diurnal."
       }
     },
     "omega": {
       "CL": 0.04,
-      "V": 0.05
+      "V": 0.05,
+      "ka": 0.09
     },
     "sigma": {
       "prop": 0.1
     },
-    "_expected_misspecification_bias": {
-      "note": "Diurnal damping exp(-delta*t/24) has no DSL primitive today. APMODE will recover a time-averaged CL biased downward relative to CL0 = 4.482. Benchmark comparisons should use the time-averaged target below, not the raw CL0.",
-      "time_averaged_CL_over_dosing_interval": 3.678,
-      "static_target_bias_pct": -17.9
-    }
+    "time_averaged_CL_over_48h_no_covariate": 3.872,
+    "static_target_bias_pct": -13.66,
+    "note_on_bias": "APMODE has no autoinduction primitive; a static-CL fit will recover a time-averaged CL of 3.872 vs true CL0 = 4.482. Bias = -13.66% (not -17.9%). Use time-averaged target when benchmarking, not CL0."
   }
 }

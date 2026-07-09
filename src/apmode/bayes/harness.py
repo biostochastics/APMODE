@@ -424,14 +424,14 @@ def _build_stan_data(request: dict[str, Any]) -> dict[str, Any]:
         stan_data["cens"] = cens
         stan_data["loq"] = loq
 
-    # Covariates referenced via CovariateLink variability items.
+    # Covariates referenced via the top-level ``covariates`` list (Formular
+    # sharpening plan §4 Phase 1, P1.6 — CovariateLink is no longer among
+    # ``variability`` items).
     # Stan data declares covariates as vector[N_subjects] (subject-level constants).
     # Time-varying covariates silently collapsing to baseline would bias
     # estimates, so reject at data-build time.
-    variability = (
-        request["spec"].get("variability", []) if isinstance(request["spec"], dict) else []
-    )
-    cov_names = sorted({v["covariate"] for v in variability if v.get("type") == "CovariateLink"})
+    covariates = request["spec"].get("covariates", []) if isinstance(request["spec"], dict) else []
+    cov_names = sorted({v["covariate"] for v in covariates})
     for cov in cov_names:
         if cov not in df.columns:
             raise ValueError(

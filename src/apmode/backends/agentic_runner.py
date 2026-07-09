@@ -14,6 +14,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import structlog
@@ -26,7 +27,6 @@ from apmode.backends.diagnostic_summarizer import (
     summarize_stability_for_llm,
 )
 from apmode.backends.prompts.system_v1 import SYSTEM_PROMPT_VERSION, build_system_prompt
-from apmode.backends.protocol import Lane
 from apmode.backends.transform_parser import parse_llm_response
 from apmode.bundle.models import (
     AgenticTraceInput,
@@ -36,6 +36,7 @@ from apmode.bundle.models import (
     DataManifest,
     RunLineage,
 )
+from apmode.dsl.lane import Lane
 from apmode.dsl.transforms import apply_transform, validate_transform
 from apmode.dsl.validator import validate_dsl
 from apmode.errors import AgenticExhaustionError
@@ -96,6 +97,19 @@ def _sanitize_for_prompt(text: str, max_len: int = 500) -> str:
     return cleaned
 
 
+def _transform_rationale(transform: object) -> str | None:
+    """Pull the provenance rationale off a FormularTransform, if any.
+
+    Every FormularTransform except SetPrior carries ``rationale`` directly
+    (P2.2). SetPrior instead reuses its existing ``justification`` field as
+    the rationale-equivalent (see prior_transforms.py docstring) \u2014 falling
+    back to it here means SetPrior never silently produces ``rationale=None``
+    when it actually has a justification.
+    """
+    rationale = getattr(transform, "rationale", None) or getattr(transform, "justification", None)
+    return rationale or None
+
+
 @runtime_checkable
 class LLMClientProtocol(Protocol):
     """Protocol for LLM clients (real or replay)."""
@@ -117,7 +131,7 @@ class AgenticConfig:
         if self.max_iterations < 1 or self.max_iterations > 25:
             msg = f"max_iterations must be in [1, 25] (PRD §4.2.6), got {self.max_iterations}"
             raise ValueError(msg)
-        valid_lanes = {"submission", "discovery", "optimization"}
+        valid_lanes = {lane.value for lane in Lane}
         if self.lane not in valid_lanes:
             msg = f"lane must be one of {sorted(valid_lanes)}, got '{self.lane}'"
             raise ValueError(msg)
@@ -300,7 +314,7 @@ class AgenticRunner:
             "set_transit_n",
             "toggle_lag",
         ]
-        if self._config.lane in ("discovery", "optimization"):
+        if Lane(self._config.lane) in (Lane.DISCOVERY, Lane.OPTIMIZATION):
             available_transforms.append("replace_with_node")
 
         system_prompt = build_system_prompt(
@@ -312,7 +326,7 @@ class AgenticRunner:
         best_result: BackendResult | None = None
         history: list[dict[str, Any]] = []
         iteration_records: list[IterationRecord] = []
-        lineage_entries: list[dict[str, str | None]] = []
+        lineage_entries: list[dict[str, str | list[str] | None]] = []
 
         # Conversation history preserves multi-turn context across iterations
         # so the LLM knows what it tried before and what happened. A sliding
@@ -470,7 +484,7 @@ class AgenticRunner:
                     err_feedback: list[str] = []
                     if parse_result.success and parse_result.transforms:
                         new_spec = current_spec
-                        staged_lineage: list[dict[str, str | None]] = []
+                        staged_lineage: list[dict[str, str | list[str] | None]] = []
                         for transform in parse_result.transforms:
                             t_errors = validate_transform(new_spec, transform)
                             if t_errors:
@@ -486,6 +500,13 @@ class AgenticRunner:
                                             "candidate_id": new_spec.model_id,
                                             "parent_id": prev_id,
                                             "transform": str(transform),
+                                            "rationale": _transform_rationale(transform),
+                                            "expected_diagnostic_effect": list(
+                                                getattr(
+                                                    transform, "expected_diagnostic_effect", []
+                                                )
+                                            ),
+                                            "applied_at": datetime.now(tz=UTC).isoformat(),
                                         }
                                     )
                                 except ValueError as e:
@@ -731,6 +752,11 @@ class AgenticRunner:
                                 "candidate_id": new_spec.model_id,
                                 "parent_id": prev_id,
                                 "transform": str(transform),
+                                "rationale": _transform_rationale(transform),
+                                "expected_diagnostic_effect": list(
+                                    getattr(transform, "expected_diagnostic_effect", [])
+                                ),
+                                "applied_at": datetime.now(tz=UTC).isoformat(),
                             }
                         )
                     except ValueError as e:
@@ -878,7 +904,7 @@ class AgenticRunner:
         path = self._trace_dir / f"{iteration_id}_cached_response.json"
         path.write_text(llm_response.model_dump_json(indent=2))
 
-    def _write_agentic_lineage(self, entries: list[dict[str, str | None]]) -> None:
+    def _write_agentic_lineage(self, entries: list[dict[str, str | list[str] | None]]) -> None:
         """Write agentic_lineage.json — candidate derivation DAG from transforms."""
         path = self._trace_dir / "agentic_lineage.json"
         path.write_text(json.dumps({"entries": entries}, indent=2))

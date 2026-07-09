@@ -13,7 +13,9 @@ from apmode.dsl.ast_models import (
     DSLSpec,
     FirstOrder,
     LinearElim,
+    ObservationEndpoint,
     OneCmt,
+    Proportional,
 )
 from apmode.dsl.frem_emitter import (
     FREMCovariate,
@@ -25,14 +27,18 @@ from apmode.dsl.frem_emitter import (
 
 def _simple_spec(model_id: str = "frem_test", cov_links: bool = False) -> DSLSpec:
     variability: list[object] = [IIV(params=["CL", "V"], structure="diagonal")]
+    covariates: list[object] = []
     if cov_links:
-        variability.append(CovariateLink(param="CL", covariate="WT", form="power"))
+        covariates.append(
+            CovariateLink(param="CL", covariate="WT", form="power", theta=0.75, ref=70.0)
+        )
     return DSLSpec(
         model_id=model_id,
-        absorption=FirstOrder(ka=1.0),
-        distribution=OneCmt(V=50.0),
-        elimination=LinearElim(CL=5.0),
+        absorption=FirstOrder(),
+        distribution=OneCmt(),
+        elimination=LinearElim(),
         variability=variability,  # type: ignore[arg-type]
+        covariates=covariates,  # type: ignore[arg-type]
         observation=Combined(sigma_prop=0.1, sigma_add=0.01),
     )
 
@@ -222,6 +228,24 @@ class TestEmitNlmixr2FREM:
         spec = _simple_spec()
         with pytest.raises(ValueError, match="at least one covariate"):
             emit_nlmixr2_frem(spec, [])
+
+    def test_rejects_multi_analyte_observations(self) -> None:
+        """P1.7: multi-analyte observations: blocks are a Phase 2 gap for FREM."""
+        spec = _simple_spec().model_copy(
+            update={
+                "observations": {
+                    "plasma": ObservationEndpoint(
+                        name="plasma",
+                        dvid=1,
+                        prediction="C_central",
+                        error=Proportional(sigma_prop=0.1),
+                    ),
+                }
+            }
+        )
+        covs = [FREMCovariate(name="WT", mu_init=70.0, sigma_init=10.0, dvid=10)]
+        with pytest.raises(NotImplementedError, match="observations"):
+            emit_nlmixr2_frem(spec, covs)
 
     def test_variance_initializes_to_square_of_sd(self) -> None:
         spec = _simple_spec()

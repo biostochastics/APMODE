@@ -142,7 +142,7 @@ class TestGenerateRootCandidates:
         params = {"ka": 2.0, "CL": 10.0, "V": 50.0}
         candidates = generate_root_candidates(space, base_params=params)
         assert len(candidates) == 1
-        assert candidates[0].absorption.ka == 2.0  # type: ignore[union-attr]
+        assert candidates[0].initial["ka"] == 2.0
 
 
 class TestSearchDAG:
