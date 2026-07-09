@@ -280,6 +280,33 @@ response_path <- args[2]
     }
   }, error = function(e) list())
 
+  # Per-subject post-hoc ETAs — nlmixr2 5.0.2's fit$eta is a data.frame
+  # keyed by ID with one eta.<PARAM> column per random effect (confirmed
+  # identical to fit$ranef; nlmixr2::ranef() is not exported from the
+  # package namespace, so fit$eta is used directly). Column names are
+  # stripped of the "eta." prefix to match eta_shrinkage's naming
+  # convention (eta.CL -> CL) and the eta.ka/eta.V/eta.CL headers in the
+  # benchmarks/suite_a/*_eta.csv ground-truth files, so downstream Python
+  # eta-recovery scoring has one consistent {subject_id: {param: value}}
+  # naming convention on both sides. Empty list (not zeros) signals
+  # "unavailable" so downstream scoring treats it as not-scorable rather
+  # than perfect recovery.
+  per_subject_eta <- tryCatch({
+    e <- fit$eta
+    eta_cols <- grep("^eta\\.", colnames(e), value = TRUE)
+    id_col <- if ("ID" %in% colnames(e)) "ID" else "id"
+    out <- list()
+    for (i in seq_len(nrow(e))) {
+      subj <- as.character(e[[id_col]][i])
+      vals <- as.list(e[i, eta_cols, drop = FALSE])
+      names(vals) <- sub("^eta\\.", "", names(vals))
+      out[[subj]] <- vals
+    }
+    out
+  }, error = function(e) {
+    list()  # unavailable — downstream must treat empty as "not scorable", not zero
+  })
+
   # Convergence info — check multiple indicators for robustness across
   # SAEM/FOCEI/nlme methods. In nlmixr2 5.0, fit$message may be empty
   # and fit$objDf$OBJF may be NA for SAEM. Use AIC(fit) as fallback.
@@ -433,6 +460,7 @@ response_path <- args[2]
     bic = bic_val,
     parameter_estimates = param_list,
     eta_shrinkage = shrinkage,
+    per_subject_eta = per_subject_eta,
     convergence_metadata = conv_meta,
     # ``diagnostics.vpc`` / ``npe_score`` / ``auc_cmax_be_score`` are
     # populated on the Python side via ``predicted_simulations`` below

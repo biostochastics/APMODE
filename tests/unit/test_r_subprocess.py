@@ -31,9 +31,9 @@ def _session_info() -> RSessionInfo:
 def _test_spec() -> DSLSpec:
     return DSLSpec(
         model_id="test_model_id_0000000",
-        absorption=FirstOrder(ka=1.0),
-        distribution=OneCmt(V=70.0),
-        elimination=LinearElim(CL=5.0),
+        absorption=FirstOrder(),
+        distribution=OneCmt(),
+        elimination=LinearElim(),
         variability=[IIV(params=["CL", "V"], structure="diagonal")],
         observation=Proportional(sigma_prop=0.1),
     )
@@ -282,6 +282,65 @@ class TestHarnessRRenamesNMID:
             "harness.R must apply .normalize_id_column to the held-out test "
             "data path so rxode2 partitions the held-out events by subject "
             "id rather than treating the file as a single subject."
+        )
+
+
+class TestHarnessRPerSubjectEta:
+    """Pin per-subject post-hoc ETA extraction in `r/harness.R`.
+
+    Without per-subject fitted ETAs there is nothing to compare
+    ``benchmarks/suite_a/*_eta.csv`` ground truth against (eta-recovery
+    scoring, see plan Task 5). ``fit$eta`` is an nlmixr2 5.0.2 data.frame
+    keyed by ``ID`` with one ``eta.<PARAM>`` column per random effect
+    (confirmed empirically against nlmixr2est 5.0.2: ``fit$eta`` and
+    ``fit$ranef`` are identical data.frames; ``nlmixr2::ranef`` is *not*
+    exported from the namespace). Column names are stripped of the
+    ``eta.`` prefix to match both the existing ``eta_shrinkage`` block's
+    naming convention and the ``eta.ka``/``eta.V``/``eta.CL`` headers in
+    the suite_a ground-truth CSVs.
+    """
+
+    def _harness_text(self) -> str:
+        from pathlib import Path
+
+        import apmode
+
+        harness = Path(apmode.__file__).parent / "r" / "harness.R"
+        assert harness.is_file(), f"harness.R missing at {harness}"
+        return harness.read_text()
+
+    def test_per_subject_eta_extraction_present(self) -> None:
+        text = self._harness_text()
+        assert "per_subject_eta <- tryCatch(" in text, (
+            "harness.R must define a per_subject_eta tryCatch block "
+            "extracting per-subject post-hoc ETAs from fit$eta, "
+            "sibling to the eta_shrinkage block."
+        )
+
+    def test_per_subject_eta_reads_fit_eta(self) -> None:
+        text = self._harness_text()
+        assert "fit$eta" in text, (
+            "harness.R must read per-subject ETAs from fit$eta "
+            "(confirmed present as a data.frame keyed by ID in "
+            "nlmixr2est 5.0.2; fit$ranef is identical but "
+            "nlmixr2::ranef is not exported)."
+        )
+
+    def test_per_subject_eta_strips_prefix(self) -> None:
+        text = self._harness_text()
+        assert 'sub("^eta\\\\.", "", names(vals))' in text, (
+            "harness.R must strip the 'eta.' column prefix so "
+            "per_subject_eta keys match the eta_shrinkage naming "
+            "convention (e.g. eta.CL -> CL) and the suite_a ground-"
+            "truth CSV headers once ground-truth's own 'eta.' prefix "
+            "is stripped downstream."
+        )
+
+    def test_per_subject_eta_in_result_list(self) -> None:
+        text = self._harness_text()
+        assert "per_subject_eta = per_subject_eta," in text, (
+            "harness.R's result list must include per_subject_eta "
+            "alongside eta_shrinkage so the Python side can consume it."
         )
 
 
