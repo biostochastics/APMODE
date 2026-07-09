@@ -36,6 +36,52 @@ Germovsek et al. 2017. Both papers are cited in the registry; the fixture
 uses the Germovsek IOV parameterization because it matches the dataset card
 already on disk (`benchmarks/datasets/ddmore_gentamicin`).
 
+## Metric definition and current scorecard status
+
+The `npe_apmode` / `npe_literature` fields in `phase1_npe_inputs.json`
+are APMODE's own **NPE** (Nonparametric Prediction Error): the median
+absolute prediction error from posterior-predictive simulations, per
+`apmode.benchmarks.scoring.compute_npe`. **This is not the classical
+Comets/Mentré NPDE** (Normalised Prediction Distribution Error — a
+mean≈0/variance≈1 z-score-like diagnostic from full Monte-Carlo
+simulation; Comets, Brendel & Mentré 2008,
+[10.1016/j.cmpb.2007.12.002](https://doi.org/10.1016/j.cmpb.2007.12.002)).
+The two share the "NPE" substring by coincidence of naming, not
+methodology — do not present a Suite C win/loss as an NPDE-validated
+result; it is a proprietary, residual-scaled proxy comparison between
+two fits of the same DSL spec on the same held-out fold (see
+`suite_c_phase1_runner.py`'s "Honest mode" docstring for exactly what
+is and isn't controlled for).
+
+`phase1_npe_inputs.json` also carries `pit_calibration_apmode` /
+`pit_calibration_literature` — the median-across-folds PIT/NPDE-lite
+calibration check (`PITCalibrationSummary`, the same mechanism Gate 1
+uses: does the predictive CDF hit its nominal coverage, `calibration["p50"]
+≈ 0.50`?). It was already computed by `build_predictive_diagnostics` for
+every Suite C fit but discarded before this field existed. It is a real
+calibration diagnostic (closer in spirit to NPDE than the NPE point-
+accuracy number above, though still without decorrelation or the formal
+Wilcoxon/Fisher/KS test battery) and is reported for visibility in
+`render_markdown_summary`'s output — it does **not** feed the win/loss
+gate.
+
+The committed `phase1_npe_inputs.json` was last regenerated
+2026-04-25 and reports `fraction_beats_literature_median = 40%
+(2/5)` — **below** the `>= 60%` CI target
+(`PHASE1_FRACTION_BEATS_TARGET`). The weekly
+`.github/workflows/suite_c_phase1.yml` job re-scores this static
+JSON (arithmetic only); it does not re-run the live nlmixr2 fits, so a
+green CI run only confirms the scoring math is self-consistent with
+the last live measurement, not that the measurement is current. Before
+citing Suite C results as evidence of methodology improvement, confirm
+(a) the scorecard has been regenerated via a live
+`suite_c_phase1_runner.py` run since the change in question landed, and
+(b) `apmode.data.initial_estimates.NCAEstimator` was not seeded with
+`fallback_estimates` derived from the fixture's own
+`reference_params` (see
+`tests/unit/test_suite_c_phase1_runner.py::test_run_fixture_apmode_side_never_seeded_from_literature_reference_params`
+for the regression test that pins this).
+
 ## Adding a new fixture
 
 1. Decide on a stable `dataset_id` (snake_case, lowercase).

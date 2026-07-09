@@ -160,11 +160,10 @@
       
       # Compartment dynamics
       d/dt(depot_fo) <- -ka * depot_fo
-      dur(depot_zo) <- dur
-      d/dt(depot_zo) <- -depot_zo
       f(depot_fo) <- frac
-      f(depot_zo) <- 1 - frac
-      d/dt(centr) <- ka * depot_fo + depot_zo - CL / V * centr
+      dur(centr) <- dur
+      f(centr) <- 1 - frac
+      d/dt(centr) <- ka * depot_fo - CL / V * centr
       cp <- centr / V
       
       # Observation model
@@ -181,7 +180,6 @@
       # Structural parameters
       lka <- log(1.0)
       lktr <- log(2.0)
-      ln <- log(4)
       lV <- log(70.0)
       lCL <- log(5.0)
       
@@ -196,7 +194,7 @@
       # Back-transform parameters
       ka <- exp(lka)
       ktr <- exp(lktr)
-      n <- exp(ln)
+      n <- 4
       mtt <- (n + 1) / ktr  # mean transit time for rxode2
       V <- exp(lV + eta.V)
       CL <- exp(lCL + eta.CL)
@@ -372,7 +370,6 @@
       # Structural parameters
       lka <- log(1.5)
       lktr <- log(3.0)
-      ln <- log(5)
       lV1 <- log(15.0)
       lV2 <- log(25.0)
       lV3 <- log(8.0)
@@ -392,7 +389,7 @@
       # Back-transform parameters
       ka <- exp(lka)
       ktr <- exp(lktr + eta.ktr)
-      n <- exp(ln)
+      n <- 5
       mtt <- (n + 1) / ktr  # mean transit time for rxode2
       V1 <- exp(lV1 + eta.V1)
       V2 <- exp(lV2)

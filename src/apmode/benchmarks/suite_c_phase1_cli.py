@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""``python -m apmode.benchmarks.suite_c_phase1_cli`` — score the Phase-1 roster.
+"""``python -m apmode.benchmarks.suite_c_phase1_cli`` — score the Suite C roster.
 
-Plan Task 41 — driver invoked by ``.github/workflows/suite_c_phase1.yml``.
-The CLI reads a JSON file mapping ``fixture_id`` → ``{npe_apmode,
+Driver invoked by ``.github/workflows/suite_c_phase1.yml``. The CLI reads a
+JSON file mapping ``fixture_id`` → ``{npe_apmode,
 npe_literature}``, computes the per-fixture
 :class:`~apmode.benchmarks.suite_c_phase1_scoring.FixtureScore`,
 aggregates them into a
@@ -77,7 +77,7 @@ def _load_inputs(path: Path) -> dict[str, dict[str, object]]:
         }
 
     ``npe_apmode_per_fold`` is optional — supplied by the live-fit
-    runner (plan Task 44) to carry the raw per-fold NPE values whose
+    runner to carry the raw per-fold NPE values whose
     median is ``npe_apmode``. Inputs JSON files written before the
     runner landed are still accepted unchanged. Extra unrelated fields
     per entry are tolerated for forward compat.
@@ -110,6 +110,17 @@ def _load_inputs(path: Path) -> dict[str, dict[str, object]]:
                 )
                 raise TypeError(msg)
             entry["npe_apmode_per_fold"] = tuple(float(x) for x in per_fold)
+        # PIT/NPDE-lite calibration is informational only — pass through
+        # verbatim (no gate reads it) so render_markdown_summary can
+        # display it. Optional: absent in inputs files written before
+        # this field existed.
+        for pit_key in ("pit_calibration_apmode", "pit_calibration_literature"):
+            pit_val = payload.get(pit_key)
+            if pit_val is not None:
+                if not isinstance(pit_val, dict):
+                    msg = f"inputs entry for fixture {fid!r}: {pit_key!r} must be an object"
+                    raise TypeError(msg)
+                entry[pit_key] = {str(k): float(v) for k, v in pit_val.items()}
         out[fid] = entry
     return out
 
@@ -138,13 +149,30 @@ def _score_all(inputs: dict[str, dict[str, object]]) -> list[FixtureScore]:
 # ---------------------------------------------------------------------------
 
 
-def render_markdown_summary(card: SuiteCPhase1Scorecard) -> str:
+def _format_pit_cell(calibration: object) -> str:
+    """Render a PIT calibration dict as ``p5=.05 p50=.49 p95=.94``, or a dash if absent."""
+    if not isinstance(calibration, dict) or not calibration:
+        return "—"
+    return " ".join(f"{k}={v:.2f}" for k, v in sorted(calibration.items()))
+
+
+def render_markdown_summary(
+    card: SuiteCPhase1Scorecard,
+    inputs: dict[str, dict[str, object]] | None = None,
+) -> str:
     """Render the scorecard as a Markdown table + headline.
 
     Used by the workflow to populate ``$GITHUB_STEP_SUMMARY`` and the
     body of the auto-opened GitHub issue when the gate misses. Kept
     deterministic (no timestamps) so the artifact diff is meaningful
     week-on-week.
+
+    ``inputs`` (the raw ``_load_inputs`` map) is optional and, when
+    supplied, adds PIT/NPDE-lite calibration columns per fixture — this
+    is informational only (not part of ``FixtureScore``/the win/loss
+    gate) so it lives here rather than on the scorecard model itself.
+    Absent for inputs files written before this field existed, or when
+    the caller doesn't have the raw inputs map on hand.
     """
     lines: list[str] = ["# Suite C Phase-1 scorecard", ""]
     if card.fraction_beats_literature_median is None:
@@ -160,17 +188,32 @@ def render_markdown_summary(card: SuiteCPhase1Scorecard) -> str:
             f"({card.n_beats}/{card.n_datasets}) — target "
             f"{card.target:.0%} {emoji}"
         )
-    lines.extend(
-        [
-            "",
-            "| Fixture | NPE APMODE | NPE Literature | Beats? |",
-            "| --- | ---: | ---: | :---: |",
-        ]
-    )
+    has_pit = inputs is not None
+    header = "| Fixture | NPE APMODE | NPE Literature | Beats? |"
+    divider = "| --- | ---: | ---: | :---: |"
+    if has_pit:
+        header += " PIT APMODE | PIT Literature |"
+        divider += " --- | --- |"
+    lines.extend(["", header, divider])
     for s in card.scores:
         beats = ":white_check_mark:" if s.beats_literature else ":x:"
-        lines.append(
-            f"| `{s.fixture_id}` | {s.npe_apmode:.4f} | {s.npe_literature:.4f} | {beats} |"
+        row = f"| `{s.fixture_id}` | {s.npe_apmode:.4f} | {s.npe_literature:.4f} | {beats} |"
+        if has_pit:
+            entry = (inputs or {}).get(s.fixture_id, {})
+            row += (
+                f" {_format_pit_cell(entry.get('pit_calibration_apmode'))} "
+                f"| {_format_pit_cell(entry.get('pit_calibration_literature'))} |"
+            )
+        lines.append(row)
+    if has_pit:
+        lines.extend(
+            [
+                "",
+                "_PIT/NPDE-lite calibration (`p{level}=observed coverage`; should be "
+                "close to the nominal level, e.g. p50≈0.50) is a calibration diagnostic, "
+                "distinct from the NPE point-accuracy comparison above — see "
+                "`benchmarks/suite_c/README.md`._",
+            ]
         )
     return "\n".join(lines) + "\n"
 
@@ -248,7 +291,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.markdown_summary is not None:
         args.markdown_summary.parent.mkdir(parents=True, exist_ok=True)
-        _atomic_write(args.markdown_summary, render_markdown_summary(card))
+        _atomic_write(args.markdown_summary, render_markdown_summary(card, inputs))
 
     if args.fail_on_missed_gate and not card.passes_gate:
         sys.stderr.write("error: gate missed (passes_gate=false)\n")

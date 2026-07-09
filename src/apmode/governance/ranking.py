@@ -643,17 +643,16 @@ def rank_cross_paradigm(
     )
 
 
-# --- v0.5.0 M0: ScoringContract-grouped ranking (plan §3) ---
+# --- ScoringContract-grouped ranking ---
 
 
 @dataclass
 class ContractGroupedRanking:
     """Gate-3 ranking split by :class:`~apmode.bundle.models.ScoringContract`.
 
-    Plan §3 mandates hard-separate leaderboards whenever survivors carry
-    different contracts (conditional vs marginal NLPD, integrated vs
-    pooled RE, HMC-NUTS vs FOCEI integrator, float32 vs float64 accumulation).
-    This type is what Gate 3 produces in the contract-split world.
+    Gate 3 uses hard-separated leaderboards whenever survivors carry different
+    contracts (conditional vs marginal NLPD, integrated vs pooled RE,
+    HMC-NUTS vs FOCEI integrator, float32 vs float64 accumulation).
 
     ``groups`` lists one ranking per distinct contract, preserving the
     insertion order of ``group_by_scoring_contract`` (which in turn is

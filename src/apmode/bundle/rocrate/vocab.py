@@ -80,7 +80,7 @@ class RegulatoryContext(StrEnum):
     (if any) the bundle is being prepared under. ``research-only`` is the
     default for an unflagged run; other values indicate that the
     downstream PCCP / MDR / Article-12 artifacts are expected to be
-    present in the ``regulatory/`` subdirectory (v0.8+).
+    present in the ``regulatory/`` subdirectory.
     """
 
     RESEARCH_ONLY = "research-only"

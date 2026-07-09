@@ -171,3 +171,33 @@ class TestToNlmixr2Format:
         assert "DVID" in result.columns
         assert list(result["DVID"]) == [1, 1, 2]
         assert list(result["DV"]) == [0.0, 5.0, 10.0]
+
+    def test_single_dose_sumig_helper_column_added(self) -> None:
+        df = pd.DataFrame(
+            {
+                "NMID": [1, 1, 2, 2],
+                "TIME": [0.0, 1.0, 0.0, 1.0],
+                "DV": [0.0, 5.0, 0.0, 7.0],
+                "MDV": [1, 0, 1, 0],
+                "EVID": [1, 0, 1, 0],
+                "AMT": [100.0, 0.0, 250.0, 0.0],
+                "CMT": [1, 1, 1, 1],
+            }
+        )
+        result = to_nlmixr2_format(df)
+        assert list(result["SUMIG_DOSE"]) == [100.0, 100.0, 250.0, 250.0]
+
+    def test_sumig_helper_not_added_for_multi_dose_subject(self) -> None:
+        df = pd.DataFrame(
+            {
+                "NMID": [1, 1, 1],
+                "TIME": [0.0, 12.0, 24.0],
+                "DV": [0.0, 0.0, 5.0],
+                "MDV": [1, 1, 0],
+                "EVID": [1, 1, 0],
+                "AMT": [100.0, 100.0, 0.0],
+                "CMT": [1, 1, 1],
+            }
+        )
+        result = to_nlmixr2_format(df)
+        assert "SUMIG_DOSE" not in result.columns

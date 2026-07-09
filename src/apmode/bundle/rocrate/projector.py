@@ -117,10 +117,9 @@ class RoCrateProfile(StrEnum):
 class ReportableSelection(StrEnum):
     """Policy for which candidates get a full per-candidate CreateAction.
 
-    v0.6 always uses :attr:`ALL` because the Submission lane has a
-    small candidate count. :attr:`GATE2_PASS` and :attr:`TOP_K` are
-    recognised by the CLI for forward-compatibility with v0.7's
-    Discovery-lane tiering — they currently behave like :attr:`ALL`.
+    ``ALL`` projects every result file. ``GATE2_PASS`` keeps candidates that
+    passed Gate 2, and ``TOP_K`` caps projection to the first 50 collected
+    candidate ids.
     """
 
     ALL = "all-evaluated"
@@ -528,9 +527,8 @@ class RoCrateEmitter:
     ) -> list[str]:
         """Return the list of candidate ids to project as CreateActions.
 
-        v0.6 always returns every candidate with a result file. The
-        other selections are recognised for forward-compat — v0.7 will
-        cap Discovery-lane projections to a tiered subset.
+        ``ALL`` returns every candidate with a result file. Other selections
+        apply their configured filtering before projection.
         """
         ids = ent_backend.collect_result_ids(bundle_dir)
         if options.reportable == ReportableSelection.GATE2_PASS:

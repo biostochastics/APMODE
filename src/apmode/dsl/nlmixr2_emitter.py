@@ -5,7 +5,8 @@ Emits a complete nlmixr2 model function with:
 - ini({}) block: parameter initial estimates, eta definitions, sigma definitions
 - model({}) block: rxode2 ODE/algebraic model, covariate effects, observation model
 
-NODE modules are Phase 2 and raise NotImplementedError.
+NODE modules are unsupported by the nlmixr2 emitter and raise
+``NotImplementedError``; neural execution uses the NODE backend stack.
 
 References for ODE formulations:
 - TMDD full binding: Mager & Jusko (2001), J Pharmacokinet Pharmacodyn 28:507-532
@@ -56,10 +57,9 @@ from apmode.dsl.capabilities import CapabilityTag
 # Valid R identifier pattern for name sanitization
 _R_IDENT_RE = re.compile(r"^[a-zA-Z_.][a-zA-Z0-9_.]*$")
 
-# Capability matrix (P0.7, docs/plans/2026-07-08-formular-sharpening-and-adoption-design.md
-# §4 Phase 0): every module-axis variant this emitter has a real lowering
-# path for, versus what it explicitly rejects. NODE modules are Phase 2
-# (JAX/Diffrax emitter) and raise via ``spec.has_node_modules()`` above.
+# Capability matrix: every module-axis variant this emitter has a real
+# lowering path for, versus what it explicitly rejects. NODE modules belong to
+# the neural backend stack and raise via ``spec.has_node_modules()``.
 SUPPORTS: frozenset[CapabilityTag] = frozenset(
     {
         CapabilityTag.ABSORPTION_IV_BOLUS,
@@ -125,12 +125,12 @@ def emit_nlmixr2(
     Returns an R code string defining an nlmixr2-compatible model function
     with ini() and model() blocks.
 
-    Raises NotImplementedError for NODE modules (Phase 2).
+    Raises NotImplementedError for NODE modules.
     """
     if spec.has_node_modules():
         raise NotImplementedError(
             "NODE module lowering to nlmixr2 is not supported. "
-            "NODE backends use the JAX/Diffrax emitter (Phase 2)."
+            "NODE backends use the JAX/Diffrax execution stack."
         )
 
     ini_lines = _emit_ini(spec, initial_estimates=initial_estimates)
@@ -182,10 +182,10 @@ def _emit_structural_ini(
 ) -> list[str]:
     """Emit structural parameter initial estimates.
 
-    Calibration values come from ``spec.initial`` (Formular sharpening plan
-    §4 Phase 1, P1.4); when ``initial_estimates`` is also provided, those
-    values take precedence for matching parameter names (e.g. runtime
-    NCA-derived overrides beat the DSL-declared ``initial:`` block).
+    Calibration values come from ``spec.initial``; when ``initial_estimates``
+    is also provided, those values take precedence for matching parameter
+    names (e.g. runtime NCA-derived overrides beat the DSL-declared
+    ``initial:`` block).
     """
     ov = initial_estimates or {}
     lines: list[str] = []
@@ -212,10 +212,6 @@ def _emit_structural_ini(
     elif isinstance(abs_mod, Transit):
         lines.append(f"lka <- log({val('ka')})")
         lines.append(f"lktr <- log({val('ktr')})")
-        # n is estimated as continuous via log/exp transform; rxode2's transit()
-        # uses gamma-function interpolation for non-integer n values
-        # (Savic et al. 2007, J Pharmacokinet Pharmacodyn 34:711-726)
-        lines.append(f"ln <- log({ov.get('n', abs_mod.n)})")
     elif isinstance(abs_mod, MixedFirstZero):
         lines.append(f"lka <- log({val('ka')})")
         lines.append(f"ldur <- log({val('dur')})")
@@ -311,12 +307,10 @@ def _emit_structural_ini(
         lines.append(f"lkdecay <- log({val('kdecay', 0.1)})")
 
     # Covariate coefficients. Initial/starting values come from the
-    # covariate declaration's own ``theta``/``hill``/``tm50`` fields
-    # (Formular sharpening plan §4 Phase 1, P1.6) rather than a hardcoded
-    # per-form constant — ``power``/``exponential``/``linear`` use
-    # ``theta``; ``maturation`` uses ``hill`` (coefficient) and ``tm50``.
-    # ``categorical`` has no configurable coefficient yet (Phase 2
-    # candidate; see ``CovariateLink`` docstring) and keeps the pre-P1.6
+    # covariate declaration's own ``theta``/``hill``/``tm50`` fields rather
+    # than a hardcoded per-form constant: ``power``/``exponential``/``linear``
+    # use ``theta``; ``maturation`` uses ``hill`` (coefficient) and ``tm50``.
+    # ``categorical`` has no configurable coefficient yet and keeps a
     # hardcoded starting value of 0.
     cov_links = list(spec.covariates)
     if cov_links:
@@ -518,7 +512,8 @@ def _emit_backtransform(spec: DSLSpec) -> list[str]:
                 elif cov.form == "exponential":
                     expr += f" + {coeff} * {cov.covariate}"
                 elif cov.form == "linear":
-                    expr += f" + log(1 + {coeff} * {cov.covariate})"
+                    mult = f"1 + {coeff} * {cov.covariate}"
+                    expr += f" + log(ifelse({mult} > 1e-6, {mult}, 1e-6))"
                 elif cov.form == "categorical":
                     expr += f" + {coeff} * {cov.covariate}"
                 elif cov.form == "maturation":
@@ -590,7 +585,7 @@ def _emit_backtransform(spec: DSLSpec) -> list[str]:
     elif isinstance(abs_mod, Transit):
         lines.append(_bt("ka", "lka"))
         lines.append(_bt("ktr", "lktr"))
-        lines.append("n <- exp(ln)")
+        lines.append(f"n <- {abs_mod.n}")
         lines.append("mtt <- (n + 1) / ktr  # mean transit time for rxode2")
     elif isinstance(abs_mod, MixedFirstZero):
         lines.append(_bt("ka", "lka"))
@@ -719,13 +714,14 @@ def _emit_ode_dynamics(spec: DSLSpec) -> list[str]:
         lines.append("d/dt(depot) <- transit(n, mtt) - ka * depot")
         _abs_influx = "ka * depot"
     elif isinstance(abs_mod, MixedFirstZero):
-        # Mixed first-order + zero-order: two depot compartments
+        # Mixed first-order + zero-order. The zero-order route is an
+        # event-level infusion directly into the central compartment over dur;
+        # the first-order route remains a depot.
         lines.append("d/dt(depot_fo) <- -ka * depot_fo")
-        lines.append("dur(depot_zo) <- dur")
-        lines.append("d/dt(depot_zo) <- -depot_zo")
         lines.append("f(depot_fo) <- frac")
-        lines.append("f(depot_zo) <- 1 - frac")
-        _abs_influx = "ka * depot_fo + depot_zo"
+        lines.append("dur(centr) <- dur")
+        lines.append("f(centr) <- 1 - frac")
+        _abs_influx = "ka * depot_fo"
     elif isinstance(abs_mod, Erlang):
         # Explicit n-compartment chain (ADR-0003 D2). Dose enters E1; each
         # transit step drains at rate ktr; the last compartment feeds the
@@ -747,8 +743,8 @@ def _emit_ode_dynamics(spec: DSLSpec) -> list[str]:
     elif isinstance(abs_mod, SumIG):
         # Closed-form analytical input rate (Csajka 2005; Weiss 2022).
         # I(t) = D·F · Σᵢ wᵢ · sqrt(RD2ᵢ / (2π·t³)) · exp(-RD2ᵢ·(t-MTᵢ)² / (2·MTᵢ²·t))
-        # Single-dose only in v0.7 (multi-dose superposition deferred,
-        # ADR-0003 D4). Guard against t=0 with a small floor — rxode2's
+        # Single-dose only; multi-dose superposition is not represented here.
+        # Guard against t=0 with a small floor — rxode2's
         # LSODA evaluates RHS at output-time grid; output at exactly t=0
         # would force a 0^(-3/2) singularity. The `_t_safe` guard keeps
         # the integrator stable; the contribution near t=0 is ~0 anyway
@@ -766,9 +762,10 @@ def _emit_ode_dynamics(spec: DSLSpec) -> list[str]:
         lines.append("sumig_input <- weight_1 * ig_1 + weight_2 * ig_2  # ∫sumig_input dt = 1")
         # The input rate above integrates to 1 over (0, ∞). Multiply by the
         # dose amount so the central-compartment influx has units of
-        # [mass·time⁻¹]. rxode2 exposes the dose via `amt` in the model
-        # block (resolved per-event by the data adapter).
-        _abs_influx = "amt * sumig_input"
+        # [mass·time⁻¹]. rxode2's reserved `amt` is not persistent after the
+        # event row, so the nlmixr2 data adapter provides SUMIG_DOSE as a
+        # per-subject constant for the single-dose SumIG contract.
+        _abs_influx = "SUMIG_DOSE * sumig_input"
     else:
         _abs_influx = "0"
 
@@ -968,8 +965,7 @@ def _emit_endpoint_residual(obs: ObservationModule, prediction_var: str, suffix:
 def _emit_observation_model(spec: DSLSpec) -> list[str]:
     """Emit the observation/residual error model for every observation endpoint.
 
-    Formular sharpening plan §4 Phase 1 (P1.7): iterates
-    ``spec.observation_endpoints()``. The single-endpoint case (the
+    Iterates ``spec.observation_endpoints()``. The single-endpoint case (the
     synthetic ``"default"`` endpoint every legacy ``observation:`` spec
     normalizes to) emits ``cp ~ ...`` exactly as before P1.7. For a genuine
     multi-analyte ``observations:`` block, each endpoint's ``prediction``
@@ -984,7 +980,7 @@ def _emit_observation_model(spec: DSLSpec) -> list[str]:
     names) is a data-adapter/runner concern, not this emitter's — see
     ``apmode.data.adapters.PK_DVID_ALLOWLIST`` and the ``Nlmixr2Runner``
     two-layer adapter contract (CLAUDE.md); wiring that end-to-end for
-    multi-analyte data is a Phase 2 candidate.
+    multi-analyte data belongs in the data-adapter/runner layer.
     """
     endpoints = spec.observation_endpoints()
     if len(endpoints) == 1:

@@ -524,9 +524,13 @@ def apply_transform(spec: DSLSpec, transform: FormularTransform) -> DSLSpec:
         variability=variability,
         covariates=covariates,
         observation=observation,
+        observations=spec.observations,
         priors=spec.priors,
         experimental=spec.experimental,
         metadata=spec.metadata,
+        units=spec.units,
+        source_meta=spec.source_meta,
+        macros_used=spec.macros_used,
         initial={},
     )
 
@@ -592,9 +596,13 @@ def _prune_stale_variability(spec: DSLSpec) -> DSLSpec:
         variability=cleaned,
         covariates=cleaned_covariates,
         observation=spec.observation,
+        observations=spec.observations,
         priors=pruned_priors,
         experimental=spec.experimental,
         metadata=spec.metadata,
+        units=spec.units,
+        source_meta=spec.source_meta,
+        macros_used=spec.macros_used,
         initial=spec.initial,
     )
 

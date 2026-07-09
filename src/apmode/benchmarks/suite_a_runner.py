@@ -17,16 +17,14 @@ producer of ``benchmarks/suite_a/eta_recovery_report.json``:
      — the DSL's own documented distinction between "structural
      parameter names" (used for typing/validation) and "calibration
      parameter names" (the subset that needs an ``initial:`` value and
-     is meaningful as an nlmixr2 THETA). This matters for A3: its
-     ``REFERENCE_PARAMS["A3"]`` carries ``"n": 3.0``, the Transit
-     absorption chain-length count, not a THETA. Empirically
-     ``emit_nlmixr2`` does *not* raise on an extra ``"n"`` key (the
-     Transit branch of ``_emit_structural_ini`` happens to consume it
-     via ``ov.get("n", abs_mod.n)``), but filtering through
-     ``calibration_param_names()`` is the documented, forward-compatible
-     contract rather than relying on that per-module lookup shape —
-     future structural-only keys (Erlang, NODE weights, SumIG's ``k``)
-     are not guaranteed to be similarly harmless if passed through.
+     is meaningful as an nlmixr2 THETA). ``REFERENCE_PARAMS`` keys are
+     kept equal to each scenario's ``structural_param_names()`` (pinned
+     by ``test_reference_params_complete``), so today this filter is a
+     no-op for every scenario; it is kept as the forward-compatible
+     contract rather than assuming that invariant holds — a future
+     structural-only key (NODE weights, SumIG's ``k``) is not
+     guaranteed to be harmless if passed through to ``initial:``
+     unfiltered.
   4. Run a single ``Nlmixr2Runner.run`` fit per scenario. Any exception
      is caught and recorded as ``status="fit_error"`` — one scenario's
      failure must never abort the rest of the suite.

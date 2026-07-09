@@ -1,11 +1,9 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Publishing stubs for WorkflowHub / Zenodo (Phase v0.8 target).
+"""Publishing stubs for WorkflowHub / Zenodo.
 
-v0.6 ships the CLI surface only — the implementations raise
-:class:`NotImplementedError` so operators discover the flow and see a
-helpful message pointing at the roadmap. The signatures match plan
-§F so that enabling the feature in v0.8 is a drop-in replacement rather
-than a CLI migration.
+The CLI surface exists, but upload implementations are not wired yet. The
+stubs raise :class:`NotImplementedError` with guidance to export a crate ZIP
+locally and track the publishing work separately.
 """
 
 from __future__ import annotations
@@ -13,10 +11,10 @@ from __future__ import annotations
 from pathlib import Path  # noqa: TC003 — runtime type in function signatures
 
 _DEFERRED_MSG = (
-    "APMODE bundle publishing is scheduled for v0.8. "
+    "APMODE bundle publishing is not implemented yet. "
     "Use `apmode bundle rocrate export` to produce the crate now; "
-    "once v0.8 lands it will upload the zip to WorkflowHub / Zenodo. "
-    "Tracking: _research/ROCRATE_INTEGRATION_PLAN.md §H (v0.8)."
+    "the future publisher will upload the zip to WorkflowHub / Zenodo. "
+    "Tracking: _research/ROCRATE_INTEGRATION_PLAN.md §H."
 )
 
 
@@ -26,7 +24,7 @@ def publish_to_workflowhub(
     sandbox: bool = True,
     token_env: str = "WORKFLOWHUB_TOKEN",
 ) -> None:
-    """Upload a crate ZIP to WorkflowHub. Not implemented in v0.6."""
+    """Upload a crate ZIP to WorkflowHub. Not implemented."""
     del crate_zip, sandbox, token_env
     raise NotImplementedError(_DEFERRED_MSG)
 
@@ -37,6 +35,6 @@ def publish_to_zenodo(
     sandbox: bool = True,
     token_env: str = "ZENODO_TOKEN",
 ) -> None:
-    """Upload a crate ZIP to Zenodo. Not implemented in v0.6."""
+    """Upload a crate ZIP to Zenodo. Not implemented."""
     del crate_zip, sandbox, token_env
     raise NotImplementedError(_DEFERRED_MSG)

@@ -28,15 +28,14 @@ Because of this, serialization is driven entirely by ``type(module)``
 dispatch, never by reading calibration values off the module itself
 (P1.4 already moved every calibration field into ``DSLSpec.initial``).
 
-Known gap: ``DSLSpec.experimental`` (the NODE opt-in gate, P0.8) has no
+Known gap: ``DSLSpec.experimental`` (the NODE opt-in gate) has no
 grammar syntax at all — there is no ``experimental:`` block in
 ``pk_grammar.lark`` — so a spec with ``experimental.node=True`` cannot be
 round-tripped through :func:`serialize_spec` followed by
 :func:`apmode.dsl.grammar.compile_dsl`: the reparsed spec always gets
 ``experimental.node=False`` and fails ``FrmCode.LANE_NODE_EXPERIMENTAL_GATE``
-on the next ``validate_dsl`` call. This is a pre-existing grammar
-limitation (Phase 2 candidate — adding text syntax for the experimental
-gate), not something this module can paper over.
+on the next ``validate_dsl`` call. This is a grammar limitation, not
+something this module can paper over.
 """
 
 from __future__ import annotations

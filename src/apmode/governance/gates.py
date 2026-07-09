@@ -1327,7 +1327,7 @@ def _gate3_cross_paradigm(
 
 
 # ---------------------------------------------------------------------------
-# Gate 2.5: Credibility Qualification (Phase 2 scaffold)
+# Gate 2.5: Credibility Qualification
 # ---------------------------------------------------------------------------
 
 

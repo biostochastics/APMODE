@@ -81,7 +81,7 @@ class Transit(BaseModel):
     with first-order transfer rate ``ka`` to the central compartment.
     rxode2's transit(n, mtt) handles the chain; ka controls depot→central.
     Calibration values ``ktr``, ``ka`` live in ``DSLSpec.initial``; ``n`` is
-    the structural chain length and stays inline.
+    the structural chain length and stays inline, not an estimated parameter.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -130,9 +130,8 @@ class ParallelFirstOrder(BaseModel):
 class SumIG(BaseModel):
     """Sum of Inverse Gaussians absorption (Csajka 2005; Weiss & Wegner 2022).
 
-    v0.7 ships ``k=2`` only (validator restricts to k ∈ {1, 2}) — ``k`` is
-    structural and stays inline. The path to k=3 is a validator-only change
-    in a future release.
+    The validator restricts ``k`` to {1, 2}. ``k`` is structural and stays
+    inline; per-component calibration values live in ``DSLSpec.initial``.
 
     Per-component ``MT_1``, ``MT_2``, ``RD2_1``, ``RD2_2``, ``weight_1`` are
     calibration values that live in ``DSLSpec.initial`` so existing IIV /
@@ -392,7 +391,7 @@ VariabilityItem = Annotated[
 
 
 # ---------------------------------------------------------------------------
-# Covariates (Formular sharpening plan §4 Phase 1, P1.6)
+# Covariates
 # ---------------------------------------------------------------------------
 #
 # Covariate effects moved out of the variability-item union entirely (they
@@ -450,17 +449,12 @@ def _require_covariate_fields(
 class CovariateLink(BaseModel):
     """A covariate effect on a structural parameter, with first-class reference values.
 
-    Formular sharpening plan §4 Phase 1 (P1.6): each ``form`` carries its
-    own explicit, named field set instead of the coefficient's starting
-    value and any reference constant being hardcoded inside the emitters
-    (previously ``power`` silently centered on a hardcoded 70 kg reference
-    weight -- Anderson & Holford 2008 -- and every form's coefficient
-    started from a hardcoded per-form constant). All numeric/string fields
-    below are calibration-like (excluded from ``structure_fingerprint``,
-    included in ``spec_fingerprint`` -- see ``apmode.dsl.canonical``) with
-    one exception: ``reference`` (the categorical baseline *level name*) is
-    treated as structural, since it identifies which level the model
-    defines as baseline rather than a re-estimable numeric value.
+    Each ``form`` carries its own explicit, named field set. All numeric/string
+    fields below are calibration-like (excluded from ``structure_fingerprint``,
+    included in ``spec_fingerprint`` -- see ``apmode.dsl.canonical``) with one
+    exception: ``reference`` (the categorical baseline *level name*) is treated
+    as structural, since it identifies which level the model defines as
+    baseline rather than a re-estimable numeric value.
 
     - ``power``: ``theta`` (coefficient's initial/starting estimate) and
       ``ref`` (fixed reference covariate value the formula centers on,
@@ -470,7 +464,7 @@ class CovariateLink(BaseModel):
     - ``categorical``: ``reference`` only (the baseline level's name; the
       numeric 0/1 encoding of non-reference levels is a data-adapter
       concern, not a DSL one -- see ``apmode.data.adapters``). The
-      coefficient itself is not yet configurable here (Phase 2 candidate).
+      coefficient itself is not yet configurable here.
     - ``maturation``: ``tm50`` and ``hill`` (initial/starting estimates for
       the TM50 and Hill-exponent parameters respectively).
 
@@ -629,19 +623,17 @@ class ObservationEndpoint(BaseModel):
 
 
 class ExperimentalFlags(BaseModel):
-    """Explicit opt-in flags for AST variants with no working backend yet.
+    """Explicit opt-in flags for experimental AST variants.
 
-    Phase 0 P0.8 (Formular sharpening plan §4): ``NODEAbsorption`` /
-    ``NODEElimination`` exist in the AST but every registered emitter
-    (nlmixr2, Stan, FREM) raises ``NotImplementedError`` for them — there
-    is no working NODE solver backend today (see
-    ``apmode.dsl.capabilities`` NODE tags). Without an explicit gate, a
-    spec author could write a NODE variant and have downstream tooling
-    silently report "unsupported" with no signal that this is an
-    intentionally experimental, not-yet-backed feature rather than a bug.
-    ``node=True`` is the author's acknowledgement of that; ``validate_dsl``
-    fails closed with ``FrmCode.LANE_NODE_EXPERIMENTAL_GATE`` when a NODE
-    variant is present and this flag is unset, independent of lane.
+    ``NODEAbsorption`` / ``NODEElimination`` are accepted in the AST, but the
+    registered DSL emitters (nlmixr2, Stan, FREM) do not lower them. The
+    separate NODE runner/trainer stack owns neural execution. Without an
+    explicit gate, a spec author could write a NODE variant and get a generic
+    backend-capability failure with no signal that this is an intentionally
+    experimental route. ``node=True`` is the author's acknowledgement of that;
+    ``validate_dsl`` fails closed with
+    ``FrmCode.LANE_NODE_EXPERIMENTAL_GATE`` when a NODE variant is present and
+    this flag is unset, independent of lane.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -719,47 +711,34 @@ class DSLSpec(BaseModel):
     elimination: EliminationModule
     variability: list[VariabilityItem]
     observation: ObservationModule
-    # Formular sharpening plan §4 Phase 1 (P1.7): optional multi-analyte
-    # form, additive to the ``observation`` field above (never a
-    # replacement -- the legacy singular ``observation:`` sugar is still
-    # the common case and stays fully supported). ``None`` when the spec
-    # used only the singular form (the overwhelming majority of specs,
-    # pre- and post-P1.7). When a Formular ``observations:`` block is
-    # compiled, ``observation`` above is synthesized from the *first*
-    # entry (insertion order) so every pre-existing consumer that reads
-    # ``spec.observation`` directly (``apmode.dsl.canonical``,
-    # ``apmode.dsl.units``, ``apmode.bundle.scoring_contract``,
-    # ``apmode.backends.predictive_summary``) keeps working unchanged,
-    # treating that first entry as representative -- full multi-endpoint
-    # awareness in those modules is a Phase 2 candidate. Code that must see
-    # every endpoint regardless of which syntax form was used should call
-    # :meth:`observation_endpoints` instead of reading either field
-    # directly.
+    # Optional multi-analyte form, additive to the ``observation`` field
+    # above. The singular ``observation:`` form remains the common case and
+    # stays supported. When an ``observations:`` block is compiled,
+    # ``observation`` above is synthesized from the first entry in insertion
+    # order so consumers that only understand one endpoint still have a
+    # representative value. Code that must see every endpoint should call
+    # :meth:`observation_endpoints` instead of reading either field directly.
     observations: dict[str, ObservationEndpoint] | None = None
-    # Formular sharpening plan §4 Phase 1 (P1.6): covariate effects live in
-    # their own top-level list, distinct from ``variability`` (whose sole
-    # item kinds are now IIV/IOV). See ``CovariateLink`` for the per-form
-    # field contract.
+    # Covariate effects live in their own top-level list, distinct from
+    # ``variability`` (whose item kinds are IIV/IOV). See ``CovariateLink``
+    # for the per-form field contract.
     covariates: list[CovariateLink] = Field(default_factory=list)
     priors: list[PriorSpec] = Field(default_factory=list)
-    # Formular sharpening plan §4 Phase 1 (P1.4): flat parameter-name -> value
-    # dict for every calibration (initial-estimate) value used anywhere in
-    # the structural modules (absorption/distribution/elimination). See
-    # ``calibration_param_names()`` for exactly which names are expected.
-    # Structural/topology fields (Transit.n, Erlang.n, SumIG.k, NODE
-    # dim/constraint_template, TimeVaryingElim.decay_fn) stay inline on
-    # their module and are never present here. Observation sigmas and
-    # covariate theta/ref values also stay inline, never here.
+    # Flat parameter-name -> value dict for calibration values used by the
+    # structural modules (absorption/distribution/elimination). See
+    # ``calibration_param_names()`` for the exact names. Structural/topology
+    # fields (Transit.n, Erlang.n, SumIG.k, NODE dim/constraint_template,
+    # TimeVaryingElim.decay_fn) stay inline on their module and are never
+    # present here. Observation sigmas and covariate theta/ref values also
+    # stay inline.
     initial: dict[str, float] = Field(default_factory=dict)
-    # Formular sharpening plan §4 Phase 1 (P1.2): optional free-text
-    # provenance block. None when the spec was built programmatically
-    # without a metadata: block, or by pre-Phase-1 callers.
+    # Optional free-text provenance block. None when the spec was built
+    # programmatically without a metadata: block.
     metadata: Metadata | None = None
-    # Formular sharpening plan §4 Phase 1 (P1.3): optional global units
-    # declaration. ``None`` when the spec was built without a ``units:``
-    # block (pre-Phase-1 callers, or an author who has not yet opted in) --
-    # ``apmode.dsl.units.unit_coverage_report`` returns a
-    # ``status="not_declared"`` report in that case rather than raising.
+    # Optional global units declaration. ``None`` when the spec was built
+    # without a ``units:`` block; ``apmode.dsl.units.unit_coverage_report``
+    # returns a ``status="not_declared"`` report in that case rather than
+    # raising.
     units: UnitsDeclaration | None = None
     # #17: source_meta is populated by ``parse_dsl_with_source`` as a
     # sidecar map from AST node kind (``"absorption"`` / ``"distribution"``
@@ -768,26 +747,14 @@ class DSLSpec(BaseModel):
     # when the spec was built programmatically (no parse tree). The
     # validator uses it to annotate error messages with ``file.pk:L:C``.
     source_meta: dict[str, tuple[int, int]] = Field(default_factory=dict)
-    # P0.8: experimental-feature opt-in gate. Defaults to all-False so
-    # every pre-existing DSLSpec construction call site (positional or
-    # keyword) keeps working unchanged; only specs that actually use a
-    # NODE variant need to set ``experimental.node=True``.
+    # Experimental-feature opt-in gate. Defaults to all-False; specs that use
+    # a NODE variant need to set ``experimental.node=True``.
     experimental: ExperimentalFlags = Field(default_factory=ExperimentalFlags)
-    # Formular sharpening plan §4 Phase 2 (P2.1): provenance trail for
-    # ``use <macro>`` statement expansion. Each entry is
-    # ``"{MacroDef.name}@{MacroDef.version}"`` (e.g.
-    # ``"pkstd.standard_iiv@v1"``) in the source order the `use`
-    # statements were expanded (see
-    # ``apmode.dsl.macros.expand_macros``). Empty for every spec that
-    # declares no `use` statement (the overwhelming majority, pre- and
-    # post-P2.1) or is built programmatically. Deliberately excluded from
-    # both ``apmode.dsl.canonical.structure_fingerprint`` and
-    # ``spec_fingerprint`` — macro expansion is sugar, not semantics, so
-    # two byte-identical-after-expansion specs must fingerprint
-    # identically whether or not either used a `use` shortcut (both
-    # canonical functions hand-build their projection dict from an
-    # explicit field allowlist rather than a raw ``model_dump``, so this
-    # field is excluded by construction — see that module's docstring).
+    # Provenance trail for ``use <macro>`` statement expansion. Each entry is
+    # ``"{MacroDef.name}@{MacroDef.version}"`` in source order. Deliberately
+    # excluded from structure/spec fingerprints because macro expansion is
+    # syntax sugar; byte-identical post-expansion specs must fingerprint
+    # identically whether or not either used a ``use`` shortcut.
     macros_used: list[str] = Field(default_factory=list)
 
     def get_initial(self, name: str, default: float | None = None) -> float | None:
@@ -806,9 +773,8 @@ class DSLSpec(BaseModel):
 
         The single unified accessor downstream code (emitters, scoring,
         canonicalization) should prefer over branching on whether the spec
-        used the legacy singular ``observation:`` sugar or the plural
-        multi-analyte ``observations:`` block (Formular sharpening plan §4
-        Phase 1, P1.7). When ``observations`` is unset (the common case),
+        used the singular ``observation:`` form or the plural multi-analyte
+        ``observations:`` block. When ``observations`` is unset (the common case),
         ``observation`` is wrapped in a single synthetic endpoint named
         ``"default"`` with ``dvid=1`` (matching
         ``apmode.data.adapters.PK_DVID_ALLOWLIST``'s numeric convention for
@@ -841,7 +807,7 @@ class DSLSpec(BaseModel):
         which no emitter currently synthesizes as one named output) and no
         other structural module exposes a second named prediction state --
         e.g. metabolite/parent-child compartment topology does not exist in
-        the DSL yet (Phase 2 candidate). An ``observations:`` entry naming
+        the DSL yet. An ``observations:`` entry naming
         anything else is rejected by the validator with
         ``FrmCode.AST_OBSERVATIONS_PREDICTION_UNKNOWN``.
         """
@@ -885,8 +851,9 @@ class DSLSpec(BaseModel):
         elif isinstance(abs_mod, LaggedFirstOrder):
             names.extend(["ka", "tlag"])
         elif isinstance(abs_mod, Transit):
-            # n is estimated as continuous via log/exp (rxode2 gamma interpolation)
-            names.extend(["n", "ktr", "ka"])
+            # n is structural topology (set inline on Transit), not an
+            # estimated parameter. Only ktr and ka are calibratable.
+            names.extend(["ktr", "ka"])
         elif isinstance(abs_mod, MixedFirstZero):
             names.extend(["ka", "dur", "frac"])
         elif isinstance(abs_mod, Erlang):
@@ -896,10 +863,10 @@ class DSLSpec(BaseModel):
         elif isinstance(abs_mod, ParallelFirstOrder):
             names.extend(["ka1", "ka2", "frac"])
         elif isinstance(abs_mod, SumIG):
-            # v0.7 ships k=2 only; flattened per-component names so the
-            # validator/IIV/Prior machinery sees plain StanIdentifier strings.
-            # k itself is structural (validator restricts to {1, 2}); not
-            # exposed for variability.
+            # Flattened per-component names so the validator/IIV/Prior
+            # machinery sees plain StanIdentifier strings. k itself is
+            # structural (validator restricts to {1, 2}); not exposed for
+            # variability.
             names.extend(["MT_1", "MT_2", "RD2_1", "RD2_2", "weight_1"])
         elif isinstance(abs_mod, IVBolus):
             # IV bolus has no absorption parameters.

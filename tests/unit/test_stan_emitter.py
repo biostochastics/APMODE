@@ -148,8 +148,11 @@ class TestStructuralParams:
 
     def test_transit_absorption(self) -> None:
         code = emit_stan(_make_spec(absorption=Transit(n=3)))
-        assert "log_n" in code
+        assert "log_n" not in code
         assert "log_ktr" in code
+        assert "real transit_1 = y[1];" in code
+        assert "dydt[3] = ktr * transit_2 - ktr * transit_3;" in code
+        assert "dydt[4] = ktr * transit_3 - ka * depot;" in code
 
 
 # ---------------------------------------------------------------------------

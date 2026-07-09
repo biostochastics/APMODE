@@ -1167,7 +1167,7 @@ class TestExplorePolicyForwarding:
 
 
 # ---------------------------------------------------------------------------
-# Machine-readable `--json` outputs added in v0.6 polish
+# Machine-readable `--json` outputs
 # ---------------------------------------------------------------------------
 
 
@@ -1267,7 +1267,7 @@ class TestJsonOutputs:
 
 
 # ---------------------------------------------------------------------------
-# Environment-variable bindings on `apmode run` (added v0.6)
+# Environment-variable bindings on `apmode run`
 # ---------------------------------------------------------------------------
 
 
@@ -1381,7 +1381,7 @@ class TestEnvVarBindings:
 
 
 # ---------------------------------------------------------------------------
-# Skill-documented `bundle rocrate import|publish` aliases (added v0.6)
+# Skill-documented `bundle rocrate import|publish` aliases
 # ---------------------------------------------------------------------------
 
 

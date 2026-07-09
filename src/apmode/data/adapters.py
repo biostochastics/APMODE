@@ -60,6 +60,7 @@ _RESERVED_COLUMNS: frozenset[str] = frozenset(
         "RATE",
         "DUR",
         "LLOQ",
+        "SUMIG_DOSE",
         "STUDY_ID",
     }
 )
@@ -198,6 +199,21 @@ def to_nlmixr2_format(
         unique_remaining = {str(v).strip().lower() for v in remaining.dropna().unique()}
         if len(unique_remaining) <= 1:
             out = out.drop(columns=["DVID"])
+
+    # SumIG lowering needs the dose scalar at every RHS evaluation. rxode2's
+    # reserved `amt` is only populated on event rows, so provide a persistent
+    # per-subject single-dose column the SumIG model can reference. The SumIG
+    # validator/data-bound checks reject multi-dose use; the adapter stays
+    # conservative and only adds the helper when each dosed subject has exactly
+    # one positive dose.
+    if "SUMIG_DOSE" not in out.columns and {"ID", "EVID", "AMT"}.issubset(out.columns):
+        dose_rows = out[(out["EVID"].isin([1, 4])) & (out["AMT"] > 0)]
+        if not dose_rows.empty and dose_rows.groupby("ID").size().eq(1).all():
+            out = out.merge(
+                dose_rows[["ID", "AMT"]].rename(columns={"AMT": "SUMIG_DOSE"}),
+                on="ID",
+                how="left",
+            )
 
     from pandas.api.types import is_numeric_dtype
 

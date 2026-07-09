@@ -344,10 +344,17 @@ class DiagnosticBundle(BaseModel):
     ``npe_score`` is the canonical simulation-based Nonparametric
     Prediction Error (median absolute prediction error from posterior
     predictive simulations; see :func:`apmode.benchmarks.scoring.compute_npe`).
-    Backends that generate VPC / posterior-predictive simulations must
-    populate this field using the benchmarks helper so every site in
-    APMODE consumes the *same* NPE definition. When ``npe_score`` is
-    ``None`` the ranking layer falls back to a documented CWRES proxy
+    This is a proprietary APMODE metric, distinct from the classical
+    Comets/Mentré NPDE (Normalised Prediction Distribution Error — a
+    mean~0/variance~1 diagnostic requiring full Monte-Carlo simulation
+    of the predictive distribution). Do not treat the two as
+    interchangeable despite the shared "NPE" substring; see
+    ``benchmarks/suite_c/README.md`` for where this distinction matters
+    for external-validation claims. Backends that generate VPC /
+    posterior-predictive simulations must populate this field using the
+    benchmarks helper so every site in APMODE consumes the *same* NPE
+    definition. When ``npe_score`` is ``None`` the ranking layer falls
+    back to a documented CWRES proxy
     (:func:`apmode.governance.ranking.compute_cwres_npe_proxy`) —
     never silently redefining NPE.
 
@@ -1270,7 +1277,7 @@ class Ranking(BaseModel):
         return self
 
 
-# --- Gate 2.5 Credibility Context (Phase 2) ---
+# --- Gate 2.5 Credibility Context ---
 
 
 class CredibilityContext(BaseModel):
@@ -1290,14 +1297,14 @@ class CredibilityContext(BaseModel):
     ml_transparency_statement: str | None = None
 
 
-# --- Phase 2+ Prep Models ---
+# --- Credibility Report Models ---
 
 
 class CredibilityReport(BaseModel):
-    """Per-candidate credibility assessment (ARCHITECTURE.md §4.4, PRD §4.3.3).
+    """Per-candidate credibility assessment.
 
-    Phase 2: each recommended model's report includes context-of-use,
-    credibility evidence, data adequacy, limitations, and ML transparency.
+    Each report includes context-of-use, credibility evidence, data adequacy,
+    limitations, and ML transparency.
     """
 
     candidate_id: str

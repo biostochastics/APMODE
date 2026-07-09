@@ -121,20 +121,18 @@ class BayesianRunner:
         Raises ValueError if spec contains NODE modules (not supported by the
         Stan emitter) or if data_path is missing.
 
-        ``gate3_policy`` and ``nca_diagnostics`` are accepted for
-        ``BackendRunner``-protocol conformance. Scope 2 (Stan
-        ``generated quantities`` y_pred emission) wires them into
-        :func:`apmode.bayes.harness.build_predictive_from_draws` so the
-        BayesianRunner populates VPC/NPE/AUC-Cmax atomically via
-        :func:`apmode.backends.predictive_summary.build_predictive_diagnostics`.
-        Until that lands the kwargs are recorded and ignored.
+        ``gate3_policy``, ``nca_diagnostics``, and ``test_data_path`` are
+        accepted for ``BackendRunner``-protocol conformance. This runner does
+        not currently build posterior-predictive diagnostics from those inputs;
+        callers should treat Bayesian predictive summaries as unavailable
+        unless a downstream harness artifact explicitly provides them.
         """
-        _ = gate3_policy, nca_diagnostics, test_data_path  # Scope 2 / honest-mode TODO
+        _ = gate3_policy, nca_diagnostics, test_data_path
         if fixed_parameter:
             msg = (
                 "fixed_parameter=True not yet honoured by BayesianRunner "
                 "(requires Stan `generate_quantities` fix-param stage — see "
-                "PRD \u00a78 Phase 3 / loro_cv.py). Refusing to evaluate to avoid "
+                "loro_cv.py). Refusing to evaluate to avoid "
                 "silent train/test leakage."
             )
             raise NotImplementedError(msg)

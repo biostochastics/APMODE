@@ -424,9 +424,7 @@ def _build_stan_data(request: dict[str, Any]) -> dict[str, Any]:
         stan_data["cens"] = cens
         stan_data["loq"] = loq
 
-    # Covariates referenced via the top-level ``covariates`` list (Formular
-    # sharpening plan §4 Phase 1, P1.6 — CovariateLink is no longer among
-    # ``variability`` items).
+    # Covariates are referenced via the top-level ``covariates`` list.
     # Stan data declares covariates as vector[N_subjects] (subject-level constants).
     # Time-varying covariates silently collapsing to baseline would bias
     # estimates, so reject at data-build time.
@@ -443,7 +441,7 @@ def _build_stan_data(request: dict[str, Any]) -> dict[str, Any]:
             offenders = nunique[nunique > 1].index.tolist()
             raise ValueError(
                 f"Covariate {cov!r} varies within subject for ids {offenders[:5]} "
-                f"(first 5). Time-varying covariates are not supported in v1; "
+                f"(first 5). The Stan harness expects subject-level covariates; "
                 f"preprocess to a subject-level summary."
             )
         first_per_subject = df.drop_duplicates(subset=[id_col], keep="first")
@@ -1099,7 +1097,7 @@ def _extract_structural_names(spec: dict[str, Any] | str) -> list[str]:
         "FirstOrder": ["ka"],
         "ZeroOrder": ["dur"],
         "LaggedFirstOrder": ["ka", "tlag"],
-        "Transit": ["n", "ktr", "ka"],
+        "Transit": ["ktr", "ka"],
         "MixedFirstZero": ["ka", "dur", "frac"],
     }
     dist_map = {

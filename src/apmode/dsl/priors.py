@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Prior AST models for the PK DSL (Phase 2+).
+"""Prior AST models for the PK DSL.
 
 Priors are a first-class DSL field on `DSLSpec.priors`. They are consumed by
 `stan_emitter` (inject into model block) and ignored by `nlmixr2_emitter`,
@@ -40,7 +40,7 @@ PriorSource = Literal[
 ]
 """Prior source taxonomy.
 
-``fixed_external`` (added in v0.7 / ADR-0003) marks a prior that captures
+``fixed_external`` marks a prior that captures
 *externally fixed* parameter values — typically derived from an IV
 reference fit or a prior converged classical model. Used by the SumIG
 disposition-fixed cross-module check to certify CL/V/Q are not jointly
@@ -308,7 +308,7 @@ def validate_prior_justification(
 
 
 _VALID_FAMILIES: dict[TargetKind, frozenset[str]] = {
-    "structural": frozenset({"Normal", "LogNormal", "Mixture", "HistoricalBorrowing"}),
+    "structural": frozenset({"Normal", "LogNormal", "Beta", "Mixture", "HistoricalBorrowing"}),
     # #29: InvGamma is conventionally a variance prior. Allowing it on
     # *_sd targets without a matching sqrt transformation in the Stan
     # emitter would silently constrain the variance while the emitter
@@ -326,6 +326,21 @@ _VALID_FAMILIES: dict[TargetKind, frozenset[str]] = {
     # (e.g., allometric exponents with external historical support).
     "covariate": frozenset({"Normal", "Mixture", "HistoricalBorrowing"}),
 }
+
+_UNIT_INTERVAL_STRUCTURAL_TARGETS: frozenset[str] = frozenset({"frac", "weight_1"})
+
+
+def _validate_target_specific_prior(
+    target: str, kind: TargetKind, family: PriorFamily
+) -> str | None:
+    if isinstance(family, BetaPrior) and (
+        kind != "structural" or target not in _UNIT_INTERVAL_STRUCTURAL_TARGETS
+    ):
+        return (
+            f"Prior family 'Beta' is only valid for unit-interval structural targets "
+            f"{sorted(_UNIT_INTERVAL_STRUCTURAL_TARGETS)}; got target {target!r}."
+        )
+    return None
 
 
 def classify_target(target: str, structural_params: set[str]) -> TargetKind | None:
@@ -421,6 +436,9 @@ def build_prior_spec(
         family_err = validate_prior_family(kind, family)
         if family_err:
             raise ValueError(family_err)
+        target_err = _validate_target_specific_prior(target, kind, family)
+        if target_err:
+            raise ValueError(target_err)
 
     return PriorSpec(
         target=target,
@@ -457,6 +475,10 @@ def validate_priors(
         family_err = validate_prior_family(kind, prior.family)
         if family_err:
             errors.append(family_err)
+            continue
+        target_err = _validate_target_specific_prior(prior.target, kind, prior.family)
+        if target_err:
+            errors.append(target_err)
 
     return errors
 

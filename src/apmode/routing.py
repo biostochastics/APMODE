@@ -38,9 +38,9 @@ _BACKEND_EMITTER_NAMES: dict[str, str] = {
 # the canonical runtime enum lives in ``apmode.backends.protocol.Lane``.
 Lane = Literal["submission", "discovery", "optimization"]
 
-# Backends available per lane. Submission stays classical NLME only in v0.6
-# (Bayesian admission in Submission is gated on the full Block 1 artifact
-# set: SBC, prior-justification, prior-data conflict, prior-sensitivity).
+# Backends available per lane. Submission currently stays classical NLME only;
+# Bayesian admission in Submission is gated on the full Block 1 artifact set:
+# SBC, prior-justification, prior-data conflict, and prior-sensitivity.
 _LANE_BACKENDS: dict[str, list[str]] = {
     "submission": ["nlmixr2"],
     "discovery": ["nlmixr2", "jax_node", "agentic_llm", "bayesian_stan"],

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Code-derived capability matrix for the DSL emitters (Phase 0, P0.7).
+"""Code-derived capability matrix for the DSL emitters.
 
 Every AST variant/feature across the five module axes (Absorption x
 Distribution x Elimination x Variability x Observation, PRD §4.2.5) gets one
@@ -254,12 +254,11 @@ _STATUS_EXPLICITLY_UNSUPPORTED = "explicitly_unsupported"
 _STATUS_UNKNOWN_GAP = "unknown_gap"
 _STATUS_EXPERIMENTAL_NO_STABLE_BACKEND = "experimental_no_stable_backend"
 
-# Tags for AST variants with no working backend anywhere (Phase 0 P0.8):
-# every registered emitter raises NotImplementedError for these, so a plain
-# "explicitly_unsupported" (this emitter's deliberate choice not to support
-# a construct another emitter handles) undersells the real status -- there
-# is no stable backend at all. Gated in the AST by
-# ``DSLSpec.experimental.node`` / ``FrmCode.LANE_NODE_EXPERIMENTAL_GATE``.
+# Tags for experimental AST variants that no registered DSL emitter lowers.
+# The separate NODE runner/trainer stack is not a DSL emitter, so capability
+# reporting keeps these as experimental from the emitter-contract perspective.
+# Gated in the AST by ``DSLSpec.experimental.node`` /
+# ``FrmCode.LANE_NODE_EXPERIMENTAL_GATE``.
 _NODE_EXPERIMENTAL_TAGS: frozenset[CapabilityTag] = frozenset(
     {CapabilityTag.ABSORPTION_NODE, CapabilityTag.ELIMINATION_NODE}
 )

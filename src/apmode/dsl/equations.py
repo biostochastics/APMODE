@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Symbolic ODE-system view over a compiled ``DSLSpec``.
 
-Formular sharpening plan §4 Phase 2, P2.3.
-
 This module is **non-authoritative and read-only**: it exists purely so a
 human reviewing ``apmode formular explain --equations`` can see the
 mathematical structure a spec compiles to. The R/Stan emitters
@@ -24,7 +22,7 @@ Every branch below is a line-for-line symbolic translation of
 :func:`apmode.dsl.nlmixr2_emitter._emit_tmdd_core_odes`, and
 :func:`apmode.dsl.nlmixr2_emitter._emit_tmdd_qss_odes` — same compartment
 names (``depot``, ``centr``, ``periph``, ``periph1``, ``periph2``,
-``E1..En``, ``depot_fo``/``depot_zo``, ``depot_fast``/``depot_slow``,
+``E1..En``, ``depot_fo``, ``depot_fast``/``depot_slow``,
 ``Atot``, ``Rtot``, ``R``, ``RC``), same rate expressions. Non-obvious
 mirroring decisions (documented at the relevant branch below):
 
@@ -241,13 +239,13 @@ def _build_absorption(abs_mod: object) -> _AbsorptionResult:
 
     if isinstance(abs_mod, MixedFirstZero):
         notes.append(
-            "MixedFirstZero: f(depot_fo) = frac, f(depot_zo) = 1 - frac "
-            "(bioavailability split) and dur(depot_zo) = dur (infusion "
-            "duration) are dosing-event-level mechanisms, not ODE terms."
+            "MixedFirstZero: f(depot_fo) = frac routes the first-order "
+            "fraction to the depot; f(centr) = 1 - frac with dur(centr) = dur "
+            "routes the zero-order fraction directly into central as an "
+            "event-level infusion, not an ODE term."
         )
         odes.append(_ode("depot_fo", -ka * _state("depot_fo")))
-        odes.append(_ode("depot_zo", -_state("depot_zo")))
-        influx = ka * _state("depot_fo") + _state("depot_zo")
+        influx = ka * _state("depot_fo")
         return _AbsorptionResult(odes, algebraic, influx, notes)
 
     if isinstance(abs_mod, Erlang):
@@ -271,7 +269,9 @@ def _build_absorption(abs_mod: object) -> _AbsorptionResult:
         return _AbsorptionResult(odes, algebraic, influx, notes)
 
     if isinstance(abs_mod, SumIG):
-        MT_1, MT_2, RD2_1, RD2_2, weight_1, amt = symbols("MT_1 MT_2 RD2_1 RD2_2 weight_1 amt")
+        MT_1, MT_2, RD2_1, RD2_2, weight_1, SUMIG_DOSE = symbols(
+            "MT_1 MT_2 RD2_1 RD2_2 weight_1 SUMIG_DOSE"
+        )
         weight_2 = 1 - weight_1
         ig_1 = sqrt(RD2_1 / (2 * pi * t**3)) * exp(-RD2_1 * (t - MT_1) ** 2 / (2 * MT_1**2 * t))
         ig_2 = sqrt(RD2_2 / (2 * pi * t**3)) * exp(-RD2_2 * (t - MT_2) ** 2 / (2 * MT_2**2 * t))
@@ -283,10 +283,10 @@ def _build_absorption(abs_mod: object) -> _AbsorptionResult:
             "(Csajka 2005; Weiss & Wegner 2022) that integrates to 1 over "
             "(0, infinity); the numerical _t_safe floor-guard near t=0 "
             "(a stability detail, not a modeling choice) is omitted here. "
-            "Single-dose only in v0.7 (multi-dose superposition deferred, "
-            "ADR-0003 D4)."
+            "Single-dose only; multi-dose superposition is not represented "
+            "by this equation view."
         )
-        return _AbsorptionResult(odes, algebraic, amt * input_rate, notes)
+        return _AbsorptionResult(odes, algebraic, SUMIG_DOSE * input_rate, notes)
 
     if isinstance(abs_mod, NODEAbsorption):  # pragma: no cover — gated earlier
         msg = "NODEAbsorption has no closed-form symbolic representation"
@@ -301,23 +301,26 @@ def _build_absorption(abs_mod: object) -> _AbsorptionResult:
 # ---------------------------------------------------------------------------
 
 
-def _build_tmdd_core(influx: sympy.Expr | None) -> tuple[list[sympy.Eq], list[sympy.Eq], sympy.Eq]:
-    V, R0, kon, koff, kint, CL = symbols("V R0 kon koff kint CL")
+def _build_tmdd_core(
+    influx: sympy.Expr | None, elim_mod: object
+) -> tuple[list[sympy.Eq], list[sympy.Eq], sympy.Eq]:
+    V, R0, kon, koff, kint = symbols("V R0 kon koff kint")
     centr, R, RC = _state("centr"), _state("R"), _state("RC")
     influx_expr = influx if influx is not None else sympy.Integer(0)
 
     L = Function("L")(t)
-    kel, kdeg, ksyn = symbols("kel kdeg ksyn")
+    elim = Function("elim")(t)
+    kdeg, ksyn = symbols("kdeg ksyn")
 
     algebraic = [
         Eq(L, centr / V),
-        Eq(kel, CL / V),
+        Eq(elim, _elimination_rate_expr_sym(elim_mod, centr, V)),
         Eq(kdeg, koff),
         Eq(ksyn, kdeg * R0),
         Eq(R.subs(t, 0), R0),
     ]
     odes = [
-        _ode("centr", influx_expr - kel * centr - kon * L * R * V + koff * RC * V),
+        _ode("centr", influx_expr - elim - kon * L * R * V + koff * RC * V),
         _ode("R", ksyn - kdeg * R - kon * L * R + koff * RC),
         _ode("RC", kon * L * R - koff * RC - kint * RC),
     ]
@@ -325,8 +328,10 @@ def _build_tmdd_core(influx: sympy.Expr | None) -> tuple[list[sympy.Eq], list[sy
     return odes, algebraic, observation_eq
 
 
-def _build_tmdd_qss(influx: sympy.Expr | None) -> tuple[list[sympy.Eq], list[sympy.Eq], sympy.Eq]:
-    V, R0, KD, kint, CL = symbols("V R0 KD kint CL")
+def _build_tmdd_qss(
+    influx: sympy.Expr | None, elim_mod: object
+) -> tuple[list[sympy.Eq], list[sympy.Eq], sympy.Eq]:
+    V, R0, KD, kint = symbols("V R0 KD kint")
     Atot, Rtot = _state("Atot"), _state("Rtot")
     influx_expr = influx if influx is not None else sympy.Integer(0)
 
@@ -337,7 +342,8 @@ def _build_tmdd_qss(influx: sympy.Expr | None) -> tuple[list[sympy.Eq], list[sym
         Function("Rfree")(t),
         Function("RC")(t),
     )
-    kel, kdeg, ksyn = symbols("kel kdeg ksyn")
+    elim = Function("elim")(t)
+    kdeg, ksyn = symbols("kdeg ksyn")
 
     algebraic = [
         Eq(KSS, KD),
@@ -349,14 +355,14 @@ def _build_tmdd_qss(influx: sympy.Expr | None) -> tuple[list[sympy.Eq], list[sym
         ),
         Eq(Rfree, Rtot * KSS / (KSS + Cfree)),
         Eq(RC, Ctot - Cfree),
-        Eq(kel, CL / V),
+        Eq(elim, _elimination_rate_expr_sym(elim_mod, Cfree * V, V)),
         Eq(kdeg, kint),
         Eq(ksyn, kdeg * R0),
         Eq(Atot.subs(t, 0), 0),
         Eq(Rtot.subs(t, 0), R0),
     ]
     odes = [
-        _ode("Atot", influx_expr - kel * Cfree * V - kint * RC * V),
+        _ode("Atot", influx_expr - elim - kint * RC * V),
         _ode("Rtot", ksyn - kdeg * Rfree - kint * RC),
     ]
     observation_eq = Eq(Function("Cp")(t), Cfree)
@@ -378,7 +384,7 @@ def build_equations(spec: DSLSpec) -> EquationSystem:
         msg = (
             "Symbolic equations view does not support NODE modules "
             "(no closed-form representation; NODE uses a JAX/Diffrax hybrid "
-            "backend, Phase 2)."
+            "backend)."
         )
         raise NotImplementedError(msg)
 
@@ -405,17 +411,14 @@ def build_equations(spec: DSLSpec) -> EquationSystem:
 
     if isinstance(dist_mod, (TMDDCore, TMDDQSS)):
         notes.append(
-            f"TMDD distribution ({type(dist_mod).__name__}) ignores "
-            f"spec.elimination entirely — kel/kint are the only "
-            f"elimination-like terms; the declared elimination module "
-            f"({type(elim_mod).__name__}) is not read by these dynamics "
-            "regardless of its type (the emitter never calls "
-            "_elimination_rate_expr in the TMDD branches)."
+            f"TMDD distribution ({type(dist_mod).__name__}) applies the "
+            f"declared elimination module ({type(elim_mod).__name__}) to "
+            "free-drug amount, matching the nlmixr2 and Stan emitters."
         )
         if isinstance(dist_mod, TMDDCore):
-            tmdd_odes, tmdd_algebraic, observation_eq = _build_tmdd_core(influx)
+            tmdd_odes, tmdd_algebraic, observation_eq = _build_tmdd_core(influx, elim_mod)
         else:
-            tmdd_odes, tmdd_algebraic, observation_eq = _build_tmdd_qss(influx)
+            tmdd_odes, tmdd_algebraic, observation_eq = _build_tmdd_qss(influx, elim_mod)
         odes.extend(tmdd_odes)
         algebraic.extend(tmdd_algebraic)
         return EquationSystem(

@@ -6,7 +6,7 @@ Registered into :data:`apmode.cli.app` by
 group with:
 
 - ``apmode bundle rocrate export <bundle_dir> --out <path>``
-- ``apmode bundle publish <bundle_dir>`` (stub; real implementation in v0.8)
+- ``apmode bundle publish <bundle_dir>`` (validated stub; upload not wired yet)
 
 The projector itself lives in :mod:`apmode.bundle.rocrate.projector`;
 this module owns only the CLI layer, argument validation, and
@@ -372,16 +372,14 @@ def publish_command(
 ) -> None:
     """Publish the bundle's RO-Crate to an external registry.
 
-    **Stub in v0.6**: the command exists so that operators can discover
-    the flow, but the implementation is deferred to v0.8. Running it
-    currently raises :class:`NotImplementedError` with a message
-    pointing at the roadmap.
+    The command validates inputs and then raises
+    :class:`NotImplementedError`; external registry upload is not wired yet.
     """
     if not (workflowhub or zenodo):
         err_console.print("[red bold]Error:[/] pass --workflowhub or --zenodo to select a target.")
         raise typer.Exit(code=1)
-    # Validate inputs up-front so the v0.6 stub emits the same
-    # diagnostics the v0.8 real uploader will. A typo in ``bundle_dir``
+    # Validate inputs up-front so the publishing stub emits useful
+    # diagnostics. A typo in ``bundle_dir``
     # would otherwise be masked by the "Not implemented" message and
     # the user wouldn't learn about the bad path until publishing is
     # wired up.
@@ -393,9 +391,9 @@ def publish_command(
             f"[red bold]Error:[/] bundle_dir is not a directory: {escape(str(bundle_dir))}"
         )
         raise typer.Exit(code=1)
-    # Inputs validated; fall through to the v0.8 stub message.
+    # Inputs validated; fall through to the publishing stub message.
     err_console.print(
-        "[yellow bold]Not implemented in v0.6:[/] publishing lands in v0.8. "
+        "[yellow bold]Not implemented:[/] publishing is not wired yet. "
         "For now, use `apmode bundle rocrate export` to produce the crate "
         "and upload it manually. "
         f"Target: {'workflowhub' if workflowhub else 'zenodo'} "

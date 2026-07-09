@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Stan codegen emitter: DSL AST -> Stan program (PRD v0.3, Phase 2+).
+"""Stan codegen emitter: DSL AST -> Stan program.
 
 Generates a complete Stan program from a DSLSpec for probabilistic inference.
 Uses ODE-based models via Stan's `ode_rk45` integrator for non-linear dynamics,
@@ -13,12 +13,12 @@ Observation model (#1 — matches nlmixr2 semantics for cross-paradigm NLPD):
 IIV is modeled via log-normal random effects:
   theta_i = theta * exp(eta_i), eta_i ~ N(0, omega^2)
 
-NODE modules are not supported (Stan has no neural ODE support).
-BLQ M3/M4 left-censored likelihoods and inter-occasion variability (IOV)
-are implemented; maturation covariate links and the v0.7 absorption
-preview forms still raise ``NotImplementedError``. Correlated
-(block-structure) IIV — including an LKJ prior on ``corr_iiv`` — is not
-yet lowered; only diagonal IIV is supported.
+NODE modules are not supported (Stan has no neural ODE support). BLQ M3/M4
+left-censored likelihoods and inter-occasion variability (IOV) are
+implemented. Maturation covariate links, multi-analyte observations, and
+selected nlmixr2-only absorption forms still raise ``NotImplementedError``.
+Correlated (block-structure) IIV — including an LKJ prior on ``corr_iiv`` —
+is not yet lowered; only diagonal IIV is supported.
 """
 
 from __future__ import annotations
@@ -69,9 +69,8 @@ from apmode.dsl.priors import (
     PriorSpec,
 )
 
-# Capability matrix (P0.7, docs/plans/2026-07-08-formular-sharpening-and-adoption-design.md
-# §4 Phase 0). Populated from the actual NotImplementedError raise sites in
-# ``emit_stan`` below plus what the ODE/analytical codegen paths handle.
+# Capability matrix populated from the actual ``NotImplementedError`` raise
+# sites in ``emit_stan`` plus what the ODE/analytical codegen paths handle.
 SUPPORTS: frozenset[CapabilityTag] = frozenset(
     {
         CapabilityTag.ABSORPTION_IV_BOLUS,
@@ -101,7 +100,7 @@ SUPPORTS: frozenset[CapabilityTag] = frozenset(
 EXPLICITLY_UNSUPPORTED: frozenset[CapabilityTag] = frozenset(
     {
         # Torsten user-defined ODE RHS lacks arbitrary t-forcing without
-        # time-varying covariate plumbing (ADR-0003 D4) — deferred to v0.7.1.
+        # time-varying covariate plumbing, so route these forms to nlmixr2.
         CapabilityTag.ABSORPTION_ZERO_ORDER,
         CapabilityTag.ABSORPTION_MIXED_FIRST_ZERO,
         CapabilityTag.ABSORPTION_ERLANG,
@@ -115,10 +114,8 @@ EXPLICITLY_UNSUPPORTED: frozenset[CapabilityTag] = frozenset(
         # diagonal-only model.
         CapabilityTag.VARIABILITY_IIV_BLOCK_STRUCTURE,
         CapabilityTag.VARIABILITY_COVARIATE_MATURATION_FORM,
-        # P1.7: multi-analyte `observations:` would require per-endpoint
-        # data arrays, likelihood terms, and log_lik accumulation — a
-        # disproportionately large rewrite for this session (Phase 2 gap,
-        # see `emit_stan`'s entry guard).
+        # Multi-analyte `observations:` requires per-endpoint data arrays,
+        # likelihood terms, and log_lik accumulation.
         CapabilityTag.OBSERVATION_MULTI_ANALYTE,
     }
 )
@@ -139,9 +136,9 @@ def emit_stan(
         A Stan program string.
 
     Raises:
-        NotImplementedError: For NODE modules, maturation covariates, block
-            (correlated) IIV structure, an LKJ prior on ``corr_iiv``, or
-            v0.7 absorption preview forms.
+        NotImplementedError: For NODE modules, maturation covariates,
+            multi-analyte observations, block (correlated) IIV structure, an
+            LKJ prior on ``corr_iiv``, or nlmixr2-only absorption forms.
     """
     if spec.has_node_modules():
         raise NotImplementedError(
@@ -149,26 +146,23 @@ def emit_stan(
             "NODE backends use the JAX/Diffrax emitter."
         )
 
-    # P1.7: multi-analyte `observations:` blocks are not yet supported by
-    # the Stan emitter — every data/parameters/likelihood/log_lik helper
-    # below still reads the singular `spec.observation` field directly, and
-    # doing this correctly would need per-endpoint data arrays and
-    # likelihood terms (a disproportionately large rewrite for this
-    # session). Reject explicitly rather than silently emitting a program
-    # for only the first declared endpoint. Use the nlmixr2 backend for
-    # multi-analyte specs, or declare a single observation: block.
+    # Multi-analyte `observations:` blocks require per-endpoint data arrays,
+    # likelihood terms, and log_lik accumulation. Reject explicitly rather
+    # than silently emitting a program for only the first declared endpoint.
+    # Use the nlmixr2 backend for multi-analyte specs, or declare a single
+    # observation: block.
     if spec.observations is not None:
         raise NotImplementedError(
             "Multi-analyte observations: blocks are not supported by the "
-            "Stan emitter yet (Phase 2 gap). Use the nlmixr2 backend, or "
-            "declare a single observation: block."
+            "Stan emitter. Use the nlmixr2 backend, or declare a single "
+            "observation: block."
         )
 
     # Block (correlated) IIV structure: _emit_parameters_block /
     # _emit_transformed_parameters_block only declare independent
     # per-parameter omegas (no LKJ correlation matrix), so honouring a
     # "block" request would require silently falling back to diagonal —
-    # reject explicitly instead (P0.6/P0.7 capability audit finding).
+    # reject explicitly instead.
     if any(isinstance(v, IIV) and v.structure == "block" for v in spec.variability):
         raise NotImplementedError(
             "Block (correlated) IIV structure is not yet implemented in Stan codegen. "
@@ -190,12 +184,9 @@ def emit_stan(
             "prior or use the nlmixr2 backend for correlated IIV."
         )
 
-    # Unsupported absorption types in ODE mode.
-    # v0.7 SOTA absorption forms (Erlang, ParallelFirstOrder, SumIG) ship
-    # with nlmixr2 lowering only — Stan/Torsten support is deferred to
-    # v0.7.1 because Torsten user-defined ODE RHS does not have access to
-    # arbitrary t-forcing without time-varying covariate plumbing
-    # (ADR-0003 D4). For now, route these to nlmixr2.
+    # Unsupported absorption types in ODE mode. These forms currently have
+    # nlmixr2 lowering only; Stan/Torsten lacks the time-varying forcing
+    # plumbing needed to represent them correctly.
     if _needs_ode(spec) and isinstance(
         spec.absorption,
         (ZeroOrder, MixedFirstZero, Erlang, ParallelFirstOrder, SumIG),
@@ -291,6 +282,11 @@ def _emit_user_prior(
         return [f"{prefix}inv_gamma({family.alpha:.6f}, {family.beta:.6f});"]
 
     if isinstance(family, BetaPrior):
+        if on_log_scale:
+            raise NotImplementedError(
+                "Beta priors require a unit-interval parameterization; this Stan "
+                f"parameter is on log scale ({stan_param})."
+            )
         return [f"{prefix}beta({family.alpha:.6f}, {family.beta:.6f});"]
 
     if isinstance(family, MixturePrior):
@@ -694,10 +690,9 @@ def _emit_model_block(
 
     # Priors on covariate coefficients. Absent an explicit spec.priors
     # override, the default prior is centered on the covariate's own
-    # ``theta``/``hill`` starting value (Formular sharpening plan §4
-    # P1.6) rather than a hardcoded constant; ``categorical`` has no
-    # configurable coefficient yet (Phase 2 candidate) and keeps the
-    # pre-P1.6 ``normal(0, 1)`` default.
+    # ``theta``/``hill`` starting value rather than a hardcoded constant;
+    # ``categorical`` has no configurable coefficient yet and keeps the
+    # ``normal(0, 1)`` default.
     cov_links = list(spec.covariates)
     for cov in cov_links:
         p = _sanitize_stan_name(cov.param, context="covariate-target parameter")
@@ -824,18 +819,30 @@ def _needs_depot(spec: DSLSpec) -> bool:
     return not isinstance(spec.absorption, IVBolus)
 
 
+def _transit_chain_len(spec: DSLSpec) -> int:
+    return spec.absorption.n if isinstance(spec.absorption, Transit) else 0
+
+
+def _depot_idx(spec: DSLSpec) -> int:
+    if isinstance(spec.absorption, IVBolus):
+        raise ValueError("IVBolus has no depot state")
+    return _transit_chain_len(spec) + 1
+
+
 def _centr_idx(spec: DSLSpec) -> int:
     """Stan-array index of the central compartment in ``y[]``.
 
-    Depot is always ``y[1]`` when present, pushing central to ``y[2]``.
+    Depot is normally ``y[1]`` when present, pushing central to ``y[2]``.
+    Transit absorption prepends ``n`` transit states before the terminal
+    depot, so central follows the explicit chain.
     Under IVBolus there is no depot, so central is ``y[1]``.
     """
-    return 2 if _needs_depot(spec) else 1
+    return _transit_chain_len(spec) + 2 if _needs_depot(spec) else 1
 
 
 def _n_states(spec: DSLSpec) -> int:
     """Number of ODE states."""
-    base = 1 if _needs_depot(spec) else 0  # depot only when absorption requires it
+    base = (_transit_chain_len(spec) + 1) if _needs_depot(spec) else 0
     dist = spec.distribution
     if isinstance(dist, OneCmt):
         return base + 1
@@ -914,7 +921,7 @@ def _covariate_expr(spec: DSLSpec, param: str, idx_var: str) -> str:
             elif v.form in ("exponential", "categorical"):
                 parts.append(f" + {coeff} * {c}[{idx_var}]")
             elif v.form == "linear":
-                parts.append(f" + log(1 + {coeff} * {c}[{idx_var}])")
+                parts.append(f" + log(fmax(1e-6, 1 + {coeff} * {c}[{idx_var}]))")
             elif v.form == "maturation":
                 raise NotImplementedError(
                     f"Maturation covariate form not yet supported in Stan codegen "
@@ -1112,7 +1119,11 @@ def _emit_state_aliases(spec: DSLSpec, indent: int = 4) -> list[str]:
     """
     pad = " " * indent
     lines: list[str] = []
-    if _needs_depot(spec):
+    if isinstance(spec.absorption, Transit):
+        for idx in range(1, spec.absorption.n + 1):
+            lines.append(f"{pad}real transit_{idx} = y[{idx}];")
+        lines.append(f"{pad}real depot = y[{_depot_idx(spec)}];")
+    elif _needs_depot(spec):
         lines.append(f"{pad}real depot = y[1];")
 
     centr = _centr_idx(spec)
@@ -1175,10 +1186,12 @@ def _emit_ode_dynamics(spec: DSLSpec, indent: int = 4) -> list[str]:
         lines.append(f"{pad}dydt[1] = -ka * depot;")
         abs_influx = "ka * depot"
     elif isinstance(abs_mod, Transit):
-        lines.append(f"{pad}real mtt = (n + 1) / ktr;")
-        lines.append(f"{pad}// Transit compartment approximation")
-        lines.append(f"{pad}real ktr_eff = (n + 1) / mtt;")
-        lines.append(f"{pad}dydt[1] = ktr_eff * depot * exp(-ktr_eff * t) - ka * depot;")
+        for idx in range(1, abs_mod.n + 1):
+            if idx == 1:
+                lines.append(f"{pad}dydt[1] = -ktr * transit_1;")
+            else:
+                lines.append(f"{pad}dydt[{idx}] = ktr * transit_{idx - 1} - ktr * transit_{idx};")
+        lines.append(f"{pad}dydt[{_depot_idx(spec)}] = ktr * transit_{abs_mod.n} - ka * depot;")
         abs_influx = "ka * depot"
     else:
         # LaggedFirstOrder and any future first-order-like case
@@ -1304,14 +1317,28 @@ def _emit_ode_solve(spec: DSLSpec, indent: int = 4) -> list[str]:
                 lines.append(f"{pad}    theta_i[{idx}] = {_theta_ref(name, spec)};")
     lines.append(f"{pad}    // Apply all pending dose events up to (and including) this obs time")
     lines.append(f"{pad}    while (e_idx >= 1 && e_idx <= event_end[i]")
-    lines.append(f"{pad}           && event_time[e_idx] <= time[n]) {{")
+    if isinstance(spec.absorption, LaggedFirstOrder):
+        lines.append(
+            f"{pad}           && ((event_evid[e_idx] == 1 || event_evid[e_idx] == 4)"
+            " ? event_time[e_idx] + tlag_i : event_time[e_idx]) <= time[n]) {"
+        )
+    else:
+        lines.append(f"{pad}           && event_time[e_idx] <= time[n]) {{")
+    if isinstance(spec.absorption, LaggedFirstOrder):
+        lines.append(
+            f"{pad}      real event_apply_time = "
+            "((event_evid[e_idx] == 1 || event_evid[e_idx] == 4)"
+            " ? event_time[e_idx] + tlag_i : event_time[e_idx]);"
+        )
+    else:
+        lines.append(f"{pad}      real event_apply_time = event_time[e_idx];")
     lines.append(f"{pad}      // Integrate to event time")
-    lines.append(f"{pad}      if (event_time[e_idx] > t_prev) {{")
-    lines.append(f"{pad}        array[1] real ts_e = {{event_time[e_idx]}};")
+    lines.append(f"{pad}      if (event_apply_time > t_prev) {{")
+    lines.append(f"{pad}        array[1] real ts_e = {{event_apply_time}};")
     lines.append(f"{pad}        array[1] vector[{n_states}] y_e =")
     lines.append(f"{pad}          ode_rk45(ode_rhs, y_state, t_prev, ts_e, theta_i, x_r, x_i);")
     lines.append(f"{pad}        y_state = y_e[1];")
-    lines.append(f"{pad}        t_prev = event_time[e_idx];")
+    lines.append(f"{pad}        t_prev = event_apply_time;")
     lines.append(f"{pad}      }}")
     lines.append(f"{pad}      // Apply reset (EVID=3 or 4)")
     lines.append(f"{pad}      if (event_evid[e_idx] == 3 || event_evid[e_idx] == 4)")

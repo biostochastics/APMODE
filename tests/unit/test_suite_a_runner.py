@@ -408,7 +408,7 @@ class TestWriteResultsAtomic:
             scenario_id="A7",
             status="skipped",
             skipped=True,
-            skip_reason="NODE backend live wiring is out of v0.6 scope",
+            skip_reason="NODE cases use the neural backend.",
         )
         write_results_atomic(out, {"A7": result})
         payload = json.loads(out.read_text())

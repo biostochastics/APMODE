@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Suite C Phase 2 — synthetic methodology-validation panel.
+"""Suite C synthetic methodology-validation panel.
 
 PRD §5 reserves the headline metric ``fraction-beats-median-expert >= 60%``
 for a blinded human-expert head-to-head benchmark. That panel requires
-external collaborator coordination and is **out of v0.6 scope**. To keep
-the metric exercised end-to-end before real experts arrive, this module
-synthesises an "expert" panel from log-normal perturbations of the
+external collaborator coordination. To keep the metric exercised end-to-end
+before real experts arrive, this module synthesises an "expert" panel from
+log-normal perturbations of the
 fixture's literature anchor and applies the same
 :func:`apmode.benchmarks.scoring.evaluate_expert_comparison` /
 :func:`compute_fraction_beats_expert` plumbing the real panel will use.
@@ -76,10 +76,10 @@ SYNTHETIC_BANNER: str = (
     "log-normal perturbation of the published literature anchor; it is "
     "NOT a real-expert benchmark and must not be cited as one. The PRD "
     "§5 fraction-beats-median-expert metric remains gated on a blinded "
-    "human-expert panel that is out of v0.6 scope."
+    "human-expert panel."
 )
 
-# Exit codes mirror the Phase-1 CLI for muscle-memory.
+# Exit codes mirror the Suite C scorer CLI for muscle-memory.
 _EXIT_OK: int = 0
 _EXIT_USAGE: int = 2
 _EXIT_VALIDATION: int = 3

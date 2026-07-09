@@ -558,24 +558,23 @@ class BundleEmitter:
     ) -> tuple[Path, Path | None]:
         """Write compiled_specs/{candidate_id}.json and .R.
 
-        NODE specs are written as JSON only (no R lowering in Phase 1).
+        NODE specs are written as JSON only because the nlmixr2 emitter does
+        not lower neural modules.
         Also writes compiled_specs/{candidate_id}_fingerprints.json —
         content-based sha256 digests (structure/spec/initial/justification)
         computed by ``apmode.dsl.canonical`` — so the bundle digest
         includes deterministic fingerprints derived from this exact spec
         (see docs/FINGERPRINT_MIGRATION.md). The same file carries the
-        spec's optional ``metadata:`` block (Formular sharpening plan §4
-        Phase 1, P1.2) under the ``"metadata"`` key — ``None`` when the
-        spec has no metadata block — so audit/report tooling can read
-        free-text provenance (title/intent/context_of_use/analyte/version)
-        without loading the full compiled spec JSON. It also carries the
-        spec's ``UnitCoverageReport`` (Formular sharpening plan §4 Phase 1,
-        P1.3) under the ``"units_coverage"`` key — ``{"status":
+        spec's optional ``metadata:`` block under the ``"metadata"`` key —
+        ``None`` when the spec has no metadata block — so audit/report tooling
+        can read free-text provenance (title/intent/context_of_use/analyte/
+        version) without loading the full compiled spec JSON. It also carries
+        the spec's ``UnitCoverageReport`` under the ``"units_coverage"`` key —
+        ``{"status":
         "not_declared", ...}`` when the spec has no ``units:`` block.
 
         When ``spec.macros_used`` is non-empty (a top-level ``use <macro>``
-        statement expanded during compilation — Formular sharpening plan §4
-        Phase 2, P2.1), also writes
+        statement expanded during compilation), also writes
         ``compiled_specs/{candidate_id}/expanded.formular``: the canonical
         re-serialization (:func:`apmode.dsl.serializer.serialize_spec`) of
         the *post-expansion* spec, so a reviewer can see exactly what the
@@ -715,7 +714,7 @@ class BundleEmitter:
         path = self.run_dir / "report_provenance.json"
         return self._write_text(path, provenance.model_dump_json(indent=2))
 
-    # --- Credibility reports (per-candidate, Phase 2+) ---
+    # --- Credibility reports (per-candidate) ---
 
     def _credibility_dir(self) -> Path:
         """Ensure and return the credibility/ subdirectory."""
@@ -771,7 +770,7 @@ class BundleEmitter:
         path = self.run_dir / "run_lineage.json"
         return self._write_text(path, lineage.model_dump_json(indent=2))
 
-    # --- Bayesian artifacts (Phase 2+) ---
+    # --- Bayesian artifacts ---
 
     def _bayesian_dir(self) -> Path:
         """Ensure and return the bayesian/ subdirectory."""

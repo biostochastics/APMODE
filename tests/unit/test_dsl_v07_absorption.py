@@ -9,7 +9,7 @@ Covers Erlang, ParallelFirstOrder, and SumIG (k=2):
 - Transform validation + apply (ConvertTransitToErlang, AddParallelRoute,
   SetSumIGComponents)
 - nlmixr2 emitter lowering (smoke + content checks)
-- Stan emitter rejection (Stan support deferred to v0.7.1)
+- Stan emitter rejection for nlmixr2-only absorption forms
 - Property test: SumIG closed-form input rate integrates to ~1 on (0, ∞)
 
 Formular sharpening plan §4 Phase 1 (P1.4): calibration values (ktr, ka1,
@@ -426,14 +426,14 @@ class TestEmitterContent:
         # t-safety guard
         assert "_t_safe" in code
         # Dose-scaled influx
-        assert "amt * sumig_input" in code
+        assert "SUMIG_DOSE * sumig_input" in code
         # Positive-difference parameterisation for MT_2
         assert "delta_MT_2" in code
         assert "MT_2 <- MT_1 + delta_MT_2" in code
 
 
 # ---------------------------------------------------------------------------
-# Stan emitter rejects new variants (deferred to v0.7.1)
+# Stan emitter rejects nlmixr2-only variants
 # ---------------------------------------------------------------------------
 
 

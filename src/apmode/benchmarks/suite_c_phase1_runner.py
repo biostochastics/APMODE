@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Plan Task 44 — Phase-1 Suite C live-fit runner.
+"""Suite C live-fit runner for literature-anchor scorecards.
 
-For each Phase-1 MLE fixture this module composes the existing pieces
-into a single producer of ``benchmarks/suite_c/phase1_npe_inputs.json``:
+For each literature MLE fixture this module composes the existing pieces into
+a single producer of ``benchmarks/suite_c/phase1_npe_inputs.json``:
 
   1. ``literature_loader.load_fixture_by_id`` → :class:`LiteratureFixture`
   2. ``data.datasets.fetch_dataset`` (or a ``--dataset-csv`` override)
@@ -26,10 +26,10 @@ into a single producer of ``benchmarks/suite_c/phase1_npe_inputs.json``:
      per-fold values flow through to ``FixtureScore.npe_apmode_per_fold``
      for downstream variance bars.
   7. Atomic write of the inputs JSON (tmp + rename) so a SIGKILL
-     mid-write never half-writes the file the Task 41 scorer ingests.
+     mid-write never half-writes the file the scorecard helper ingests.
 
-Honest mode (v0.6.1)
---------------------
+Held-out evaluation mode
+------------------------
 
 * **Held-out NPE per fold.** Each fold writes both a ``train.csv`` and
   a disjoint ``test.csv``. The APMODE-side fit uses the train CSV via
@@ -112,8 +112,8 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-# Hand-curated fixture-id → DATASET_REGISTRY key mapping for the three
-# Phase-1 fixtures whose dataset is shipped via ``data.datasets.fetch_dataset``
+# Hand-curated fixture-id → DATASET_REGISTRY key mapping for fixtures whose
+# dataset is shipped via ``data.datasets.fetch_dataset``
 # (the nlmixr2data ones). The two non-registry fixtures
 # (``ddmore_gentamicin``, ``mimic_vancomycin``) require a ``--dataset-csv``
 # override; the runner surfaces a clear error when that override is missing
@@ -156,6 +156,12 @@ class FixturePhase1Inputs:
     npe_literature_per_fold: tuple[float, ...]
     n_subjects: int
     n_folds: int
+    # PIT/NPDE-lite calibration (Gate 1's calibration check, see
+    # PITCalibrationSummary), median-aggregated across folds. Reported
+    # for visibility alongside the NPE point-accuracy comparison — not
+    # itself part of the win/loss gate (see _extract_pit_calibration).
+    pit_calibration_apmode: dict[str, float]
+    pit_calibration_literature: dict[str, float]
 
 
 # ---------------------------------------------------------------------------
@@ -275,6 +281,47 @@ def _extract_npe(result: BackendResult, *, label: str, fold_idx: int) -> float:
     return float(npe)
 
 
+def _extract_pit_calibration(
+    result: BackendResult, *, label: str, fold_idx: int
+) -> dict[str, float]:
+    """Pull ``diagnostics.pit_calibration`` out of a BackendResult or fail loudly.
+
+    ``pit_calibration`` (Gate 1's "PIT/NPDE-lite" check — see
+    :class:`apmode.bundle.models.PITCalibrationSummary`) is populated by
+    the same :func:`apmode.backends.predictive_summary.
+    build_predictive_diagnostics` call that produces ``npe_score``, so a
+    ``None`` here indicates the same short-circuit ``_extract_npe`` guards
+    against. Reported alongside NPE rather than folded into the win/loss
+    gate: NPE is a point-accuracy comparison, PIT/NPDE-lite is a
+    calibration diagnostic — conflating the two would repeat the
+    NPE/NPDE labelling mistake this module's README section warns about.
+    """
+    pit = result.diagnostics.pit_calibration
+    if pit is None:
+        msg = (
+            f"fold {fold_idx} ({label}): BackendResult.diagnostics.pit_calibration "
+            "is None — posterior-predictive simulation did not produce a "
+            "value (see fit logs in the runner work dir)."
+        )
+        raise RuntimeError(msg)
+    return dict(pit.calibration)
+
+
+def _median_calibration_across_folds(per_fold: list[dict[str, float]]) -> dict[str, float]:
+    """Median-aggregate per-fold PIT calibration dicts, one median per probability level.
+
+    Mirrors the per-fold-then-median pattern already used for NPE
+    (``statistics.median(apmode_per_fold)``). All folds share the same
+    probability-level keys (``Gate3Config`` doesn't vary across folds),
+    so this is a plain per-key median, not a weighted pool.
+    """
+    if not per_fold:
+        msg = "per_fold calibration list must be non-empty"
+        raise ValueError(msg)
+    keys = per_fold[0].keys()
+    return {k: statistics.median(fold[k] for fold in per_fold) for k in keys}
+
+
 # ---------------------------------------------------------------------------
 # Top-level fixture driver
 # ---------------------------------------------------------------------------
@@ -327,6 +374,8 @@ async def run_fixture(
 
     apmode_per_fold: list[float] = []
     literature_per_fold: list[float] = []
+    apmode_pit_per_fold: list[dict[str, float]] = []
+    literature_pit_per_fold: list[dict[str, float]] = []
 
     # NCAEstimator is imported lazily inside the loop to avoid a hard
     # dependency at module-import time on the rest of the data-stack
@@ -437,6 +486,12 @@ async def run_fixture(
         literature_per_fold.append(
             _extract_npe(literature_result, label="literature", fold_idx=fold_idx)
         )
+        apmode_pit_per_fold.append(
+            _extract_pit_calibration(apmode_result, label="apmode", fold_idx=fold_idx)
+        )
+        literature_pit_per_fold.append(
+            _extract_pit_calibration(literature_result, label="literature", fold_idx=fold_idx)
+        )
 
     return FixturePhase1Inputs(
         fixture_id=fixture_id,
@@ -446,6 +501,8 @@ async def run_fixture(
         npe_literature_per_fold=tuple(literature_per_fold),
         n_subjects=int(df["NMID"].nunique()),
         n_folds=len(folds),
+        pit_calibration_apmode=_median_calibration_across_folds(apmode_pit_per_fold),
+        pit_calibration_literature=_median_calibration_across_folds(literature_pit_per_fold),
     )
 
 
@@ -500,6 +557,11 @@ def write_inputs_atomic(path: Path, inputs: dict[str, FixturePhase1Inputs]) -> N
     Per-fold literature values are emitted under
     ``npe_literature_per_fold`` for downstream tooling — the scorer
     tolerates extra fields (forward-compat per its docstring).
+
+    ``pit_calibration_apmode`` / ``pit_calibration_literature`` carry the
+    median-across-folds PIT/NPDE-lite calibration (see
+    ``PITCalibrationSummary`` / ``_extract_pit_calibration``) — reported
+    for visibility, not consumed by the NPE win/loss gate.
     """
     payload: dict[str, dict[str, object]] = {}
     for fid, item in inputs.items():
@@ -510,6 +572,8 @@ def write_inputs_atomic(path: Path, inputs: dict[str, FixturePhase1Inputs]) -> N
             "npe_literature_per_fold": list(item.npe_literature_per_fold),
             "n_subjects": item.n_subjects,
             "n_folds": item.n_folds,
+            "pit_calibration_apmode": item.pit_calibration_apmode,
+            "pit_calibration_literature": item.pit_calibration_literature,
         }
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")
@@ -547,8 +611,8 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="python -m apmode.benchmarks.suite_c_phase1_runner",
         description=(
-            "Run the Phase-1 Suite C live-fit loop and write "
-            "phase1_npe_inputs.json for the Task 41 scorer."
+            "Run the Suite C live-fit loop and write "
+            "phase1_npe_inputs.json for the scorecard helper."
         ),
     )
     parser.add_argument(

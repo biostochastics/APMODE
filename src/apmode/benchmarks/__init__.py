@@ -6,10 +6,11 @@ Three-tier benchmark system:
   Suite A:          Synthetic recovery (A1-A8) — known ground truth
   Suite A-External: Schoemaker 2019 standard grid (nlmixr2data, 12 datasets)
   Suite B:          NODE validation (B1-B3, mock) + real-data anchors (B4-B12)
-  Suite C Phase 1:  Literature-anchor head-to-head (5 MLE + 2 Bayesian)
-  Suite C Phase 2:  Synthetic-panel methodology validation (NOT a real-expert
-                    benchmark; the blinded-human-expert head-to-head is gated
-                    on external collaborator coordination and out of v0.6 scope)
+  Suite C:          Literature-anchor head-to-head (5 MLE + 2 Bayesian)
+  Suite C Synthetic Panel:
+                    Synthetic-panel methodology validation (NOT a
+                    real-expert benchmark; blinded-human-expert head-to-head
+                    depends on external collaborator coordination)
 
 Supporting infrastructure:
 
@@ -31,12 +32,11 @@ Supporting infrastructure:
                                 fit → score, with the PRD R8 cross-seed
                                 stability monitor on parameter estimates
   suite_b_cli:                  Score-only CLI for Suite B results JSON
-  suite_c_phase1_runner:        Live Phase-1 runner — held-out NPE per fold
+  suite_c_phase1_runner:        Live Suite C runner — held-out NPE per fold
                                 + fixed-THETA literature comparator
-  suite_c_phase1_scoring:       Phase-1 scoring math (FixtureScore,
+  suite_c_phase1_scoring:       Suite C scoring math (FixtureScore,
                                 fraction-beats-literature-median)
-  suite_c_phase1_cli:           Phase-1 scorer CLI used by the weekly workflow
+  suite_c_phase1_cli:           Suite C scorer CLI used by the weekly workflow
   suite_c_phase2_synthetic:     Synthetic-panel methodology validation
-                                scaffold for the Phase 2 metric;
-                                explicitly NOT a real-expert claim
+                                scaffold; explicitly NOT a real-expert claim
 """

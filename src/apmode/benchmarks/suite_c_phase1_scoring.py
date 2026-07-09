@@ -1,38 +1,42 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Suite C Phase-1 scoring helper (plan Task 41).
+"""Suite C literature-anchor scoring helper.
 
-The Phase-1 Suite C contract per PRD §4 / plan Task 41:
+The Suite C contract:
 
-* Score APMODE against each Phase-1 MLE fixture using subject-level
+* Score APMODE against each literature MLE fixture using subject-level
   5-fold cross-validation (the same split strategy
   ``apmode.benchmarks.suite_c.DEFAULT_SPLIT`` codifies for the legacy
   ``BenchmarkCase`` system).
 * Report the per-dataset ``NPE_median`` for both the APMODE candidate
-  and the literature anchor.
+  and the literature anchor. **NPE here is APMODE's own metric**
+  (:func:`apmode.benchmarks.scoring.compute_npe` — median absolute
+  prediction error from posterior-predictive simulations), *not* the
+  classical Comets/Mentré NPDE (Normalised Prediction Distribution
+  Error, a mean~0/variance~1 diagnostic from full Monte-Carlo
+  simulation). The shared "NPE" substring is coincidental naming, not a
+  methodological claim of equivalence — see
+  ``benchmarks/suite_c/README.md`` for the full caveat and the current
+  scorecard's staleness status.
 * Aggregate via
 
       fraction_beats_literature_median = Σ(NPE_APMODE ≤ NPE_lit·(1-δ))/|D|
 
-  with ``δ = 0.02`` (2% margin); the v0.6 CI gate is ``>= 0.60``
-  (3 of 5 fixtures must beat the literature NPE by at least 2%).
+      with ``δ = 0.02`` (2% margin); the default target is ``>= 0.60``
+      (3 of 5 fixtures must beat the literature NPE by at least 2%).
 
-This module ships **only the scoring math + scorecard schema**. The
-actual NPE production loop (load fixture → drive the orchestrator
-through the dataset → record per-fold NPE) is deferred to plan Task 44
-(full regression sweep) and the weekly CI workflow shipped alongside
-this file. Decoupling lets the unit tests cover the disqualifying
-arithmetic without spinning up R + cmdstan, while the CI workflow
-reuses the helper as soon as a credentialed run is available.
+This module owns the scoring math + scorecard schema. The live-fit
+production loop lives in :mod:`apmode.benchmarks.suite_c_phase1_runner`.
+Decoupling lets unit tests cover the disqualifying arithmetic without
+spinning up R + cmdstan, while the runner reuses the same helper for
+credentialed sweeps.
 
-Wins vs the legacy :mod:`apmode.benchmarks.suite_c`
-----------------------------------------------------
+Relationship to :mod:`apmode.benchmarks.suite_c`
+------------------------------------------------
 
-The legacy module defines ``BenchmarkCase`` + ``WIN_MARGIN_DELTA``
-under the older "expert benchmark" framing (plan Task 38 renamed the
-suite). This module is the *Phase-1 specific* surface that operates on
-:class:`apmode.benchmarks.models.LiteratureFixture` (the YAML/DSL pair
-landed in Task 40) — so the scorecard schema can carry the fixture id
-+ DOI + reference parameter set rather than the legacy
+The benchmark catalog still defines ``BenchmarkCase`` + ``WIN_MARGIN_DELTA``
+for broader Suite C metadata. This scoring helper operates on
+:class:`apmode.benchmarks.models.LiteratureFixture`, so the scorecard schema
+can carry the fixture id + DOI + reference parameter set rather than
 ``BenchmarkCase.expected_structure``. Both layers agree on
 ``WIN_MARGIN_DELTA = 0.02`` and the same 5-fold CV cadence.
 """
@@ -58,7 +62,7 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 PHASE1_FRACTION_BEATS_TARGET: float = 0.60
-"""CI target per plan Task 41. ``fraction_beats_literature_median`` must
+"""CI target. ``fraction_beats_literature_median`` must
 hit at least this number for the weekly Suite C run to pass. A miss
 opens a GitHub issue — it is *not* a release block (the suite measures
 methodology drift, not a release-critical contract)."""
@@ -78,7 +82,7 @@ floor for the same reason."""
 
 
 class FixtureScore(BaseModel):
-    """Per-fixture Phase-1 score record.
+    """Per-fixture literature-anchor score record.
 
     ``npe_apmode`` is the APMODE candidate's median NPE on the
     held-out folds (subject-level 5-fold CV). ``npe_literature`` is
@@ -86,9 +90,8 @@ class FixtureScore(BaseModel):
     observation model so the win/loss decision is on commensurate
     metrics (PRD §4.3.1 / plan §10 Q2). When the literature paper does
     not report NPE directly, the value is computed by re-fitting the
-    published parameter set under the orchestrator's harness — that
-    workflow is the integration concern of plan Task 44, not this
-    helper.
+    published parameter set under the orchestrator's harness; that workflow
+    belongs to the live-fit runner, not this helper.
 
     ``npe_apmode_per_fold`` carries the raw per-fold NPEs that produce
     ``npe_apmode`` (their median). Optional and ``None`` for legacy
@@ -144,7 +147,7 @@ class FixtureScore(BaseModel):
 
 
 class SuiteCPhase1Scorecard(BaseModel):
-    """Aggregate Phase-1 scorecard returned by :func:`aggregate_phase1_scorecard`.
+    """Aggregate Suite C scorecard returned by :func:`aggregate_phase1_scorecard`.
 
     ``fraction_beats_literature_median`` is the headline number; ``None``
     when the underlying score list has fewer than
@@ -218,13 +221,13 @@ def aggregate_phase1_scorecard(
     target: float = PHASE1_FRACTION_BEATS_TARGET,
     min_fixtures: int = PHASE1_MIN_FIXTURES_FOR_AGGREGATE,
 ) -> SuiteCPhase1Scorecard:
-    """Aggregate per-fixture scores into the Phase-1 scorecard.
+    """Aggregate per-fixture scores into the Suite C scorecard.
 
     ``min_fixtures`` is the floor below which the aggregate fraction
     is reported as ``None`` (and ``passes_gate=False`` regardless of
     the partial wins) — this prevents a 1-of-1 = 100% from looking
-    like a green Phase-1 run. ``target`` defaults to the v0.6 CI gate
-    (``0.60``); the weekly workflow reads this off
+    like a green Suite C run. ``target`` defaults to
+    :data:`PHASE1_FRACTION_BEATS_TARGET` (``0.60``); the weekly workflow reads this off
     ``SuiteCPhase1Scorecard.passes_gate``.
 
     The returned scorecard preserves the input order of ``scores`` for
@@ -264,7 +267,7 @@ def aggregate_phase1_scorecard(
 
 
 def phase1_roster_dois() -> dict[str, str]:
-    """Return ``{fixture_id: DOI}`` for the canonical Phase-1 MLE roster.
+    """Return ``{fixture_id: DOI}`` for the canonical literature MLE roster.
 
     Used by the weekly workflow to render a table in the GitHub issue
     that fires on a missed gate, so a reviewer can map each fixture

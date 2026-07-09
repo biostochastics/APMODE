@@ -24,7 +24,6 @@ from apmode.dsl.ast_models import (
     FirstOrder,
     LaggedFirstOrder,
     LinearElim,
-    MichaelisMenten,
     NODEAbsorption,
     NODEElimination,
     OccasionByStudy,
@@ -226,23 +225,25 @@ class TestFrmAstCodes:
             == FrmCode.AST_NO_VARIABILITY_ON_PARAM
         )
 
-    def test_tmdd_requires_linear_elim_carries_ast_009(self) -> None:
+    def test_tmdd_rejects_node_elim_carries_ast_009(self) -> None:
+        from apmode.dsl.ast_models import ExperimentalFlags, NODEElimination
+
         spec = _make_spec(
             distribution=TMDDCore(),
-            elimination=MichaelisMenten(),
+            elimination=NODEElimination(dim=2, constraint_template="bounded_positive"),
             initial={
+                "ka": 1.0,
                 "V": 10.0,
                 "R0": 1.0,
                 "kon": 0.1,
                 "koff": 0.01,
                 "kint": 0.05,
-                "Vmax": 100.0,
-                "Km": 10.0,
             },
-            variability=[IIV(params=["Vmax", "V"], structure="diagonal")],
+            variability=[IIV(params=["V"], structure="diagonal")],
         )
+        spec = spec.model_copy(update={"experimental": ExperimentalFlags(node=True)})
         assert (
-            _code_for(spec, Lane.SUBMISSION, "tmdd_requires_linear_elim")
+            _code_for(spec, Lane.SUBMISSION, "tmdd_rejects_node_elim")
             == FrmCode.AST_TMDD_REQUIRES_LINEAR_ELIM
         )
 

@@ -7,6 +7,139 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1-rc2] — 2026-07-09
+
+### Fixed — SumIG absorption: production nlmixr2 emitter no longer relies on rxode2's non-persistent `amt`
+
+- `emit_nlmixr2`'s SumIG absorption influx term used the reserved `amt` event
+  variable (`amt * sumig_input`), which rxode2 only populates on the exact
+  dosing row — every other row in the ODE solve saw `amt=0` and produced
+  all-NaN concentrations for anything past the first timepoint. Suite A13's
+  benchmark simulator had already worked around this locally (a literal
+  dose constant substituted in the R-side ground-truth simulator), but the
+  production emitter path was unfixed. `apmode.data.adapters.to_nlmixr2_format`
+  now adds a persistent per-subject `SUMIG_DOSE` column (added to
+  `_RESERVED_COLUMNS`) when each dosed subject has exactly one positive
+  dose — conservative by construction, since SumIG's validator already
+  restricts it to single-dose use — and the emitter reads `SUMIG_DOSE *
+  sumig_input` instead.
+- `PriorFamily`'s `Beta` distribution is now valid for the two genuinely
+  unit-interval **structural** targets — `frac` (`ParallelFirstOrder`) and
+  `weight_1` (`SumIG`) — via a new `_validate_target_specific_prior` guard
+  in `dsl/priors.py`. Previously `Beta` was excluded from the `"structural"`
+  target-kind allowlist entirely, which was overly conservative for these
+  two bounded-fraction parameters.
+- `_validate_variability`'s check ordering in `dsl/validator.py` tested
+  "is this an unknown parameter" before "is this a no-variability parameter
+  (`n`)", so requesting IIV/IOV on Transit/Erlang's structural `n` produced
+  a generic `iiv_param_exists` error instead of the specific
+  `no_variability_on_param` one. Reordered so the specific check runs first.
+- `REFERENCE_PARAMS["A3"]` (Suite A benchmark ground truth) carried a stale
+  `"n": 3.0` entry left over from before `structural_param_names()` was
+  corrected to exclude Transit's non-calibratable `n` (chain-length is
+  structural topology set inline on the module, not an estimated THETA —
+  matches the existing `Erlang` handling). This broke the
+  `REFERENCE_PARAMS == structural_param_names()` invariant three tests pin
+  (`test_a3_params_match_spec`, `test_reference_params_match_spec[A3-*]`,
+  `test_reference_params_complete`); removed the stale key.
+
+### Changed — drop dated planning-process references from DSL docstrings
+
+- Removed "Formular sharpening plan §4 Phase X (PX.Y)" / "v0.7" / "Phase 1 /
+  Phase 2" temporal markers from docstrings and comments across
+  `dsl/ast_models.py`, `dsl/equations.py`, `dsl/nlmixr2_emitter.py`,
+  `dsl/stan_emitter.py`, `dsl/priors.py`, `dsl/validator.py`,
+  `backends/protocol.py`, and `governance/policy.py` — those features
+  (SOTA absorption forms, multi-analyte observations, prior-family
+  machinery, NODE experimental gating) are stable now, not in-progress
+  plan items, so citing the planning task that introduced them no longer
+  serves a reader. No behavioral change from this cleanup beyond the
+  fixes listed above.
+
+### Added — surface Suite C's already-computed PIT/NPDE-lite calibration
+
+- `result.diagnostics.pit_calibration` (populated by
+  `build_predictive_diagnostics` for every Suite C fit via the
+  `gate3_policy` already passed to both the APMODE-side and
+  literature-side fits) was computed and silently discarded —
+  `suite_c_phase1_runner.py` only ever pulled `npe_score` out of the
+  result. `run_fixture` now also extracts it per fold
+  (`_extract_pit_calibration`, mirroring `_extract_npe`'s fail-loud-on-
+  `None` contract) and median-aggregates across folds per probability
+  level (`_median_calibration_across_folds`), for both sides
+  independently. `FixturePhase1Inputs` / `phase1_npe_inputs.json` /
+  `suite_c_phase1_cli._load_inputs` / `render_markdown_summary` all
+  carry the new `pit_calibration_apmode` / `pit_calibration_literature`
+  fields through to the rendered scorecard. This is reporting only —
+  PIT/NPDE-lite is a calibration diagnostic, NPE is a point-accuracy
+  comparison, and the two are deliberately not merged into a single
+  gate (see `benchmarks/suite_c/README.md`'s NPE/NPDE section).
+
+### Fixed — LORO-CV data leakage; NODE/Bayesian crash in Optimization lane
+
+- **`evaluate_loro_cv` froze each fold's evaluation parameters at
+  `candidate_result.parameter_estimates`** — the Gate-1 survivor's
+  *full-data* fit, which by construction already saw every regimen group,
+  including whichever one that fold held out. The "does this model
+  extrapolate to unseen regimens?" check was therefore measuring
+  goodness-of-fit, not extrapolation. Each fold now runs two backend calls:
+  a leak-free per-fold refit on train-only data (`fixed_parameter=False`),
+  then the existing frozen posthoc evaluation (`fixed_parameter=True`)
+  seeded from that fold-specific refit rather than the shared full-data
+  candidate. `initial_estimates` is now used only as an optimizer warm-start
+  seed, never as a frozen value. `evaluate_loro_cv` takes a new required
+  `df: pd.DataFrame` parameter (the orchestrator already holds this in
+  memory) to carve out train-only CSVs per fold without re-reading
+  `data_path` from disk.
+- **`NodeBackendRunner` / `BayesianRunner` raise bare `NotImplementedError`
+  (not `BackendError`) for `fixed_parameter=True`**, which propagated
+  through the orchestrator's `asyncio.TaskGroup` uncaught and crashed the
+  entire Optimization-lane run for any NODE/Bayesian Gate-1 survivor.
+  `_run_loro_cv._eval_one` now also catches `NotImplementedError` and skips
+  the candidate (logged as `loro_cv_backend_unsupported`) — Gate 2's
+  `_check_loro_requirement` already fails closed when a candidate has no
+  `LOROMetrics` entry. Full LORO-CV support for NODE/Bayesian backends
+  (a no-refit evaluate() path in `node_trainer` / a Stan
+  `generate_quantities` fixed-param stage) remains unimplemented, as their
+  own docstrings already stated.
+
+### Added — Suite C anti-circularity regression test; NPE/NPDE relabeling
+
+- Added `test_run_fixture_apmode_side_never_seeded_from_literature_reference_params`
+  pinning that `NCAEstimator` is never constructed with `fallback_estimates`
+  equal to a fixture's literature `reference_params`, and that the
+  APMODE-side fit's `initial_estimates` differ from the literature anchor
+  for every fold. Source-level audit confirmed the current
+  `suite_c_phase1_runner.py` does not have this leak (the APMODE-side NCA
+  is already train-fold-only, no `fallback_estimates` wired in) — this
+  test guards against a future regression reintroducing it.
+- Documented that APMODE's Suite C **NPE** (median absolute
+  posterior-predictive prediction error) is a proprietary metric, distinct
+  from the classical Comets/Mentré **NPDE**, in
+  `benchmarks/suite_c/README.md`, `suite_c_phase1_scoring.py`, and
+  `DiagnosticBundle.npe_score`'s docstring — the shared "NPE" substring is
+  coincidental naming, not a methodology claim.
+- `benchmarks/suite_c/README.md` now states plainly that the committed
+  `phase1_npe_inputs.json` (last regenerated 2026-04-25) reports
+  `fraction_beats_literature_median = 40% (2/5)`, below the `>= 60%` CI
+  target, and that the weekly workflow re-scores that static JSON rather
+  than re-running live fits.
+
+### Added — end-to-end agentic-transform integration tests
+
+- Added `AgenticRunner.run()` integration tests driving `set_prior`,
+  `convert_transit_to_erlang`, `add_parallel_route`, and
+  `set_sumig_components` individually through to a compiled/fit candidate,
+  plus a compound multi-transform test (`set_prior` +
+  `convert_transit_to_erlang` proposed in one iteration) pinning that
+  compound proposals commit all-or-nothing, gated by the post-transform
+  `validate_dsl` check. Code-level audit of `agentic_runner.py`'s
+  transform-application loop confirmed this atomicity guarantee already
+  held (per-transform `validate_transform` gates each individual apply,
+  immutable `DSLSpec` construction prevents aliasing, and a final
+  whole-spec `validate_dsl` gates the commit to `current_spec`) — these
+  tests close the coverage gap without needing a code fix.
+
 ### Added — Suite A9-A21: close all 15 uncovered DSL v0.7 capability tags
 
 - **`scripts/analyze_benchmark_capability_coverage.py` went from 15 uncovered

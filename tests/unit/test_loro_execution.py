@@ -9,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import AsyncMock
 
+import pandas as pd
 import pytest
 
 from apmode.bundle.models import (
@@ -136,12 +137,22 @@ def _make_folds(n_groups: int = 4, subjects_per_group: int = 10) -> list[SplitMa
     return folds
 
 
+def _make_df(n_groups: int = 4, subjects_per_group: int = 10) -> pd.DataFrame:
+    """Minimal in-memory dataset matching ``_make_folds``' subject IDs.
+
+    ``evaluate_loro_cv`` only needs the ``NMID`` column to carve out each
+    fold's train-only CSV; the mocked runner never reads file contents.
+    """
+    n_subjects = n_groups * subjects_per_group
+    return pd.DataFrame({"NMID": [str(s) for s in range(1, n_subjects + 1)]})
+
+
 class TestEvaluateLoroCV:
     """Tests for evaluate_loro_cv() with mocked runner."""
 
     @pytest.mark.asyncio
     async def test_runs_all_folds(self, tmp_path: Path) -> None:
-        """Runner is called once per fold."""
+        """Runner is called twice per fold (train-only refit + frozen eval)."""
         folds = _make_folds(n_groups=3)
         runner = AsyncMock()
         runner.run = AsyncMock(return_value=_mock_backend_result())
@@ -153,11 +164,12 @@ class TestEvaluateLoroCV:
             runner=runner,
             data_manifest=_mock_data_manifest(),
             data_path=tmp_path / "data.csv",
+            df=_make_df(n_groups=3),
             initial_estimates={"CL": 2.0, "V": 30.0, "ka": 1.0},
             seed=42,
         )
 
-        assert runner.run.call_count == 3
+        assert runner.run.call_count == 6
         assert len(result.fold_results) == 3
 
     @pytest.mark.asyncio
@@ -173,6 +185,7 @@ class TestEvaluateLoroCV:
             runner=runner,
             data_manifest=_mock_data_manifest(),
             data_path=tmp_path / "data.csv",
+            df=_make_df(n_groups=4),
             initial_estimates={"CL": 2.0, "V": 30.0},
             seed=42,
         )
@@ -183,16 +196,21 @@ class TestEvaluateLoroCV:
 
     @pytest.mark.asyncio
     async def test_handles_fold_failure(self, tmp_path: Path) -> None:
-        """If a fold raises, it's recorded as non-converged."""
+        """If a fold raises, it's recorded as non-converged.
+
+        Each fold now makes two runner.run calls (train-only refit, then
+        frozen posthoc eval), so fold 1's pair is calls 3-4; raising on
+        call 3 (fold 1's refit step) fails fold 1 without a step-2 call.
+        """
         folds = _make_folds(n_groups=3)
         runner = AsyncMock()
         call_count = 0
 
-        async def mock_run(**kwargs: object) -> BackendResult:
+        async def mock_run(**_kwargs: object) -> BackendResult:
             nonlocal call_count
             call_count += 1
-            if call_count == 2:
-                msg = "Fold 2 failed"
+            if call_count == 3:
+                msg = "Fold 1 refit failed"
                 raise RuntimeError(msg)
             return _mock_backend_result()
 
@@ -205,6 +223,7 @@ class TestEvaluateLoroCV:
             runner=runner,
             data_manifest=_mock_data_manifest(),
             data_path=tmp_path / "data.csv",
+            df=_make_df(n_groups=3),
             initial_estimates={"CL": 2.0, "V": 30.0},
             seed=42,
         )
@@ -212,30 +231,62 @@ class TestEvaluateLoroCV:
         assert len(result.fold_results) == 3
         converged = [f.converged for f in result.fold_results]
         assert converged == [True, False, True]
+        # fold 0: calls 1-2; fold 1: call 3 raises (step 2 skipped);
+        # fold 2: calls 4-5.
+        assert call_count == 5
 
     @pytest.mark.asyncio
-    async def test_warm_starts_from_fitted_estimates(self, tmp_path: Path) -> None:
-        """Runner receives fitted structural estimates, not initial NCA."""
+    async def test_no_leakage_from_stale_full_data_candidate(self, tmp_path: Path) -> None:
+        """Regression test for the LORO-CV data-leakage fix.
+
+        Earlier versions froze each fold's evaluation parameters at
+        ``candidate_result.parameter_estimates`` — the Gate-1 survivor's
+        *full-data* fit, which by construction already saw the held-out
+        regimen group. This test pins the fix: step 1 (train-only refit)
+        must receive the passed-in ``initial_estimates`` seed, never the
+        stale global candidate's fitted values; step 2 (frozen posthoc
+        eval) must then freeze at step 1's *own* fold-local estimates, not
+        the stale candidate's.
+        """
         folds = _make_folds(n_groups=2)
         runner = AsyncMock()
-        runner.run = AsyncMock(return_value=_mock_backend_result())
+        # The stale global "full-data" fit — deliberately different from
+        # what the (mocked) fold-local refit below produces, so a test
+        # failure here would mean the stale values leaked through.
+        stale_candidate = _mock_backend_result(cwres_mean=0.0)
+        stale_candidate.parameter_estimates["CL"].estimate = 2.0
+        stale_candidate.parameter_estimates["V"].estimate = 30.0
 
-        candidate = _mock_backend_result()
+        fold_local_refit = _mock_backend_result(cwres_mean=0.0)
+        fold_local_refit.parameter_estimates["CL"].estimate = 3.5
+        fold_local_refit.parameter_estimates["V"].estimate = 45.0
+        runner.run = AsyncMock(return_value=fold_local_refit)
+
         await evaluate_loro_cv(
             candidate_spec=_base_spec(),
-            candidate_result=candidate,
+            candidate_result=stale_candidate,
             folds=folds,
             runner=runner,
             data_manifest=_mock_data_manifest(),
             data_path=tmp_path / "data.csv",
-            initial_estimates={"CL": 1.0, "V": 20.0},  # Different from fitted
+            df=_make_df(n_groups=2),
+            initial_estimates={"CL": 1.0, "V": 20.0},  # optimizer seed only
             seed=42,
         )
 
-        # The runner should receive the candidate's fitted estimates (CL=2.0, V=30.0)
-        call_kwargs = runner.run.call_args_list[0][1]
-        assert call_kwargs["initial_estimates"]["CL"] == 2.0
-        assert call_kwargs["initial_estimates"]["V"] == 30.0
+        # Step 1 (train-only refit) receives the seed, not the stale candidate.
+        step1_kwargs = runner.run.call_args_list[0][1]
+        assert step1_kwargs["initial_estimates"] == {"CL": 1.0, "V": 20.0}
+        assert step1_kwargs["fixed_parameter"] is False
+        assert step1_kwargs["data_path"] != tmp_path / "data.csv"
+
+        # Step 2 (frozen eval) freezes at the fold-local refit's own
+        # estimates (3.5/45.0) — never the stale candidate's (2.0/30.0).
+        step2_kwargs = runner.run.call_args_list[1][1]
+        assert step2_kwargs["initial_estimates"]["CL"] == 3.5
+        assert step2_kwargs["initial_estimates"]["V"] == 45.0
+        assert step2_kwargs["fixed_parameter"] is True
+        assert step2_kwargs["data_path"] == tmp_path / "data.csv"
 
 
 class TestAggregateLoroMetrics:

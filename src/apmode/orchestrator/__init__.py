@@ -230,11 +230,10 @@ class Orchestrator:
         Args:
             bayesian_runner: Optional runner for the ``bayesian_stan`` backend
                 (Torsten via cmdstanpy). Wired into the SearchEngine runner
-                map when the lane policy admits ``bayesian_stan`` (discovery
-                / optimization only in v0.6). A classical spec is never
-                auto-dispatched to the Bayesian runner; dispatch is triggered
-                by caller intent (API ``backend=bayesian_stan`` body flag or
-                Gate-1 survivor re-dispatch during LORO-CV).
+                map when the lane policy admits ``bayesian_stan``. A classical
+                spec is never auto-dispatched to the Bayesian runner; dispatch
+                is triggered by caller intent (API ``backend=bayesian_stan``
+                body flag or Gate-1 survivor re-dispatch during LORO-CV).
             frem_runner: Optional FOCE-I-configured ``Nlmixr2Runner`` used
                 for the FREM execution stage. When omitted but the
                 missing-data directive resolves to ``FREM``, the orchestrator
@@ -1563,6 +1562,11 @@ class Orchestrator:
             elif cand_result.backend == "bayesian_stan" and self._bayesian_runner is not None:
                 cand_runner = self._bayesian_runner
 
+            # Used only as an optimizer warm-start seed for
+            # evaluate_loro_cv's per-fold train-only refit — never as a
+            # frozen final value — so reusing the candidate's already-
+            # converged full-data fit here does not reintroduce the
+            # leakage evaluate_loro_cv's step 1 guards against.
             warm_estimates = {
                 name: pe.estimate
                 for name, pe in cand_result.parameter_estimates.items()
@@ -1585,6 +1589,7 @@ class Orchestrator:
                         runner=cand_runner,
                         data_manifest=manifest,
                         data_path=data_path,
+                        df=df,
                         initial_estimates=warm_estimates,
                         seed=self._config.seed,
                         timeout_seconds=self._config.timeout_seconds,
@@ -1596,6 +1601,24 @@ class Orchestrator:
                         "loro_cv_candidate_failed",
                         candidate=cand_result.model_id,
                         exc_info=True,
+                    )
+                    return cand_result.model_id, None
+                except NotImplementedError:
+                    # NodeBackendRunner / BayesianRunner raise bare
+                    # NotImplementedError (not BackendError) for
+                    # fixed_parameter=True — step 2 of evaluate_loro_cv
+                    # needs it and neither backend has a no-refit
+                    # evaluate() path yet (see node_runner.py /
+                    # bayesian_runner.py docstrings). Left uncaught this
+                    # propagates through the TaskGroup below and crashes
+                    # the entire Optimization-lane run for any NODE/
+                    # Bayesian Gate-1 survivor. Skip instead — Gate 2's
+                    # _check_loro_requirement already fails closed when
+                    # a candidate has no LOROMetrics entry.
+                    logger.warning(
+                        "loro_cv_backend_unsupported",
+                        candidate=cand_result.model_id,
+                        backend=cand_result.backend,
                     )
                     return cand_result.model_id, None
 

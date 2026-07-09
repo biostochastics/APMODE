@@ -3,8 +3,7 @@
 
 Enforces the constraint table from PRD §4.2.5:
 - Volumes > 0, rates > 0, sigmas > 0
-- NODE variant requires ``experimental.node`` opt-in (no working backend
-  exists yet; lane-independent)
+- NODE variant requires ``experimental.node`` opt-in before backend/lane checks
 - NODE dim <= constraint_template max dim
 - NODE dim <= lane ceiling
 - NODE not admissible in Submission lane
@@ -82,7 +81,7 @@ _LANE_DIM_CEILING: dict[Lane, int | None] = {
     Lane.OPTIMIZATION: 4,
 }
 
-# v0.7 absorption-form lane admissibility (ADR-0003 D6)
+# Absorption-form lane admissibility (ADR-0003 D6)
 # True = admissible; False = rejected at Gate 2 with actionable error.
 # All forms not enumerated here are admissible in every lane.
 _LANE_ABSORPTION_INADMISSIBLE: dict[Lane, frozenset[str]] = {
@@ -95,9 +94,9 @@ _LANE_ABSORPTION_INADMISSIBLE: dict[Lane, frozenset[str]] = {
 # and inflate state count quadratically in the explicit-chain emitter.
 _ERLANG_MAX_N: int = 7
 
-# SumIG component cap for v0.7 (ADR-0003 D1). Path to k=3 is a validator-only
-# change in a future release.
-_SUMIG_MAX_K_V0_7: int = 2
+# SumIG component cap (ADR-0003 D1). Raising this is a validator-only change
+# once the model contract supports more components.
+_SUMIG_MAX_K: int = 2
 
 
 class ValidationError(BaseModel):
@@ -513,7 +512,7 @@ def _validate_sumig(
 ) -> None:
     """SumIG-specific validation (ADR-0003 D1, D5).
 
-    - k restricted to {1, 2} for v0.7 (validator-only path to k=3 in future)
+    - k restricted to {1, 2}
     - All MT, RD2 strictly positive
     - weight_1 strictly in (0, 1)
     - MT_1 < MT_2 (positive-difference parameterisation; prevents label switching)
@@ -523,21 +522,21 @@ def _validate_sumig(
     """
     span = _span_for(spec, mod)
 
-    # k in {1, 2} for v0.7 (structural; stays inline on the module)
-    if m.k < 1 or m.k > _SUMIG_MAX_K_V0_7:
+    # k in {1, 2} (structural; stays inline on the module)
+    if m.k < 1 or m.k > _SUMIG_MAX_K:
         errors.append(
             ValidationError(
                 module=mod,
                 param=f"{mod}.k",
                 constraint="sumig_k_range",
                 message=(
-                    f"SumIG.k={m.k} out of range; v0.7 supports k ∈ "
-                    f"[1, {_SUMIG_MAX_K_V0_7}]. Path to k=3 is gated behind "
+                    f"SumIG.k={m.k} out of range; supported k ∈ "
+                    f"[1, {_SUMIG_MAX_K}]. Path to k=3 is gated behind "
                     "the sumig_max_k policy knob (see ADR-0003 D1)."
                 ),
                 source_span=span,
                 code=FrmCode.SEM_SUMIG_K_RANGE.value,
-                remediation=f"Set SumIG.k to a value in [1, {_SUMIG_MAX_K_V0_7}].",
+                remediation=f"Set SumIG.k to a value in [1, {_SUMIG_MAX_K}].",
             )
         )
 
@@ -715,10 +714,9 @@ def _validate_observation_module(
 ) -> None:
     """Validate one observation module's numeric constraints.
 
-    Shared between the legacy singular ``observation:`` field and every
-    entry's ``error`` field in a multi-analyte ``observations:`` block
-    (Formular sharpening plan §4 Phase 1, P1.7) so both syntax forms get
-    identical sigma/loq_value positivity checking — see
+    Shared between the singular ``observation:`` field and every entry's
+    ``error`` field in a multi-analyte ``observations:`` block so both syntax
+    forms get identical sigma/loq_value positivity checking — see
     :func:`_validate_observation` / :func:`_validate_observations_multi`.
     """
     if isinstance(m, Proportional):
@@ -808,9 +806,9 @@ def _validate_observations_multi(spec: DSLSpec, errors: list[ValidationError]) -
 _NO_VARIABILITY_PARAMS: frozenset[str] = frozenset({"n"})
 """Structural parameters that cannot have IIV/IOV.
 
-Transit 'n' is estimated via log/exp transform but the nlmixr2/Stan emitters
-do not apply eta or covariate effects to its back-transform. Allowing
-variability on n would produce code that silently ignores the effect.
+Transit 'n' is structural topology, not an estimated parameter. Keep a
+dedicated error so requests for IIV/IOV on n do not collapse into a generic
+"unknown parameter" diagnostic.
 """
 
 
@@ -880,7 +878,22 @@ def _validate_variability(spec: DSLSpec, errors: list[ValidationError]) -> None:
                 )
             for p in item.params:
                 np = normalize_param_name(p)
-                if np not in valid_params:
+                if np in _NO_VARIABILITY_PARAMS:
+                    errors.append(
+                        ValidationError(
+                            module=mod,
+                            param=f"variability[{i}].params",
+                            constraint="no_variability_on_param",
+                            message=(
+                                f"Parameter '{p}' cannot have IIV; "
+                                "it is structural topology, not an estimated parameter"
+                            ),
+                            source_span=item_span,
+                            code=FrmCode.AST_NO_VARIABILITY_ON_PARAM.value,
+                            remediation=f"Remove '{p}' from this IIV block's params list.",
+                        )
+                    )
+                elif np not in valid_params:
                     errors.append(
                         ValidationError(
                             module=mod,
@@ -896,21 +909,6 @@ def _validate_variability(spec: DSLSpec, errors: list[ValidationError]) -> None:
                                 f"Replace '{p}' with one of the structural "
                                 f"parameters: {sorted(valid_params)}."
                             ),
-                        )
-                    )
-                elif np in _NO_VARIABILITY_PARAMS:
-                    errors.append(
-                        ValidationError(
-                            module=mod,
-                            param=f"variability[{i}].params",
-                            constraint="no_variability_on_param",
-                            message=(
-                                f"Parameter '{p}' cannot have IIV; "
-                                f"emitter does not apply eta to its back-transform"
-                            ),
-                            source_span=item_span,
-                            code=FrmCode.AST_NO_VARIABILITY_ON_PARAM.value,
-                            remediation=f"Remove '{p}' from this IIV block's params list.",
                         )
                     )
         elif isinstance(item, IOV):
@@ -930,7 +928,24 @@ def _validate_variability(spec: DSLSpec, errors: list[ValidationError]) -> None:
                 )
             for p in item.params:
                 np = normalize_param_name(p)
-                if np not in valid_params:
+                if np in _NO_VARIABILITY_PARAMS:
+                    # Mirror the IIV check: Transit ``n`` is topology, not a
+                    # parameter with an eta-bearing back-transform.
+                    errors.append(
+                        ValidationError(
+                            module=mod,
+                            param=f"variability[{i}].params",
+                            constraint="no_variability_on_param",
+                            message=(
+                                f"Parameter '{p}' cannot have IOV; "
+                                "it is structural topology, not an estimated parameter"
+                            ),
+                            source_span=item_span,
+                            code=FrmCode.AST_NO_VARIABILITY_ON_PARAM.value,
+                            remediation=f"Remove '{p}' from this IOV block's params list.",
+                        )
+                    )
+                elif np not in valid_params:
                     errors.append(
                         ValidationError(
                             module=mod,
@@ -946,23 +961,6 @@ def _validate_variability(spec: DSLSpec, errors: list[ValidationError]) -> None:
                                 f"Replace '{p}' with one of the structural "
                                 f"parameters: {sorted(valid_params)}."
                             ),
-                        )
-                    )
-                elif np in _NO_VARIABILITY_PARAMS:
-                    # Mirror the IIV check — the nlmixr2 and Stan
-                    # emitters do not apply IOV eta to Transit ``n`` either.
-                    errors.append(
-                        ValidationError(
-                            module=mod,
-                            param=f"variability[{i}].params",
-                            constraint="no_variability_on_param",
-                            message=(
-                                f"Parameter '{p}' cannot have IOV; "
-                                f"emitter does not apply eta to its back-transform"
-                            ),
-                            source_span=item_span,
-                            code=FrmCode.AST_NO_VARIABILITY_ON_PARAM.value,
-                            remediation=f"Remove '{p}' from this IOV block's params list.",
                         )
                     )
 
@@ -1052,30 +1050,27 @@ def _validate_covariates(spec: DSLSpec, errors: list[ValidationError]) -> None:
 def _validate_module_compatibility(spec: DSLSpec, errors: list[ValidationError]) -> None:
     """Validate cross-module compatibility constraints.
 
-    TMDD distribution models emit kel = CL/V in the dynamics, so they
-    require an elimination module that provides CL (LinearElim only).
-    ParallelLinearMM has CL but its MM term is not wired into TMDD dynamics,
-    so allowing it would silently drop Vmax/Km.
+    TMDD distribution models route the selected classical elimination module
+    through the free-drug amount in both emitters. NODE elimination has no
+    TMDD lowering and would otherwise fall through to an undefined CL symbol.
     """
-    if isinstance(spec.distribution, (TMDDCore, TMDDQSS)) and not isinstance(
-        spec.elimination, LinearElim
+    if isinstance(spec.distribution, (TMDDCore, TMDDQSS)) and isinstance(
+        spec.elimination, NODEElimination
     ):
         errors.append(
             ValidationError(
                 module="distribution",
                 param="distribution.type",
-                constraint="tmdd_requires_linear_elim",
+                constraint="tmdd_rejects_node_elim",
                 message=(
-                    f"TMDD distribution ({spec.distribution.type}) requires "
-                    f"Linear elimination (provides CL for kel = CL/V); "
-                    f"got {spec.elimination.type}"
+                    f"TMDD distribution ({spec.distribution.type}) cannot be "
+                    "paired with NODE elimination; TMDD lowering supports "
+                    "classical Linear, MichaelisMenten, ParallelLinearMM, and "
+                    f"TimeVarying elimination, got {spec.elimination.type}"
                 ),
                 source_span=_span_for(spec, "distribution"),
                 code=FrmCode.AST_TMDD_REQUIRES_LINEAR_ELIM.value,
-                remediation=(
-                    "Change elimination to Linear() (with CL set in the initial: block) "
-                    "when using a TMDD distribution module."
-                ),
+                remediation=("Use a classical elimination module when using a TMDD distribution."),
             )
         )
 
@@ -1151,7 +1146,7 @@ def _validate_node_constraints(spec: DSLSpec, lane: Lane, errors: list[Validatio
             )
 
 
-# --- Seven-level validator API (Formular sharpening plan §4 Phase 1, P1.8) ---
+# --- Seven-level validator API ---
 #
 # The functions below are the DATA_BOUND / BACKEND_BOUND / POLICY_BOUND
 # checks consumed by ``apmode.dsl.validation_levels.validate``. They are
@@ -1166,9 +1161,8 @@ def _validate_node_constraints(spec: DSLSpec, lane: Lane, errors: list[Validatio
 def validate_data_bound(spec: DSLSpec, data: pd.DataFrame) -> list[ValidationError]:
     """Data-bound checks: does ``data`` satisfy what the spec declares.
 
-    Conservatively scoped per the P1.8 task brief — existence checks only,
-    tied directly to what the spec's ``observations:``/``covariates:``
-    blocks reference:
+    Scoped to checks that need the actual bound dataframe and are directly
+    implied by the compiled spec:
 
     - A multi-analyte ``observations:`` block (``spec.observations``) needs
       a ``DVID`` column in ``data`` to route rows to each named endpoint.
@@ -1177,12 +1171,12 @@ def validate_data_bound(spec: DSLSpec, data: pd.DataFrame) -> list[ValidationErr
       conventionally upper-case, e.g. ``WT``/``SEX``; see
       ``apmode.data.adapters._RESERVED_COLUMNS``).
 
-    Deliberately does not attempt richer profiling (missingness, per-DVID
-    row counts, sparsity/richness classification) — that is
-    ``apmode.data.profiler``'s job (PRD §4.2.1 Evidence Manifest) and is
-    out of scope for a spec-level validator. A future pass could call the
-    profiler and surface its findings through this same coded channel;
-    tracked as a Phase 2 candidate.
+    - ``SumIG`` absorption needs dose metadata (``EVID``/``AMT`` plus
+      ``NMID`` or ``ID``) and is single-dose-only here.
+
+    Richer profiling (missingness, sparsity/richness classification,
+    covariate balance) belongs to ``apmode.data.profiler``; this validator
+    only emits spec-bound data contract errors.
     """
     errors: list[ValidationError] = []
     columns = set(data.columns)
@@ -1222,6 +1216,57 @@ def validate_data_bound(spec: DSLSpec, data: pd.DataFrame) -> list[ValidationErr
                 )
             )
 
+    if isinstance(spec.absorption, SumIG):
+        required = {"EVID", "AMT"}
+        missing = sorted(required - columns)
+        if missing:
+            errors.append(
+                ValidationError(
+                    module="data",
+                    param="data",
+                    constraint="data_sumig_dose_columns_missing",
+                    message=f"SumIG requires dose columns {sorted(required)}; missing {missing}",
+                    code=FrmCode.DATA_REQUIRED_COLUMN_MISSING.value,
+                    remediation="Bind data with EVID and AMT columns before fitting SumIG.",
+                )
+            )
+        else:
+            subject_col = "NMID" if "NMID" in columns else "ID" if "ID" in columns else None
+            if subject_col is None:
+                errors.append(
+                    ValidationError(
+                        module="data",
+                        param="data.ID",
+                        constraint="data_sumig_subject_column_missing",
+                        message=(
+                            "SumIG single-dose validation requires NMID or ID in the bound dataset"
+                        ),
+                        code=FrmCode.DATA_REQUIRED_COLUMN_MISSING.value,
+                        remediation="Add an NMID or ID subject column to the dataset.",
+                    )
+                )
+            else:
+                dose_rows = data[(data["EVID"].isin([1, 4])) & (data["AMT"] > 0)]
+                dose_counts = dose_rows.groupby(subject_col).size()
+                bad_subjects = dose_counts[dose_counts != 1]
+                if dose_rows.empty or not bad_subjects.empty:
+                    errors.append(
+                        ValidationError(
+                            module="data",
+                            param="data.AMT",
+                            constraint="data_sumig_single_dose",
+                            message=(
+                                "SumIG is single-dose only in this Formular version; "
+                                "each dosed subject must have exactly one positive dose event"
+                            ),
+                            code=FrmCode.SEM_SUMIG_DISPOSITION_FIXED.value,
+                            remediation=(
+                                "Use a single-dose dataset for SumIG or choose a supported "
+                                "multi-dose absorption module."
+                            ),
+                        )
+                    )
+
     return errors
 
 
@@ -1231,10 +1276,9 @@ def validate_backend_bound(spec: DSLSpec, backend: str) -> list[ValidationError]
     Delegates entirely to :func:`apmode.dsl.capabilities.report` (the
     code-derived capability matrix) — this function adds no new capability
     knowledge, it just turns a non-``"supported"`` status for any tag the
-    spec exercises into a coded :class:`ValidationError`. ``"explicitly_unsupported"``,
-    ``"unknown_gap"``, and ``"experimental_no_stable_backend"`` (NODE tags
-    with no working backend anywhere) are all treated as failures here —
-    from "can this backend emit this spec" all three answer no.
+    spec exercises into a coded :class:`ValidationError`. From "can this
+    backend emit this spec", ``"explicitly_unsupported"``, ``"unknown_gap"``,
+    and ``"experimental_no_stable_backend"`` all answer no.
     """
     emitter_names = {e.name for e in registered_emitters()}
     if backend not in emitter_names:
@@ -1279,10 +1323,8 @@ def validate_backend_bound(spec: DSLSpec, backend: str) -> list[ValidationError]
 def validate_policy_bound(spec: DSLSpec, lane: Lane, policy: GatePolicy) -> list[ValidationError]:
     """Policy-bound checks: the spec against a loaded ``GatePolicy``.
 
-    Deliberately minimal first pass (P1.8 task brief explicitly allows an
-    "honest first pass" here rather than deep governance-policy
-    integration): two checks that are cheap, unambiguous, and require only
-    the policy object and the spec/lane already in hand.
+    These checks are cheap, unambiguous, and require only the policy object
+    and the spec/lane already in hand.
 
     - ``policy.lane`` must match the lane validation was requested for —
       catches an operator accidentally loading e.g. ``discovery.json``
@@ -1295,12 +1337,10 @@ def validate_policy_bound(spec: DSLSpec, lane: Lane, policy: GatePolicy) -> list
       Optimization deployment that has locally tightened
       ``gate2.node_eligible=false`` is also caught.
 
-    Deeper policy validation — gate threshold sanity against actual
-    candidate metrics (CWRES, VPC coverage, Gate 3 composite weights,
-    etc.) — needs a fitted candidate result, not just the compiled spec,
-    and is out of scope for a DSL-level validator. Left as a Phase 2 gap;
-    see ``apmode.governance.gates`` for where those checks already run
-    once a candidate exists.
+    Gate-threshold validation against actual candidate metrics (CWRES, VPC
+    coverage, Gate 3 composite weights, etc.) needs a fitted candidate
+    result, not just the compiled spec; see ``apmode.governance.gates`` for
+    those checks.
     """
     errors: list[ValidationError] = []
 

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Integration test — Phase-1 Suite C MLE literature fixtures (plan Task 40).
+"""Integration test — Suite C MLE literature fixtures.
 
 For every fixture id in :data:`PHASE1_MLE_FIXTURE_IDS` the test:
 
@@ -16,8 +16,8 @@ For every fixture id in :data:`PHASE1_MLE_FIXTURE_IDS` the test:
    :file:`benchmarks/datasets/registry.yaml` so a stale fixture
    referencing a deleted dataset card is caught at the test layer.
 
-The full fit + scoring loop lives in plan Task 41 (weekly CI dashboard);
-this test only proves the fixtures are loadable and DSL-compatible.
+The full fit + scoring loop lives in the weekly Suite C dashboard; this test
+only proves the fixtures are loadable and DSL-compatible.
 """
 
 from __future__ import annotations

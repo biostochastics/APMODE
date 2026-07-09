@@ -12,6 +12,7 @@ from apmode.dsl.ast_models import (
     LaggedFirstOrder,
     LinearElim,
     MichaelisMenten,
+    ObservationEndpoint,
     OccasionByStudy,
     OccasionByVisit,
     OneCmt,
@@ -19,6 +20,7 @@ from apmode.dsl.ast_models import (
     SumIG,
     Transit,
     TwoCmt,
+    UnitsDeclaration,
 )
 from apmode.dsl.transforms import (
     AddCovariateLink,
@@ -80,6 +82,35 @@ class TestSwapModule:
         assert new_spec.absorption == spec.absorption
         assert new_spec.distribution == spec.distribution
         assert new_spec.observation == spec.observation
+
+    def test_transform_preserves_sidecar_spec_fields(self) -> None:
+        spec = _base_spec().model_copy(
+            update={
+                "observations": {
+                    "plasma": ObservationEndpoint(
+                        name="plasma",
+                        dvid=1,
+                        prediction="C_central",
+                        error=Proportional(sigma_prop=0.1),
+                    )
+                },
+                "units": UnitsDeclaration(time="h", amount="mg", concentration="mg/L", volume="L"),
+                "source_meta": {"absorption": (3, 5)},
+                "macros_used": ["pkstd.standard_iiv@v1"],
+            }
+        )
+        new_spec = apply_transform(
+            spec,
+            SwapModule(
+                position="elimination",
+                new_module=MichaelisMenten(),
+                initial_overrides={"Vmax": 100.0, "Km": 10.0},
+            ),
+        )
+        assert new_spec.observations == spec.observations
+        assert new_spec.units == spec.units
+        assert new_spec.source_meta == spec.source_meta
+        assert new_spec.macros_used == spec.macros_used
 
 
 class TestAddCovariateLink:

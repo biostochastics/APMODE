@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Tests for the ``python -m apmode.benchmarks.suite_c_phase1_cli`` driver.
 
-Plan Task 41 — exercise the JSON inputs loader, scorecard JSON
-emission, Markdown rendering, and the documented exit codes (2 for
+Exercise the JSON inputs loader, scorecard JSON emission, Markdown rendering,
+and the documented exit codes (2 for
 usage errors, 3 for fixture validation failures).
 """
 
@@ -80,6 +80,48 @@ def test_cli_writes_markdown_summary_when_requested(tmp_path: Path) -> None:
     assert "theophylline_boeckmann_1992" in md
     assert "Fraction beating literature" in md
     assert "80%" in md  # 4/5 beats
+    # inputs without pit_calibration_* still render (dash placeholder,
+    # not a KeyError) — forward/backward compat with older inputs files.
+    assert "—" in md
+
+
+def test_cli_markdown_summary_renders_pit_calibration_when_present(tmp_path: Path) -> None:
+    """PIT/NPDE-lite calibration — previously computed and discarded — now
+    shows up as its own column pair in the Markdown summary."""
+    payload = _five_fixture_inputs()
+    payload["theophylline_boeckmann_1992"]["pit_calibration_apmode"] = {  # type: ignore[index]
+        "p5": 0.06,
+        "p50": 0.49,
+        "p95": 0.94,
+    }
+    payload["theophylline_boeckmann_1992"]["pit_calibration_literature"] = {  # type: ignore[index]
+        "p5": 0.04,
+        "p50": 0.52,
+        "p95": 0.97,
+    }
+    inputs_file = tmp_path / "in.json"
+    inputs_file.write_text(json.dumps(payload))
+    md_file = tmp_path / "scorecard.md"
+    out_file = tmp_path / "scorecard.json"
+
+    rc = main(
+        [
+            "--inputs",
+            str(inputs_file),
+            "--out",
+            str(out_file),
+            "--markdown-summary",
+            str(md_file),
+        ]
+    )
+    assert rc == 0
+
+    md = md_file.read_text()
+    assert "PIT APMODE" in md
+    assert "PIT Literature" in md
+    assert "p50=0.49" in md
+    assert "p50=0.52" in md
+    assert "PIT/NPDE-lite calibration" in md  # explanatory footnote
 
 
 # ---------------------------------------------------------------------------

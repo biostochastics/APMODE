@@ -7,9 +7,9 @@ mechanistic params. Uses Optax for optimization with early stopping.
 Training objective: population negative log-likelihood (pooled).
   theta = MLP weights + mechanistic params (ka, V) + sigma
 
-Phase 2 limitation: performs pooled (naive) population fit. Per-subject
-random effects via Laplace approximation are deferred to Phase 3.
-The model.apply_random_effects() API is available for future RE integration.
+Current limitation: performs pooled population fitting. Per-subject random
+effects via Laplace approximation are not implemented; the
+``model.apply_random_effects()`` API is available for that integration.
 """
 
 from __future__ import annotations

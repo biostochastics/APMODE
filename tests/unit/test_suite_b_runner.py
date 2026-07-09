@@ -351,7 +351,7 @@ class TestWriteResultsAtomic:
             suite="B",
             dataset_id="x",
             skipped=True,
-            skip_reason="NODE backend live wiring is out of v0.6 scope",
+            skip_reason="NODE cases use the neural backend.",
         )
         write_results_atomic(out, {"b1_node": result})
         roundtrip = json.loads(out.read_text())

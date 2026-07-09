@@ -1,19 +1,17 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Benchmark Suite C: Methodology validation vs established literature models.
+"""Benchmark Suite C: methodology validation vs established literature models.
 
-Phase 1 (v0.6 scope) evaluates APMODE against *published, peer-reviewed*
-reference parameterizations on real clinical PK datasets. The primary
-metric is ``fraction-beats-literature-median``:
+APMODE is evaluated against *published, peer-reviewed* reference
+parameterizations on real clinical PK datasets. The primary metric is
+``fraction-beats-literature-median``:
 
     fraction-beats-literature-median >= 60%
 
-Phase 2 (head-to-head vs a blinded human-expert panel) is gated on
-external collaborator coordination and **is not in v0.6 scope**. The
-plan-task rename (plan Task 38) reframed the suite to match the evidence
-this release actually ships: the literature anchor is a fixed baseline;
-the expert panel baseline lands with Phase 2.
+Head-to-head evaluation against a blinded human-expert panel is external
+collaborator work. This module owns the published-literature anchor; expert
+panel baselines are supplied separately when available.
 
-Methodology (Phase 1):
+Methodology:
   1. For each dataset d, load the published literature model fixture.
   2. Score the literature model using the same harness applied to APMODE.
   3. APMODE "wins" on dataset d if NPE_APMODE <= NPE_literature * (1 - delta).
@@ -32,14 +30,14 @@ Secondary outcomes:
   - Wall-clock time-to-model (APMODE measured)
   - Prediction interval calibration (50/80/90/95% PI coverage)
 
-Initial Suite C datasets (Phase 1):
+Suite C datasets:
   C1: Mavoglurant (nlmixr2data) — 222 subjects, oral 2-CMT
   C2: Gentamicin IOV (DDMoRe) — 205 neonates, IOV challenge
   C3: Eleveld Propofol (OpenTCI) — 1033 subjects, IV infusion 3-CMT
 
 Literature baseline strategy:
   - Published models serve as *reference comparators* ("literature anchor")
-  - Phase 2 (future): blinded expert panel working under same time budget
+  - Optional blinded expert panel baselines follow the same scoring harness
 """
 
 from __future__ import annotations
@@ -63,17 +61,15 @@ DEFAULT_SPLIT = SplitStrategy(
 
 WIN_MARGIN_DELTA: float = 0.02  # APMODE must beat literature NPE by >= 2%
 BOOTSTRAP_CI_LEVEL: float = 0.80  # 80% CI for NPE gap
-# Minimum literature comparators for a reliable Phase-1 median. Phase 2's
-# blinded expert panel (post v0.6) reuses this floor as its N_experts.
+# Minimum literature comparators for a reliable median; optional expert-panel
+# baselines reuse this floor as their minimum panel size.
 MIN_LITERATURE_COUNT: int = 3
 # Backwards-compatible alias: some callers still import MIN_EXPERT_COUNT.
-# Scheduled for removal in v0.7 once the Suite C orchestration lands.
 MIN_EXPERT_COUNT: int = MIN_LITERATURE_COUNT
 
 # NOTE on literature_models: Each case currently provides 1 published model
-# as a *reference anchor* (absolute baseline). Phase 2 will add a blinded
-# expert panel (N >= MIN_LITERATURE_COUNT) working under the same time
-# budget — that panel is assembled per evaluation round, not hard-coded.
+# as a *reference anchor* (absolute baseline). Optional blinded expert panels
+# are assembled per evaluation round, not hard-coded into these fixtures.
 # If a panel is unavailable, scoring falls back to comparing AIC/BIC/OFV
 # against the published literature anchor.
 
@@ -218,7 +214,7 @@ ALL_CASES: list[BenchmarkCase] = [
     CASE_C3_PROPOFOL,
 ]
 
-# Phase 3 priority order (mavoglurant first — no access barriers)
+# Preferred execution order (mavoglurant first because it has no access barriers).
 PRIORITY_ORDER: list[str] = [
     "c1_mavoglurant",
     "c2_gentamicin_iov",
@@ -231,7 +227,7 @@ __all__ = [
     "CASE_C2_GENTAMICIN",
     "CASE_C3_PROPOFOL",
     "DEFAULT_SPLIT",
-    "MIN_EXPERT_COUNT",  # deprecated alias, removed in v0.7
+    "MIN_EXPERT_COUNT",  # compatibility alias
     "MIN_LITERATURE_COUNT",
     "PRIORITY_ORDER",
     "WIN_MARGIN_DELTA",

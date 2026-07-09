@@ -118,12 +118,13 @@ def test_transit_has_opaque_transit_function_and_note() -> None:
     assert any("gamma-interpolated" in note for note in system.notes)
 
 
-def test_mixed_first_zero_has_two_depot_odes() -> None:
+def test_mixed_first_zero_has_one_depot_ode() -> None:
     system = build_equations(_base_spec(MixedFirstZero()))
-    assert len(system.odes) == 3  # depot_fo, depot_zo, centr
+    assert len(system.odes) == 2  # depot_fo, centr; zero-order input is event-level
     rendered = render_equations(system)
     assert "depot_fo" in rendered
-    assert "depot_zo" in rendered
+    assert "depot_zo" not in rendered
+    assert any("dur" in note for note in system.notes)
 
 
 def test_erlang_chain_length_matches_n() -> None:
@@ -166,16 +167,16 @@ def test_node_absorption_raises_not_implemented() -> None:
 
 
 # ---------------------------------------------------------------------------
-# TMDD: elimination module is ignored
+# TMDD: elimination module is applied to free-drug amount
 # ---------------------------------------------------------------------------
 
 
-def test_tmdd_core_ignores_elimination_module() -> None:
+def test_tmdd_core_applies_elimination_module() -> None:
     spec = DSLSpec(
         model_id="tmdd_core",
         absorption=FirstOrder(),
         distribution=TMDDCore(),
-        elimination=MichaelisMenten(),  # deliberately incompatible per validator
+        elimination=MichaelisMenten(),
         variability=[],
         observation=Proportional(sigma_prop=0.1),
         initial={
@@ -191,19 +192,19 @@ def test_tmdd_core_ignores_elimination_module() -> None:
     )
     system = build_equations(spec)
     rendered = render_equations(system)
-    assert "Vmax" not in rendered
-    assert "Km" not in rendered
-    assert "kel" in rendered
-    assert any("ignores spec.elimination" in note for note in system.notes)
+    assert "Vmax" in rendered
+    assert "Km" in rendered
+    assert "kel" not in rendered
+    assert any("applies the declared elimination module" in note for note in system.notes)
     assert any("MichaelisMenten" in note for note in system.notes)
 
 
-def test_tmdd_qss_ignores_elimination_module() -> None:
+def test_tmdd_qss_applies_elimination_module() -> None:
     spec = DSLSpec(
         model_id="tmdd_qss",
         absorption=FirstOrder(),
         distribution=TMDDQSS(),
-        elimination=MichaelisMenten(),  # deliberately incompatible per validator
+        elimination=MichaelisMenten(),
         variability=[],
         observation=Proportional(sigma_prop=0.1),
         initial={
@@ -218,11 +219,11 @@ def test_tmdd_qss_ignores_elimination_module() -> None:
     )
     system = build_equations(spec)
     rendered = render_equations(system)
-    assert "Vmax" not in rendered
-    assert "Km" not in rendered
-    assert "kel" in rendered
+    assert "Vmax" in rendered
+    assert "Km" in rendered
+    assert "kel" not in rendered
     assert "Cfree" in rendered
-    assert any("ignores spec.elimination" in note for note in system.notes)
+    assert any("applies the declared elimination module" in note for note in system.notes)
     # Central compartment is Atot/Rtot, never "centr", for TMDD states.
     assert "Atot" in rendered
     assert "Rtot" in rendered

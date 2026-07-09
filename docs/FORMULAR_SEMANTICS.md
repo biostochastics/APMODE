@@ -188,8 +188,8 @@ Read against `src/apmode/dsl/ast_models.py`, `validator.py`, `transforms.py`,
   (`DSLSpec.initial: dict[str, float]`). `DSLSpec.calibration_param_names()` is the
   authoritative list of which `structural_param_names()` entries require an `initial:`
   value — it excludes names that are structural-but-not-calibrated: chain-length
-  integers (`Transit.n`, `Erlang.n` — the latter is set only by the
-  `ConvertTransitToErlang` transform, never estimated) and NODE input-layer weight names
+  integers (`Transit.n`, `Erlang.n`; `Erlang.n` is set only by the
+  `ConvertTransitToErlang` transform) and NODE input-layer weight names
   (`node_abs_w*`/`node_elim_w*` — no DSL primitive gives them an initial value; that is a
   NODE-backend concern). `FrmCode.AST_INITIAL_VALUE_MISSING` /
   `FrmCode.AST_INITIAL_VALUE_UNUSED` catch, respectively, a calibration parameter with no
@@ -589,13 +589,10 @@ grammar/relocation story.
    - nlmixr2: `alag(depot) <- tlag` then `d/dt(depot) <- -ka * depot`; influx `= ka *
      depot`. Under the `linCmt()` (non-ODE) path, `alag(depot) <- tlag` is emitted
      alongside `cp <- linCmt()`.
-   - Stan: falls into the generic "LaggedFirstOrder and any future first-order-like case"
-     branch of `_emit_ode_dynamics` (`dydt[1] = -ka * depot;`, influx `ka * depot`) — the
-     lag itself is applied only in the analytical superposition path
-     (`_emit_analytical_solve`, `t_eff = fmax(t_since_dose - tlag_i, 0)`), not in the raw
-     ODE RHS; TBD whether the ODE (non-analytical) Stan path applies `tlag` at all —
-     **TBD** (needs a dedicated code trace/test to confirm before asserting; not a
-     question the Phase 1 grammar work resolves).
+   - Stan: the ODE RHS remains first-order (`dydt[1] = -ka * depot;`, influx `ka * depot`),
+     and the event loop delays dose application by `tlag_i` before adding dose amount to the
+     depot. The analytical superposition path applies the same lag with
+     `t_eff = fmax(t_since_dose - tlag_i, 0)`.
 5. **Observation contribution.** N/A.
 6. **Backend lowering notes.** See `src/apmode/dsl/capabilities.py` for current support
    status.
@@ -605,32 +602,30 @@ grammar/relocation story.
 9. **Supported transforms.** `SwapModule`; `ToggleLag` (off: `LaggedFirstOrder →
    FirstOrder()`, `ka` carried forward unchanged under the same `initial:` key,
    `tlag` pruned from `initial:` — Formular sharpening plan §4 Phase 1, P1.4).
-10. **Known limitations.** Possible ODE-vs-analytical inconsistency in tlag handling under
-    Stan — TBD, see item 4.
+10. **Known limitations.** Reset+dose (`EVID=4`) events in Stan ODE mode are delayed as a
+    combined event under `LaggedFirstOrder`; plain dose events (`EVID=1`) carry the intended
+    lag semantics.
 
 ### Transit
 
 1. **Synopsis.** Transit-compartment absorption (Savic et al. 2007) — an `n`-compartment
    chain with rate `ktr` feeding a first-order depot with rate `ka`.
-2. **State variables introduced.** `depot` (rxode2's `transit(n, mtt)` intrinsic handles
-   the transit chain's internal states implicitly in nlmixr2; the Stan emitter has no
-   equivalent intrinsic and approximates the transit chain with an explicit expression,
-   see below).
+2. **State variables introduced.** nlmixr2 exposes `depot` (rxode2's `transit(n, mtt)`
+   intrinsic handles the transit chain's internal states implicitly). Stan emits explicit
+   `transit_1..transit_n` states plus a terminal `depot`.
 3. **Parameters.** `n` — **structural**, declared inline on the module
-   (`absorption: Transit(n=5, ktr, ka)`; estimated continuously via log/exp — rxode2
-   gamma interpolation permits non-integer `n`), never in `initial:`. `ktr` (Rate), `ka`
-   (Rate) — both **calibration** values, must have `initial:` entries.
+   (`absorption: Transit(n=5, ktr, ka)`), never estimated and never in `initial:`. `ktr`
+   (Rate), `ka` (Rate) — both **calibration** values, must have `initial:` entries.
 4. **ODE / algebraic contribution.**
    - nlmixr2: `d/dt(depot) <- transit(n, mtt) - ka * depot` where `mtt <- (n + 1) / ktr`
      is the mean transit time fed to rxode2's `transit()` intrinsic.
-   - Stan: no `transit()` intrinsic exists, so `_emit_ode_dynamics` approximates it with
-     `real ktr_eff = (n + 1) / mtt;` and `dydt[1] = ktr_eff * depot * exp(-ktr_eff * t) -
-     ka * depot;` — an explicit approximation of the gamma-chain input, not the same
-     closed-form rxode2 uses. This is a real cross-backend numerical divergence, not
-     merely a documentation gap.
+   - Stan: no `transit()` intrinsic exists, so `_emit_ode_dynamics` emits an explicit
+     integer chain: `dydt[1] = -ktr * transit_1`, middle states
+     `ktr * transit_{i-1} - ktr * transit_i`, terminal depot
+     `dydt[n+1] = ktr * transit_n - ka * depot`, and central influx `ka * depot`.
 5. **Observation contribution.** N/A.
 6. **Backend lowering notes.** Both emitters support `Transit`, but via materially
-   different mathematical approximations (see item 4). See
+   different lowerings (rxode2 intrinsic vs explicit integer chain; see item 4). See
    `src/apmode/dsl/capabilities.py` for current support status.
 7. **Identifiability caveats.** None documented in `validator.py` beyond positivity
    constraints (`n >= 1` int, `ktr > 0`, `ka > 0`).
@@ -645,15 +640,16 @@ grammar/relocation story.
 ### MixedFirstZero
 
 1. **Synopsis.** Mixed first-order + zero-order absorption: fraction `frac` of dose goes
-   through a zero-order (constant-rate) depot, the remainder through a first-order depot.
-2. **State variables introduced.** `depot_fo`, `depot_zo`.
+   through a first-order depot, the remainder enters central as a duration-controlled
+   zero-order input.
+2. **State variables introduced.** `depot_fo`; the zero-order route uses event-level
+   `dur(centr)`/`f(centr)` rather than a synthetic depot.
 3. **Parameters.** `ka` (Rate), `dur` (Time), `frac` (Unitless, unit interval) — all
    three are **calibration** values, declared with no inline value, each requiring an
    `initial:` entry.
 4. **ODE / algebraic contribution.**
-   - nlmixr2: `d/dt(depot_fo) <- -ka * depot_fo`; `dur(depot_zo) <- dur`;
-     `d/dt(depot_zo) <- -depot_zo`; `f(depot_fo) <- frac`; `f(depot_zo) <- 1 - frac`;
-     influx `= ka * depot_fo + depot_zo`.
+   - nlmixr2: `d/dt(depot_fo) <- -ka * depot_fo`; `f(depot_fo) <- frac`;
+     `dur(centr) <- dur`; `f(centr) <- 1 - frac`; influx `= ka * depot_fo`.
    - Stan: **not supported** in ODE mode — `emit_stan` raises `NotImplementedError`
      unconditionally for `MixedFirstZero` (see the `ZeroOrder` entry above; same guard
      clause).
@@ -758,8 +754,9 @@ grammar/relocation story.
      `I(t) = D·F · Σᵢ wᵢ · sqrt(RD2ᵢ / (2π·t³)) · exp(-RD2ᵢ·(t-MTᵢ)² / (2·MTᵢ²·t))` as R
      code (`ig_1`, `ig_2`, `sumig_input`), guarded by a `_t_safe <- ifelse(t > 1e-6, t,
      1e-6)` floor to avoid a `0^(-3/2)` singularity at `t=0` in rxode2's LSODA output-time
-     grid evaluation. Influx to central `= amt * sumig_input` (dose amount times the
-     input density, which integrates to 1 over `(0, ∞)`).
+     grid evaluation. Influx to central `= SUMIG_DOSE * sumig_input`; the nlmixr2 data
+     adapter supplies `SUMIG_DOSE` as a persistent per-subject single-dose scalar because
+     rxode2's reserved `amt` is not available after the event row.
    - Stan: **not supported** — `emit_stan` raises `NotImplementedError` unconditionally
      for `SumIG`. The docstring in `stan_emitter.py` explains the deferral is not a
      simple omission: "Torsten user-defined ODE RHS does not have access to arbitrary
@@ -958,12 +955,10 @@ grammar/relocation story.
 5. **Observation contribution.** N/A.
 6. **Backend lowering notes.** Both emitters. See `src/apmode/dsl/capabilities.py` for
    current support status.
-7. **Identifiability caveats (from `validator.py::_validate_module_compatibility`,
-   real, documented):** TMDD distribution modules (`TMDDCore`, `TMDDQSS`) **require**
-   `LinearElim` as the elimination module — `ParallelLinearMM` "has CL but its MM term is
-   not wired into TMDD dynamics, so allowing it would silently drop Vmax/Km" (verbatim
-   docstring rationale); violation `tmdd_requires_linear_elim` for any other elimination
-   module. All five `TMDDCore` parameters must be `> 0`.
+7. **Identifiability caveats.** TMDD distribution modules apply the selected classical
+   elimination module to free-drug amount in both emitters. `NODEElimination` remains
+   incompatible because no NODE+TMDD lowering exists. All five `TMDDCore` parameters must
+   be `> 0`.
 8. **Lane admissibility.** Not restricted by `_LANE_ABSORPTION_INADMISSIBLE` (that map is
    absorption-axis only); no distribution-axis lane restriction exists in `validator.py`
    today.
@@ -994,19 +989,19 @@ grammar/relocation story.
    `KSS <- KD` (documented approximation, item 3); `Ctot <- Atot/V`; algebraic QSS solve:
    `Cfree <- 0.5*((Ctot - Rtot - KSS) + sqrt((Ctot - Rtot - KSS)^2 + 4*KSS*Ctot))`;
    `Rfree <- Rtot*KSS/(KSS + Cfree)`; `RC <- Ctot - Cfree`;
-   `d/dt(Atot) <- <abs_influx> - kel*Cfree*V - kint*RC*V`;
+   `d/dt(Atot) <- <abs_influx> - elim(Cfree*V) - kint*RC*V`;
    `d/dt(Rtot) <- ksyn - kdeg*Rfree - kint*RC`; initial conditions `Atot(0) <- 0`,
    `Rtot(0) <- R0`; `cp <- Cfree` (note: the observed/predicted concentration is the
    algebraically-derived free concentration, not `Atot/V`). Derived rates: `kdeg <- kint`
-   (approximated equal to `kint`'s initial value), `ksyn <- kdeg * R0`, `kel <- CL/V`
-   (again requires `LinearElim`).
+   (approximated equal to `kint`'s initial value), `ksyn <- kdeg * R0`; classical
+   elimination is applied to free-drug amount.
 5. **Observation contribution.** N/A.
 6. **Backend lowering notes.** Both emitters (Stan's ODE solve path additionally computes
    `Cfree`/`Rtot` per-observation-time inline in `_emit_ode_solve`'s TMDDQSS branch, using
    `y_state`-derived `Ctot_n`/`Rtot_n`). See `src/apmode/dsl/capabilities.py` for current
    support status.
-7. **Identifiability caveats.** Same `tmdd_requires_linear_elim` cross-module check as
-   `TMDDCore` (item 7 there). `KD ≈ koff/kon` is documented in the class docstring as an
+7. **Identifiability caveats.** Same NODE-elimination incompatibility as `TMDDCore`
+   (item 7 there). `KD ≈ koff/kon` is documented in the class docstring as an
    approximation that "differs from KD when kint > 0," i.e. the QSS parameterisation
    trades off exactness against `TMDDCore` for a lower-dimensional, better-behaved
    estimation problem — a real, literature-grounded (Gibiansky 2008) identifiability
@@ -1058,8 +1053,8 @@ grammar/relocation story.
 5. **Observation contribution.** N/A.
 6. **Backend lowering notes.** Both emitters; forces `needs_ode(spec) = True`
    (`_emitter_utils.needs_ode`) — no analytical/linCmt shortcut is possible with
-   saturable elimination. Incompatible with TMDD distributions (see
-   `_validate_module_compatibility`, `tmdd_requires_linear_elim`). See
+   saturable elimination. Compatible with TMDD distributions; the TMDD emitters apply the
+   MM term to free-drug amount. See
    `src/apmode/dsl/capabilities.py` for current support status.
 7. **Identifiability caveats.** None beyond `Vmax > 0`, `Km > 0`. No sparse-data /
    flat-likelihood warning is implemented for MM elimination under limited concentration
@@ -1209,11 +1204,10 @@ grammar/relocation story.
    - `block` structure requires `>= 2` params (`block_min_params` violation otherwise).
    - Every targeted param must resolve to a structural parameter
      (`iiv_param_exists` violation).
-   - `Transit`'s `n` parameter is explicitly **disallowed** from IIV
+   - `Transit`'s `n` topology field is explicitly **disallowed** from IIV
      (`_NO_VARIABILITY_PARAMS = frozenset({"n"})`, `no_variability_on_param` violation) —
-     "Transit `n` is estimated via log/exp transform but the nlmixr2/Stan emitters do not
-     apply eta or covariate effects to its back-transform. Allowing variability on `n`
-     would produce code that silently ignores the effect" (verbatim rationale).
+     `n` is structural topology, not an estimated parameter with an eta-bearing
+     back-transform.
 8. **Lane admissibility.** Not restricted by lane.
 9. **Supported transforms.** `AdjustVariability` (`action: "add" | "remove" |
    "upgrade_to_block"` — `_apply_adjust_variability` targets the *first* `IIV` block
@@ -1796,9 +1790,9 @@ insert-or-replace).
 1. **Synopsis.** `Beta(alpha, beta)` — supported on `[0, 1]`; suited to bioavailability
    `F` or mixing fractions. No current structural parameter is literally named `F`, but
    unit-interval structural params exist today (e.g. `MixedFirstZero.frac`,
-   `ParallelFirstOrder.frac`, `SumIG.weight_1`); a prior on `frac` resolves via
-   `classify_target` to `structural`, which the schema permits `Beta` on — so this family
-   is reachable today for `frac`-like parameters, not merely anticipatory.
+   `ParallelFirstOrder.frac`, `SumIG.weight_1`). The prior schema permits `Beta` only on
+   known unit-interval structural targets (`frac`, `weight_1`), not on positive
+   structural parameters such as `CL` or `V`.
 2. **State variables introduced.** N/A.
 3. **Parameters.** `alpha: float` (`> 0`), `beta: float` (`> 0`).
 4. **ODE / algebraic contribution.** N/A.
@@ -2058,7 +2052,7 @@ differential state), `algebraic` (closed-form / non-differential relations),
 corresponding nlmixr2-emitter function (`_emit_ode_dynamics`,
 `_elimination_rate_expr`, `_emit_tmdd_core_odes`, `_emit_tmdd_qss_odes`), using the
 same compartment names (`depot`, `centr`, `periph`, `periph1`, `periph2`, `E1..En`,
-`depot_fo`/`depot_zo`, `depot_fast`/`depot_slow`, `Atot`, `Rtot`, `R`, `RC`).
+`depot_fo`, `depot_fast`/`depot_slow`, `Atot`, `Rtot`, `R`, `RC`).
 
 **Known limitations / special-case notes**, surfaced here per this document's own
 TBD/known-limitations convention rather than silently omitted:
@@ -2431,18 +2425,17 @@ silently left ambiguous:
   section) — whether Stan's `eta_raw` matrix actually induces a correlated block or
   treats columns independently was not traced through the full covariance-Cholesky path;
   flagged TBD rather than asserted.
-- **`LaggedFirstOrder` under Stan's non-analytical ODE path** — whether `tlag` is applied
-  at all outside the analytical superposition solve was not confirmed by tracing
-  `_emit_ode_dynamics`'s generic fallback branch against a concrete `tlag`-nonzero test
-  case; flagged TBD.
+- **`LaggedFirstOrder` under Stan reset+dose events** — plain dose events are delayed in
+  the ODE path, but reset+dose (`EVID=4`) is applied as one delayed combined event rather
+  than an immediate reset plus delayed dose.
 - **`BetaPrior`/`HistoricalBorrowingPrior` parameterization mismatches against the Stan
   emitter's uniformly-log-scale (structural) / uniformly-natural-scale (covariate)
   parameter declarations** — the `HistoricalBorrowingPrior`-on-`covariate` mismatch was
   confirmed by direct trace (`_emit_model_block`'s covariate-prior call site always
   passes `on_log_scale=False`, and `_emit_historical_borrowing_prior` raises on
-  `on_log_scale=False`); the `BetaPrior`-on-`frac`-like-target question was *not* traced
-  to the same level of certainty and remains flagged as an open question rather than an
-  asserted bug.
+  `on_log_scale=False`). `BetaPrior` is now target-restricted to unit-interval structural
+  targets; unsupported Stan log-scale emission raises rather than silently applying a beta
+  density to a log parameter.
 - **NODE module ODE/algebraic contribution** — this document describes only what the
   nlmixr2/Stan emitters do (raise `NotImplementedError`), not the actual JAX/Diffrax
   hybrid-ODE mathematics in `node_ode.py`, which is out of scope for a Formular-compiler

@@ -21,6 +21,7 @@ from apmode.dsl.priors import (
     MixturePrior,
     NormalPrior,
     PriorSpec,
+    build_prior_spec,
     classify_target,
     default_corr_prior,
     default_covariate_prior,
@@ -192,6 +193,9 @@ class TestValidatePriorFamily:
     def test_structural_accepts_normal(self) -> None:
         assert validate_prior_family("structural", NormalPrior(mu=0, sigma=1)) is None
 
+    def test_structural_accepts_beta_family_for_target_specific_check(self) -> None:
+        assert validate_prior_family("structural", BetaPrior(alpha=2, beta=2)) is None
+
     def test_structural_rejects_halfcauchy(self) -> None:
         err = validate_prior_family("structural", HalfCauchyPrior(scale=1))
         assert err is not None and "HalfCauchy" in err
@@ -224,6 +228,21 @@ class TestValidatePriorFamily:
 class TestValidatePriors:
     def test_empty_list_valid(self) -> None:
         assert validate_priors([], {"CL", "V"}) == []
+
+    def test_beta_prior_allowed_on_unit_interval_structural_target(self) -> None:
+        prior = build_prior_spec(
+            target="frac",
+            family=BetaPrior(alpha=2.0, beta=2.0),
+            structural_params={"frac", "ka", "CL", "V"},
+        )
+        assert validate_priors([prior], {"frac", "ka", "CL", "V"}) == []
+
+    def test_beta_prior_rejected_on_positive_structural_target(self) -> None:
+        err = validate_priors(
+            [PriorSpec(target="CL", family=BetaPrior(alpha=2.0, beta=2.0))],
+            {"CL", "V"},
+        )
+        assert err and "unit-interval structural targets" in err[0]
 
     def test_detects_unknown_target(self) -> None:
         priors = [PriorSpec(target="UNKNOWN", family=NormalPrior(mu=0, sigma=1))]

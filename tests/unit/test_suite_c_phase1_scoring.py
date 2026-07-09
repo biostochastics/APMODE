@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Unit tests for plan Task 41 — Phase-1 Suite C scoring helper.
+"""Unit tests for the Suite C scoring helper.
 
 Pure-Python coverage of the win-rate math + scorecard schema.
-Orchestrator-driven NPE production is plan Task 44; the helper itself
+Orchestrator-driven NPE production lives in the live-fit runner; the helper itself
 must not require R / cmdstan to test.
 """
 
@@ -241,7 +241,7 @@ def test_aggregate_min_fixtures_override() -> None:
 
 
 def test_phase1_roster_dois_returns_one_doi_per_fixture() -> None:
-    """The roster helper resolves every Phase-1 MLE fixture's DOI."""
+    """The roster helper resolves every literature MLE fixture's DOI."""
     dois = phase1_roster_dois()
     assert set(dois.keys()) == set(PHASE1_MLE_FIXTURE_IDS)
     for fid, doi in dois.items():
@@ -252,7 +252,7 @@ def test_phase1_roster_dois_returns_one_doi_per_fixture() -> None:
 
 
 def test_min_fixtures_default_matches_legacy_min_literature_count() -> None:
-    """Phase-1 floor agrees with the legacy ``MIN_LITERATURE_COUNT``.
+    """Suite C floor agrees with the legacy ``MIN_LITERATURE_COUNT``.
 
     Cross-link guard — if either constant drifts the other should
     follow, since they encode the same statistical intuition (a

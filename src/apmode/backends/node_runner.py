@@ -78,13 +78,12 @@ def configure_jax_platform(platform: Literal["cpu", "gpu"]) -> None:
 
 
 def _node_pooled_contract(spec: DSLSpec) -> ScoringContract:
-    """Build the v0.5.0 pooled-NODE scoring contract from a DSLSpec.
+    """Build the pooled-NODE scoring contract from a DSLSpec.
 
-    v0.5.0 NODE runs with pooled NLL (no per-subject random effects).
-    M3 will add Laplace-approximated RE and flip ``re_treatment`` to
-    ``"conditional_ebe"`` with ``nlpd_integrator`` in
-    {``"laplace_diag"``, ``"laplace_blockdiag"``}. Until then the
-    contract is fixed to the pooled form below.
+    NODE runs use pooled NLL with no per-subject random effects, so the
+    contract is fixed to pooled random-effect treatment. A future
+    random-effects implementation must update this contract alongside the
+    trainer behavior.
 
     Float precision is locked to ``float32`` — JAX defaults to float32
     on TPU/GPU and APMODE does not enable x64 on NODE runs.
@@ -103,10 +102,7 @@ def _node_pooled_contract(spec: DSLSpec) -> ScoringContract:
 
 
 class NodeBackendRunner:
-    """BackendRunner implementation for JAX/Diffrax NODE backend.
-
-    Phase 2: in-process JAX execution (no subprocess needed).
-    """
+    """BackendRunner implementation for the in-process JAX/Diffrax NODE backend."""
 
     def __init__(
         self,
@@ -132,15 +128,13 @@ class NodeBackendRunner:
     ) -> None:
         """Draw posterior-predictive simulations for Gate 3 diagnostics.
 
-        Returns ``None`` until NODE Phase 3 random-effects infrastructure
-        (per-subject input-layer RE weights with Laplace-approximate
-        posterior) lands in
-        :mod:`apmode.backends.node_trainer`. The cross-paradigm ranker's
-        uniform-drop rule already treats ``None`` as "backend did not
-        emit sims" and falls back to the CWRES NPE proxy, so the return
-        type here is load-bearing for Gate 3.
+        Returns ``None`` because the current NODE trainer is pooled and does
+        not produce a per-subject random-effects posterior. The
+        cross-paradigm ranker's uniform-drop rule treats ``None`` as "backend
+        did not emit sims" and falls back to the CWRES NPE proxy, so the
+        return type here is load-bearing for Gate 3.
 
-        When implemented, this method must:
+        A future implementation must:
           1. Sample ``n_sims`` ETA vectors from the Laplace-approximate
              posterior on the trained model's input-layer RE weights.
           2. Forward-solve the structural model via
@@ -151,12 +145,12 @@ class NodeBackendRunner:
              build_predictive_diagnostics`.
 
         The runtime stub emits a :class:`UserWarning` so a caller that
-        accidentally wires this in today sees the deferral loudly rather
+        accidentally wires this in sees the unsupported path loudly rather
         than treating the ``None`` return as an expected no-op.
         """
         _ = training_result, subjects, n_sims, seed  # explicit unused
         warnings.warn(
-            "NodeBackendRunner.sample_posterior_predictive is a Phase 3 stub "
+            "NodeBackendRunner.sample_posterior_predictive is not implemented "
             "and returns None. Random-effects infrastructure must land in "
             "node_trainer before this can emit real simulations. Gate 3 "
             "falls back to the CWRES NPE proxy for NODE candidates.",
@@ -189,10 +183,10 @@ class NodeBackendRunner:
             seed: Random seed.
             timeout_seconds: Not enforced for in-process JAX (JAX is non-interruptible).
             data_path: Path to CSV data file.
-            split_manifest: Split assignments (unused in Phase 2 NODE).
+            split_manifest: Split assignments (currently unused by NODE).
             gate3_policy: Accepted for BackendRunner-protocol conformance but
                 currently ignored — NODE posterior-predictive sampling is a
-                Phase 3 stub (see ``sample_posterior_predictive``). Gate 3
+                not implemented (see ``sample_posterior_predictive``). Gate 3
                 falls back to the CWRES NPE proxy for NODE candidates.
             nca_diagnostics: Accepted for protocol conformance. Unused until
                 ``sample_posterior_predictive`` lands.
@@ -203,13 +197,13 @@ class NodeBackendRunner:
         Raises:
             InvalidSpecError: If spec has no NODE modules.
         """
-        # reserved for Phase 3 posterior-predictive path
+        # Reserved for a future posterior-predictive path.
         _ = gate3_policy, nca_diagnostics, test_data_path
         if fixed_parameter:
             msg = (
                 "fixed_parameter=True not yet honoured by NODE runner "
                 "(requires a no-refit evaluate() path in node_trainer — see "
-                "PRD \u00a78 Phase 3 / loro_cv.py). Refusing to evaluate to "
+                "loro_cv.py). Refusing to evaluate to "
                 "avoid silent train/test leakage."
             )
             raise NotImplementedError(msg)
@@ -218,7 +212,7 @@ class NodeBackendRunner:
         # another task, so silently accepting timeout_seconds would be
         # a lie. Surface it explicitly — orchestrators that need a hard
         # wall-clock bound on NODE fits must spawn a subprocess
-        # watchdog (tracked in PRD §8 Phase 3 / loro_cv.py).
+        # watchdog.
         if timeout_seconds is not None:
             msg = (
                 f"NodeBackendRunner cannot enforce timeout_seconds={timeout_seconds}: "
@@ -320,8 +314,8 @@ class NodeBackendRunner:
             # (3) calling ``build_predictive_diagnostics(subject_sims,
             # policy=gate3_policy)`` and ``diagnostics.model_copy(update=...)``
             # with the four returned fields.  Random-effects infrastructure
-            # is Phase 3 scope per ``node_trainer.py`` module docstring.
-            # Until then Gate 3 falls back to the CWRES NPE proxy for NODE
+            # is not implemented by ``node_trainer.py``. Until then Gate 3
+            # falls back to the CWRES NPE proxy for NODE
             # candidates (see ``apmode.governance.ranking._resolve_npe``).
             diagnostics=DiagnosticBundle(
                 gof=GOFMetrics(

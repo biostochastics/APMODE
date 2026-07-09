@@ -1,13 +1,10 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Structured FRM-{TAXON}-NNN error code registry for the Formular DSL.
 
-Formular sharpening plan §4 Phase 0 (P0.2): the validator previously
-returned free-text messages with no stable identifier, which makes it
-impossible for a caller (CLI, agentic transform loop, CI) to pattern-match
-on "which check fired" without parsing prose. This module is the single
-source of truth for the code taxonomy; :mod:`apmode.dsl.validator`
-attaches one :class:`FrmCode` value to every :class:`ValidationError` it
-constructs.
+This module is the single source of truth for the code taxonomy;
+:mod:`apmode.dsl.validator` attaches one :class:`FrmCode` value to every
+:class:`ValidationError` it constructs so callers can identify checks
+without parsing prose.
 
 Taxonomy — ``FRM-{TAXON}-NNN``:
 
@@ -41,22 +38,20 @@ Taxonomy — ``FRM-{TAXON}-NNN``:
   (a pandas ``DataFrame``), not just the spec — e.g. a multi-analyte
   ``observations:`` block with no ``DVID`` column in the data, or a
   ``covariates:`` entry naming a column absent from the data. Emitted by
-  :func:`apmode.dsl.validator.validate_data_bound` (P1.8).
+  :func:`apmode.dsl.validator.validate_data_bound`.
 - ``POLICY`` — policy-bound checks: the spec against a loaded
   :class:`apmode.governance.policy.GatePolicy` — lane/policy mismatch,
   or a NODE module present while the policy's ``gate2.node_eligible`` is
-  false. Emitted by :func:`apmode.dsl.validator.validate_policy_bound`
-  (P1.8). Deliberately minimal first pass — see that function's
-  docstring for what deeper policy validation (candidate-metric gate
-  threshold checks) is out of scope here and left as a Phase 2 gap.
+  false. Emitted by :func:`apmode.dsl.validator.validate_policy_bound`.
+  Candidate-metric gate threshold checks run later in the governance layer,
+  once a fitted candidate exists.
 - ``PRIOR`` — prior-related validation. See "Why FRM-PRIOR now has one
   emitted code" below.
 
-Why FRM-PRIOR now has one emitted code
----------------------------------------
-Through Formular sharpening plan §4 Phase 0 (P0.2), :mod:`apmode.dsl.priors`
-enforced evidence-quality / justification checks (FDA Gate 2, PRD §4.3.1)
-purely via exceptions and ``list[str]`` prose — ``PriorSpec``'s
+Prior validation boundary
+-------------------------
+:mod:`apmode.dsl.priors` still enforces evidence-quality / justification
+checks via exceptions and ``list[str]`` prose — ``PriorSpec``'s
 ``model_validator`` raises ``pydantic.ValidationError`` for missing
 justification/``historical_refs`` on informative sources, and
 ``validate_prior_justification`` / ``validate_priors`` return ``list[str]``
@@ -71,9 +66,8 @@ emit coded :class:`~apmode.dsl.validator.ValidationError` objects remains
 out of scope (an API-breaking change across that call graph). ``priors.py``
 itself is unchanged by this section and stays exception/string-based.
 
-Formular sharpening plan §4 Phase 1 (P1.5) adds a genuinely new call site
-with no legacy string-matching callers to break: the ``priors:`` grammar
-block lets a human author Bayesian priors directly in Formular text, and
+The ``priors:`` grammar block lets a human author Bayesian priors directly
+in Formular text, and
 :func:`apmode.dsl.grammar.compile_dsl` lowers each entry through
 :func:`apmode.dsl.priors.build_prior_spec` — the same canonical factory the
 agentic ``SetPrior`` transform uses. A ``build_prior_spec`` failure at this
@@ -122,10 +116,10 @@ class FrmCode(StrEnum):
     """An integer count (Transit/Erlang ``n``, NODE ``dim``) must be >= 1."""
 
     SEM_ERLANG_MAX_N = "FRM-SEM-005"
-    """Erlang chain length ``n`` exceeds the v0.7 cap of 7 (ADR-0003 D2)."""
+    """Erlang chain length ``n`` exceeds the supported cap of 7."""
 
     SEM_SUMIG_K_RANGE = "FRM-SEM-006"
-    """SumIG ``k`` is outside the v0.7-supported range [1, 2] (ADR-0003 D1)."""
+    """SumIG ``k`` is outside the supported range [1, 2]."""
 
     SEM_SUMIG_MT_ORDERING = "FRM-SEM-007"
     """SumIG requires ``MT_1 < MT_2`` (label-switching guard, ADR-0003 D1)."""
@@ -192,9 +186,8 @@ class FrmCode(StrEnum):
 
     AST_MACRO_UNKNOWN = "FRM-AST-016"
     """A top-level ``use <name>`` statement names a macro not present in
-    ``apmode.dsl.macros.MACRO_REGISTRY`` (Formular sharpening plan §4 Phase 2,
-    P2.1 -- only a small vetted standard-library registry is supported;
-    there are no user-defined macros in this phase)."""
+    ``apmode.dsl.macros.MACRO_REGISTRY``. Only the vetted standard-library
+    registry is supported; user-defined macros are not loaded."""
 
     AST_MACRO_DUPLICATE_USE = "FRM-AST-017"
     """The same macro name appears in more than one ``use`` statement within
@@ -214,7 +207,7 @@ class FrmCode(StrEnum):
     """Absorption form (e.g. SumIG) is not admissible in the requested lane (ADR-0003 D6)."""
 
     LANE_NODE_EXPERIMENTAL_GATE = "FRM-LANE-004"
-    """NODE variant used without ``experimental.node`` opt-in (no working backend exists)."""
+    """NODE variant used without the required ``experimental.node`` opt-in."""
 
     # -- FRM-BE: backend-capability errors -----------------------------------
     BE_UNKNOWN_BACKEND = "FRM-BE-001"
@@ -223,9 +216,8 @@ class FrmCode(StrEnum):
 
     BE_CAPABILITY_UNSUPPORTED = "FRM-BE-002"
     """The spec exercises a :class:`~apmode.dsl.capabilities.CapabilityTag`
-    the named backend does not report ``"supported"`` for (explicitly
-    unsupported, an unknown coverage gap, or NODE's no-stable-backend
-    status) — see :func:`apmode.dsl.capabilities.report`."""
+    the named backend does not report ``"supported"`` for; see
+    :func:`apmode.dsl.capabilities.report`."""
 
     # -- FRM-DATA: data-bound errors ------------------------------------------
     DATA_REQUIRED_COLUMN_MISSING = "FRM-DATA-001"

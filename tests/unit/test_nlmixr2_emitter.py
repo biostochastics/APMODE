@@ -3,7 +3,7 @@
 
 DSL AST → R code strings for nlmixr2. Tests verify that the emitter produces
 valid nlmixr2 model code for all classical module combinations.
-NODE modules are Phase 2 and should raise NotImplementedError.
+NODE modules should raise NotImplementedError.
 """
 
 import pytest
@@ -410,7 +410,7 @@ class TestTMDDEmission:
 
 
 class TestNODENotSupported:
-    """NODE modules are Phase 2 — nlmixr2 emitter should refuse them."""
+    """nlmixr2 emitter should refuse NODE modules."""
 
     def test_node_absorption_raises(self) -> None:
         spec = _make_spec(

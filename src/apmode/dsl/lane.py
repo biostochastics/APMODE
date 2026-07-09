@@ -21,12 +21,11 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-# Bump this when lane *membership* or *semantics* change -- e.g. a fourth
-# lane is added, an existing lane's admissible-backend set changes in a
-# way that alters downstream dispatch, or a lane is renamed. Governance-
-# relevant: a future policy-schema check may cross-reference this against
-# ``policies/<lane>.json`` to detect stale policy files after a taxonomy
-# change. Not yet consumed by any validator as of v0.6.1-rc1.
+# Bump this when lane *membership* or *semantics* change -- e.g. a fourth lane
+# is added, an existing lane's admissible-backend set changes in a way that
+# alters downstream dispatch, or a lane is renamed. It is a taxonomy marker for
+# policy/schema compatibility checks; the enum below remains the runtime source
+# of truth for accepted lane values.
 LANE_TAXONOMY_VERSION = "1.0.0"
 
 

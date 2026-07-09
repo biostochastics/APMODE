@@ -27,6 +27,8 @@ from apmode.dsl.ast_models import (
     LinearElim,
     OneCmt,
     Proportional,
+    SumIG,
+    Transit,
 )
 
 
@@ -615,3 +617,324 @@ async def test_agentic_lineage_defaults_when_no_rationale_supplied(tmp_path: Pat
     assert entry["rationale"] is None
     assert entry["expected_diagnostic_effect"] == []
     assert entry["applied_at"] is not None
+
+
+# ---------------------------------------------------------------------------
+# End-to-end coverage for the four v0.7 DSL transforms exposed to the agent
+# same-day as the compiler support landed (commit 124978c). Interface
+# parity (available_transforms / _TRANSFORM_DESCRIPTIONS / parser registry)
+# was already covered by test_agentic_prompts.py and
+# test_transform_parser.py; these tests drive each transform through the
+# actual AgenticRunner.run() loop to a compiled/fit candidate, closing the
+# gap the xen consensus review flagged: the loop, not just the interface,
+# must accept these transforms.
+# ---------------------------------------------------------------------------
+
+
+def _transit_spec_with_initial() -> DSLSpec:
+    """Transit absorption — precondition for convert_transit_to_erlang."""
+    return DSLSpec(
+        model_id="transit-base",
+        absorption=Transit(n=3),
+        distribution=OneCmt(),
+        elimination=LinearElim(),
+        variability=[IIV(params=["CL", "V"], structure="diagonal")],
+        observation=Proportional(sigma_prop=0.1),
+        initial={"CL": 2.0, "V": 30.0, "ktr": 2.0, "ka": 1.0},
+    )
+
+
+def _sumig_spec_with_initial() -> DSLSpec:
+    """SumIG absorption — precondition for set_sumig_components.
+
+    SumIG additionally requires disposition (CL/V/Q) to be fixed
+    externally (ADR-0003 D5 — absorption and disposition are not jointly
+    identifiable from oral-only data), certified here via
+    ``source="fixed_external"`` priors rather than a manifest-level
+    ``disposition_fixed`` flag.
+    """
+    from apmode.dsl.priors import LogNormalPrior, PriorSpec
+
+    return DSLSpec(
+        model_id="sumig-base",
+        absorption=SumIG(k=2),
+        distribution=OneCmt(),
+        elimination=LinearElim(),
+        variability=[IIV(params=["CL", "V"], structure="diagonal")],
+        observation=Proportional(sigma_prop=0.1),
+        priors=[
+            PriorSpec(
+                target="CL",
+                family=LogNormalPrior(mu=0.7, sigma=0.1),
+                source="fixed_external",
+            ),
+            PriorSpec(
+                target="V",
+                family=LogNormalPrior(mu=3.4, sigma=0.1),
+                source="fixed_external",
+            ),
+        ],
+        initial={
+            "CL": 2.0,
+            "V": 30.0,
+            "MT_1": 0.5,
+            "MT_2": 2.0,
+            "RD2_1": 0.3,
+            "RD2_2": 0.3,
+            "weight_1": 0.6,
+        },
+    )
+
+
+def _transform_response(transforms: list[dict[str, object]], *, reasoning: str) -> LLMResponse:
+    return LLMResponse(
+        raw_text=json.dumps({"transforms": transforms, "reasoning": reasoning}),
+        model_id="test",
+        model_version="v1",
+        input_tokens=100,
+        output_tokens=50,
+        cost_usd=0.001,
+        wall_time_seconds=1.0,
+        request_payload_hash="1" * 64,
+    )
+
+
+@pytest.mark.asyncio
+async def test_convert_transit_to_erlang_applies_end_to_end(tmp_path: Path) -> None:
+    """convert_transit_to_erlang flows through the agent loop to a fit candidate."""
+    inner_runner = AsyncMock()
+    inner_runner.run = AsyncMock(return_value=_mock_backend_result())
+
+    responses = [
+        _transform_response(
+            [{"type": "convert_transit_to_erlang", "n": 3}],
+            reasoning="Erlang gives a cleaner ODE form than transit(n, mtt).",
+        ),
+        _stop_response(),
+    ]
+    mock_llm = AsyncMock()
+    mock_llm.complete = AsyncMock(side_effect=responses)
+
+    trace_dir = tmp_path / "agentic_trace"
+    config = AgenticConfig(max_iterations=25, lane="discovery")
+    runner = AgenticRunner(
+        inner_runner=inner_runner,
+        llm_client=mock_llm,
+        config=config,
+        trace_dir=trace_dir,
+    )
+
+    result = await runner.run(
+        spec=_transit_spec_with_initial(),
+        data_manifest=_mock_data_manifest(),
+        initial_estimates={"CL": 2.0, "V": 30.0, "ktr": 2.0, "ka": 1.0},
+        seed=42,
+    )
+
+    assert result is not None
+    entries = json.loads((trace_dir / "agentic_lineage.json").read_text())["entries"]
+    assert len(entries) == 1
+    assert entries[0]["transform"].startswith("type='convert_transit_to_erlang'") or (
+        "convert_transit_to_erlang" in entries[0]["transform"]
+    )
+    # The fit was actually driven on the post-transform spec, not the base one.
+    fitted_spec = inner_runner.run.call_args_list[-1].kwargs["spec"]
+    assert fitted_spec.absorption.type == "Erlang"
+
+
+@pytest.mark.asyncio
+async def test_add_parallel_route_applies_end_to_end(tmp_path: Path) -> None:
+    """add_parallel_route flows through the agent loop to a fit candidate."""
+    inner_runner = AsyncMock()
+    inner_runner.run = AsyncMock(return_value=_mock_backend_result())
+
+    responses = [
+        _transform_response(
+            [{"type": "add_parallel_route", "ka2": 0.3, "frac": 0.4}],
+            reasoning="Data show a fast/slow absorption split.",
+        ),
+        _stop_response(),
+    ]
+    mock_llm = AsyncMock()
+    mock_llm.complete = AsyncMock(side_effect=responses)
+
+    trace_dir = tmp_path / "agentic_trace"
+    config = AgenticConfig(max_iterations=25, lane="discovery")
+    runner = AgenticRunner(
+        inner_runner=inner_runner,
+        llm_client=mock_llm,
+        config=config,
+        trace_dir=trace_dir,
+    )
+
+    result = await runner.run(
+        spec=_base_spec_with_initial(),
+        data_manifest=_mock_data_manifest(),
+        initial_estimates={"CL": 2.0, "V": 30.0, "ka": 1.0},
+        seed=42,
+    )
+
+    assert result is not None
+    entries = json.loads((trace_dir / "agentic_lineage.json").read_text())["entries"]
+    assert len(entries) == 1
+    fitted_spec = inner_runner.run.call_args_list[-1].kwargs["spec"]
+    assert fitted_spec.absorption.type == "ParallelFirstOrder"
+    assert fitted_spec.initial["ka2"] == pytest.approx(0.3)
+    assert fitted_spec.initial["frac"] == pytest.approx(0.4)
+
+
+@pytest.mark.asyncio
+async def test_set_sumig_components_applies_end_to_end(tmp_path: Path) -> None:
+    """set_sumig_components flows through the agent loop to a fit candidate."""
+    inner_runner = AsyncMock()
+    inner_runner.run = AsyncMock(return_value=_mock_backend_result())
+
+    responses = [
+        _transform_response(
+            [
+                {
+                    "type": "set_sumig_components",
+                    "MT_1": 0.4,
+                    "MT_2": 2.5,
+                    "RD2_1": 0.25,
+                    "RD2_2": 0.35,
+                    "weight_1": 0.55,
+                }
+            ],
+            reasoning="Refine SumIG component timing from VPC diagnostics.",
+        ),
+        _stop_response(),
+    ]
+    mock_llm = AsyncMock()
+    mock_llm.complete = AsyncMock(side_effect=responses)
+
+    trace_dir = tmp_path / "agentic_trace"
+    config = AgenticConfig(max_iterations=25, lane="discovery")
+    runner = AgenticRunner(
+        inner_runner=inner_runner,
+        llm_client=mock_llm,
+        config=config,
+        trace_dir=trace_dir,
+    )
+
+    result = await runner.run(
+        spec=_sumig_spec_with_initial(),
+        data_manifest=_mock_data_manifest(),
+        initial_estimates={"CL": 2.0, "V": 30.0},
+        seed=42,
+    )
+
+    assert result is not None
+    entries = json.loads((trace_dir / "agentic_lineage.json").read_text())["entries"]
+    assert len(entries) == 1
+    fitted_spec = inner_runner.run.call_args_list[-1].kwargs["spec"]
+    assert fitted_spec.initial["MT_1"] == pytest.approx(0.4)
+    assert fitted_spec.initial["MT_2"] == pytest.approx(2.5)
+
+
+@pytest.mark.asyncio
+async def test_set_prior_applies_end_to_end(tmp_path: Path) -> None:
+    """set_prior flows through the agent loop to a fit candidate."""
+    inner_runner = AsyncMock()
+    inner_runner.run = AsyncMock(return_value=_mock_backend_result())
+
+    responses = [
+        _transform_response(
+            [
+                {
+                    "type": "set_prior",
+                    "target": "CL",
+                    "family": {"type": "LogNormal", "mu": 0.7, "sigma": 0.3},
+                    "source": "weakly_informative",
+                }
+            ],
+            reasoning="Weakly-informative LogNormal prior on CL for the Bayesian path.",
+        ),
+        _stop_response(),
+    ]
+    mock_llm = AsyncMock()
+    mock_llm.complete = AsyncMock(side_effect=responses)
+
+    trace_dir = tmp_path / "agentic_trace"
+    config = AgenticConfig(max_iterations=25, lane="discovery")
+    runner = AgenticRunner(
+        inner_runner=inner_runner,
+        llm_client=mock_llm,
+        config=config,
+        trace_dir=trace_dir,
+    )
+
+    result = await runner.run(
+        spec=_base_spec_with_initial(),
+        data_manifest=_mock_data_manifest(),
+        initial_estimates={"CL": 2.0, "V": 30.0, "ka": 1.0},
+        seed=42,
+    )
+
+    assert result is not None
+    entries = json.loads((trace_dir / "agentic_lineage.json").read_text())["entries"]
+    assert len(entries) == 1
+    fitted_spec = inner_runner.run.call_args_list[-1].kwargs["spec"]
+    assert any(p.target == "CL" for p in fitted_spec.priors)
+
+
+@pytest.mark.asyncio
+async def test_compound_multi_transform_proposal_applies_atomically(tmp_path: Path) -> None:
+    """A single iteration proposing two independent transforms applies both.
+
+    PRD §4.2.6 frames compound proposals (multiple transforms per
+    iteration) as the agent's value-add over a one-transform-at-a-time
+    search. ``set_prior`` and ``convert_transit_to_erlang`` are mutually
+    independent (neither's precondition depends on the other), so both
+    should land in the same iteration's lineage and the fitted spec
+    should reflect both changes together.
+    """
+    inner_runner = AsyncMock()
+    inner_runner.run = AsyncMock(return_value=_mock_backend_result())
+
+    responses = [
+        _transform_response(
+            [
+                {
+                    "type": "set_prior",
+                    "target": "CL",
+                    "family": {"type": "LogNormal", "mu": 0.7, "sigma": 0.3},
+                },
+                {"type": "convert_transit_to_erlang", "n": 3},
+            ],
+            reasoning="Combine a CL prior with the transit->erlang simplification.",
+        ),
+        _stop_response(),
+    ]
+    mock_llm = AsyncMock()
+    mock_llm.complete = AsyncMock(side_effect=responses)
+
+    trace_dir = tmp_path / "agentic_trace"
+    config = AgenticConfig(max_iterations=25, lane="discovery")
+    runner = AgenticRunner(
+        inner_runner=inner_runner,
+        llm_client=mock_llm,
+        config=config,
+        trace_dir=trace_dir,
+    )
+
+    result = await runner.run(
+        spec=_transit_spec_with_initial(),
+        data_manifest=_mock_data_manifest(),
+        initial_estimates={"CL": 2.0, "V": 30.0, "ktr": 2.0, "ka": 1.0},
+        seed=42,
+    )
+
+    assert result is not None
+    entries = json.loads((trace_dir / "agentic_lineage.json").read_text())["entries"]
+    # Both transforms from the one compound proposal were staged and
+    # committed together (all-or-nothing gated by the post-transform
+    # validate_dsl check — see agentic_runner.py's staged_lineage comment).
+    assert len(entries) == 2
+    transform_types = [e["transform"] for e in entries]
+    assert any("set_prior" in t for t in transform_types)
+    assert any("convert_transit_to_erlang" in t for t in transform_types)
+
+    fitted_spec = inner_runner.run.call_args_list[-1].kwargs["spec"]
+    assert fitted_spec.absorption.type == "Erlang"
+    assert any(p.target == "CL" for p in fitted_spec.priors)

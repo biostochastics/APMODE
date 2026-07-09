@@ -128,8 +128,8 @@ Erlang) and `k` (SumIG) are structural and stay inline with their values.
 | First-order | `FirstOrder(ka)` | `ka`: absorption rate (h⁻¹) |
 | Zero-order | `ZeroOrder(dur)` | `dur`: infusion duration (h) |
 | Lagged first-order | `LaggedFirstOrder(ka, tlag)` | `ka`, `tlag` (h) |
-| Transit | `Transit(n=4, ktr, ka)` | `n` structural (≥1); `ktr` (h⁻¹), `ka` calibrated |
-| Mixed | `MixedFirstZero(ka, dur, frac)` | `frac ∈ (0, 1)` |
+| Transit | `Transit(n=4, ktr, ka)` | `n` structural topology (≥1); `ktr` (h⁻¹), `ka` calibrated |
+| Mixed | `MixedFirstZero(ka, dur, frac)` | `ka`, `dur`; `frac ∈ (0, 1)` is first-order fraction |
 | Erlang (v0.7) | `Erlang(n=3, ktr)` | integer `n` (1..7) structural; chain with no terminal `ka`; `ktr` calibrated |
 | Parallel first-order (v0.7) | `ParallelFirstOrder(ka1, ka2, frac)` | two depots; `frac ∈ (0, 1)` |
 | SumIG (v0.7) | `SumIG(k=2, MT_1, MT_2, RD2_1, RD2_2, weight_1)` | `k` structural; closed-form IG sum; `MT_1 < MT_2`; Discovery+Optimization only |

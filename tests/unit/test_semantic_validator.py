@@ -638,7 +638,7 @@ class TestTMDDEliminationCompatibility:
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
         assert not any(e.constraint == "tmdd_requires_linear_elim" for e in errors)
 
-    def test_tmdd_core_with_mm_elim_rejected(self) -> None:
+    def test_tmdd_core_with_mm_elim_valid(self) -> None:
         from apmode.dsl.ast_models import TMDDCore
 
         spec = _make_spec(
@@ -657,9 +657,10 @@ class TestTMDDEliminationCompatibility:
             },
         )
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
-        assert any(e.constraint == "tmdd_requires_linear_elim" for e in errors)
+        assert not any(e.constraint == "tmdd_requires_linear_elim" for e in errors)
+        assert not any(e.constraint == "tmdd_rejects_node_elim" for e in errors)
 
-    def test_tmdd_qss_with_mm_elim_rejected(self) -> None:
+    def test_tmdd_qss_with_mm_elim_valid(self) -> None:
         from apmode.dsl.ast_models import TMDDQSS
 
         spec = _make_spec(
@@ -677,9 +678,10 @@ class TestTMDDEliminationCompatibility:
             },
         )
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
-        assert any(e.constraint == "tmdd_requires_linear_elim" for e in errors)
+        assert not any(e.constraint == "tmdd_requires_linear_elim" for e in errors)
+        assert not any(e.constraint == "tmdd_rejects_node_elim" for e in errors)
 
-    def test_tmdd_qss_with_parallel_mm_rejected(self) -> None:
+    def test_tmdd_qss_with_parallel_mm_valid(self) -> None:
         from apmode.dsl.ast_models import TMDDQSS
 
         spec = _make_spec(
@@ -698,7 +700,8 @@ class TestTMDDEliminationCompatibility:
             },
         )
         errors = validate_dsl(spec, lane=Lane.SUBMISSION)
-        assert any(e.constraint == "tmdd_requires_linear_elim" for e in errors)
+        assert not any(e.constraint == "tmdd_requires_linear_elim" for e in errors)
+        assert not any(e.constraint == "tmdd_rejects_node_elim" for e in errors)
 
 
 class TestDuplicateIIVParams:

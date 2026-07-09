@@ -17,10 +17,10 @@ Public API:
 - :class:`RoCrateExportOptions` — export knobs (profile, severity,
   reportable-candidate selection, PROV-AGENT opt-in).
 - :class:`RoCrateProfile` — the three WRROC v0.5 profile URIs as an
-  enum; ``PROVENANCE`` is the default (and the only one v0.6 conforms
-  to declaratively — others are inherited per the profile hierarchy).
-- :class:`ReportableSelection` — forward-compat enum for v0.7's
-  Discovery-lane tiering. v0.6 always behaves like ``ALL``.
+  enum; ``PROVENANCE`` is the default, with the other profiles inherited
+  per the profile hierarchy.
+- :class:`ReportableSelection` — candidate-selection policy for RO-Crate
+  projection (all evaluated, Gate-2 pass, or top-k).
 - :class:`BundleNotSealedError` — raised when a caller tries to export
   from a bundle that lacks the ``_COMPLETE`` sentinel.
 - :func:`import_crate` — round-trip a crate back to a bundle directory

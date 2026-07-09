@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Unit tests for plan Task 44 — Phase-1 Suite C live-fit runner.
+"""Unit tests for the Suite C live-fit runner.
 
 The R subprocess is mocked at the ``Nlmixr2Runner.run`` boundary so
 these tests cover the orchestration (split fan-out, NPE aggregation,
@@ -36,16 +36,34 @@ from apmode.bundle.models import (
     GOFMetrics,
     IdentifiabilityFlags,
     ParameterEstimate,
+    PITCalibrationSummary,
 )
 
 
-def _make_backend_result(npe: float | None, *, model_id: str = "fake_candidate") -> BackendResult:
+def _default_pit_calibration() -> PITCalibrationSummary:
+    """A well-calibrated PIT summary — good enough for tests that don't target PIT itself."""
+    return PITCalibrationSummary(
+        probability_levels=[0.05, 0.50, 0.95],
+        calibration={"p5": 0.05, "p50": 0.50, "p95": 0.95},
+        n_observations=10,
+        n_subjects=2,
+        aggregation="subject_robust",
+    )
+
+
+def _make_backend_result(
+    npe: float | None,
+    *,
+    model_id: str = "fake_candidate",
+    pit_calibration: PITCalibrationSummary | None = None,
+) -> BackendResult:
     """Minimal BackendResult carrying an NPE score, mirroring suite_b.make_b3_result.
 
-    The runner only reads ``diagnostics.npe_score``; the surrounding
-    fields exist purely so the Pydantic model validates. Stub each
-    required field to its smallest valid form so the test stays focused
-    on the NPE-aggregation contract.
+    The runner only reads ``diagnostics.npe_score`` and (as of the PIT/
+    NPDE-lite reporting wire) ``diagnostics.pit_calibration``; the
+    surrounding fields exist purely so the Pydantic model validates.
+    Stub each required field to its smallest valid form so the test
+    stays focused on the NPE-aggregation contract.
     """
     return BackendResult(
         model_id=model_id,
@@ -71,6 +89,7 @@ def _make_backend_result(npe: float | None, *, model_id: str = "fake_candidate")
             identifiability=IdentifiabilityFlags(profile_likelihood_ci={}, ill_conditioned=False),
             blq=BLQHandling(method="none", n_blq=0, blq_fraction=0.0),
             npe_score=npe,
+            pit_calibration=pit_calibration or _default_pit_calibration(),
         ),
         wall_time_seconds=0.1,
         backend_versions={"nlmixr2": "test"},
@@ -183,6 +202,8 @@ def test_write_inputs_atomic_emits_scorer_compatible_shape(tmp_path: Path) -> No
             npe_literature_per_fold=(1.0, 1.01, 0.99, 1.0, 1.02),
             n_subjects=12,
             n_folds=5,
+            pit_calibration_apmode={"p5": 0.06, "p50": 0.49, "p95": 0.94},
+            pit_calibration_literature={"p5": 0.04, "p50": 0.52, "p95": 0.97},
         )
     }
     out = tmp_path / "phase1_npe_inputs.json"
@@ -198,6 +219,10 @@ def test_write_inputs_atomic_emits_scorer_compatible_shape(tmp_path: Path) -> No
     # downstream FixtureScore validator enforces.
     assert len(entry["npe_apmode_per_fold"]) == entry["n_folds"]
     assert len(entry["npe_literature_per_fold"]) == entry["n_folds"]
+    # PIT/NPDE-lite calibration is reported alongside NPE (previously
+    # computed by build_predictive_diagnostics and silently discarded).
+    assert entry["pit_calibration_apmode"] == {"p5": 0.06, "p50": 0.49, "p95": 0.94}
+    assert entry["pit_calibration_literature"] == {"p5": 0.04, "p50": 0.52, "p95": 0.97}
     # No leftover .tmp file on success.
     assert not list(tmp_path.glob("*.tmp"))
 
@@ -215,6 +240,8 @@ def test_write_inputs_atomic_round_trips_through_scorer_cli(tmp_path: Path) -> N
             npe_literature_per_fold=(1.0,) * 5,
             n_subjects=32,
             n_folds=5,
+            pit_calibration_apmode={"p5": 0.05, "p50": 0.50, "p95": 0.95},
+            pit_calibration_literature={"p5": 0.05, "p50": 0.50, "p95": 0.95},
         ),
         "mavoglurant_wendling_2015": FixturePhase1Inputs(
             fixture_id="mavoglurant_wendling_2015",
@@ -224,6 +251,8 @@ def test_write_inputs_atomic_round_trips_through_scorer_cli(tmp_path: Path) -> N
             npe_literature_per_fold=(1.0,) * 5,
             n_subjects=14,
             n_folds=5,
+            pit_calibration_apmode={"p5": 0.05, "p50": 0.50, "p95": 0.95},
+            pit_calibration_literature={"p5": 0.05, "p50": 0.50, "p95": 0.95},
         ),
     }
     out = tmp_path / "phase1_npe_inputs.json"
@@ -234,6 +263,8 @@ def test_write_inputs_atomic_round_trips_through_scorer_cli(tmp_path: Path) -> N
     warf = loaded["warfarin_funaki_2018"]
     assert warf["npe_apmode"] == pytest.approx(0.90)
     assert warf["npe_apmode_per_fold"] == (0.88, 0.91, 0.90, 0.92, 0.89)
+    assert warf["pit_calibration_apmode"] == {"p5": 0.05, "p50": 0.50, "p95": 0.95}
+    assert warf["pit_calibration_literature"] == {"p5": 0.05, "p50": 0.50, "p95": 0.95}
 
 
 # ---------------------------------------------------------------------------
@@ -348,6 +379,78 @@ def test_run_fixture_aggregates_per_fold_npe(
             f"seed {seed_value} should appear in exactly 2 calls "
             f"(apmode + literature within one fold), got {seeds.count(seed_value)}"
         )
+
+
+def test_run_fixture_reports_median_pit_calibration_across_folds(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    synthetic_pk_csv: Path,
+) -> None:
+    """PIT/NPDE-lite calibration (previously computed and discarded) is
+    now median-aggregated across folds and returned on FixturePhase1Inputs,
+    independently for the APMODE and literature sides.
+    """
+    apmode_pit_by_fold = [
+        {"p5": 0.03, "p50": 0.40, "p95": 0.90},
+        {"p5": 0.05, "p50": 0.50, "p95": 0.95},
+        {"p5": 0.07, "p50": 0.60, "p95": 0.99},
+    ]
+    literature_pit_by_fold = [
+        {"p5": 0.10, "p50": 0.55, "p95": 0.85},
+        {"p5": 0.12, "p50": 0.58, "p95": 0.88},
+        {"p5": 0.14, "p50": 0.61, "p95": 0.91},
+    ]
+
+    def _pit(d: dict[str, float]) -> PITCalibrationSummary:
+        return PITCalibrationSummary(
+            probability_levels=[0.05, 0.50, 0.95],
+            calibration=d,
+            n_observations=10,
+            n_subjects=2,
+            aggregation="subject_robust",
+        )
+
+    interleaved = [
+        _make_backend_result(0.95, pit_calibration=_pit(apmode_pit_by_fold[0])),
+        _make_backend_result(1.00, pit_calibration=_pit(literature_pit_by_fold[0])),
+        _make_backend_result(0.95, pit_calibration=_pit(apmode_pit_by_fold[1])),
+        _make_backend_result(1.00, pit_calibration=_pit(literature_pit_by_fold[1])),
+        _make_backend_result(0.95, pit_calibration=_pit(apmode_pit_by_fold[2])),
+        _make_backend_result(1.00, pit_calibration=_pit(literature_pit_by_fold[2])),
+    ]
+    fake_runner = AsyncMock()
+    fake_runner.run = AsyncMock(side_effect=interleaved)
+
+    monkeypatch.setattr(
+        "apmode.benchmarks.suite_c_phase1_runner.load_fixture_by_id",
+        lambda _fid: cast("LiteratureFixture", _StubFixture("nlmixr2data_theophylline")),
+    )
+    monkeypatch.setattr(
+        "apmode.benchmarks.suite_c_phase1_runner.load_dsl_spec",
+        lambda _fix: object(),
+    )
+    monkeypatch.setattr(
+        "apmode.benchmarks.suite_c_phase1_runner.resolve_dataset_csv",
+        lambda _fix, *, cache_dir, overrides: synthetic_pk_csv,
+    )
+    monkeypatch.setattr(
+        "apmode.benchmarks.suite_c_phase1_runner._translate_reference_params",
+        lambda _fix: {"CL": 2.83, "V": 32.0, "ka": 1.5},
+    )
+
+    result = asyncio.run(
+        run_fixture(
+            "theophylline_boeckmann_1992",
+            runner=fake_runner,  # type: ignore[arg-type]
+            cache_dir=tmp_path / "cache",
+            work_dir=tmp_path / "work",
+            n_folds=3,
+            n_sims=100,
+        )
+    )
+
+    assert result.pit_calibration_apmode == {"p5": 0.05, "p50": 0.50, "p95": 0.95}
+    assert result.pit_calibration_literature == {"p5": 0.12, "p50": 0.58, "p95": 0.88}
 
 
 def test_run_fixture_surfaces_missing_npe_loudly(
@@ -485,6 +588,99 @@ def test_run_fixture_drives_honest_mode_calls(
     # Train/test CSV paths in the kwargs match the on-disk fold layout.
     for call, fold_dir in zip(apmode_calls, fold_dirs, strict=True):
         assert call.kwargs["test_data_path"] == next(fold_dir.glob("*_test.csv"))
+
+
+def test_run_fixture_apmode_side_never_seeded_from_literature_reference_params(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    synthetic_pk_csv: Path,
+    fake_backend_result_factory: object,
+) -> None:
+    """Anti-circularity regression test.
+
+    Suite C's "methodology drift" comparison (APMODE's free fit vs. the
+    literature's fixed-THETA fit) is only meaningful if the APMODE side's
+    initial estimates are genuinely blind to the literature anchor for
+    that fixture — otherwise the pipeline could silently hand its own
+    "independent" NCA estimate the fixture's answer key, and every
+    fraction-beats-literature-median number downstream would be inflated
+    by construction rather than by real methodology improvement.
+
+    Pins two invariants:
+      1. ``NCAEstimator`` (``run_fixture``'s per-fold APMODE-side estimator,
+         imported lazily inside the loop) is never constructed with
+         ``fallback_estimates`` equal to the literature's translated
+         ``reference_params`` — that would route the paper's own values
+         into the estimator through its "dataset_card" fallback channel.
+      2. The ``initial_estimates`` actually passed to the APMODE-side
+         ``runner.run`` call differ from the literature's reference
+         params for every fold.
+    """
+    make_result = fake_backend_result_factory  # callable factory
+    fake_runner = AsyncMock()
+    fake_runner.run = AsyncMock(side_effect=[make_result(0.95) for _ in range(10)])
+
+    literature_reference = {"CL": 2.83, "V": 32.0, "ka": 1.5}
+
+    monkeypatch.setattr(
+        "apmode.benchmarks.suite_c_phase1_runner.load_fixture_by_id",
+        lambda _fid: cast("LiteratureFixture", _StubFixture("nlmixr2data_theophylline")),
+    )
+    monkeypatch.setattr(
+        "apmode.benchmarks.suite_c_phase1_runner.load_dsl_spec",
+        lambda _fix: object(),
+    )
+    monkeypatch.setattr(
+        "apmode.benchmarks.suite_c_phase1_runner.resolve_dataset_csv",
+        lambda _fix, *, cache_dir, overrides: synthetic_pk_csv,
+    )
+    monkeypatch.setattr(
+        "apmode.benchmarks.suite_c_phase1_runner._translate_reference_params",
+        lambda _fix: dict(literature_reference),
+    )
+
+    from apmode.data.initial_estimates import NCAEstimator as _RealNCAEstimator
+
+    captured_fallback_estimates: list[dict[str, float] | None] = []
+
+    class _SpyNCAEstimator(_RealNCAEstimator):  # type: ignore[misc]
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            captured_fallback_estimates.append(
+                cast("dict[str, float] | None", kwargs.get("fallback_estimates"))
+            )
+            super().__init__(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr("apmode.data.initial_estimates.NCAEstimator", _SpyNCAEstimator)
+
+    asyncio.run(
+        run_fixture(
+            "theophylline_boeckmann_1992",
+            runner=fake_runner,  # type: ignore[arg-type]
+            cache_dir=tmp_path / "cache",
+            work_dir=tmp_path / "work",
+            n_folds=5,
+            n_sims=100,
+        )
+    )
+
+    # Invariant 1: no dataset_card-style fallback seeded from the anchor.
+    assert len(captured_fallback_estimates) == 5, (
+        "expected NCAEstimator to be constructed once per fold (5 folds)"
+    )
+    for fallback in captured_fallback_estimates:
+        assert fallback is None or fallback != literature_reference, (
+            "NCAEstimator must not be seeded with the literature fixture's "
+            "own reference_params as a fallback prior — that would let the "
+            "answer key leak into the 'independent' APMODE-side estimate"
+        )
+
+    # Invariant 2: the APMODE-side fit's initial_estimates differ from the
+    # literature anchor for every fold (comparing against itself would be
+    # a trivial, not a genuine, methodology-drift check).
+    apmode_calls = fake_runner.run.call_args_list[0::2]
+    assert len(apmode_calls) == 5
+    for call in apmode_calls:
+        assert call.args[2] != literature_reference
 
 
 def test_main_returns_usage_error_on_unknown_fixture() -> None:

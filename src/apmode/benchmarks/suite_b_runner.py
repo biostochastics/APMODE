@@ -13,8 +13,8 @@ this module composes the existing pieces into a single producer of
   3. Build a default DSLSpec from the case's ``ExpectedStructure``
      (minimum-viable: 1- or 2-cmt + first-order ka + linear elim, sized
      to the expected ``n_compartments``). Cases that need NODE
-     elimination/absorption (B1-B3) are skipped — the NODE backend live
-     wiring is out of v0.6 scope.
+     elimination/absorption (B1-B3) are skipped because this runner scores
+     nlmixr2-compatible artifacts.
   4. Build a per-fit plan via :func:`_build_run_plan` and run each entry
      through :class:`Nlmixr2Runner.run`. Two mutually exclusive shapes:
 
@@ -111,7 +111,8 @@ _DATASET_TO_REGISTRY_KEY: dict[str, str] = {
     "nlmixr2data_bolus_1cptmm": "Bolus_1CPTMM",
 }
 
-# Cases skipped at runtime — NODE backend live wiring is out of v0.6 scope.
+# Cases skipped at runtime because Suite B classical scoring expects an
+# nlmixr2-compatible model artifact, while NODE cases use the neural backend.
 _NODE_BACKED_CASES = {"b1_node_absorption", "b2_node_elimination_sparse"}
 
 _EXIT_OK: int = 0
@@ -455,8 +456,7 @@ async def run_case(
     """Drive one Suite B case through perturb → multi-seed fit → score.
 
     Skips B1-B3 NODE-backed cases with a clear ``skipped=True`` signal
-    so the CI dashboard surfaces the gap rather than silently omitting
-    them.
+    because this runner scores nlmixr2-compatible artifacts.
     """
     if case.case_id in _NODE_BACKED_CASES:
         return SuiteBCaseResult(
@@ -464,7 +464,10 @@ async def run_case(
             suite=case.suite,
             dataset_id=case.dataset_id,
             skipped=True,
-            skip_reason="NODE backend live wiring is out of v0.6 scope",
+            skip_reason=(
+                "Suite B live-fit runner scores nlmixr2-compatible artifacts; "
+                "NODE cases use the neural backend."
+            ),
         )
 
     case_dir = work_dir / case.case_id

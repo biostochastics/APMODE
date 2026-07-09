@@ -148,7 +148,7 @@ _DIMENSION_DEPENDENCIES: dict[Dimension, tuple[str, ...]] = {
 # Per the task brief: exactly this role table, no more. Parameters with no
 # entry here (Q/Q2/Q3, TMDD's R0/kon/koff/kint/KD, SumIG/ParallelFirstOrder
 # component params, structural n/k/dim/decay_fn, NODE weights, ...) are
-# reported as "unchecked" -- Phase 2 candidates, not silently guessed at.
+# reported as "unchecked", not silently guessed at.
 _ROLE_DIMENSIONS: dict[str, Dimension] = {
     "CL": CLEARANCE,
     "V": VOLUME,

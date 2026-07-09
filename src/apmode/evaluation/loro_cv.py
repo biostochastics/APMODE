@@ -5,12 +5,31 @@ Leave-one-regimen-out cross-validation for predictive performance evaluation.
 Each fold holds out one regimen group, trains on the rest, and evaluates
 predictions on the held-out group.
 
-Two evaluation modes:
-  - fixed_parameter (default): Use candidate's fitted parameters to predict
-    held-out data without re-estimation (fast, per Vongjarudech, Khandokar,
-    Hsu & Karlsson, "Evaluation of Cross-Validation in Pharmacometrics Model
-    Selection," PAGE 33 (2025) Abstr 11736).
-  - refit: Re-estimate on train fold then predict test fold (strict CV).
+Each fold is evaluated in two steps so that no information about the
+held-out regimen group ever informs the parameters used to score it:
+
+  1. **Per-fold refit** (``fixed_parameter=False``): the candidate is
+     re-estimated from scratch on a CSV containing *only* the fold's train
+     subjects. ``initial_estimates`` (the run's NCA-derived warm start) only
+     seeds the optimizer — the likelihood driving convergence is computed
+     exclusively from train-fold data, so the fold-specific structural
+     estimates this step produces cannot be informed by the held-out group.
+  2. **Frozen posthoc evaluation** (``fixed_parameter=True``): THETA/OMEGA/
+     SIGMA are frozen at step 1's fold-specific estimates and posthoc ETAs
+     are fit across the full dataset (train and test), exactly as the
+     ``BackendRunner.run`` ``fixed_parameter`` contract specifies. Because
+     posthoc/empirical-Bayes ETA estimation is inherently per-subject, this
+     step does not reintroduce leakage as long as the frozen values
+     themselves are leak-free — which step 1 now guarantees.
+
+Earlier versions of this module skipped step 1 and froze parameters taken
+directly from ``candidate_result`` (the Gate-1 survivor's *full-data* fit,
+which by construction already saw every regimen group, including whichever
+one a given fold holds out). That let the held-out group's own data
+influence the "fixed" values being evaluated against it, silently turning
+the extrapolation check into a goodness-of-fit check. Step 1 above is the
+fix — it costs one extra backend call per fold, which is the standard price
+of leak-free k-fold CV.
 
 Metrics aggregated across folds:
   - Pooled NPDE (approximated via CWRES on test fold): mean ~0, variance ~1
@@ -24,7 +43,9 @@ Metrics aggregated across folds:
 from __future__ import annotations
 
 import asyncio
+import tempfile
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -33,7 +54,7 @@ import structlog
 from apmode.bundle.models import LOROCVResult, LOROFoldResult, LOROMetrics
 
 if TYPE_CHECKING:
-    from pathlib import Path
+    import pandas as pd
 
     from apmode.backends.protocol import BackendRunner
     from apmode.bundle.models import (
@@ -55,6 +76,7 @@ async def evaluate_loro_cv(
     runner: BackendRunner,
     data_manifest: DataManifest,
     data_path: Path,
+    df: pd.DataFrame,
     initial_estimates: dict[str, float],
     seed: int,
     timeout_seconds: int = 600,
@@ -64,20 +86,31 @@ async def evaluate_loro_cv(
 ) -> LOROCVResult:
     """Run LORO-CV for a single candidate across all folds.
 
-    Default mode (fixed_parameter): For each fold, evaluate the candidate's
-    fitted parameters on the held-out test subjects. No re-estimation.
-    This measures "does this model extrapolate to new regimens?"
+    For each fold, refits the candidate on train-only data (see module
+    docstring step 1), then freezes those fold-specific parameters and
+    evaluates posthoc ETAs across the full dataset (step 2). This measures
+    "does this model extrapolate to new regimens?" without letting the
+    held-out regimen's own data inform the values it is scored against.
 
     Args:
         candidate_spec: DSLSpec for the candidate model.
         candidate_result: BackendResult from full-data fit (Gate 1 survivor).
+            Used only for its ``model_id`` — never as a source of frozen
+            parameter values (see module docstring).
         folds: List of SplitManifest from loro_cv_splits().
         runner: BackendRunner for executing fits.
         data_manifest: Data manifest for the run.
-        data_path: Path to the data CSV.
-        initial_estimates: Structural parameter estimates (warm-start).
+        data_path: Path to the full data CSV (used for step 2's
+            frozen/posthoc pass, which needs every subject).
+        df: The full dataset already loaded in memory (the orchestrator
+            has this on hand already), used to carve out each fold's
+            train-only CSV for step 1 without re-reading ``data_path``.
+        initial_estimates: Structural parameter estimates. Used only as an
+            optimizer warm-start seed for step 1's train-only refit —
+            never as a frozen value — so it may legitimately be derived
+            from the full dataset (e.g. NCA) without reintroducing leakage.
         seed: Random seed for reproducibility.
-        timeout_seconds: Per-fold timeout.
+        timeout_seconds: Per-fold, per-step timeout.
 
     Returns:
         LOROCVResult with per-fold results and aggregated metrics.
@@ -86,77 +119,95 @@ async def evaluate_loro_cv(
     fold_results: list[LOROFoldResult] = []
     regimen_groups: list[str] = []
 
-    # Extract fitted structural parameter estimates for warm-start
-    warm_estimates = {
-        name: pe.estimate
-        for name, pe in candidate_result.parameter_estimates.items()
-        if pe.category == "structural"
-    }
-    if not warm_estimates:
-        warm_estimates = initial_estimates
+    with tempfile.TemporaryDirectory(prefix="apmode_loro_") as tmp_dir_str:
+        tmp_dir = Path(tmp_dir_str)
 
-    for fold_idx, fold_manifest in enumerate(folds):
-        test_subjects = {a.subject_id for a in fold_manifest.assignments if a.fold == "test"}
-        train_subjects = {a.subject_id for a in fold_manifest.assignments if a.fold == "train"}
+        for fold_idx, fold_manifest in enumerate(folds):
+            test_subjects = {a.subject_id for a in fold_manifest.assignments if a.fold == "test"}
+            train_subjects = {a.subject_id for a in fold_manifest.assignments if a.fold == "train"}
 
-        # Use actual regimen group name for auditability
-        if regimen_labels is not None and fold_idx < len(regimen_labels):
-            regimen_label = regimen_labels[fold_idx]
-        else:
-            regimen_label = f"fold_{fold_idx}"
-        regimen_groups.append(regimen_label)
+            # Use actual regimen group name for auditability
+            if regimen_labels is not None and fold_idx < len(regimen_labels):
+                regimen_label = regimen_labels[fold_idx]
+            else:
+                regimen_label = f"fold_{fold_idx}"
+            regimen_groups.append(regimen_label)
 
-        logger.info(
-            "loro_fold_start",
-            fold=fold_idx + 1,
-            total_folds=len(folds),
-            n_train=len(train_subjects),
-            n_test=len(test_subjects),
-        )
-
-        try:
-            fold_result_backend = await runner.run(
-                spec=candidate_spec,
-                data_manifest=data_manifest,
-                initial_estimates=warm_estimates,
-                seed=seed + fold_idx,
-                timeout_seconds=timeout_seconds,
-                data_path=data_path,
-                split_manifest=fold_manifest.model_dump(),
-                gate3_policy=gate3_policy,
-                nca_diagnostics=nca_diagnostics,
-                # Evaluate likelihood at full-data estimates; no refit.
-                # Without this flag the runner could re-fit on the train
-                # fold with warm_estimates as starting values, leaking
-                # test-fold subjects into the final parameter values.
-                fixed_parameter=True,
+            logger.info(
+                "loro_fold_start",
+                fold=fold_idx + 1,
+                total_folds=len(folds),
+                n_train=len(train_subjects),
+                n_test=len(test_subjects),
             )
 
-            fold_result = _extract_fold_metrics(
-                fold_idx,
-                regimen_label,
-                fold_result_backend,
-                len(train_subjects),
-                len(test_subjects),
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.warning(
-                "loro_fold_failed",
-                fold=fold_idx,
-                candidate=candidate_spec.model_id,
-                exc_info=True,
-            )
-            fold_result = LOROFoldResult(
-                fold_index=fold_idx,
-                regimen_group=regimen_label,
-                n_train_subjects=len(train_subjects),
-                n_test_subjects=len(test_subjects),
-                converged=False,
-            )
+            train_csv = tmp_dir / f"fold{fold_idx:02d}_train.csv"
+            train_df = df[df["NMID"].astype(str).isin(train_subjects)]
+            train_df.to_csv(train_csv, index=False)
 
-        fold_results.append(fold_result)
+            try:
+                # Step 1: leak-free per-fold refit on train-only data. No
+                # split_manifest / gate3_policy needed — this call exists
+                # only to obtain fold-specific structural estimates.
+                fold_refit = await runner.run(
+                    spec=candidate_spec,
+                    data_manifest=data_manifest,
+                    initial_estimates=initial_estimates,
+                    seed=seed + fold_idx,
+                    timeout_seconds=timeout_seconds,
+                    data_path=train_csv,
+                    fixed_parameter=False,
+                )
+                fold_warm_estimates = {
+                    name: pe.estimate
+                    for name, pe in fold_refit.parameter_estimates.items()
+                    if pe.category == "structural"
+                }
+                if not fold_warm_estimates:
+                    fold_warm_estimates = initial_estimates
+
+                # Step 2: freeze THETA/OMEGA/SIGMA at the fold-specific
+                # (leak-free) estimates and fit posthoc ETAs across the
+                # full dataset so split_gof can partition residuals by
+                # train/test fold.
+                fold_result_backend = await runner.run(
+                    spec=candidate_spec,
+                    data_manifest=data_manifest,
+                    initial_estimates=fold_warm_estimates,
+                    seed=seed + fold_idx,
+                    timeout_seconds=timeout_seconds,
+                    data_path=data_path,
+                    split_manifest=fold_manifest.model_dump(),
+                    gate3_policy=gate3_policy,
+                    nca_diagnostics=nca_diagnostics,
+                    fixed_parameter=True,
+                )
+
+                fold_result = _extract_fold_metrics(
+                    fold_idx,
+                    regimen_label,
+                    fold_result_backend,
+                    len(train_subjects),
+                    len(test_subjects),
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning(
+                    "loro_fold_failed",
+                    fold=fold_idx,
+                    candidate=candidate_spec.model_id,
+                    exc_info=True,
+                )
+                fold_result = LOROFoldResult(
+                    fold_index=fold_idx,
+                    regimen_group=regimen_label,
+                    n_train_subjects=len(train_subjects),
+                    n_test_subjects=len(test_subjects),
+                    converged=False,
+                )
+
+            fold_results.append(fold_result)
 
     metrics = _aggregate_loro_metrics(fold_results)
     wall_time = time.monotonic() - start_time
