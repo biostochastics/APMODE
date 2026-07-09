@@ -1,13 +1,18 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Tests for Benchmark Suite A scenario definitions (PRD §5)."""
 
+import math
+from pathlib import Path
+
 import pytest
 
 from apmode.backends.protocol import Lane
+from apmode.benchmarks.scoring import score_eta_recovery
 from apmode.benchmarks.suite_a import (
     A8_COVARIATE_MODEL_NOTES,
     ALL_SCENARIOS,
     REFERENCE_PARAMS,
+    load_reference_eta,
     scenario_a1,
     scenario_a2,
     scenario_a3,
@@ -19,6 +24,8 @@ from apmode.benchmarks.suite_a import (
 )
 from apmode.dsl.nlmixr2_emitter import emit_nlmixr2
 from apmode.dsl.validator import validate_dsl
+
+SUITE_A_DIR = Path(__file__).resolve().parents[2] / "benchmarks" / "suite_a"
 
 # Classical scenarios (no NODE modules) — can be validated for submission lane
 # and compiled to R code.
@@ -185,3 +192,47 @@ class TestSuiteASpecific:
             assert ref == struct, (
                 f"Scenario {name}: reference params {ref} != structural params {struct}"
             )
+
+
+class TestLoadReferenceEta:
+    """``load_reference_eta`` parses ``*_eta.csv`` ground truth into the
+    ``{subject_id: {param: value}}`` shape ``score_eta_recovery`` expects
+    (Task 6: proof-of-chain, since no live Suite A fit-and-score driver
+    exists yet to wire this into)."""
+
+    def test_parses_a1_eta_csv(self) -> None:
+        eta_path = SUITE_A_DIR / "a1_1cmt_oral_linear_eta.csv"
+        assert eta_path.exists(), f"fixture missing: {eta_path}"
+
+        true_eta = load_reference_eta(eta_path)
+
+        # Header is "NMID","eta.ka","eta.V","eta.CL" -> prefix stripped,
+        # subject ids stringified.
+        assert "1" in true_eta
+        assert set(true_eta["1"].keys()) == {"ka", "V", "CL"}
+        assert true_eta["1"]["ka"] == pytest.approx(0.126267259035449)
+        assert true_eta["1"]["V"] == pytest.approx(0.0831826677346906)
+        assert true_eta["1"]["CL"] == pytest.approx(0.213646205307045)
+
+    def test_chains_into_score_eta_recovery(self) -> None:
+        """End-to-end: ground-truth CSV -> loader -> score_eta_recovery
+        produces a finite, sane per-parameter RMSE dict."""
+        eta_path = SUITE_A_DIR / "a1_1cmt_oral_linear_eta.csv"
+        true_eta = load_reference_eta(eta_path)
+
+        # Hand-built "fitted" etas: reuse a couple of true subjects with a
+        # small perturbation plus one unmatched subject id (exercises the
+        # missing-subject-is-excluded-not-penalized path already covered
+        # unit-wise in test_benchmark_scoring.py).
+        fitted_eta = {
+            subject_id: {param: value + 0.01 for param, value in params.items()}
+            for subject_id, params in list(true_eta.items())[:5]
+        }
+        fitted_eta["does-not-exist-in-truth"] = {"ka": 0.0, "V": 0.0, "CL": 0.0}
+
+        result = score_eta_recovery(true_eta, fitted_eta)
+
+        assert set(result.keys()) == {"ka", "V", "CL"}
+        for param_name, rmse in result.items():
+            assert math.isfinite(rmse), f"{param_name} RMSE should be finite"
+            assert rmse == pytest.approx(0.01, abs=1e-6)

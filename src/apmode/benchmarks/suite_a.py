@@ -17,6 +17,9 @@ Scenarios:
 
 from __future__ import annotations
 
+import csv
+from pathlib import Path
+
 from apmode.dsl.ast_models import (
     IIV,
     TMDDQSS,
@@ -245,3 +248,40 @@ ALL_SCENARIOS = [
     ("A7", scenario_a7),
     ("A8", scenario_a8),
 ]
+
+
+def load_reference_eta(eta_csv_path: Path) -> dict[str, dict[str, float]]:
+    """Parse a Suite A ``*_eta.csv`` ground-truth file into the
+    ``{subject_id: {param_name: value}}`` shape :func:`score_eta_recovery`
+    (``apmode.benchmarks.scoring``) expects.
+
+    The simulator (``benchmarks/suite_a/simulate_all.R``) writes one row per
+    subject with an ``NMID`` column plus one ``eta.<PARAM>`` column per
+    random effect (e.g. ``"NMID","eta.ka","eta.V","eta.CL"``). The
+    ``"eta."`` prefix is stripped and the subject id is cast to ``str`` to
+    match the naming convention ``r/harness.R``'s ``per_subject_eta``
+    extraction settled on (see the comment above that block) — both sides
+    key by stringified subject id and bare parameter name (``CL``, not
+    ``eta.CL``), so the two dicts line up without any translation layer at
+    the ``score_eta_recovery`` call site.
+
+    Args:
+        eta_csv_path: Path to a ``<stem>[_repNN]_eta.csv`` file as produced
+            by ``scenario_dataset_paths(..., include_eta=True)``.
+
+    Returns:
+        ``{subject_id: {param_name: value}}``, e.g.
+        ``{"1": {"ka": 0.126, "V": 0.083, "CL": 0.214}}``.
+    """
+    eta_csv_path = Path(eta_csv_path)
+    result: dict[str, dict[str, float]] = {}
+    with eta_csv_path.open(newline="", encoding="utf-8") as fh:
+        reader = csv.DictReader(fh)
+        if reader.fieldnames is None:
+            return result
+        id_col = "NMID" if "NMID" in reader.fieldnames else reader.fieldnames[0]
+        eta_cols = [c for c in reader.fieldnames if c.startswith("eta.")]
+        for row in reader:
+            subject_id = str(row[id_col])
+            result[subject_id] = {col[len("eta.") :]: float(row[col]) for col in eta_cols}
+    return result
