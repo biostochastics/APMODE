@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security — clear 24 open Dependabot advisories across 8 transitive dependencies
+
+- `litellm` bumped to `>=1.84.0` (direct `llm` extra dependency): patches
+  GHSA-4xpc-pv4p-pm3w (critical, auth bypass via Host header injection)
+  and GHSA-qrc4-49gv-mv9m (high, `internal_user` role can mint API keys
+  outside its permitted routes).
+- `[tool.uv.override-dependencies]` gained floors for `aiohttp>=3.14.1`
+  (bumped from `>=3.13.4`; clears 9 additional GHSA advisories —
+  TLS-hostname-override-on-reuse, websocket memory-limit bypass,
+  max_line_size bypass, digest-auth cross-origin credential leak,
+  unbounded pipelined-request queue, unclosed mid-body-disconnect
+  payload, `client_max_size` bypass, multipart CRLF injection,
+  host-only-cookie promotion), `msgpack>=1.2.1` (out-of-bounds
+  read/crash on Unpacker reuse), `starlette>=1.3.1` (form-data DoS,
+  request.url.hostname/path poisoning, UNC-path SSRF/NTLM theft,
+  arbitrary HTTP method dispatch via getattr), `cryptography>=48.0.1`
+  (vulnerable bundled OpenSSL), `idna>=3.15` (CVE-2024-3651 fix bypass),
+  `urllib3>=2.7.0` (cross-origin header leak on proxied redirects,
+  decompression-bomb bypass), and `pip>=26.1` (CVE-2026-3219
+  tar/ZIP interpretation conflict — dev-only, via `pip-audit`).
+- No behavioral changes expected: APMODE only exercises
+  `litellm.acompletion` and FastAPI's Starlette request/response
+  plumbing, not the code paths the advisories target. Full
+  `mypy --strict` + `ruff` + test suite reverified green post-upgrade.
+
 ### Fixed — Formular review pass: multi-analyte runner routing, skipped validation levels, duplicate-key rejection
 
 Follow-up to the deep review of the v0.7 Formular/CLI/API changes.

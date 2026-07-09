@@ -65,10 +65,12 @@ llm = [
     "openai>=1.50",
     "google-genai>=1.0",
     "ollama>=0.4",
-    # 1.83.7 patches GHSA SQL-injection (critical) + SSTI (high) in
-    # /prompts/test. Lower bound is bumped to the patched release so any
-    # ``uv sync --extra llm`` resolves to a non-vulnerable wheel.
-    "litellm>=1.83.7",
+    # 1.84.0 patches GHSA-4xpc-pv4p-pm3w (critical: auth bypass via Host
+    # header injection) and GHSA-qrc4-49gv-mv9m (high: internal_user can
+    # mint API keys outside their role's permitted routes). Lower bound
+    # is bumped to the patched release so any ``uv sync --extra llm``
+    # resolves to a non-vulnerable wheel.
+    "litellm>=1.84.0",
 ]
 bayesian = [
     "cmdstanpy>=1.2",
@@ -136,38 +138,78 @@ ignore = [
 known-first-party = ["apmode"]
 
 [tool.uv]
-# litellm 1.83.7+ patches GHSA SQL-injection (critical) and SSTI (high)
-# advisories but hard-pins several transitive dependencies to test-time
-# versions that have since picked up their *own* CVE patches. The
-# overrides below force the patched releases — APMODE only imports
+# litellm and fastapi hard-pin several transitive dependencies to
+# test-time versions that have since picked up their *own* CVE patches.
+# The overrides below force the patched releases — APMODE only imports
 # ``litellm.acompletion`` (not the proxy CLI / Jinja templating paths
-# that litellm pins for), so the runtime contract is unaffected.
+# that litellm pins for) and consumes Starlette only via FastAPI's
+# request/response plumbing, so the runtime contract is unaffected.
 #
-# - ``click>=8.2``         : roc-validator>=0.8.1 needs >=8.2;
-#                            litellm pins ==8.1.8.
-# - ``aiohttp>=3.13.4``    : clears 10 GHSA advisories
-#                            (header injection, response splitting,
-#                            cookie leak, multipart DoS, ...);
-#                            litellm pins ==3.13.3.
+# - ``click>=8.2``          : roc-validator>=0.8.1 needs >=8.2;
+#                             litellm pins ==8.1.8.
+# - ``aiohttp>=3.14.1``     : clears GHSA-4m7w-qmgq-4wj5 (TLS hostname
+#                             override on connection reuse),
+#                             GHSA-xcgm-r5h9-7989 (websocket frame
+#                             memory-limit bypass), GHSA-63hw-fmq6-xxg2
+#                             (max_line_size bypass on fragmented
+#                             lines), GHSA-hpj7-wq8m-9hgp (digest-auth
+#                             credential leak on cross-origin redirect),
+#                             GHSA-4fvr-rgm6-gqmc (unbounded pipelined
+#                             request queue), GHSA-9x8q-7h8h-wcw9
+#                             (unclosed payload on mid-body disconnect),
+#                             GHSA-g3cq-j2xw-wf74 (client_max_size
+#                             bypass via unread compressed body),
+#                             GHSA-m6qw-4cw2-hm4m (CRLF injection in
+#                             multipart headers), and
+#                             GHSA-2fqr-mr3j-6wp8 (host-only cookies
+#                             promoted to domain cookies); litellm pins
+#                             ==3.13.3.
 # - ``python-dotenv>=1.2.2``: clears the symlink-follow CVE in
-#                            set_key; litellm pins ==1.0.1.
+#                             set_key; litellm pins ==1.0.1.
+# - ``msgpack>=1.2.1``      : clears GHSA-6v7p-g79w-8964 (out-of-bounds
+#                             read / crash on Unpacker reuse after a
+#                             caught error).
+# - ``starlette>=1.3.1``    : clears GHSA-82w8-qh3p-5jfq (silently
+#                             ignored form-data size limits enabling
+#                             DoS), GHSA-jp82-jpqv-5vv3 (unvalidated
+#                             path poisons request.url.hostname),
+#                             GHSA-wqp7-x3pw-xc5r (SSRF/NTLM credential
+#                             theft via UNC paths in StaticFiles on
+#                             Windows), GHSA-x746-7m8f-x49c (arbitrary
+#                             HTTP method dispatch via getattr on
+#                             HTTPEndpoint), and GHSA-86qp-5c8j-p5mr
+#                             (missing Host header validation poisons
+#                             request.url.path); fastapi pins an older
+#                             floor.
+# - ``cryptography>=48.0.1``: clears GHSA-537c-gmf6-5ccf (vulnerable
+#                             OpenSSL bundled in prior wheels).
+# - ``idna>=3.15``          : clears GHSA-65pc-fj4g-8rjx (crafted input
+#                             to idna.encode() bypasses the
+#                             CVE-2024-3651 fix).
+# - ``urllib3>=2.7.0``      : clears GHSA-qccp-gfcp-xxvc (sensitive
+#                             headers forwarded cross-origin on proxied
+#                             redirects) and GHSA-mf9v-mfxr-j63j
+#                             (decompression-bomb safeguard bypass in
+#                             the streaming API).
+# - ``pip>=26.1``           : clears GHSA-jp4c-xjxw-mgf9 (concatenated
+#                             tar/ZIP interpretation conflict,
+#                             CVE-2026-3219). pip is dev-only
+#                             here — pulled in transitively via
+#                             ``pip-audit -> pip-api -> pip`` in
+#                             ``[project.optional-dependencies].dev``;
+#                             APMODE never invokes pip at runtime, users
+#                             install via ``uv sync``.
 override-dependencies = [
     "click>=8.2",
-    "aiohttp>=3.13.4",
+    "aiohttp>=3.14.1",
     "python-dotenv>=1.2.2",
+    "msgpack>=1.2.1",
+    "starlette>=1.3.1",
+    "cryptography>=48.0.1",
+    "idna>=3.15",
+    "urllib3>=2.7.0",
+    "pip>=26.1",
 ]
-# Forward note: GHSA-58qw-9mgm-455v / CVE-2026-3219 affects pip
-# <= 26.0.1 ("concatenated tar/ZIP interpretation conflict"). The
-# upstream fix (pypa/pip#13870) is merged for milestone 26.1 but has
-# not shipped to PyPI yet — 26.0.1 is still the latest publicly
-# available version. A constraint-dependency cannot be added today
-# because uv's resolver would refuse to lock against an unavailable
-# release. Exposure on this project is dev-only: pip is pulled in
-# transitively via ``pip-audit -> pip-api -> pip``, and pip-audit
-# lives in ``[project.optional-dependencies].dev``. APMODE never
-# invokes pip at runtime — users install via ``uv sync``. Once
-# pip 26.1 ships we will add ``"pip>=26.1"`` to the override list
-# above so subsequent ``uv lock --upgrade`` runs pick it up.
 
 [tool.mypy]
 python_version = "3.12"
