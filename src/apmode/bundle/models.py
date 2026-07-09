@@ -479,6 +479,15 @@ class BackendResult(BaseModel):
     bic: float | None = None
     parameter_estimates: dict[str, ParameterEstimate]
     eta_shrinkage: dict[str, float]
+    # Per-subject post-hoc ETA estimates, keyed by subject ID then parameter
+    # name (e.g. ``{"1": {"CL": 0.12, "V": -0.03}}``). Populated by the
+    # nlmixr2 harness (Task 3, r/harness.R) for eta-recovery scoring against
+    # simulated ground truth (benchmarks/suite_a/*_eta.csv); other backends
+    # (jax_node, agentic_llm, bayesian_stan) leave this at its default empty
+    # dict. Flows through `Nlmixr2Runner._parse_response`'s
+    # `BackendResult.model_validate(result_dict)` automatically since the
+    # harness JSON key name matches the field name — no manual mapping.
+    per_subject_eta: dict[str, dict[str, float]] = Field(default_factory=dict)
     convergence_metadata: ConvergenceMetadata
     diagnostics: DiagnosticBundle
     wall_time_seconds: float = Field(ge=0.0)

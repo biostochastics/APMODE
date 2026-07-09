@@ -194,6 +194,54 @@ class TestBackendResult:
         roundtripped = BackendResult.model_validate(parsed)
         assert roundtripped.model_id == result.model_id
 
+    def test_per_subject_eta_defaults_to_empty_dict(self) -> None:
+        result = self._make_result()
+        assert result.per_subject_eta == {}
+
+    def test_per_subject_eta_accepts_payload_via_model_validate(self) -> None:
+        defaults = dict(
+            model_id=generate_candidate_id(),
+            backend="nlmixr2",
+            converged=True,
+            ofv=-1234.5,
+            aic=2479.0,
+            bic=2495.0,
+            parameter_estimates={
+                "CL": {
+                    "name": "CL",
+                    "estimate": 5.0,
+                    "fixed": False,
+                    "category": "structural",
+                }
+            },
+            eta_shrinkage={"CL": 0.12},
+            convergence_metadata={
+                "method": "saem",
+                "converged": True,
+                "iterations": 300,
+                "minimization_status": "successful",
+                "wall_time_seconds": 42.0,
+            },
+            diagnostics={
+                "gof": {"cwres_mean": 0.0, "cwres_sd": 1.0, "outlier_fraction": 0.01},
+                "vpc": None,
+                "identifiability": {
+                    "condition_number": 30.0,
+                    "profile_likelihood_ci": {"CL": True},
+                    "ill_conditioned": False,
+                },
+                "blq": {"method": "none", "n_blq": 0, "blq_fraction": 0.0},
+                "diagnostic_plots": {},
+            },
+            wall_time_seconds=42.0,
+            backend_versions={"nlmixr2": "3.0.0", "R": "4.4.1"},
+            initial_estimate_source="nca",
+            per_subject_eta={"1": {"CL": 0.12, "V": -0.03}, "2": {"CL": -0.05, "V": 0.02}},
+        )
+        result = BackendResult.model_validate(defaults)
+        assert result.per_subject_eta["1"]["CL"] == pytest.approx(0.12)
+        assert result.per_subject_eta["2"]["V"] == pytest.approx(0.02)
+
 
 class TestDataManifest:
     def test_valid(self) -> None:
@@ -384,6 +432,36 @@ class TestCandidateLineage:
             ]
         )
         assert len(cl.entries) == 2
+
+    def test_pre_p2_2_construction_still_works(self) -> None:
+        """Backward compat: constructing with only the original 3 fields."""
+        entry = CandidateLineageEntry(
+            candidate_id="child2", parent_id="child1", transform="add_covariate_link"
+        )
+        assert entry.rationale is None
+        assert entry.expected_diagnostic_effect == []
+        assert entry.applied_at is None
+
+    def test_p2_2_provenance_fields_roundtrip(self) -> None:
+        """P2.2: rationale/expected_diagnostic_effect/applied_at pulled from
+
+        the FormularTransform that produced this candidate.
+        """
+        ts = datetime.now(tz=UTC).isoformat()
+        entry = CandidateLineageEntry(
+            candidate_id="child2",
+            parent_id="child1",
+            transform="add_covariate_link",
+            rationale="Wide body-weight range supports allometric scaling.",
+            expected_diagnostic_effect=["reduces CL eta shrinkage"],
+            applied_at=ts,
+        )
+        assert entry.rationale == "Wide body-weight range supports allometric scaling."
+        assert entry.expected_diagnostic_effect == ["reduces CL eta shrinkage"]
+        assert entry.applied_at == ts
+        # Round-trips through JSON serialization unchanged.
+        restored = CandidateLineageEntry.model_validate_json(entry.model_dump_json())
+        assert restored == entry
 
 
 class TestBackendVersions:
