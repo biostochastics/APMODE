@@ -247,6 +247,25 @@ class TestGate1ImputationStability:
         assert check.passed is True
         assert check.observed == "not_applicable"
 
+    def test_mi_directive_without_stability_fails(self) -> None:
+        from apmode.governance.gates import evaluate_gate1
+
+        result, policy = self._result_and_policy()
+        directive = MissingDataDirective(
+            covariate_method="MI-PMM",
+            m_imputations=5,
+            blq_method="M7+",
+        )
+        g1 = evaluate_gate1(
+            result,
+            policy,
+            directive=directive,  # type: ignore[arg-type]
+            stability=None,
+        )
+        check = next(c for c in g1.checks if c.check_id == "imputation_stability")
+        assert check.passed is False
+        assert check.observed == "missing_stability_entry"
+
     def test_low_convergence_fails(self) -> None:
         from apmode.governance.gates import evaluate_gate1
 

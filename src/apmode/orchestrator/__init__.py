@@ -83,6 +83,71 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
+def _promote_mi_pooled_results(
+    search_outcome: SearchOutcome,
+    stability_manifest: ImputationStabilityManifest,
+) -> None:
+    """Promote MI pooled fit summaries onto matching backend results in-place.
+
+    ``imputation_stability.json`` remains the audit artifact, but downstream
+    gates and ranking consume ``BackendResult`` objects. Updating matching
+    classical results here makes Gate 2/2.5, Gate 3, and the human report use
+    the same pooled criteria and structural estimates that the MI stage
+    computed, instead of the pre-MI incomplete-data fit.
+    """
+    entries = {entry.candidate_id: entry for entry in stability_manifest.entries}
+    for sr in search_outcome.results:
+        if sr.result is None:
+            continue
+        entry = entries.get(sr.candidate_id)
+        if entry is None:
+            continue
+
+        result = sr.result
+        updates: dict[str, object] = {}
+        if entry.pooled_ofv is not None:
+            updates["ofv"] = entry.pooled_ofv
+        if entry.pooled_aic is not None:
+            updates["aic"] = entry.pooled_aic
+        if entry.pooled_bic is not None:
+            updates["bic"] = entry.pooled_bic
+
+        if entry.pooled_parameters:
+            params = dict(result.parameter_estimates)
+            for name, stats in entry.pooled_parameters.items():
+                current = params.get(name)
+                if current is None:
+                    continue
+                total_var = stats.get("total_var")
+                se = total_var**0.5 if total_var is not None and total_var >= 0 else None
+                estimate = stats["pooled_estimate"]
+                is_log_space = len(name) >= 2 and name[0] == "l" and name[1].isalpha()
+                rse = None
+                if se is not None and estimate != 0 and not is_log_space:
+                    rse = abs(se / estimate) * 100.0
+                ci_lower = estimate - 1.96 * se if se is not None else None
+                ci_upper = estimate + 1.96 * se if se is not None else None
+                params[name] = current.model_copy(
+                    update={
+                        "estimate": estimate,
+                        "se": se,
+                        "rse": rse,
+                        "ci95_lower": ci_lower,
+                        "ci95_upper": ci_upper,
+                    }
+                )
+            updates["parameter_estimates"] = params
+
+        if not updates:
+            continue
+        pooled = result.model_copy(update=updates)
+        sr.result = pooled
+        sr.bic = pooled.bic
+        sr.aic = pooled.aic
+        sr.converged = pooled.converged
+        sr.n_params = len(pooled.parameter_estimates)
+
+
 @dataclass
 class RunConfig:
     """Configuration for a single APMODE run."""
@@ -344,11 +409,9 @@ class Orchestrator:
             for reason in directive.rationale:
                 logger.info("Missing-data rationale: %s", reason)
             if directive.covariate_method.startswith("MI-"):
-                logger.warning(
-                    "Multiple-imputation execution path is staged but not yet "
-                    "driven by the orchestrator loop. Directive is recorded; use "
-                    "apmode.search.stability.run_with_imputations directly for "
-                    "end-to-end execution in this release."
+                logger.info(
+                    "Multiple-imputation execution will refit classical candidates "
+                    "and promote pooled summaries before governance."
                 )
             elif directive.covariate_method == "FREM":
                 logger.info(
@@ -519,6 +582,7 @@ class Orchestrator:
                     )
                     if stability_manifest is not None:
                         emitter.write_imputation_stability(stability_manifest)
+                        _promote_mi_pooled_results(search_outcome, stability_manifest)
                 except (
                     BackendError,
                     RuntimeError,
@@ -984,6 +1048,8 @@ class Orchestrator:
                 credibility_reports=cred_reports,
                 failed_count=len(search_outcome.results) - len(gate12_survivors),
                 total_candidates=len(search_outcome.results),
+                missing_data_directive=dispatch.missing_data_directive,
+                imputation_stability=stability_manifest,
             )
             report_path = emitter.run_dir / "report.md"
             report_path.write_text(report_md)

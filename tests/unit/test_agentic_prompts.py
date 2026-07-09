@@ -13,6 +13,10 @@ def test_system_prompt_contains_constraints() -> None:
             "adjust_variability",
             "set_transit_n",
             "toggle_lag",
+            "set_prior",
+            "convert_transit_to_erlang",
+            "add_parallel_route",
+            "set_sumig_components",
             "replace_with_node",
         ],
     )
@@ -44,3 +48,15 @@ def test_system_prompt_json_schema_example() -> None:
     prompt = build_system_prompt(lane="discovery", available_transforms=["swap_module"])
     assert '"transforms"' in prompt
     assert '"reasoning"' in prompt
+
+
+def test_system_prompt_documents_all_parser_transforms() -> None:
+    from apmode.backends.transform_parser import _TRANSFORM_PARSERS
+
+    prompt = build_system_prompt(
+        lane="discovery",
+        available_transforms=list(_TRANSFORM_PARSERS),
+    )
+
+    for transform_name in _TRANSFORM_PARSERS:
+        assert transform_name in prompt

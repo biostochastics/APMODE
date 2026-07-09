@@ -13,7 +13,7 @@ import pandas as pd  # type: ignore[import-untyped]
 import pytest
 from pydantic import ValidationError
 
-from apmode.bundle.models import EvidenceManifest
+from apmode.bundle.models import ColumnMapping, CovariateMetadata, DataManifest, EvidenceManifest
 from apmode.data.ingest import ingest_nonmem_csv
 from apmode.data.profiler import (
     _assess_absorption_coverage,
@@ -23,6 +23,7 @@ from apmode.data.profiler import (
     _compute_blq_burden,
     _detect_nonlinear_clearance,
     _spearman_r,
+    _subject_covariate_first_values,
     profile_data,
 )
 
@@ -84,6 +85,35 @@ class TestProfileData:
         em = profile_data(df, manifest)
         with pytest.raises(ValidationError):
             em.richness_category = "rich"  # type: ignore[misc]
+
+    def test_subject_covariate_first_values_skip_leading_missing(self) -> None:
+        df = pd.DataFrame(
+            {
+                "NMID": [1, 1, 2, 2],
+                "TIME": [0.0, 1.0, 0.0, 1.0],
+                "WT": [None, 70.0, None, None],
+            }
+        )
+        manifest = DataManifest(
+            data_sha256="0" * 64,
+            ingestion_format="nonmem_csv",
+            column_mapping=ColumnMapping(
+                subject_id="NMID",
+                time="TIME",
+                dv="DV",
+                evid="EVID",
+                amt="AMT",
+            ),
+            n_subjects=2,
+            n_observations=2,
+            n_doses=1,
+            covariates=[CovariateMetadata(name="WT", type="continuous")],
+        )
+
+        subj_covs = _subject_covariate_first_values(df, manifest)
+
+        assert subj_covs.loc[1, "WT"] == 70.0
+        assert pd.isna(subj_covs.loc[2, "WT"])
 
 
 class TestRichnessClassification:

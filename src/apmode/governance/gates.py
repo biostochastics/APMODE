@@ -564,17 +564,26 @@ def _check_imputation_stability(
     of imputations cannot be trusted regardless of how permissive the
     rank-stability threshold is.
 
-    When MI is not active (directive is None or method is not an MI-*
-    variant, or no stability entry is available), the check is marked
-    ``not_applicable`` and passes.
+    When MI is not active (directive is None or method is not an MI-* variant),
+    the check is marked ``not_applicable`` and passes. When MI is active,
+    missing stability evidence fails closed: the directive was binding, so a
+    candidate without an ``ImputationStabilityEntry`` was not evaluated under
+    the selected missing-data plan.
     """
     # ``_result`` prefix signals unused param: candidate is identified
     # via ``stability.candidate_id``.
-    if directive is None or stability is None or not directive.covariate_method.startswith("MI-"):
+    if directive is None or not directive.covariate_method.startswith("MI-"):
         return GateCheckResult(
             check_id="imputation_stability",
             passed=True,
             observed="not_applicable",
+        )
+    if stability is None:
+        return GateCheckResult(
+            check_id="imputation_stability",
+            passed=False,
+            observed="missing_stability_entry",
+            threshold=f"conv_rate≥{convergence_rate_min}",
         )
 
     issues: list[str] = []

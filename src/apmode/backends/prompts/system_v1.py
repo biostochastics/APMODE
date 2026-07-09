@@ -39,6 +39,23 @@ _TRANSFORM_DESCRIPTIONS: dict[str, str] = {
         "constraint_template: monotone_increasing, monotone_decreasing, bounded_positive, "
         "saturable, unconstrained_smooth. dim ≤ lane ceiling."
     ),
+    "set_prior": (
+        "set_prior(target, family, source, justification) — Declare or replace a prior "
+        "on a structural, omega, beta, or sigma target. Use justification instead of "
+        "rationale; informative sources require non-empty justification."
+    ),
+    "convert_transit_to_erlang": (
+        "convert_transit_to_erlang(n) — Convert Transit absorption to Erlang absorption. "
+        "Requires the current absorption module to be Transit; n must be 1..7."
+    ),
+    "add_parallel_route": (
+        "add_parallel_route(ka2, frac) — Split FirstOrder absorption into parallel "
+        "fast/slow first-order routes. Requires FirstOrder absorption; frac is in (0, 1)."
+    ),
+    "set_sumig_components": (
+        "set_sumig_components(MT_1, MT_2, RD2_1, RD2_2, weight_1) — Update SumIG "
+        "component parameters. Requires SumIG absorption and MT_1 < MT_2."
+    ),
 }
 
 

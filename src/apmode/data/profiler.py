@@ -1684,7 +1684,14 @@ def _subject_covariate_first_values(
     df: pd.DataFrame,
     manifest: DataManifest,
 ) -> pd.DataFrame:
-    """Return one covariate row per subject for manifest-declared covariates."""
+    """Return one covariate row per subject for manifest-declared covariates.
+
+    ``GroupBy.first`` intentionally returns the first non-missing value in each
+    subject group. The R imputation harness mirrors this convention before
+    broadcasting subject-level imputations back to observation rows, so
+    detection and execution agree when a covariate is blank on the dose row but
+    observed later in the profile.
+    """
     cov_names = [c.name for c in manifest.covariates if c.name in df.columns]
     if not cov_names:
         return pd.DataFrame(index=pd.Index([], name="NMID"))

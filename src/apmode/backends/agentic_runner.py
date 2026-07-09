@@ -313,6 +313,10 @@ class AgenticRunner:
             "adjust_variability",
             "set_transit_n",
             "toggle_lag",
+            "set_prior",
+            "convert_transit_to_erlang",
+            "add_parallel_route",
+            "set_sumig_components",
         ]
         if Lane(self._config.lane) in (Lane.DISCOVERY, Lane.OPTIMIZATION):
             available_transforms.append("replace_with_node")

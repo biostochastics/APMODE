@@ -106,9 +106,16 @@ tryCatch({
 
   # Subject-level slice: one row per subject with covariate values. mice
   # operates here; imputed values are broadcast back onto observations.
+  first_observed <- function(x) {
+    observed <- x[!is.na(x)]
+    if (length(observed) == 0) {
+      return(NA)
+    }
+    observed[1]
+  }
   subj_df <- aggregate(full_df[, cov_names, drop = FALSE],
                        by = list(.id = full_df[[id_col]]),
-                       FUN = function(x) x[1])
+                       FUN = first_observed)
   names(subj_df)[1] <- id_col
 
   imputed_csvs <- character(0)

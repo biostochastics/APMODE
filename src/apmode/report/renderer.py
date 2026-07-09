@@ -23,6 +23,8 @@ if TYPE_CHECKING:
         EvidenceManifest,
         FailedCandidate,
         GateResult,
+        ImputationStabilityManifest,
+        MissingDataDirective,
         Ranking,
     )
 
@@ -67,6 +69,8 @@ def render_run_report(
     failed_count: int = 0,
     total_candidates: int = 0,
     backends_dispatched: list[str] | None = None,
+    missing_data_directive: MissingDataDirective | None = None,
+    imputation_stability: ImputationStabilityManifest | None = None,
     seed: int | None = None,
     policy_version: str | None = None,
 ) -> str:
@@ -83,6 +87,7 @@ def render_run_report(
     sections = [
         _header(run_id, lane, seed, policy_version),
         _data_summary(manifest, evidence),
+        _missing_data_summary(evidence, missing_data_directive, imputation_stability),
         _dispatch_summary(lane, backends_dispatched or []),
         _gate_funnel(total_candidates, len(ranked), failed_count),
     ]
@@ -176,6 +181,60 @@ def _dispatch_summary(lane: str, backends: list[str]) -> str:
         return ""
     backend_str = ", ".join(f"`{b}`" for b in backends)
     return f"\n### Dispatch\n\nBackends dispatched for **{lane}** lane: {backend_str}\n"
+
+
+def _missing_data_summary(
+    evidence: EvidenceManifest,
+    directive: MissingDataDirective | None,
+    stability: ImputationStabilityManifest | None,
+) -> str:
+    cov = evidence.covariate_missingness
+    cov_missing = (
+        "None detected" if cov is None else f"{cov.fraction_incomplete:.1%} ({cov.pattern})"
+    )
+
+    lines = [
+        "\n### Missing Data\n",
+        "| Property | Value |",
+        "|----------|-------|",
+        f"| Covariate missingness | {cov_missing} |",
+        f"| Time-varying covariates | {'Yes' if evidence.time_varying_covariates else 'No'} |",
+        f"| BLQ burden | {evidence.blq_burden:.1%} |",
+    ]
+    if directive is None:
+        lines.append("| Resolved plan | No policy directive available |")
+        return "\n".join(lines)
+
+    m_value = str(directive.m_imputations) if directive.m_imputations is not None else "--"
+    lines.extend(
+        [
+            f"| Covariate method | {directive.covariate_method} |",
+            f"| Imputations | {m_value} |",
+            f"| BLQ method | {directive.blq_method} |",
+            f"| LLM pooled-only guard | {'Yes' if directive.llm_pooled_only else 'No'} |",
+        ]
+    )
+    if directive.rationale:
+        rationale = "<br>".join(directive.rationale)
+        lines.append(f"| Rationale | {rationale} |")
+
+    if stability is not None:
+        entries = stability.entries
+        min_conv = min((e.convergence_rate for e in entries), default=None)
+        min_rank = min((e.rank_stability for e in entries), default=None)
+        min_conv_str = f"{min_conv:.1%}" if min_conv is not None else "--"
+        min_rank_str = f"{min_rank:.1%}" if min_rank is not None else "--"
+        lines.extend(
+            [
+                f"| MI stability entries | {len(entries)} |",
+                f"| Minimum MI convergence rate | {min_conv_str} |",
+                f"| Minimum MI rank stability | {min_rank_str} |",
+            ]
+        )
+    elif directive.covariate_method.startswith("MI-"):
+        lines.append("| MI stability artifact | Missing |")
+
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
