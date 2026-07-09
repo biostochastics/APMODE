@@ -7,6 +7,138 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Suite A9-A21: close all 15 uncovered DSL v0.7 capability tags
+
+- **`scripts/analyze_benchmark_capability_coverage.py` went from 15 uncovered
+  to 0** (excluding the two Phase-0-experimental NODE tags, which stay
+  exempt). Formular v0.7's capability matrix landed with real nlmixr2-emitter
+  support for every one of these 15 tags — so instead of stub DSL
+  declarations, all 13 new scenarios are real, live-fittable rxode2-simulated
+  ground truth, mirroring the exact ODE forms `nlmixr2_emitter.py` already
+  lowers to (Erlang's explicit n-chain, SumIG's closed-form inverse-Gaussian
+  input rate, TMDD core's Mager & Jusko binding ODEs, block-covariance IIV,
+  IOV, maturation-form covariates) so recovery testing exercises the same
+  structural assumptions the fitting backend solves.
+- New scenarios: **A9** Erlang absorption, **A10** parallel first-order
+  (fast/slow depots), **A11** mixed first-order + zero-order absorption,
+  **A12** standalone zero-order absorption, **A13** sum-of-inverse-Gaussian
+  absorption (k=2, single-dose, fixed disposition), **A14** three-compartment
+  IV bolus, **A15** full TMDD core (3-arm dose-ranging — a single-dose design
+  cannot separate linear from target-mediated clearance), **A16**
+  unconfounded time-varying elimination (distinct from A8's covariate-
+  confounded version), **A17** block-structured IIV (CL–V correlation) +
+  additive residual error, **A18** inter-occasion variability across 3
+  dosing occasions, **A19** Hill/sigmoid maturation-form covariate, **A20a/
+  A20b** a paired BLQ-M3/BLQ-M4 unit sharing one elevated-LLOQ simulated
+  dataset, **A21** TMDD-QSS with a dual free-drug/total-target multi-analyte
+  endpoint.
+- Two rxode2 5.0.2-specific implementation issues were found and worked
+  around rather than silently masked: (1) `dur(cmt) <- dur`-modeled
+  zero-order absorption only activates when the dosing record sets
+  `RATE = -2` — a plain `AMT`-only record silently ignores the modeled
+  duration; (2) the reserved `amt` event-column variable does not persist
+  past the exact dosing row in a plain simulation, so a literal port of the
+  emitter's SumIG formula (which reads `amt` inside the ODE RHS) produces
+  all-`NA` concentrations — A13's R simulator substitutes an explicit dose
+  constant instead (valid since SumIG v0.7 is single-dose-only). Both are
+  documented in `benchmarks/suite_a/README.md`'s Design notes.
+- `benchmarks/suite_a/simulate_all.R` gained `build_et_multi`/
+  `build_et_icov_dosearms` helpers and generalized `build_nonmem_output`/
+  `build_et` for multi-dose-row and modeled-duration event tables.
+  `src/apmode/benchmarks/suite_a.py` gained 13 new `scenario_a*` factories
+  registered in `ALL_SCENARIOS`, plus `REFERENCE_PARAMS`/
+  `SCENARIO_FILENAME_STEMS` entries. `tests/unit/test_benchmark_suite_a.py`
+  and `tests/unit/test_benchmark_simulation.py` were updated off their
+  stale A1-A8-only assumptions.
+
+### Added — Suite B: wire orphaned protocol-pooling/covariate-missingness perturbations, fix dropped `split_strategy`
+
+- `PerturbationType.ADD_PROTOCOL_POOLING` and `INJECT_COVARIATE_MISSINGNESS`
+  (PRD §5 "protocol heterogeneity handling" / "inject covariate missingness
+  at 10%, 20%, 30%") were fully implemented and unit-tested in
+  `perturbations.py` but wired into zero `BenchmarkCase` entries. New cases
+  `b11_mavoglurant_protocol_pooling` and
+  `b12_mavoglurant_covmiss{10,20,30}` (mavoglurant anchor, matching the
+  B5-B8 pattern) close that gap, bringing the Suite B roster from 8 to 12
+  cases.
+- **Fixed:** `suite_b_runner.py` never read `BenchmarkCase.split_strategy`,
+  so B9 (gentamicin IOV) silently ran a plain single-fit cross-seed sweep
+  despite declaring `subject_level_kfold` CV intent. `_build_run_plan()` now
+  drives one fit per CV fold via `apmode.data.splitter.k_fold_split` for
+  cases that declare `subject_level_kfold`, threading the held-out subject
+  CSV through as `test_data_path` (mirroring
+  `suite_c_phase1_runner.run_fixture`'s pattern); any other declared
+  `split_strategy.method` raises `NotImplementedError` instead of silently
+  falling back. Cases without a `split_strategy` keep the legacy behavior
+  unchanged. `SeedRunResult` gained an optional `fold` field for audit.
+
+### Added — Agentic backend exposes four DSL v0.7 transforms; multiple-imputation pooling now drives the orchestrator loop end-to-end
+
+- **Agentic transform surface caught up to the DSL v0.7 capability matrix.**
+  `AgenticRunner`'s `available_transforms` and the system prompt's
+  `_TRANSFORM_DESCRIPTIONS` gained `set_prior`, `convert_transit_to_erlang`,
+  `add_parallel_route`, and `set_sumig_components` — without these, the
+  agentic backend had no legal way to reach Erlang, parallel first-order, or
+  SumIG absorption, or to declare a prior, even though the DSL compiler and
+  nlmixr2 emitter already support all three module types. Each transform
+  description documents its precondition (e.g. `convert_transit_to_erlang`
+  requires the current absorption module to already be `Transit`) so the LLM
+  proposes only legal state transitions.
+- **Multiple-imputation execution is no longer staged-but-inert.** The
+  orchestrator previously logged a warning that MI directives were
+  "recorded" but not driven end-to-end, requiring
+  `apmode.search.stability.run_with_imputations` to be called directly.
+  `Orchestrator` now calls the new `_promote_mi_pooled_results()` after
+  imputation stability runs, which rewrites each matching `BackendResult`'s
+  OFV/AIC/BIC and per-parameter estimate/SE/RSE/CI95 with the MI-pooled
+  values from `ImputationStabilityManifest` before Gate 2/2.5/3 and the
+  human report see it — so downstream governance and ranking consume the
+  same pooled criteria the MI stage computed, not the pre-MI incomplete-data
+  fit. Pooled SEs use Rubin's combining rule's total variance
+  (`total_var**0.5`); RSE is skipped for log-space parameters (identified by
+  the `l<Name>` naming convention) since a relative-SE on a log-scale
+  estimate isn't meaningful.
+- **`governance/gates.py::_check_imputation_stability` now fails closed** on
+  missing evidence: previously, an active MI directive with no matching
+  `ImputationStabilityEntry` passed as `not_applicable`; now it's a hard
+  `passed=False` / `observed="missing_stability_entry"`, since a binding MI
+  directive with no stability evidence means the candidate was never
+  actually evaluated under the selected missing-data plan.
+- **`report/renderer.py` gained a Missing Data section** (covariate
+  missingness fraction/pattern, time-varying-covariate flag, BLQ burden,
+  resolved covariate/BLQ method, imputation count, LLM pooled-only guard,
+  and — when MI ran — entry count plus minimum convergence/rank-stability
+  across entries) so the human-facing report surfaces the same MI evidence
+  Gate 2/2.5 consumes, instead of leaving it bundle-only.
+- **`r/impute.R`'s subject-level covariate aggregation now takes the first
+  *non-missing* value per subject** (`first_observed()`) instead of the
+  first row unconditionally, mirroring
+  `profiler.py::_subject_covariate_first_values`'s existing
+  `GroupBy.first` convention — without this, a covariate blank on the dose
+  row but observed later in the profile would have been imputed against a
+  `NA` seed instead of the subject's actual observed value, so Python-side
+  detection and R-side execution previously disagreed on which subjects
+  needed imputation at all.
+
+### Added — LLM provider flexibility: OpenRouter timeout wiring, CLI `--api-base`, LiteLLM fallback routing
+
+- **Fixed:** `OpenRouterClient` built its patched `LLMConfig` without
+  forwarding `timeout_seconds`, so OpenRouter requests silently ignored any
+  caller-supplied timeout and fell back to the SDK default regardless of
+  configuration.
+- `apmode run` gained `--api-base` (env `APMODE_API_BASE`) to override the
+  LLM API base URL for OpenAI-compatible, Anthropic-compatible, LiteLLM, or
+  local endpoints, threaded through `_try_build_agentic_runner` into
+  `LLMConfig`.
+- **Unknown `--provider` values with an explicit `--model` no longer hard-
+  disable the agentic backend.** Previously any provider name outside the
+  fixed known set (`anthropic`/`openai`/`gemini`/`ollama`/`openrouter`)
+  disabled the agentic backend outright. Now, if `--model` is supplied
+  alongside an unrecognized provider, `apmode` routes it through the
+  existing LiteLLM fallback path instead of refusing — the hard-disable
+  behavior is kept only when neither a known provider nor an explicit model
+  is given, since there's nothing to route in that case.
+
 ### Fixed — TMDD nlmixr2/Stan emitters no longer reference `CL` before it is defined
 
 - **`kel <- CL / V` was emitted before `CL` existed.** `_emit_backtransform()`
