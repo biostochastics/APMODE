@@ -96,7 +96,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Per-scenario outcome status.
-ScenarioStatus = Literal["ok", "no_data", "no_eta_ground_truth", "fit_error", "skipped"]
+ScenarioStatus = Literal[
+    "ok", "no_data", "no_eta_ground_truth", "ingest_error", "fit_error", "skipped"
+]
 
 # Scenarios skipped at runtime — no stable nlmixr2 backend exists for
 # NODE-capability-tagged modules (apmode.dsl.capabilities._NODE_EXPERIMENTAL_TAGS).
@@ -177,9 +179,12 @@ async def run_scenario(
     """Drive one Suite A scenario through resolve -> fit -> eta-score.
 
     Skips A7 (NODE-backed, no stable nlmixr2 path) with a clear
-    ``skipped=True`` signal. Never raises on a fit failure — one
-    scenario's exception is recorded as ``status="fit_error"`` so the
-    remaining scenarios still run.
+    ``skipped=True`` signal. Never raises on a fit *or* ingest failure —
+    one scenario's exception is recorded as ``status="fit_error"`` /
+    ``status="ingest_error"`` so the remaining scenarios still run. Prior
+    to widening this try/except, an ingest-time failure (e.g. a schema
+    violation in that scenario's ground-truth CSV) propagated uncaught
+    and aborted every scenario after it in the batch.
     """
     if scenario_id in _NODE_SKIPPED_SCENARIOS:
         return ScenarioEtaResult(
@@ -202,10 +207,20 @@ async def run_scenario(
             dataset_csv=str(csv_path),
         )
 
-    spec = factory()
-    manifest, _df = ingest_nonmem_csv(csv_path)
-    reference_params = REFERENCE_PARAMS.get(scenario_id, {})
-    initial_estimates = _calibration_initial_estimates(spec, reference_params)
+    try:
+        spec = factory()
+        manifest, _df = ingest_nonmem_csv(csv_path)
+        reference_params = REFERENCE_PARAMS.get(scenario_id, {})
+        initial_estimates = _calibration_initial_estimates(spec, reference_params)
+    except Exception as exc:
+        logger.warning("scenario %s: ingest raised %s: %s", scenario_id, type(exc).__name__, exc)
+        return ScenarioEtaResult(
+            scenario_id=scenario_id,
+            status="ingest_error",
+            dataset_csv=str(csv_path),
+            eta_csv=str(eta_csv_path),
+            error_message=f"{type(exc).__name__}: {exc}",
+        )
 
     try:
         result = await runner.run(

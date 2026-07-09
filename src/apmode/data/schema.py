@@ -22,7 +22,15 @@ class CanonicalPKSchema(pa.DataFrameModel):
 
     NMID: Series[int] = pa.Field(description="Subject identifier")
     TIME: Series[float] = pa.Field(ge=0.0, description="Time relative to first dose")
-    DV: Series[float] = pa.Field(description="Dependent variable (observation value)")
+    # nullable=True: the standard NONMEM convention for a genuinely missing
+    # sample (dropout, unscheduled-visit miss) is DV=NaN with MDV=1 — not to
+    # be confused with BLQ-censoring, which carries a real numeric value
+    # (typically the LLOQ) with BLQ=1, MDV=0 (see Suite A scenario A20).
+    # dv_present_when_mdv_0 below still fails closed on a NaN DV for an
+    # actual observation row (MDV=0).
+    DV: Series[float] = pa.Field(
+        nullable=True, description="Dependent variable (observation value)"
+    )
     MDV: Series[int] = pa.Field(isin=[0, 1], description="Missing DV flag")
     EVID: Series[int] = pa.Field(
         isin=[0, 1, 2, 3, 4],
@@ -69,6 +77,16 @@ class CanonicalPKSchema(pa.DataFrameModel):
     def obs_amt_zero_when_evid_0(cls, df: pd.DataFrame) -> Series[bool]:  # type: ignore[misc]
         """When EVID=0 (observation), AMT should be 0."""
         return ~((df["EVID"] == 0) & (df["AMT"] != 0))  # type: ignore[no-any-return]
+
+    @pa.dataframe_check
+    def dv_present_when_mdv_0(cls, df: pd.DataFrame) -> Series[bool]:  # type: ignore[misc]
+        """When MDV=0 (DV is meaningful), DV must not be NaN.
+
+        DV's own nullability only permits the MDV=1 "genuinely missing
+        sample" convention; this check keeps that permissive without
+        silently accepting a NaN on a row the fit is actually meant to use.
+        """
+        return ~((df["MDV"] == 0) & df["DV"].isna())  # type: ignore[no-any-return]
 
     @pa.dataframe_check
     def addl_requires_ii(cls, df: pd.DataFrame) -> Series[bool]:  # type: ignore[misc]
