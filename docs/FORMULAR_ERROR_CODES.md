@@ -1,5 +1,12 @@
 # Formular DSL Error Codes
 
+## Related documentation
+
+- [FORMULAR.md](FORMULAR.md) — primary Formular language reference; already links to this registry at line 551, so the relationship should be bidirectional.
+- [FORMULAR_SEMANTICS.md](FORMULAR_SEMANTICS.md) — per-module semantic reference that independently documents FRM-SEM-010/FRM-PRIOR-001 triggers in prose; describes the same validation surface from a different angle.
+- [adr/0003-sota-absorption-extension.md](adr/0003-sota-absorption-extension.md) — D1/D2/D5/D6 design rationale cited by bare name four times (FRM-SEM-005/006/007/008, FRM-LANE-003) without a path or link.
+- `plans/2026-07-08-formular-sharpening-and-adoption-design.md` *(internal-only, gitignored)* — source design plan for the P1.5/P1.8/P2.1 phase work that introduced several error-code taxa (SEM_UNITS, BE, DATA, POLICY, PRIOR, AST_MACRO_*), cited by number/section only.
+
 Canonical registry of the structured `FRM-{TAXON}-NNN` error codes emitted
 by `apmode.dsl.validator.validate_dsl`. This is the single source of truth:
 `tests/unit/test_dsl_error_codes.py` asserts every code referenced in

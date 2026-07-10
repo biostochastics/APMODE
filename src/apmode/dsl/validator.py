@@ -517,8 +517,10 @@ def _validate_sumig(
     - weight_1 strictly in (0, 1)
     - MT_1 < MT_2 (positive-difference parameterisation; prevents label switching)
     - For k >= 2: disposition (CL/V/Q) must be fixed externally — checked
-      against fixed-prior signal in spec.priors. Manifest-level
-      disposition_fixed flag is checked at dispatch time, not here.
+      against fixed-prior signal in spec.priors. A manifest-level
+      disposition_fixed flag was planned as an additional dispatch-time
+      signal (ADR-0003 D7) but is not yet implemented on EvidenceManifest;
+      the priors-based check below is the only enforcement path today.
     """
     span = _span_for(spec, mod)
 
@@ -586,17 +588,19 @@ def _validate_sumig(
                 constraint="sumig_disposition_fixed",
                 message=(
                     f"SumIG.k={m.k} requires disposition (CL/V/Q) to be fixed "
-                    "externally — either via IV reference data (manifest "
-                    "disposition_fixed flag, set at dispatch) or via "
-                    'priors with source="fixed_external" on all disposition '
-                    "params. See ADR-0003 D5 / Csajka 2005 §4 / Weiss 2022 §5."
+                    'externally via priors with source="fixed_external" on '
+                    "all disposition params. (A manifest-driven IV-reference "
+                    "path is planned per ADR-0003 D7 but not yet "
+                    "implemented.) See ADR-0003 D5 / Csajka 2005 §4 / "
+                    "Weiss 2022 §5."
                 ),
                 source_span=span,
                 code=FrmCode.SEM_SUMIG_DISPOSITION_FIXED.value,
                 remediation=(
                     'Add priors with source="fixed_external" on every '
-                    "disposition parameter (CL/V/Q), or supply IV reference "
-                    "data so the manifest sets disposition_fixed at dispatch."
+                    "disposition parameter (CL/V/Q). (Manifest-driven "
+                    "IV-reference detection is planned per ADR-0003 D7 but "
+                    "not yet available.)"
                 ),
             )
         )

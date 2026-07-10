@@ -18,6 +18,7 @@ Reference:
   individualized and stratified computational modeling.
   Nucleic Acids Research 49(D1):D1358-D1364. doi:10.1093/nar/gkaa990
 """
+
 import json
 import sys
 import time
@@ -62,16 +63,21 @@ def main(out_dir: str) -> None:
         f.write("sid,name,pmid,doi,timecourse_count,individual_count,intervention_count\n")
         for s in open_studies:
             ref = s.get("reference") or {}
-            f.write(",".join([
-                s.get("sid", ""),
-                (s.get("name") or "").replace(",", " "),
-                str(ref.get("pmid") or ""),
-                (ref.get("doi") or "").replace(",", " "),
-                str(s.get("timecourse_count") or 0),
-                str(s.get("individual_count") or 0),
-                str(s.get("intervention_count") or 0),
-            ]) + "\n")
-    print(f"index.json + index_summary.csv written")
+            f.write(
+                ",".join(
+                    [
+                        s.get("sid", ""),
+                        (s.get("name") or "").replace(",", " "),
+                        str(ref.get("pmid") or ""),
+                        (ref.get("doi") or "").replace(",", " "),
+                        str(s.get("timecourse_count") or 0),
+                        str(s.get("individual_count") or 0),
+                        str(s.get("intervention_count") or 0),
+                    ]
+                )
+                + "\n"
+            )
+    print("index.json + index_summary.csv written")
 
     # Fetch full study payload (contains dataset/groupset/individualset/
     # interventionset/outputset — all timecourse data lives in these fields).

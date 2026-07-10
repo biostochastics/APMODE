@@ -1,5 +1,12 @@
 # Profiler Refinement Plan
 
+## Related documentation
+
+- `DIAGNOSTICS_REFINEMENT_ROADMAP.md` *(internal-only, gitignored)* — explicit companion doc tabulating this same profiler policy v2.1.0 baseline; cross-references PRD §4.2–§4.3 and ARCHITECTURE.md for the same Data Profiler subsystem.
+- [ARCHITECTURE.md](ARCHITECTURE.md) — §2.2 DSL/compiler and §5 reproducibility-bundle structure this profiler policy operates within.
+- `PRD_APMODE_v0.3.md` *(internal-only, gitignored)* — §4.2.1 Evidence Manifest source-of-truth section that this plan numerically operationalizes.
+- [adr/0003-sota-absorption-extension.md](adr/0003-sota-absorption-extension.md) — D7 "Profiler manifest (schema_version 2 → 3)" documents the forward evolution of the exact `manifest_schema_version` this policy currently pins at 2.
+
 This document is the derivation/citation companion to
 [`policies/profiler.json`](../policies/profiler.json). Every threshold in the
 JSON has an entry here with its primary source, a brief rationale, and a

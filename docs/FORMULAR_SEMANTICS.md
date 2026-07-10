@@ -1,5 +1,13 @@
 # Formular Semantics Reference
 
+## Related documentation
+
+- [ARCHITECTURE.md](ARCHITECTURE.md) — §4.2.5-derived architecture-level "why" behind the PK DSL this document specifies at the grammar/semantics level.
+- [FORMULAR.md](FORMULAR.md) — predecessor overview doc that explicitly defers to this one as the Phase 2 spec; the two form a matched pair.
+- [FORMULAR_ERROR_CODES.md](FORMULAR_ERROR_CODES.md) — canonical FRM-* error code registry for the validation/identifiability caveats described throughout this reference.
+- [FORMULAR_MIGRATION_v0.6_to_v0.7.md](FORMULAR_MIGRATION_v0.6_to_v0.7.md) — documents the breaking v0.6→v0.7 grammar rewrites that this document's Phase 1 top-level-block sections describe as already-landed end states.
+- [adr/0003-sota-absorption-extension.md](adr/0003-sota-absorption-extension.md) — design-decision record for Erlang/ParallelFirstOrder/SumIG, cited by short-form throughout the Absorption axis and Transforms Reference sections.
+
 **Status:** Phase 2 — macros, transform provenance, equations view, compact signature,
 and the formal grammar reference have landed on top of the Phase 1 grammar reboot. This
 document is the specification the Formular compiler implements — not a post-hoc
@@ -293,8 +301,9 @@ inside; exactly one of `observation:`/`observations:` is required.
    explain` (P1.9).
 7. **Known limitations.** No CI lint on `metadata:` prose content (unlike
    `docs/REGULATORY_POSTURE.md`'s banned-marketing-language lint, §6.2 of the design
-   plan) — a `title`/`intent` claiming e.g. "validated for clinical use" would compile
-   without complaint. Not currently in scope; flagged for awareness, not fixed here.
+   plan — planned, Track B.2 of `docs/plans/2026-07-08-formular-sharpening-and-adoption-design.md`;
+   not yet created) — a `title`/`intent` claiming e.g. "validated for clinical use" would
+   compile without complaint. Not currently in scope; flagged for awareness, not fixed here.
 
 ### `units:` block
 

@@ -44,9 +44,10 @@ PriorSource = Literal[
 *externally fixed* parameter values — typically derived from an IV
 reference fit or a prior converged classical model. Used by the SumIG
 disposition-fixed cross-module check to certify CL/V/Q are not jointly
-estimated with the input function. This is the spec-side fallback when
-the dispatch-time ``EvidenceManifest.disposition_fixed`` flag is not
-available (e.g. during isolated validator runs).
+estimated with the input function. This is currently the *only*
+enforcement path in all cases (not just isolated validator runs): a
+dispatch-time ``EvidenceManifest.disposition_fixed`` flag was planned
+(ADR-0003 D7) but is not yet implemented on ``EvidenceManifest``.
 """
 
 # ---------------------------------------------------------------------------

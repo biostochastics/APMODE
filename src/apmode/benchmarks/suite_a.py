@@ -351,8 +351,10 @@ def scenario_a13() -> DSLSpec:
     (no IIV) here -- only the absorption-shape parameter MT_1 carries BSV.
     ``k>=2`` requires disposition to be marked fixed-external in the
     validator's cross-module check (ADR-0003 D5) -- the ``priors`` below
-    are the spec-side signal for that (as opposed to an
-    ``EvidenceManifest.disposition_fixed`` flag set at dispatch time).
+    are the spec-side signal for that. (An
+    ``EvidenceManifest.disposition_fixed`` flag was planned per ADR-0003
+    D7 as an alternative dispatch-time signal but is not yet
+    implemented.)
     """
     return DSLSpec(
         model_id="suite_a_scenario_a13",

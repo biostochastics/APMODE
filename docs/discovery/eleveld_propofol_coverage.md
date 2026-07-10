@@ -1,5 +1,13 @@
 # Eleveld Propofol DSLSpec Coverage Assessment
 
+## Related documentation
+
+- [../FORMULAR_SEMANTICS.md](../FORMULAR_SEMANTICS.md) — authoritative per-form `CovariateLink` field contract (power/exponential/linear/categorical/maturation) this gap analysis is measured against, including the same Stan maturation `NotImplementedError` cited here.
+- [../FORMULAR.md](../FORMULAR.md) — Covariates grammar section and `add_covariate_link` transform table defining the five `CovariateLink` forms this note enumerates as the DSL's covariate-primitive inventory.
+- [../ARCHITECTURE.md](../ARCHITECTURE.md) — §3.1 component inventory independently documents `dsl/stan_emitter.py` raising `NotImplementedError` for maturation covariates, corroborating this note's core blocking-gap claim.
+- [../adr/0003-sota-absorption-extension.md](../adr/0003-sota-absorption-extension.md) — precedent ADR for how new DSL primitives get added end-to-end (grammar/AST/both emitters/policy); the template for closing this note's own gaps (derived-covariate, age-decay, PD effect-site) in v0.7+.
+- `../PRD_APMODE_v0.3.md` *(internal-only, gitignored)* — §4.2.5 source-of-truth spec for the typed DSL grammar this discovery note audits against a real published PK model.
+
 > Plan Task 42 — Phase-1 Bayesian fixture eligibility check.
 >
 > **Recommendation: NO-GO for v0.6 Phase-1 Bayesian fixtures.**
@@ -61,7 +69,7 @@ There is no primitive for:
 | Backend | `maturation` form support |
 |---------|--------------------------|
 | nlmixr2 (`src/apmode/dsl/nlmixr2_emitter.py`) | Implemented — emits `cov^β / (cov^β + TM50^β)` |
-| Stan (`src/apmode/dsl/stan_emitter.py:782`) | **NotImplementedError** — explicit raise |
+| Stan (`src/apmode/dsl/stan_emitter.py:927`) | **NotImplementedError** — explicit raise |
 
 The Stan backend is the one Phase-1 Bayesian fixtures would target.
 Until the Stan emitter learns the maturation form, an Eleveld fixture
@@ -112,6 +120,6 @@ Eleveld and add the propofol fixture.
 ## Related artifacts
 
 - `src/apmode/dsl/ast_models.py:CovariateLink` — primitive enumeration
-- `src/apmode/dsl/stan_emitter.py:782` — maturation NotImplementedError
-- `src/apmode/dsl/nlmixr2_emitter.py:230` — maturation reference impl
+- `src/apmode/dsl/stan_emitter.py:927` — maturation NotImplementedError
+- `src/apmode/dsl/nlmixr2_emitter.py:325,519` — maturation reference impl
 - `benchmarks/suite_c/propofol_eleveld_2018.yaml` — to be created in v0.7

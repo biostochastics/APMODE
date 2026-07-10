@@ -1,5 +1,12 @@
 # DSLSpec Fingerprint Schema — Versioning Policy
 
+## Related documentation
+
+- [FORMULAR_MIGRATION_v0.6_to_v0.7.md](FORMULAR_MIGRATION_v0.6_to_v0.7.md) — documents the exact "Phase 1 migration" (initial estimates moved into a top-level `initial:` block) cited here as the reason `CANONICAL_SCHEMA_VERSION` bumped away from schema 1.0.0.
+- [ARCHITECTURE.md](ARCHITECTURE.md) — §2.2 DSL/compiler and §5 reproducibility-bundle structure describe the `DSLSpec`/bundle architecture these fingerprint fields operate within.
+- `PRD_APMODE_v0.3.md` *(internal-only, gitignored)* — §4.2.5 (PK DSL and Compiler) and §4.3.2 (Provenance and Reproducibility Contract) are the source-of-truth sections this policy operationalizes.
+- [adr/0003-sota-absorption-extension.md](adr/0003-sota-absorption-extension.md) — D7 documents the parallel forward evolution of `manifest_schema_version` (2→3), the same versioned-schema pattern this fingerprint policy follows.
+
 `apmode.dsl.canonical` computes four sha256 fingerprints over a compiled
 `DSLSpec`: `structure_fingerprint`, `spec_fingerprint`, `initial_fingerprint`,
 and `justification_hash`. Every one of them returns

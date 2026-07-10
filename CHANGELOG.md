@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — Suite A ingest crash; Suite A/B/C validated end-to-end
+
+- `CanonicalPKSchema.DV` was declared non-nullable, rejecting Suite A
+  scenario A17's legitimate `DV=NaN`/`MDV=1` rows (the standard NONMEM
+  convention for a genuinely missing sample, distinct from BLQ-censoring
+  which carries a real numeric value). Added `nullable=True` plus a new
+  `dv_present_when_mdv_0` cross-column check so an actual observation row
+  still can't silently carry a NaN.
+- `suite_a_runner.run_scenario`'s docstring promised "never raises on a
+  fit failure," but `ingest_nonmem_csv` ran outside the try/except that
+  only wrapped the fit call — an ingest-time error propagated uncaught
+  and aborted every scenario after it in the batch. Widened the
+  try/except to cover ingestion, with a new `status="ingest_error"`
+  outcome distinct from `"fit_error"`.
+- Ran all three benchmark suites end-to-end after the fixes: **Suite A**
+  17/21 scenarios converged (4 genuine nlmixr2 convergence failures,
+  unrelated to the schema fix); **Suite B** 12/12 cases at 100%
+  convergence; **Suite C** 5/5 Phase-1 fixtures, reproducing the
+  committed scorecard's 40%/60% result (confirms it's a stable finding,
+  not staleness).
+
+### Fixed — `ddmore_gentamicin` dataset was never actually downloadable
+
+- `benchmarks/datasets/ddmore_gentamicin/prepare.py`'s `download_dataset`
+  was a stub that only wrote manual-download instructions and never
+  fetched anything — Suite B's B9 (gentamicin IOV) case and Suite C's
+  `gentamicin_germovsek_2017` fixture had no data available without
+  manual intervention. The hardcoded source URL
+  (`repository.ddmore.eu`) has been retired; its successor
+  (`repository.ddmore.foundation`) returns 503 across all URLs as of
+  2026-07-08 and, even when reachable, serves model pages via
+  JS-rendered tooling rather than a direct file. Switched to the
+  community GitHub mirror (`dpastoor/ddmore_scraping`), which serves
+  `DDMODEL00000238`'s actual simulated dataset directly; the download is
+  now SHA-256-pinned (detects upstream drift), falls back to manual
+  instructions on network failure, and rejects malformed input loudly.
+  Verified end-to-end: fresh download, cache-hit reuse, corrupted-cache
+  re-download, network-failure fallback, and Suite B's B9 case now
+  running and converging with real data.
+- `canonicalize()`'s column mapping was also wrong against the real raw
+  schema (verified by downloading and inspecting the file directly, not
+  assumed from documentation): the old rename_map's `"SCR"` entry was
+  dead code (the real column is `CREAT`), and `MDV` was derived from
+  `EVID==1` only, missing two `EVID==2` rows that also carry a
+  meaningless `DV=0`.
+- Corrected the dataset's citation, which cited a nonexistent 2017
+  paper (`61(8):e00481-17` in `prepare.py`; a different, also
+  nonexistent `61(8):e02659-16` in
+  `benchmarks/suite_c/gentamicin_germovsek_2017.yaml`) — verified
+  against independent citing reviews that the real paper is Germovsek
+  et al. 2016, *Antimicrob Agents Chemother* 60(8):4869-4877,
+  doi:10.1128/AAC.00577-16. Fixed both files plus the mirrored entry in
+  `benchmarks/suite_c/README.md`.
+
 ## [0.6.1-rc2] — 2026-07-09
 
 ### Fixed — SumIG absorption: production nlmixr2 emitter no longer relies on rxode2's non-persistent `amt`

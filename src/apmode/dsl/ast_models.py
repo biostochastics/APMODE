@@ -144,8 +144,9 @@ class SumIG(BaseModel):
 
     Identifiability: when ``k >= 2`` the disposition parameters (CL/V/Q)
     must be fixed externally — enforced as a cross-module validator check
-    against the ``EvidenceManifest.disposition_fixed`` flag or fixed-prior
-    entries in ``DSLSpec.priors``. See ADR-0003 D5.
+    against fixed-prior entries in ``DSLSpec.priors``. A planned
+    ``EvidenceManifest.disposition_fixed`` flag (ADR-0003 D7) is not yet
+    implemented. See ADR-0003 D5.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")

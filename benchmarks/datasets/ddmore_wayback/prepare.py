@@ -18,6 +18,7 @@ Reference:
 Snapshot URL:
   http://web.archive.org/web/20250327075132/http://repository.ddmore.foundation/models
 """
+
 import sys
 import time
 import urllib.request
@@ -62,13 +63,16 @@ def main(out_dir: str) -> None:
         time.sleep(0.5)  # be polite to archive.org
 
     # Write a README summarising what was retrieved
-    (out / "README.md").write_text(f"""# DDMoRe Model Repository — Wayback Snapshot
+    (out / "README.md").write_text(
+        """# DDMoRe Model Repository — Wayback Snapshot
 
 Live repository (repository.ddmore.foundation) returned 503 across all URLs on
 2026-07-08. This directory contains a Wayback Machine snapshot from **2025-03-27**.
 
 ## Canonical model IDs
-""" + "\n".join(f"- `{mid}` — {desc}" for mid, desc in CANONICAL_IDS) + f"""
+"""
+        + "\n".join(f"- `{mid}` — {desc}" for mid, desc in CANONICAL_IDS)
+        + f"""
 
 ## Source
 - Snapshot base: {BASE}
@@ -80,7 +84,8 @@ Harnisch L, Matthews I, Chard J, Karlsson MO. (2013)
 Drug and Disease Model Resources.
 CPT: Pharmacometrics & Systems Pharmacology 2:e34.
 [doi:10.1038/psp.2013.10](https://doi.org/10.1038/psp.2013.10)
-""")
+"""
+    )
 
 
 if __name__ == "__main__":

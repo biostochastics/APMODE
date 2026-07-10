@@ -1,5 +1,10 @@
 # ADR 0001 — Review Deferrals
 
+## Related documentation
+
+- [../ARCHITECTURE.md](../ARCHITECTURE.md) — its own Cross-references section already lists the same six deferred items (future-annotations, Pyright, god-modules, FREM goldens, `type: ignore`, module-level Console) by name; this link makes the pointer bidirectional.
+- `../DIAGNOSTICS_REFINEMENT_ROADMAP.md` *(internal-only, gitignored)* — §M9's FREM-emitter-golden-test deferral and re-evaluation trigger ("research branch" → "production path") directly bears on this roadmap's FREM-deprecation item A1; the two should be reconciled, not silently divergent.
+
 **Date:** 2026-04-17
 **Status:** Accepted
 **Context:** Post-review register of items intentionally NOT fixed in the
@@ -139,3 +144,58 @@ area for negligible win.
 **Re-evaluation trigger:** Measured import-time regression tied to
 `Console()` construction, OR evidence of a programmatic use-case that
 imports `cli` without needing the terminal.
+
+---
+
+## Status update (2026-07-09)
+
+Re-checked the counts and triggers cited above against current `main`.
+None of the original decision text above has been altered; this section
+records present-day facts only.
+
+- **L1 (`from __future__ import annotations`):**
+  `grep -rl 'from __future__ import annotations' src/apmode/ | wc -l`
+  now returns **135** files (up from the ~70 cited at write time — the
+  tree has grown substantially since April 2026). The stated
+  re-evaluation trigger ("pyproject minimum bumps to 3.14") has **not**
+  fired: `pyproject.toml` still declares
+  `requires-python = ">=3.12,<3.15"`. Decision stands unchanged.
+
+- **L2 (`# type: ignore` audit):**
+  `grep -rn '# type: ignore' src/apmode/ | wc -l` now returns **51**
+  (up from 33 at write time). The stated re-evaluation trigger ("the
+  count exceeds 50") **has fired** — 51 > 50. Per the ADR's own terms
+  this item is now due for re-evaluation: either re-run the audit to
+  confirm the new occurrences remain justified (untyped Lark/pandera
+  surfaces, Pydantic-runtime escapes), or file a follow-up sweep.
+
+- **M8 (god modules):** `wc -l` reports `src/apmode/data/profiler.py`
+  at **1911 LOC** (up from 1857) and
+  `src/apmode/orchestrator/__init__.py` at **1902 LOC** (up from
+  1491 — a ~28% increase). The stated re-evaluation trigger ("a module
+  exceeds 2500 LOC") has **not** fired for either file, but both are
+  now materially closer to it — profiler.py at ~76% of the threshold,
+  orchestrator/__init__.py also at ~76% after closing a large fraction
+  of the remaining gap since April. Decision stands unchanged; worth
+  monitoring given the growth rate on `orchestrator/__init__.py` in
+  particular.
+
+- **M9 (FREM-emitter golden tests) — citation fix:** the re-evaluation
+  trigger above cites "PRD R6" and "PRD §4.2.4" for FREM's
+  research-branch-vs-production-path status. Both citations are wrong:
+  `docs/PRD_APMODE_v0.3.md` never mentions FREM (`grep -ci frem
+  docs/PRD_APMODE_v0.3.md` → 0), and both §4.2.4 ("Hybrid
+  Mechanistic-NODE Backend") and R6 ("Hybrid NODE population modeling
+  is a constrained approximation") describe the NODE backend, not
+  FREM — an unrelated missing-data method
+  (`src/apmode/dsl/frem_emitter.py`, Karlsson 2011 PAGE). The
+  citations were evidently copy-pasted from NODE-adjacent text. FREM's
+  actual production status is documented in `docs/ARCHITECTURE.md`
+  ("What is active today" lists "FREM + MI-PMM + MI-missRanger
+  missing-data pipelines" as shipped) and `docs/FORMULAR_SEMANTICS.md`
+  (the section describing `frem_emitter.py`). Per that evidence the
+  re-evaluation trigger
+  has plausibly already fired (FREM is a shipped pipeline, not a
+  research branch), but the original decision text is left unedited
+  per this ADR's own convention — this bullet only fixes the citation
+  and flags the trigger for owner re-evaluation.

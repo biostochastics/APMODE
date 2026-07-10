@@ -1,5 +1,14 @@
 # ADR 0003 — SOTA Absorption Extension (v0.7)
 
+## Related documentation
+
+- [../ARCHITECTURE.md](../ARCHITECTURE.md) — documents the PK DSL architecture (§4.2.5-derived) that this ADR's absorption-module extension builds on.
+- [../FORMULAR.md](../FORMULAR.md) — canonical DSL language reference (grammar/AST/validator/emitters) whose absorption module this ADR extends with Erlang/ParallelFirstOrder/SumIG.
+- [../FORMULAR_SEMANTICS.md](../FORMULAR_SEMANTICS.md) — formal Phase 2 spec where this ADR's shipped grammar/validator changes should be reflected incrementally.
+- [../FORMULAR_MIGRATION_v0.6_to_v0.7.md](../FORMULAR_MIGRATION_v0.6_to_v0.7.md) — the breaking v0.6→v0.7 grammar changes that co-shipped alongside this ADR's new absorption forms.
+- [../FORMULAR_ERROR_CODES.md](../FORMULAR_ERROR_CODES.md) — canonical FRM-* registry; this ADR's D5/D6 decisions introduce new SumIG-specific validator errors that should be traceable here.
+- [../PROFILER_REFINEMENT_PLAN.md](../PROFILER_REFINEMENT_PLAN.md) — citation/derivation companion for `policies/profiler.json`, including the `sumig_k2_min_peak_prominence` threshold (Weiss 2022) this ADR's D7 introduces.
+
 **Date:** 2026-04-25
 **Status:** Accepted
 **Context:** v0.7 admits three new absorption forms — `Erlang(n, ktr)`,
@@ -190,3 +199,46 @@ absorption-form extension shipped here.
 - **Profiler thresholds:** `sumig_k2_min_peak_prominence` is configurable
   in `policies/profiler.json` from day one — recalibrate as real-world
   evidence accumulates.
+
+---
+
+## Status update (2026-07-09)
+
+D7 (profiler manifest schema_version 2 -> 3, adding
+`absorption_complexity_eligible: dict[str, bool]` and
+`disposition_fixed: bool`) has not been implemented as of this note.
+`manifest_schema_version` on `EvidenceManifest`
+(`src/apmode/bundle/models.py`) was independently bumped to `3` for an
+unrelated reason — restructuring nonlinear-clearance signal provenance into
+`nonlinear_clearance_signals: dict[SignalId, NonlinearClearanceSignal]` for
+ICH M15 traceability — and `EvidenceManifest` carries neither
+`absorption_complexity_eligible` nor `disposition_fixed` as fields today.
+The `sumig_k2_min_peak_prominence` threshold this decision anchors to
+`policies/profiler.json` is likewise not present there yet.
+
+D5's SumIG(k>=2) gate is enforced today via only one of its two intended
+paths: the `spec.priors` fixed-external-prior check
+(`src/apmode/dsl/validator.py::_disposition_priors_fixed`). The
+manifest-flag path described in D5/D7 does not exist at runtime — a
+full-repo grep (2026-07-09) found no code that reads
+`EvidenceManifest.disposition_fixed` or
+`EvidenceManifest.absorption_complexity_eligible` as a live attribute (no
+`manifest.disposition_fixed`, no `getattr(manifest, "disposition_fixed",
+...)`). Several docstrings and one user-facing `ValidationError`
+message/remediation pair in `src/apmode/dsl/validator.py`,
+`src/apmode/dsl/priors.py`, `src/apmode/dsl/ast_models.py`, and
+`src/apmode/benchmarks/suite_a.py` referenced
+`EvidenceManifest.disposition_fixed` descriptively without ever accessing
+it as a live attribute, so this was a documentation-accuracy gap rather
+than a runtime bug; those references were reworded in the same pass that
+added this note so they no longer imply the manifest-driven path is
+already available.
+
+Follow-up: implement D7's two manifest fields (renegotiate against the v3
+schema bump already in place for the unrelated nonlinear-clearance change
+— either a v4 bump or folding D7's fields additively into v3, whichever
+the profiler.py population logic and bundle golden-snapshot tests make
+cleaner), wire `src/apmode/data/profiler.py` to populate them and
+`policies/profiler.json` with `sumig_k2_min_peak_prominence`, then switch
+the validator's cross-module check to also consult the manifest flag as
+originally specified in D5.

@@ -1,5 +1,13 @@
 # Formular Migration Guide: v0.6 → v0.7
 
+## Related documentation
+
+- [FORMULAR.md](FORMULAR.md) — primary language reference (grammar, transforms, extensibility) this migration guide assumes as background.
+- [FORMULAR_SEMANTICS.md](FORMULAR_SEMANTICS.md) — formal Phase 2 spec describing the same validation surface this guide's mechanical rewrite targets.
+- [FORMULAR_ERROR_CODES.md](FORMULAR_ERROR_CODES.md) — the exact FRM-AST-012/013-class errors a user hits when this migration's rewrite is done incorrectly.
+- [adr/0003-sota-absorption-extension.md](adr/0003-sota-absorption-extension.md) — the new v0.7 absorption forms (Erlang, ParallelFirstOrder, SumIG) that co-shipped with this breaking grammar change.
+- `plans/2026-07-08-formular-sharpening-and-adoption-design.md` *(internal-only, gitignored)* — §4 design plan that introduced these breaking changes, currently cited by section number only.
+
 **Status:** Current
 **Scope:** Syntax changes introduced by the Formular sharpening plan, Phase 1
 (`docs/plans/2026-07-08-formular-sharpening-and-adoption-design.md` §4). Every change

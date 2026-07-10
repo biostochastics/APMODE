@@ -1,8 +1,15 @@
 # APMODE Technical Architecture
 
+## Related documentation
+
+- [FORMULAR_SEMANTICS.md](FORMULAR_SEMANTICS.md) — the current formal DSL reference (macros, transform provenance, equations view); the DSL component tables in §2.2/§3.1 describe the same modules this doc formally specifies, but this page currently links only the older FORMULAR.md.
+- [adr/0003-sota-absorption-extension.md](adr/0003-sota-absorption-extension.md) — design rationale for the v0.7 absorption forms (Erlang/ParallelFirstOrder/SumIG) that §3.1's `stan_emitter.py` row and §6 flag as incomplete for Stan/Torsten lowering.
+- [FORMULAR_ERROR_CODES.md](FORMULAR_ERROR_CODES.md) — canonical FRM-* diagnostic code registry for `src/apmode/dsl/validator.py`, listed in the §3.1 DSL component table but not linked for error-code lookup.
+- `DIAGNOSTICS_REFINEMENT_ROADMAP.md` *(internal-only, gitignored)* — roadmap/citation trail behind the Gate 1 PIT/NPDE-lite calibration metric and predictive-diagnostics pipeline that §4.3/§4.5 present as shipped, current behavior.
+
 **Version:** 0.3
 **Date:** 2026-04-25
-**Status:** Current (tracks APMODE 0.6.1-rc1; Phase 3 in progress)
+**Status:** Current (tracks APMODE 0.6.1-rc2; Phase 3 in progress)
 **Derived from:** PRD v0.3 (§3–§8)
 **Supersedes:** v0.2 (2026-04-13). Change summary: Phase 2/3 framing removed where
 shipped (Bayesian backend, NODE, agentic LLM, Gate 2.5, FREM, Gate 3 ranking all
@@ -94,7 +101,7 @@ See `docs/FORMULAR.md` for the language reference.
 | R invocation | `Rscript src/apmode/r/harness.R` via subprocess; file-based I/O (§4.2) |
 | Stan invocation | `cmdstanpy.CmdStanModel` via `src/apmode/bayes/harness.py` wrapped by `bayesian_runner.py` |
 | Retry/timeout | Bespoke logic in each runner; timeout from policy file, killed attempts write to new `attempt_id/` subdir |
-| CLI | Typer (`src/apmode/cli.py`) — 16 direct commands plus registered `bundle` / `completion` groups |
+| CLI | Typer (`src/apmode/cli.py`) — 15 direct commands plus registered `bundle`, `completion`, `formular` groups |
 
 **Note on deployment posture.** The codebase runs natively on the user's machine via
 `uv`; there is no Docker-Compose stack, no R container, no K8s. Users who want
@@ -370,7 +377,7 @@ All paths rooted at `src/apmode/`.
 
 | File | Role |
 |------|------|
-| `cli.py` | Typer app — 16 direct commands plus `bundle` / `completion` groups |
+| `cli.py` | Typer app — 15 direct commands plus registered `bundle`, `completion`, `formular` groups |
 | `paths.py` | `APMODE_POLICIES_DIR` env override + pyproject-walk fallback |
 | `routing.py` | Lane Router — evidence-manifest-driven dispatch |
 | `logging.py` | `structlog` configuration |
@@ -575,7 +582,7 @@ runs/
     ├── gate_decisions/
     │   ├── gate1_{candidate_id}.json
     │   ├── gate2_{candidate_id}.json
-    │   ├── gate25_{candidate_id}.json
+    │   ├── gate2_5_{candidate_id}.json
     │   └── gate3_{candidate_id}.json
     ├── compiled_specs/
     │   ├── {candidate_id}.json            # DSLSpec (Pydantic)
@@ -614,7 +621,7 @@ Phases 1 and 2 are complete. Phase 3 is in progress per CLAUDE.md. The per-month
 task list from v0.2 has been removed from this doc; it is preserved in the git
 history at `docs/ARCHITECTURE.md@v0.2` and summarized in `CHANGELOG.md`.
 
-**What is active today (0.6.1-rc1):**
+**What is active today (0.6.1-rc2):**
 
 - DSL grammar + compiler + validator + 10 typed transforms.
 - Classical NLME backend (nlmixr2, SAEM/FOCEi) with warm-start children.

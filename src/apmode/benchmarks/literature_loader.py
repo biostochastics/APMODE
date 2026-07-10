@@ -106,9 +106,17 @@ PHASE1_MLE_FIXTURE_IDS: tuple[str, ...] = (
     "phenobarbital_grasela_1985",
     # Simulated ACOP-2016 ground-truth-recovery fixture:
     "oral_1cpt_acop_2016",
-    # Credentialed/manual-download fixtures (kept for operator runs that
-    # set --dataset-csv overrides; CI can't reach them):
+    # gentamicin_germovsek_2017's dataset_id (ddmore_gentamicin) is not
+    # in DATASET_REGISTRY, so this fixture still needs an operator-supplied
+    # --dataset-csv override to run -- but it is not actually credentialed:
+    # benchmarks/datasets/ddmore_gentamicin/prepare.py downloads and
+    # canonicalizes it automatically (a public GitHub mirror of the
+    # DDMoRe repository), no manual/credentialed access required. Wiring
+    # that into DATASET_REGISTRY's automatic fetch path is the remaining
+    # gap, not the data source itself.
     "gentamicin_germovsek_2017",
+    # Credentialed/manual-download fixture (kept for operator runs that
+    # set --dataset-csv overrides; CI can't reach it):
     "schoemaker_nlmixr2_tutorial",
 )
 
