@@ -131,6 +131,8 @@ async def execute_run(
             max_concurrency=request.max_concurrency,
             covariate_names=list(request.covariate_names),
             context_of_use=request.context_of_use,
+            model_influence=request.model_influence,
+            decision_consequence=request.decision_consequence,
         )
         orchestrator = Orchestrator(runner, runs_dir, config)
 

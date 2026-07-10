@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from apmode.backends.prompt_sanitize import sanitize_for_prompt
+
 if TYPE_CHECKING:
     from apmode.bundle.models import (
         BackendResult,
@@ -290,7 +292,13 @@ def summarize_stability_for_llm(
         lines.append("")
         lines.append("### Covariate-Effect Sign Consistency")
         for name, frac in s["covariate_sign_consistency"].items():
-            lines.append(f"  {name}: {frac:.2f}")
+            # Covariate names are raw CSV column headers (validate_data_bound
+            # only checks case-insensitive existence, not content) and thus
+            # untrusted, reachable prompt-injection surface -- sanitize
+            # before interpolation, matching the treatment already applied
+            # to backend error text (see prompt_sanitize.py).
+            safe_name = sanitize_for_prompt(name, max_len=80)
+            lines.append(f"  {safe_name}: {frac:.2f}")
 
     if search_history:
         lines.append("")

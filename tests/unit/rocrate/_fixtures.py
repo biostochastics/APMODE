@@ -26,10 +26,10 @@ from typing import Any
 def _digest_bundle(run_dir: Path) -> str:
     digest = hashlib.sha256()
     # Mirror ``apmode.bundle.emitter._DIGEST_EXCLUDED_RELATIVE_PATHS``: sentinel
-    # itself + post-seal sidecars (CycloneDX SBOM, SBC manifest) that
-    # are explicitly excluded so regenerating them never invalidates
-    # ``_COMPLETE``.
-    excluded = {"_COMPLETE", "bom.cdx.json", "sbc_manifest.json"}
+    # itself + post-seal sidecars (CycloneDX SBOM, SBC manifest, reviewer
+    # attestation) that are explicitly excluded so regenerating them
+    # never invalidates ``_COMPLETE``.
+    excluded = {"_COMPLETE", "bom.cdx.json", "sbc_manifest.json", "attestation.json"}
     for p in sorted(run_dir.rglob("*"), key=lambda q: q.relative_to(run_dir).as_posix()):
         if not p.is_file() or p.name in excluded:
             continue
@@ -50,6 +50,7 @@ def build_submission_bundle(
     run_id: str = "canonical-submission-run",
     candidate_ids: tuple[str, ...] = ("cand001",),
     add_credibility: bool = False,
+    add_risk_grading: bool = False,
     add_bayesian: bool = False,
     add_agentic: bool = False,
     add_regulatory: bool = False,
@@ -266,6 +267,22 @@ def build_submission_bundle(
                     "model_credibility": {"sensitivity_ok": True},
                     "data_adequacy": "adequate",
                     "limitations": [],
+                },
+            )
+
+    if add_risk_grading:
+        (bundle / "risk_grading").mkdir()
+        for cid in candidate_ids:
+            _write_json(
+                bundle / "risk_grading" / f"{cid}.json",
+                {
+                    "candidate_id": cid,
+                    "context_of_use": "population PK characterisation",
+                    "model_influence": "high",
+                    "decision_consequence": "high",
+                    "risk_tier": "high",
+                    "credibility_activities": [],
+                    "gaps": [],
                 },
             )
 

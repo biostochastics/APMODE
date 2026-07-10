@@ -10,7 +10,7 @@
   [![Version](https://img.shields.io/badge/version-v0.6.1--rc2-blue)]()
   <!-- apmode:/AUTO:badge_version -->
   <!-- apmode:AUTO:badge_tests -->
-  [![Tests](https://img.shields.io/badge/tests-3267%20collected-success)]()
+  [![Tests](https://img.shields.io/badge/tests-3427%20collected-success)]()
   <!-- apmode:/AUTO:badge_tests -->
   [![License](https://img.shields.io/badge/license-GPL--2.0--or--later-green)](LICENSE)
   [![Python](https://img.shields.io/badge/python-3.12%E2%80%933.14-yellow)]()
@@ -35,7 +35,7 @@ APMODE is a **governed meta-system** that composes five population PK modeling p
 
 **Formular — a typed PK DSL — is the control surface.** Models are specified in [Formular](docs/FORMULAR.md), an order-insensitive grammar of top-level blocks (`absorption`, `distribution`, `elimination`, `variability`, `observation`/`observations`, `covariates`, `priors`, `units`, `metadata`, `initial`) — structural declarations name parameters, a separate `initial: {}` block supplies calibration values, and `priors: {}` lets an author write priors directly in Formular text (in addition to the programmatic `SetPrior` transform). Specs compile to a typed AST, are validated against pharmacometric constraints, and lower to backend-specific code (nlmixr2 R, Stan/Torsten, JAX/Diffrax). The agentic LLM backend (Phase 3) operates exclusively through the <!-- apmode:AUTO:transforms -->10<!-- apmode:/AUTO:transforms --> typed Formular transforms — including `SetPrior` for Bayesian workflows — it cannot emit raw code.
 
-> **Status**: **<!-- apmode:AUTO:version_tag -->v0.6.1-rc2<!-- apmode:/AUTO:version_tag -->** (2026-04-25) — 0.6.1 release candidate. <!-- apmode:AUTO:tests_nonlive -->3250<!-- apmode:/AUTO:tests_nonlive --> tests passing (`-m "not live"`); `mypy --strict` clean; `ruff` clean. Supports Python 3.12–3.14. Gate policy schema <!-- apmode:AUTO:policy_gate -->0.6.0<!-- apmode:/AUTO:policy_gate -->; profiler policy <!-- apmode:AUTO:policy_profiler -->2.1.0<!-- apmode:/AUTO:policy_profiler --> (manifest_schema_version = <!-- apmode:AUTO:profiler_manifest -->2<!-- apmode:/AUTO:profiler_manifest -->). v0.6.1 ships the FastAPI HTTP API surface (`apmode serve`, `POST /runs`, cancellation lifecycle), Suite C Phase-1 MLE + Bayesian fixtures with weekly NPE scoring, SOTA absorption preview forms, and the RO-Crate projector hardening pass. Reproducibility bundles continue to carry a `_COMPLETE` sentinel with a SHA-256 digest; `apmode validate` refuses unsealed bundles. See [CHANGELOG.md](CHANGELOG.md) for the full release-candidate changes.
+> **Status**: **<!-- apmode:AUTO:version_tag -->v0.6.1-rc2<!-- apmode:/AUTO:version_tag -->** (2026-04-25) — 0.6.1 release candidate. <!-- apmode:AUTO:tests_nonlive -->3410<!-- apmode:/AUTO:tests_nonlive --> tests passing (`-m "not live"`); `mypy --strict` clean; `ruff` clean. Supports Python 3.12–3.14. Gate policy schema <!-- apmode:AUTO:policy_gate -->0.7.1<!-- apmode:/AUTO:policy_gate -->; profiler policy <!-- apmode:AUTO:policy_profiler -->2.1.0<!-- apmode:/AUTO:policy_profiler --> (manifest_schema_version = <!-- apmode:AUTO:profiler_manifest -->2<!-- apmode:/AUTO:profiler_manifest -->). v0.6.1 ships the FastAPI HTTP API surface (`apmode serve`, `POST /runs`, cancellation lifecycle), Suite C Phase-1 MLE + Bayesian fixtures with on-demand NPE scoring (no scheduled CI job — see [Suite C README](benchmarks/suite_c/README.md)), SOTA absorption preview forms, and the RO-Crate projector hardening pass. Reproducibility bundles continue to carry a `_COMPLETE` sentinel with a SHA-256 digest; `apmode validate` refuses unsealed bundles. See [CHANGELOG.md](CHANGELOG.md) for the full release-candidate changes.
 
 ### Capability status
 
@@ -226,8 +226,8 @@ continues to point the policy loader at an alternative directory.
 ### Test + typecheck + lint
 
 ```bash
-uv run pytest tests/ -q                         # <!-- apmode:AUTO:tests -->3267<!-- apmode:/AUTO:tests --> collected
-uv run pytest tests/ -q -m "not live"           # <!-- apmode:AUTO:tests_nonlive -->3250<!-- apmode:/AUTO:tests_nonlive --> skip live LLM tests
+uv run pytest tests/ -q                         # <!-- apmode:AUTO:tests -->3427<!-- apmode:/AUTO:tests --> collected
+uv run pytest tests/ -q -m "not live"           # <!-- apmode:AUTO:tests_nonlive -->3410<!-- apmode:/AUTO:tests_nonlive --> skip live LLM tests
 uv run mypy src/apmode/ --strict                # type checking
 uv run ruff check src/apmode/ tests/            # linting
 uv run python scripts/sync_readme.py --check    # README ↔ codebase drift guard
@@ -541,7 +541,7 @@ Formular text ──→ Lark parser ──→ AST ──→     Search Engine
 | Report generator | `src/apmode/report/` | HTML + Markdown regulatory report with credibility framing |
 | Dataset registry | `src/apmode/data/datasets.py` | <!-- apmode:AUTO:datasets -->16<!-- apmode:/AUTO:datasets --> public PK datasets from nlmixr2data with auto-fetch |
 | Suite C literature loader | `src/apmode/benchmarks/literature_loader.py` | YAML → `LiteratureFixture` → `DSLSpec` traversal for the Phase-1 MLE + Bayesian benchmark roster |
-| Suite C Phase-1 scoring | `src/apmode/benchmarks/suite_c_phase1_scoring.py` + `suite_c_phase1_cli.py` | Pure-Python `score_fixture` + `aggregate_phase1_scorecard` (`fraction_beats_literature_median ≥ 60%` gate, `δ = 0.02` win margin); standalone `python -m` CLI driver consumed by the weekly `.github/workflows/suite_c_phase1.yml` |
+| Suite C Phase-1 scoring | `src/apmode/benchmarks/suite_c_phase1_scoring.py` + `suite_c_phase1_cli.py` | Pure-Python `score_fixture` + `aggregate_phase1_scorecard` (`fraction_beats_literature_median ≥ 60%` gate, `δ = 0.02` win margin); standalone `python -m` CLI driver run manually/on-demand (no scheduled CI job) |
 | HTTP API persistence | `src/apmode/api/store.py` | `RunStore` Protocol + `SQLiteRunStore` (WAL mode, `BEGIN IMMEDIATE` writes, idempotent startup-sweep of `RUNNING` rows) — backbone for the FastAPI surface |
 | HTTP API surface | `src/apmode/api/{app,routes,runs}.py` | `build_app()` factory + Starlette lifespan; POST/GET/DELETE `/runs` + `/runs/{id}/{status,bundle,rocrate}` endpoints; `execute_run` background-task wrapper that catches `CancelledError` and writes `RunStatus.CANCELLED` |
 | Subprocess termination | `src/apmode/backends/process_lifecycle.py` | `terminate_process_group(proc, grace_seconds=5)` shared by `Nlmixr2Runner` + `BayesianRunner` — SIGTERM → wait → SIGKILL on the child process group, called from the runners' `asyncio.CancelledError` paths |
@@ -561,7 +561,7 @@ APMODE enforces a **gated funnel** — not a weighted sum. Each gate is disquali
 | **Gate 2.5** | Credibility Qualification | ICH M15 context-of-use, data adequacy, ML transparency, limitation-risk mapping, operational qualification |
 | **Gate 3** | Ranking | Within-paradigm BIC; cross-paradigm VPC concordance + NPE + AUC/Cmax BE composite (Borda or weighted sum) |
 
-Gate thresholds are **versioned policy artifacts** in `policies/*.json` (schema v<!-- apmode:AUTO:policy_gate -->0.6.0<!-- apmode:/AUTO:policy_gate -->) — not hard-coded constants.
+Gate thresholds are **versioned policy artifacts** in `policies/*.json` (schema v<!-- apmode:AUTO:policy_gate -->0.7.1<!-- apmode:/AUTO:policy_gate -->) — not hard-coded constants.
 
 ### Gate 1 PIT calibration (0.4.2)
 
@@ -643,9 +643,9 @@ Suite C anchors APMODE against published, peer-reviewed reference parameterisati
 
 **Phase 1 Bayesian roster** — vancomycin Roberts 2011 ([10.1128/AAC.01708-10](https://doi.org/10.1128/AAC.01708-10)) ships in v0.6 with weakly-informative log-Normal priors on log-CL/log-V centred on the published typical values (4.6 L/h, 105 L) and half-Normal priors on the BSV/residual SDs. Eleveld propofol is deferred per the [`docs/discovery/eleveld_propofol_coverage.md`](docs/discovery/eleveld_propofol_coverage.md) NO-GO assessment (DSL gaps: derived FFM covariate, Stan-side maturation, age-decay piecewise on CL).
 
-The integration tests (`tests/integration/test_suite_c_phase1_mle.py`, `tests/integration/test_suite_c_bayesian.py`) verify each fixture loads, validates against its target lane, lowers cleanly to nlmixr2 R or Stan code, and carries a Crossref-canonical DOI. The full short-fit recovery test (warmup=200, sampling=200, chains=2 vs 8-subject shrink data) is gated behind `@pytest.mark.slow` for the weekly CI workflow.
+The integration tests (`tests/integration/test_suite_c_phase1_mle.py`, `tests/integration/test_suite_c_bayesian.py`) verify each fixture loads, validates against its target lane, lowers cleanly to nlmixr2 R or Stan code, and carries a Crossref-canonical DOI. The full short-fit recovery test (warmup=200, sampling=200, chains=2 vs 8-subject shrink data) is gated behind `@pytest.mark.slow` and is run on-demand, not on a schedule.
 
-The scoring harness — `fraction-beats-literature-median ≥ 60%` with δ=0.02 win margin and 5-fold subject-level CV — runs in **honest mode**: the live-fit driver `python -m apmode.benchmarks.suite_c_phase1_runner` writes a disjoint train/test CSV pair per fold, fits the APMODE side on the train CSV with posterior-predictive sims routed at the held-out fold (`Nlmixr2Runner.run(..., test_data_path=test_csv)` → `rxode2::rxSolve(events=test_df)`), and fits the literature side at the published parameter values via `est='posthoc'` (`fixed_parameter=True` → harness freezes THETA/OMEGA/SIGMA at the compiled `ini()` values and only estimates ETAs). The reported NPE on each side is therefore true held-out generalisation; the gate is a methodology-drift detector rather than a goodness-of-fit detector. The weekly CI workflow at `.github/workflows/suite_c_phase1.yml` consumes the resulting `phase1_npe_inputs.json` via `suite_c_phase1_cli.py`.
+The scoring harness — `fraction-beats-literature-median ≥ 60%` with δ=0.02 win margin and 5-fold subject-level CV — runs in **honest mode**: the live-fit driver `python -m apmode.benchmarks.suite_c_phase1_runner` writes a disjoint train/test CSV pair per fold, fits the APMODE side on the train CSV with posterior-predictive sims routed at the held-out fold (`Nlmixr2Runner.run(..., test_data_path=test_csv)` → `rxode2::rxSolve(events=test_df)`), and fits the literature side at the published parameter values via `est='posthoc'` (`fixed_parameter=True` → harness freezes THETA/OMEGA/SIGMA at the compiled `ini()` values and only estimates ETAs). The reported NPE on each side is therefore true held-out generalisation; the gate is a methodology-drift detector rather than a goodness-of-fit detector. There is no scheduled CI job for Suite C — an earlier weekly workflow (`.github/workflows/suite_c_phase1.yml`) was removed because it only re-scored the committed `phase1_npe_inputs.json` via `suite_c_phase1_cli.py` (pure arithmetic, no live `nlmixr2` fit), which created a false impression of ongoing live validation. Regenerating the snapshot and its score is a manual operator step (see [`benchmarks/suite_c/README.md`](benchmarks/suite_c/README.md)).
 
 Ten infrastructure fixes from the v0.6.1 honest-mode bring-up keep this pipeline robust on every canonical fixture: (1) `Nlmixr2Runner.run` pre-adapts the on-disk CSV through `apmode.data.adapters.to_nlmixr2_format` (NMID→ID rename + `DVID` PK-row filter + string-categorical remap + `_PK_PARAM_COLLISION_COLUMNS` strip for ACOP-style simulator metadata `V/CL/KA/DOSE/SD`) and points the harness at the adapted copy in the per-fit scratch directory — without it, FOCEI silently entered a "Theta reset (ETA drift)" loop on small folds and rxode2's posterior-predictive sims got hijacked by the simulator's true-param columns; `r/harness.R::.normalize_id_column` keeps an idempotent NMID→ID rename as defence in depth. (2) `NCAEstimator` shares the runner's `PK_DVID_ALLOWLIST` to filter mixed-endpoint datasets (warfarin's `DVID="cp"`/`"pca"`) before per-subject NCA, and a new data-driven fallback (`V = Dose_geo / Cmax_geo`, `CL = Dose_geo / AUC_obs_geo`, `ka = 2.5 / Tmax_geo` with log-normal floors/caps) precedes the conservative hard-coded defaults — the cascade is `nca → dataset_card → data_driven → defaults`. (3) The NPE residual scaling is driven by `spec.observation` (`compute_npe(error_model="proportional"|"combined"|"additive")`) so an ng/mL-scaled fixture (mavoglurant) and an mg/L-scaled fixture (theo) on the same `Proportional` model produce comparable NPE values — without this wire the rc8 raw-MedAE path inflated NPE by ~3 OoMs purely from the unit difference. (4) `r/harness.R::.simulate_posterior_predictive` wraps each per-sim row + the per-subject `t_observed`/`observed_dv` vectors in `I(...)` so `jsonlite::toJSON(auto_unbox = TRUE)` preserves the array shape on single-observation subjects (sparse fixtures like `pheno_sd`); a defence-in-depth `field_validator` on `PredictedSimulationsSubject` coerces the flat `list[float]` and bare-scalar shapes if the R-side fix ever regresses. (5) `Nlmixr2Runner._spawn_r` races a `os.kill(pid, 0)`-based watchdog against the drain gather so an orphaned gcc/clang grandchild holding inherited stdout/stderr FDs cannot block `proc.wait()` past the per-fit budget. (6) `CanonicalPKSchema.SS` accepts the ACOP-style `99` "not applicable" sentinel (in addition to the standard 0/1/2). (7) The harness filters the rxSolve output by `evid` (lowercase, modern rxode2) AND `EVID` (legacy uppercase) so EVID=2 reset rows do not inflate the per-sim row count past `n_obs`. (8) The harness uses the simulator's actual covered TIMES as the per-subject time axis and positional-matches via `match()` so partial rxSolve coverage (e.g. trailing `DV=0` observations rxode2 truncates) does not silently mark every replicate as failed. (9) `apmode.data.adapters._PK_PARAM_COLLISION_COLUMNS` strips simulator-truth columns (`V`, `CL`, `KA`, `Q`, `V1/V2/V3`, `KM`, `VM`, `MTT`, `KTR`, `KE`, `F1`, `TLAG`, plus ACOP metadata `DOSE`, `SD`) — these names are never legitimate NONMEM event-table columns, so stripping is always safe. (10) Undefined CWRES (nlmixr2 fits that converge numerically but produce all-NaN residuals — Suite-B `b8_mavoglurant_null_covariates` is the canonical case) propagates as `Optional[float] = None` end-to-end (per ICH M15 §3 and Karlsson 2007): the harness emits JSON `null` via `.finite_or_null`, `GOFMetrics.{cwres_mean,cwres_sd,outlier_fraction}` accept `None`, Gate 1 fails-closed on the `None` ("cannot affirm structural validity without a usable diagnostic"), the cross-paradigm ranker's `compute_cwres_npe_proxy` returns `+inf` so a diagnostically-incomplete fit ranks worst (not best) under the lower-is-better ordering, LORO-CV / `diagnostic_summarizer` / `report.renderer` render the gap as the literal `"unavailable"` rather than fabricating a misleading `"0.0000"` entry. The earlier silent `0/1` fallback approach is reverted because it would have let degenerate fits pass Gate 1 ranking as "perfectly diagnosed" — exactly the failure mode regulatory diagnostics protocols explicitly forbid.
 
@@ -659,7 +659,7 @@ End-to-end Phase-1 on the five open `nlmixr2data` fixtures (theophylline / warfa
 | `phenobarbital_grasela_1985` | 59 | 0.251 | 0.270 | ✓ (+7%) |
 | `oral_1cpt_acop_2016` | 120 | 0.263 | 0.259 | ✗ (-2%) |
 
-`fraction-beats-literature-median = 40% (2/5)`, below the 60% target. The three losses are all within the δ=0.02 win-margin Monte-Carlo noise band; the mavoglurant win (59% better) is the methodology-improvement signal. Oral_1CPT is a simulated ground-truth-recovery fixture where the literature side is fitting to the simulator's exact typical values, so a near-tie is the design expectation. Raw inputs are committed at `benchmarks/suite_c/phase1_npe_inputs.json` and the weekly CI workflow re-derives them via `python -m apmode.benchmarks.suite_c_phase1_runner`.
+`fraction-beats-literature-median = 40% (2/5)`, below the 60% target. The three losses are all within the δ=0.02 win-margin Monte-Carlo noise band; the mavoglurant win (59% better) is the methodology-improvement signal. Oral_1CPT is a simulated ground-truth-recovery fixture where the literature side is fitting to the simulator's exact typical values, so a near-tie is the design expectation. Raw inputs are committed at `benchmarks/suite_c/phase1_npe_inputs.json`, last regenerated 2026-04-25 by a manual `python -m apmode.benchmarks.suite_c_phase1_runner` run — there is no scheduled job that re-derives them; see [`benchmarks/suite_c/README.md`](benchmarks/suite_c/README.md) for the operator-driven regeneration procedure.
 
 ### End-to-End Benchmark Results
 
@@ -706,7 +706,7 @@ reason, vote). `apmode inspect <bundle>` renders the per-signal table;
 
 ## Test Suite
 
-**<!-- apmode:AUTO:tests -->3267<!-- apmode:/AUTO:tests --> tests collected** (<!-- apmode:AUTO:tests_nonlive -->3250<!-- apmode:/AUTO:tests_nonlive --> non-live) across multiple strategies — all counts auto-synced by `scripts/sync_readme.py`:
+**<!-- apmode:AUTO:tests -->3427<!-- apmode:/AUTO:tests --> tests collected** (<!-- apmode:AUTO:tests_nonlive -->3410<!-- apmode:/AUTO:tests_nonlive --> non-live) across multiple strategies — all counts auto-synced by `scripts/sync_readme.py`:
 
 ```bash
 uv run pytest tests/unit/ -q               # unit tests
@@ -830,7 +830,7 @@ too poor to support any flip-flop call. The stricter
 
 ### Gate policy parameters (`policies/{submission,discovery,optimization}.json`)
 
-Gate policies are lane-specific, versioned (currently **<!-- apmode:AUTO:policy_gate -->0.6.0<!-- apmode:/AUTO:policy_gate -->**), and discoverable via
+Gate policies are lane-specific, versioned (currently **<!-- apmode:AUTO:policy_gate -->0.7.1<!-- apmode:/AUTO:policy_gate -->**), and discoverable via
 `apmode policies <lane>`. The Pydantic schema lives in
 [`src/apmode/governance/policy.py`](src/apmode/governance/policy.py)
 and is validated by the CI hook
@@ -1185,7 +1185,7 @@ Every CI run and every tagged release ships a [CycloneDX](https://cyclonedx.org/
 This README's numeric claims (version, test count, transform count, CLI-command count, dataset count, policy versions, profiler manifest version) are rewritten from the codebase by [`scripts/sync_readme.py`](scripts/sync_readme.py). Each auto-synced value sits between HTML comment markers like:
 
 ```
-<!-- apmode:AUTO:tests -->3267<!-- apmode:/AUTO:tests -->
+<!-- apmode:AUTO:tests -->3427<!-- apmode:/AUTO:tests -->
 ```
 
 Running the script:

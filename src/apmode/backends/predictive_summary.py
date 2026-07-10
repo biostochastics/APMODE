@@ -46,13 +46,14 @@ from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
+from scipy import stats
 
 from apmode.benchmarks.scoring import (
     compute_auc_cmax_be_score,
     compute_npe,
     is_nca_eligible_per_subject,
 )
-from apmode.bundle.models import PITCalibrationSummary, VPCSummary, _pit_key
+from apmode.bundle.models import NPDESummary, PITCalibrationSummary, VPCSummary, _pit_key
 
 # ``np.trapezoid`` is the NumPy 2.0+ spelling; ``np.trapz`` is the
 # legacy name. Project minimum is numpy>=1.25, so pick whichever the
@@ -126,6 +127,17 @@ _MASK_DROP_KEYS: tuple[str, ...] = (
     "missing",
     "other",
 )
+
+# Divide-by-zero guard for prediction-corrected VPC's per-observation
+# "typical prediction" denominator (per-subject median of
+# ``sims_at_observed`` — see ``_compute_vpc_from_sims``). This is a pure
+# numerical-stability floor, not a scientific/governance tuning knob (no
+# gate decision is sensitive to its exact value, it only prevents
+# divide-by-zero/inf on BLQ-adjacent near-zero simulated medians), so it
+# stays a module constant rather than a ``Gate3Config`` policy field —
+# same treatment as ``compute_npe``'s ``proportional_floor`` default and
+# ``bundle/emitter.py``'s ``_HASH_CHUNK_SIZE``.
+_PC_VPC_TYPICAL_FLOOR: float = 1e-6
 
 
 def _classify_exclusion_reason(reason: str | None) -> str:
@@ -216,6 +228,12 @@ class PredictiveSummaryBundle(BaseModel):
     # the atomic-population invariant still holds: a backend that emits
     # ``vpc`` must also emit ``pit_calibration``.
     pit_calibration: PITCalibrationSummary
+    # True decorrelated NPDE (Comets & Brendel 2008/2010). Required,
+    # never None — mirrors ``vpc``/``pit_calibration``'s atomic-
+    # population contract: a degenerate simulation matrix produces a
+    # zero-subject sentinel :class:`~apmode.bundle.models.NPDESummary`
+    # (see ``build_predictive_diagnostics``), not a missing field.
+    npde: NPDESummary
     npe_score: float = Field(ge=0.0)
     auc_cmax_be_score: float | None = Field(default=None, ge=0.0, le=1.0)
     auc_cmax_source: Literal["observed_trapezoid"] | None = None
@@ -267,6 +285,46 @@ def _bin_edges_from_pooled_times(all_times: np.ndarray, n_bins: int) -> np.ndarr
     return edges
 
 
+def _vpc_coverage_loop(
+    obs: np.ndarray,
+    sims: np.ndarray,
+    *,
+    bin_idx: np.ndarray,
+    effective_n_bins: int,
+    percentiles: tuple[float, ...],
+    ci_low_q: float,
+    ci_hi_q: float,
+) -> dict[str, float]:
+    """Percentile/CI hit-test loop shared by the pc and non-pc VPC paths.
+
+    Extracted so :func:`_compute_vpc_from_sims` can run the identical
+    binning + CI-containment logic over either the raw pooled
+    ``(obs, sims)`` arrays or their prediction-corrected counterparts
+    without duplicating the loop body.
+    """
+    coverage_dict: dict[str, float] = {}
+    for p in percentiles:
+        hits = 0
+        total = 0
+        for b in range(effective_n_bins):
+            mask = bin_idx == b
+            if not mask.any():
+                continue
+            obs_in_bin = obs[mask]
+            sims_in_bin = sims[:, mask]  # (n_sims, n_in_bin)
+            if obs_in_bin.size == 0 or sims_in_bin.size == 0:
+                continue
+            obs_percentile = float(np.percentile(obs_in_bin, p))
+            sim_percentiles_across_sims = np.percentile(sims_in_bin, p, axis=1)
+            ci_low = float(np.percentile(sim_percentiles_across_sims, ci_low_q))
+            ci_hi = float(np.percentile(sim_percentiles_across_sims, ci_hi_q))
+            if ci_low <= obs_percentile <= ci_hi:
+                hits += 1
+            total += 1
+        coverage_dict[f"p{int(p)}"] = (hits / total) if total > 0 else 0.0
+    return coverage_dict
+
+
 def _compute_vpc_from_sims(
     per_subject_sims: list[SubjectSimulation],
     *,
@@ -274,6 +332,7 @@ def _compute_vpc_from_sims(
     coverage_target: float,
     n_bins: int,
     collapse_warn_ratio: float = 0.5,
+    prediction_corrected: bool = False,
 ) -> VPCSummary:
     """Percentile-based VPC with confidence intervals (xpose4/PsN).
 
@@ -299,6 +358,22 @@ def _compute_vpc_from_sims(
     effective bin count drops below ``collapse_warn_ratio * n_bins``, a
     :class:`logging.WARNING` surfaces the audit event so reviewers can
     interpret noisy coverage estimates on sparse-sampling designs.
+
+    **Prediction-corrected VPC (pcVPC), ``prediction_corrected=True``.**
+    Normalizes observed and simulated values by a per-observation
+    "typical prediction" before binning (Bergstrand 2011 / Karlsson &
+    Holford 2008 style pcVPC), so between-subject dose/covariate spread
+    doesn't inflate bin variance. This implementation approximates the
+    typical prediction with the **per-subject median of
+    ``sims_at_observed``** across replicates — a simulated-median proxy,
+    *not* a fixed-effects-only (ETA=0) PRED solve, since the latter is
+    not currently available from the R harness for held-out
+    (``test_data_path``) subjects. See
+    :attr:`apmode.governance.policy.Gate3Config.vpc_include_prediction_corrected`
+    for the full tradeoff discussion. The per-observation typical value
+    is clipped to ``_PC_VPC_TYPICAL_FLOOR`` before use as a denominator
+    so BLQ-adjacent near-zero simulated medians cannot produce
+    divide-by-zero / inf / nan coverage values.
     """
     all_times = np.concatenate([s.t_observed for s in per_subject_sims])
     all_obs = np.concatenate([s.observed_dv for s in per_subject_sims])
@@ -330,32 +405,47 @@ def _compute_vpc_from_sims(
     ci_low_q = 100.0 * alpha
     ci_hi_q = 100.0 * (1.0 - alpha)
 
-    coverage_dict: dict[str, float] = {}
-    for p in percentiles:
-        hits = 0
-        total = 0
+    if prediction_corrected:
+        # Per-subject "typical" prediction: the per-time median across
+        # sim replicates, pooled in the same subject/observation order
+        # as ``all_times``/``all_obs``/``sims_pooled`` so ``bin_idx``
+        # applies unchanged.
+        typical_pooled = np.concatenate(
+            [np.median(s.sims_at_observed, axis=0) for s in per_subject_sims]
+        )
+        typical_safe = np.maximum(typical_pooled, _PC_VPC_TYPICAL_FLOOR)
+
+        # Pooled reference value per bin: the median of the (floored)
+        # typical predictions falling in that bin — the "typical value
+        # in the bin" PsN/xpose4 pcVPC uses as the correction target.
+        pred_bin = np.full(effective_n_bins, _PC_VPC_TYPICAL_FLOOR, dtype=float)
         for b in range(effective_n_bins):
             mask = bin_idx == b
-            if not mask.any():
-                continue
-            obs_in_bin = all_obs[mask]
-            sims_in_bin = sims_pooled[:, mask]  # (n_sims, n_in_bin)
-            if obs_in_bin.size == 0 or sims_in_bin.size == 0:
-                continue
-            obs_percentile = float(np.percentile(obs_in_bin, p))
-            sim_percentiles_across_sims = np.percentile(sims_in_bin, p, axis=1)
-            ci_low = float(np.percentile(sim_percentiles_across_sims, ci_low_q))
-            ci_hi = float(np.percentile(sim_percentiles_across_sims, ci_hi_q))
-            if ci_low <= obs_percentile <= ci_hi:
-                hits += 1
-            total += 1
-        coverage_dict[f"p{int(p)}"] = (hits / total) if total > 0 else 0.0
+            if mask.any():
+                pred_bin[b] = float(np.median(typical_safe[mask]))
+
+        ref = pred_bin[bin_idx]
+        obs_for_coverage = all_obs * ref / typical_safe
+        sims_for_coverage = sims_pooled * (ref / typical_safe)[np.newaxis, :]
+    else:
+        obs_for_coverage = all_obs
+        sims_for_coverage = sims_pooled
+
+    coverage_dict = _vpc_coverage_loop(
+        obs_for_coverage,
+        sims_for_coverage,
+        bin_idx=bin_idx,
+        effective_n_bins=effective_n_bins,
+        percentiles=percentiles,
+        ci_low_q=ci_low_q,
+        ci_hi_q=ci_hi_q,
+    )
 
     return VPCSummary(
         percentiles=list(percentiles),
         coverage=coverage_dict,
         n_bins=effective_n_bins,
-        prediction_corrected=False,
+        prediction_corrected=prediction_corrected,
     )
 
 
@@ -463,6 +553,186 @@ def _compute_pit_calibration(
         n_subjects=n_subjects_used,
         aggregation="subject_robust",
     )
+
+
+def _npde_decorrelate_subject(
+    observed: np.ndarray,
+    sims: np.ndarray,
+    *,
+    covariance_ridge: float,
+) -> tuple[np.ndarray, bool]:
+    """Decorrelate one subject's observation vector against its K sims.
+
+    Comets & Brendel (2008) eq. 3-5: build the simulated within-subject
+    covariance, Cholesky-whiten both the observation and every simulated
+    replicate, ECDF-rank the whitened observation within the whitened
+    replicate distribution at each observation index, and inverse-
+    normal-transform the rank. Falls back to a marginal (uncorrelated,
+    per-observation z-score-style) rank when ``n_obs_i == 1`` or the
+    simulated covariance is singular even after ridging — returns
+    ``fell_back=True`` in that case so the caller can tally it.
+
+    ``observed`` shape ``(n_obs_i,)``; ``sims`` shape ``(K, n_obs_i)``.
+    Returns ``(npde_values, fell_back)`` where ``npde_values`` has shape
+    ``(n_obs_i,)``.
+    """
+    n_obs_i = observed.shape[0]
+    mu = sims.mean(axis=0)
+    fell_back = False
+    obs_w: np.ndarray
+    sims_w: np.ndarray
+    if n_obs_i > 1:
+        cov = np.cov(sims, rowvar=False) + covariance_ridge * np.eye(n_obs_i)
+        try:
+            chol = np.linalg.cholesky(cov)
+            obs_w = np.linalg.solve(chol, observed - mu)
+            sims_w = np.linalg.solve(chol, (sims - mu).T).T
+        except np.linalg.LinAlgError:
+            fell_back = True
+    else:
+        fell_back = True
+
+    if fell_back:
+        sd = sims.std(axis=0)
+        sd = np.where(sd > 0, sd, 1.0)
+        obs_w = (observed - mu) / sd
+        sims_w = (sims - mu) / sd
+
+    k = sims_w.shape[0]
+    npde_vals = np.empty(n_obs_i, dtype=float)
+    for j in range(n_obs_i):
+        below = float(np.sum(sims_w[:, j] < obs_w[j]))
+        tied = float(np.sum(sims_w[:, j] == obs_w[j]))
+        pde = (below + 0.5 * tied + 0.5) / (k + 1.0)
+        npde_vals[j] = float(stats.norm.ppf(pde))
+    return npde_vals, fell_back
+
+
+def _compute_npde(
+    per_subject_sims: list[SubjectSimulation],
+    *,
+    covariance_ridge: float,
+    loq_value: float | None = None,
+    censoring_mode: Literal["cdf", "loq", "ypred", "omit"] | None = None,
+) -> NPDESummary:
+    """True decorrelated NPDE (Comets & Brendel 2008, 2010).
+
+    Per subject: re-censors simulated replicates at ``loq_value`` when
+    ``censoring_mode == "cdf"`` (floors simulated draws below the LOQ —
+    a cruder operation than the ``npde`` R-package's cdf decensoring
+    method, which reconstructs the *observed* censored value from its
+    truncated conditional distribution; see :class:`NPDESummary`
+    docstring for the caveat. ``"loq"``/``"ypred"``/``"omit"`` are
+    reserved for a follow-up that needs the full Beal 2001 M3/M4
+    machinery), then decorrelates via
+    :func:`_npde_decorrelate_subject`, pools the resulting npde values
+    across subjects, and runs three complementary distributional tests
+    against the N(0,1) null: Wilcoxon signed-rank (mean=0), Shapiro-Wilk
+    (normality), and a chi-square variance test (var=1). ``bonferroni_p``
+    is ``min(three p-values) * 3``, clamped to 1.0.
+
+    Raises ``ValueError`` when fewer than 3 subjects contribute usable
+    (finite observation, finite sim) pairs — the pooled test battery is
+    not meaningfully defined below that floor. Callers (e.g.
+    :func:`build_predictive_diagnostics`) are expected to catch this and
+    substitute a zero-subject sentinel :class:`NPDESummary`.
+    """
+    all_npde: list[float] = []
+    n_obs_used = 0
+    n_subj_used = 0
+    n_fallback = 0
+
+    for s in per_subject_sims:
+        obs = np.asarray(s.observed_dv, dtype=float)
+        sims = np.asarray(s.sims_at_observed, dtype=float)
+        if obs.shape[0] == 0 or sims.shape[0] < 2:
+            continue
+        if loq_value is not None and censoring_mode == "cdf":
+            sims = np.where(sims < loq_value, loq_value, sims)
+
+        finite_cols = np.isfinite(obs) & np.all(np.isfinite(sims), axis=0)
+        if not finite_cols.any():
+            continue
+        obs_f = obs[finite_cols]
+        sims_f = sims[:, finite_cols]
+
+        npde_vals, fell_back = _npde_decorrelate_subject(
+            obs_f, sims_f, covariance_ridge=covariance_ridge
+        )
+        if fell_back:
+            n_fallback += 1
+        all_npde.extend(npde_vals.tolist())
+        n_obs_used += obs_f.shape[0]
+        n_subj_used += 1
+
+    if not all_npde or n_subj_used < 3:
+        msg = "insufficient subjects/observations to compute NPDE"
+        raise ValueError(msg)
+
+    npde_arr = np.asarray(all_npde, dtype=float)
+    npde_mean = float(np.mean(npde_arr))
+    npde_var = float(np.var(npde_arr, ddof=1)) if npde_arr.size > 1 else 0.0
+
+    try:
+        _, wilcoxon_p = stats.wilcoxon(npde_arr)
+        wilcoxon_p = float(wilcoxon_p)
+        if not np.isfinite(wilcoxon_p):
+            # scipy returns NaN (with a RuntimeWarning) rather than
+            # raising when every decorrelated npde value is exactly
+            # zero (e.g. a degenerate perfect-fit simulation matrix).
+            # That is trivially consistent with the mean=0 null — a
+            # genuinely undefined test statistic, not "reject" or a
+            # crash — so treat it as p=1.0 rather than letting NaN
+            # reach NPDESummary's [0, 1] validator (which would raise
+            # and get mis-caught by the caller's degenerate-input
+            # ValueError handler, discarding real per-subject evidence
+            # behind a zero-subject sentinel).
+            wilcoxon_p = 1.0
+    except ValueError:
+        wilcoxon_p = 1.0
+    if npde_arr.size >= 3:
+        _, shapiro_p = stats.shapiro(npde_arr)
+        shapiro_p = float(shapiro_p)
+    else:
+        shapiro_p = 1.0
+
+    n = npde_arr.size
+    chi2_stat = (n - 1) * npde_var
+    lower_tail = float(stats.chi2.cdf(chi2_stat, df=n - 1))
+    fisher_p = min(1.0, 2.0 * min(lower_tail, 1.0 - lower_tail))
+
+    bonferroni_p = min(1.0, 3.0 * min(wilcoxon_p, shapiro_p, fisher_p))
+
+    return NPDESummary(
+        n_subjects=n_subj_used,
+        n_observations=n_obs_used,
+        decorrelation_failed_subjects=n_fallback,
+        npde_mean=npde_mean,
+        npde_variance=npde_var,
+        wilcoxon_p=wilcoxon_p,
+        shapiro_p=shapiro_p,
+        fisher_variance_p=fisher_p,
+        bonferroni_p=bonferroni_p,
+        censoring_mode=censoring_mode,
+    )
+
+
+def _npde_censoring_mode(
+    spec: DSLSpec | None,
+) -> tuple[Literal["cdf", "loq", "ypred", "omit"] | None, float | None]:
+    """Map a DSL ``ObservationModule`` to (censoring_mode, loq_value) for NPDE.
+
+    Only BLQM3/BLQM4 carry an LOQ; all other observation models return
+    ``(None, None)`` — NPDE runs uncensored.
+    """
+    if spec is None:
+        return None, None
+    from apmode.dsl.ast_models import BLQM3, BLQM4
+
+    obs = spec.observation
+    if isinstance(obs, (BLQM3, BLQM4)):
+        return "cdf", obs.loq_value
+    return None, None
 
 
 def _per_subject_auc_cmax(t_observed: np.ndarray, values: np.ndarray) -> tuple[float, float]:
@@ -588,6 +858,7 @@ def build_predictive_diagnostics(
         coverage_target=vpc_coverage_target,
         n_bins=policy.vpc_n_bins,
         collapse_warn_ratio=policy.vpc_n_bin_collapse_warn_ratio,
+        prediction_corrected=policy.vpc_include_prediction_corrected,
     )
 
     # PIT/NPDE-lite calibration — the 0.4.2 Gate 1 gated metric.
@@ -619,6 +890,38 @@ def build_predictive_diagnostics(
             n_observations=0,
             n_subjects=0,
             aggregation="subject_robust",
+        )
+
+    # True decorrelated NPDE (Comets & Brendel 2008/2010) — additive to
+    # pit_calibration above, not a replacement (opt-in Gate 1 gate via
+    # Gate1Config.npde_required). Same degenerate-input discipline as
+    # pit_calibration: a fully-degenerate simulation matrix (or fewer
+    # than 3 usable subjects) raises inside _compute_npde; catch it and
+    # emit a zero-subject sentinel rather than crashing the orchestrator.
+    censoring_mode, loq_value = _npde_censoring_mode(spec)
+    try:
+        npde = _compute_npde(
+            per_subject_sims,
+            covariance_ridge=policy.npde_covariance_ridge,
+            loq_value=loq_value,
+            censoring_mode=censoring_mode,
+        )
+    except ValueError:
+        logger.warning(
+            "npde_degenerate",
+            extra={"n_subjects": len(per_subject_sims)},
+            exc_info=True,
+        )
+        npde = NPDESummary(
+            n_subjects=0,
+            n_observations=0,
+            npde_mean=0.0,
+            npde_variance=0.0,
+            wilcoxon_p=1.0,
+            shapiro_p=1.0,
+            fisher_variance_p=1.0,
+            bonferroni_p=1.0,
+            censoring_mode=censoring_mode,
         )
 
     # AUC/Cmax BE — per-subject, aggregation controlled by policy.
@@ -686,6 +989,7 @@ def build_predictive_diagnostics(
     return PredictiveSummaryBundle(
         vpc=vpc,
         pit_calibration=pit_calibration,
+        npde=npde,
         npe_score=npe_score,
         auc_cmax_be_score=auc_cmax_score,
         auc_cmax_source=auc_cmax_source,

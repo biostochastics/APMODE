@@ -231,6 +231,121 @@ class TestGate1:
         failed_ids = {c.check_id for c in g1.checks if not c.passed}
         assert "pit_calibration" in failed_ids
 
+    def test_npde_not_required_by_default_passes_when_absent(self) -> None:
+        result = _make_backend_result()  # no npde on this fixture
+        policy = _load_policy("submission")
+        g1 = evaluate_gate1(result, policy)
+        npde_check = next(c for c in g1.checks if c.check_id == "npde_calibration")
+        assert npde_check.passed is True
+        assert npde_check.observed == "npde_not_configured"
+
+    def test_npde_required_fails_when_absent(self) -> None:
+        result = _make_backend_result()
+        policy = _load_policy("submission")
+        policy.gate1.npde_required = True
+        g1 = evaluate_gate1(result, policy)
+        npde_check = next(c for c in g1.checks if c.check_id == "npde_calibration")
+        assert npde_check.passed is False
+        assert npde_check.observed == "npde_not_available"
+
+    def test_npde_populated_but_not_required_passes_without_gating(self) -> None:
+        """Backend emits NPDE but the lane hasn't opted in yet — the
+        evidence is surfaced (audit trail) but does not fail the
+        candidate, preserving the "additive, opt-in" contract even
+        after Task 6 wires npde onto every posterior-predictive-capable
+        backend result."""
+        from apmode.bundle.models import BackendResult as BR
+        from apmode.bundle.models import NPDESummary
+
+        result = _make_backend_result()
+        data = result.model_dump()
+        data["diagnostics"]["npde"] = NPDESummary(
+            n_subjects=30,
+            n_observations=120,
+            npde_mean=1.2,
+            npde_variance=2.5,
+            wilcoxon_p=0.001,
+            shapiro_p=0.02,
+            fisher_variance_p=0.001,
+            bonferroni_p=0.003,  # would fail if gated
+        ).model_dump()
+        result_bad_npde = BR.model_validate(data)
+        policy = _load_policy("submission")
+        assert policy.gate1.npde_required is False
+        g1 = evaluate_gate1(result_bad_npde, policy)
+        npde_check = next(c for c in g1.checks if c.check_id == "npde_calibration")
+        assert npde_check.passed is True
+
+    def test_npde_required_fails_below_bonferroni_alpha(self) -> None:
+        from apmode.bundle.models import BackendResult as BR
+        from apmode.bundle.models import NPDESummary
+
+        result = _make_backend_result()
+        data = result.model_dump()
+        data["diagnostics"]["npde"] = NPDESummary(
+            n_subjects=30,
+            n_observations=120,
+            npde_mean=1.2,
+            npde_variance=2.5,
+            wilcoxon_p=0.001,
+            shapiro_p=0.02,
+            fisher_variance_p=0.001,
+            bonferroni_p=0.003,
+        ).model_dump()
+        result_bad_npde = BR.model_validate(data)
+        policy = _load_policy("submission")
+        policy.gate1.npde_required = True
+        g1 = evaluate_gate1(result_bad_npde, policy)
+        npde_check = next(c for c in g1.checks if c.check_id == "npde_calibration")
+        assert npde_check.passed is False
+
+    def test_npde_required_passes_when_well_calibrated(self) -> None:
+        from apmode.bundle.models import BackendResult as BR
+        from apmode.bundle.models import NPDESummary
+
+        result = _make_backend_result()
+        data = result.model_dump()
+        data["diagnostics"]["npde"] = NPDESummary(
+            n_subjects=30,
+            n_observations=120,
+            npde_mean=0.0,
+            npde_variance=1.0,
+            wilcoxon_p=0.9,
+            shapiro_p=0.9,
+            fisher_variance_p=0.9,
+            bonferroni_p=1.0,
+        ).model_dump()
+        result_good_npde = BR.model_validate(data)
+        policy = _load_policy("submission")
+        policy.gate1.npde_required = True
+        g1 = evaluate_gate1(result_good_npde, policy)
+        npde_check = next(c for c in g1.checks if c.check_id == "npde_calibration")
+        assert npde_check.passed is True
+
+    def test_npde_required_fails_on_degenerate_zero_subject_sentinel(self) -> None:
+        from apmode.bundle.models import BackendResult as BR
+        from apmode.bundle.models import NPDESummary
+
+        result = _make_backend_result()
+        data = result.model_dump()
+        data["diagnostics"]["npde"] = NPDESummary(
+            n_subjects=0,
+            n_observations=0,
+            npde_mean=0.0,
+            npde_variance=0.0,
+            wilcoxon_p=1.0,
+            shapiro_p=1.0,
+            fisher_variance_p=1.0,
+            bonferroni_p=1.0,
+        ).model_dump()
+        result_degenerate = BR.model_validate(data)
+        policy = _load_policy("submission")
+        policy.gate1.npde_required = True
+        g1 = evaluate_gate1(result_degenerate, policy)
+        npde_check = next(c for c in g1.checks if c.check_id == "npde_calibration")
+        assert npde_check.passed is False
+        assert npde_check.observed == "npde_degenerate_no_finite_sims"
+
     def test_seed_stability_with_consistent_seeds(self) -> None:
         result1 = _make_backend_result(ofv=150.0)
         result2 = _make_backend_result(ofv=150.5)
@@ -318,6 +433,7 @@ class TestGate1:
             "cwres_mean",
             "cwres_outlier_fraction",
             "pit_calibration",
+            "npde_calibration",
             "split_integrity",
             "seed_stability",
             "imputation_stability",
@@ -956,5 +1072,47 @@ class TestGate25:
             "data_adequacy",
             "sensitivity_analysis",
             "ml_transparency",
+            "risk_grading",
         }
         assert expected == check_ids
+
+    def test_risk_grading_not_required_passes(self) -> None:
+        from apmode.bundle.models import CredibilityContext
+
+        policy = _make_policy_with_gate25()  # risk_grading omitted -> None
+        result = _make_backend_result()
+        gate_result = evaluate_gate2_5(result, policy, CredibilityContext())
+        check = next(c for c in gate_result.checks if c.check_id == "risk_grading")
+        assert check.passed is True
+        assert check.observed == "not_required"
+
+    def test_risk_grading_gap_fails(self) -> None:
+        from apmode.bundle.models import CredibilityContext
+
+        base = json.loads(POLICY_DIR.joinpath("submission.json").read_text())
+        policy = GatePolicy.model_validate(base)  # submission.json now ships risk_grading enabled
+        result = _make_backend_result()  # no NPE/AUC-Cmax diagnostics by default
+        ctx = CredibilityContext(model_influence="high", decision_consequence="high")
+        gate_result = evaluate_gate2_5(result, policy, ctx)
+        check = next(c for c in gate_result.checks if c.check_id == "risk_grading")
+        assert check.passed is False
+        assert "tier=high" in str(check.observed)
+        assert gate_result.passed is False
+
+    def test_risk_grading_tier_low_influence_low_consequence_passes(self) -> None:
+        from apmode.bundle.models import CredibilityContext
+
+        base = json.loads(POLICY_DIR.joinpath("submission.json").read_text())
+        policy = GatePolicy.model_validate(base)
+        result = _make_backend_result()
+        ctx = CredibilityContext(
+            context_of_use="Test",
+            model_influence="low",
+            decision_consequence="low",
+            n_observations=100,
+            n_parameters=5,
+        )
+        gate_result = evaluate_gate2_5(result, policy, ctx)
+        check = next(c for c in gate_result.checks if c.check_id == "risk_grading")
+        # low/low tier has empty credibility_factors in submission.json fixture
+        assert check.passed is True

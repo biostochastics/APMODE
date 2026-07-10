@@ -38,6 +38,9 @@ _SBOM_FILENAME = "bom.cdx.json"
 # by the full bundle-relative path so a same-named artefact in another
 # subdir is not silently exempted.
 _SBC_MANIFEST_RELPATH = "artifacts/sbc/sbc_manifest.json"
+# Reviewer attestation sidecar (see ``apmode.bundle.emitter._ATTESTATION_FILENAME``)
+# lives at the bundle root, like the SBOM.
+_ATTESTATION_FILENAME = "attestation.json"
 # Bundle-relative POSIX paths excluded from the digest. Lowercased so
 # round-tripping through a case-insensitive filesystem (macOS APFS
 # default, Windows NTFS) cannot inadvertently miss the sentinel.
@@ -46,7 +49,13 @@ _SBC_MANIFEST_RELPATH = "artifacts/sbc/sbc_manifest.json"
 # (e.g. ``compiled_specs/<id>/bom.cdx.json``) is *not* silently
 # exempted from the digest.
 _DIGEST_EXCLUDED_RELPATHS_LOWER: frozenset[str] = frozenset(
-    name.lower() for name in (_COMPLETE_SENTINEL, _SBOM_FILENAME, _SBC_MANIFEST_RELPATH)
+    name.lower()
+    for name in (
+        _COMPLETE_SENTINEL,
+        _SBOM_FILENAME,
+        _SBC_MANIFEST_RELPATH,
+        _ATTESTATION_FILENAME,
+    )
 )
 _HASH_CHUNK_SIZE = 1024 * 1024
 

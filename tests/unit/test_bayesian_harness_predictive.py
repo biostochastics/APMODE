@@ -112,3 +112,61 @@ class TestBuildPredictiveFromDraws:
         # VPC + NPE should still populate.
         assert bundle.vpc is not None
         assert bundle.npe_score is not None
+
+
+class TestBuildPredictiveFromDrawsSpecWiring:
+    def test_spec_forwarded_for_blq_censoring(self) -> None:
+        from apmode.dsl.ast_models import BLQM3
+
+        n_subjects, n_obs_per_subj, n_sims = 4, 3, 300
+        n_total = n_subjects * n_obs_per_subj
+        rng = np.random.default_rng(5)
+        obs_subject_idx = np.repeat(np.arange(1, n_subjects + 1), n_obs_per_subj)
+        obs_times = np.tile(np.array([0.5, 1.0, 2.0]), n_subjects)
+        observed_dv = np.full(n_total, 5.0)
+        y_pred_draws = rng.normal(loc=5.0, scale=0.3, size=(n_sims, n_total))
+        diagnostics = [
+            NCASubjectDiagnostic(subject_id=str(i + 1), excluded=False) for i in range(n_subjects)
+        ]
+
+        class _FakeSpec:
+            """Minimal stand-in carrying only ``.observation``, matching
+            how ``_npde_censoring_mode``/``_observation_error_model`` read
+            the spec — avoids constructing a full DSLSpec fixture."""
+
+            observation = BLQM3(loq_value=0.5, error_model="proportional")
+
+        bundle = build_predictive_from_draws(
+            y_pred_draws,
+            obs_subject_idx,
+            obs_times,
+            observed_dv,
+            diagnostics,
+            _policy(),
+            spec=_FakeSpec(),  # type: ignore[arg-type]
+        )
+        assert bundle.npde is not None
+        assert bundle.npde.censoring_mode == "cdf"
+
+    def test_spec_none_preserves_prior_behaviour(self) -> None:
+        n_subjects, n_obs_per_subj, n_sims = 4, 3, 300
+        n_total = n_subjects * n_obs_per_subj
+        rng = np.random.default_rng(6)
+        obs_subject_idx = np.repeat(np.arange(1, n_subjects + 1), n_obs_per_subj)
+        obs_times = np.tile(np.array([0.5, 1.0, 2.0]), n_subjects)
+        observed_dv = np.full(n_total, 5.0)
+        y_pred_draws = rng.normal(loc=5.0, scale=0.3, size=(n_sims, n_total))
+        diagnostics = [
+            NCASubjectDiagnostic(subject_id=str(i + 1), excluded=False) for i in range(n_subjects)
+        ]
+
+        bundle = build_predictive_from_draws(
+            y_pred_draws,
+            obs_subject_idx,
+            obs_times,
+            observed_dv,
+            diagnostics,
+            _policy(),
+        )
+        assert bundle.npde is not None
+        assert bundle.npde.censoring_mode is None

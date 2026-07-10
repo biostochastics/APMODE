@@ -45,6 +45,9 @@ class TestTermConstants:
     def test_credibility_report_term(self) -> None:
         assert vocab.CREDIBILITY_REPORT == "apmode:credibilityReport"
 
+    def test_risk_grading_report_term(self) -> None:
+        assert vocab.RISK_GRADING_REPORT == "apmode:riskGradingReport"
+
     def test_search_graph_term(self) -> None:
         assert vocab.SEARCH_GRAPH == "apmode:searchGraph"
 

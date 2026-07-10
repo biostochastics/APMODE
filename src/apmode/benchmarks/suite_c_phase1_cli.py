@@ -1,38 +1,45 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """``python -m apmode.benchmarks.suite_c_phase1_cli`` — score the Suite C roster.
 
-Driver invoked by ``.github/workflows/suite_c_phase1.yml``. The CLI reads a
+Run manually/on-demand by an operator after regenerating
+``benchmarks/suite_c/phase1_npe_inputs.json`` via
+``python -m apmode.benchmarks.suite_c_phase1_runner`` (see
+``benchmarks/suite_c/README.md``). There is no scheduled CI job for
+this — an earlier weekly cron workflow
+(``.github/workflows/suite_c_phase1.yml``) was removed because it only
+re-scored the static committed JSON (pure arithmetic, no R, no
+``nlmixr2``, no live fit), which created a false impression of ongoing
+live validation without actually re-running anything. The CLI reads a
 JSON file mapping ``fixture_id`` → ``{npe_apmode,
 npe_literature}``, computes the per-fixture
 :class:`~apmode.benchmarks.suite_c_phase1_scoring.FixtureScore`,
 aggregates them into a
 :class:`~apmode.benchmarks.suite_c_phase1_scoring.SuiteCPhase1Scorecard`,
 writes a machine-readable JSON scorecard, and (optionally) renders a
-human-readable Markdown summary for the GitHub Actions
-``$GITHUB_STEP_SUMMARY`` and the failure-issue body.
+human-readable Markdown summary suitable for a PR description, an
+issue body, or ad hoc CI use.
 
 Why a separate CLI module rather than a Typer subcommand on
-``apmode.cli``: the weekly workflow runs on a vanilla ``uv sync --extra
-dev`` (no R, no cmdstan); routing through ``apmode.cli`` would pull in
-``Nlmixr2Runner`` import-side imports and surface a less obvious
-"R not found" failure when ``Rscript`` happens to be missing on the
-runner. A standalone ``python -m`` entry point keeps the dependency
-surface minimal.
+``apmode.cli``: an on-demand/CI run of just the scoring math needs a
+vanilla ``uv sync --extra dev`` (no R, no cmdstan); routing through
+``apmode.cli`` would pull in ``Nlmixr2Runner`` import-side imports and
+surface a less obvious "R not found" failure when ``Rscript`` happens
+to be missing. A standalone ``python -m`` entry point keeps the
+dependency surface minimal.
 
 Exit codes:
   * ``0`` — scorecard written successfully (gate result is in the JSON
-    + Markdown; the workflow reads ``passes_gate`` to decide whether
-    to open an issue).
+    + Markdown).
   * ``2`` — usage error (bad CLI arguments, missing inputs file,
     malformed JSON).
   * ``3`` — at least one fixture's NPE values failed validation
-    (negative or non-finite). Exit non-zero so the workflow surfaces
-    a hard error rather than silently falsifying the scorecard.
+    (negative or non-finite). Exit non-zero rather than silently
+    falsifying the scorecard.
   * ``4`` — only emitted when ``--fail-on-missed-gate`` is supplied
-    AND ``passes_gate`` is False. Lets the same CLI back per-PR jobs
-    that want a hard failure on regression instead of deferring to the
-    weekly workflow's open-issue path. Without the flag, a missed gate
-    still exits 0 (the gate is reported in JSON for downstream consumers).
+    AND ``passes_gate`` is False. Lets a caller (e.g. an ad hoc CI
+    job) request a hard failure on regression. Without the flag, a
+    missed gate still exits 0 (the gate is reported in JSON for
+    downstream consumers).
 """
 
 from __future__ import annotations
@@ -162,10 +169,10 @@ def render_markdown_summary(
 ) -> str:
     """Render the scorecard as a Markdown table + headline.
 
-    Used by the workflow to populate ``$GITHUB_STEP_SUMMARY`` and the
-    body of the auto-opened GitHub issue when the gate misses. Kept
+    Suitable for a PR description, an issue body, or a
+    ``$GITHUB_STEP_SUMMARY`` in an ad hoc CI invocation. Kept
     deterministic (no timestamps) so the artifact diff is meaningful
-    week-on-week.
+    run-to-run.
 
     ``inputs`` (the raw ``_load_inputs`` map) is optional and, when
     supplied, adds PIT/NPDE-lite calibration columns per fixture — this
@@ -258,8 +265,8 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
         default=False,
         help=(
             "Exit non-zero (code 4) when passes_gate=false. "
-            "Useful for per-PR jobs that want a hard failure instead of "
-            "deferring to the weekly workflow's open-issue path."
+            "Useful for callers that want a hard failure on regression "
+            "rather than just reporting the gate result in the JSON output."
         ),
     )
     return parser.parse_args(argv)
@@ -305,8 +312,9 @@ def _atomic_write(target: Path, content: str) -> None:
 
     A SIGKILL (or OOM) mid-write leaves either the previous version
     intact or the tmp file orphaned next to the target — never a
-    half-written scorecard the workflow's `gh issue create` step
-    would mis-render. The PID-suffixed tmp name makes concurrent
+    half-written scorecard that a downstream consumer (e.g. an issue
+    body or step summary) would mis-render. The PID-suffixed tmp name
+    makes concurrent
     invocations unlikely to collide; the rename is atomic on the
     same filesystem (the only mode the CLI is exercised in — both
     the local invocation and the runner write under the same tmp /

@@ -69,6 +69,14 @@ class CreateRunRequest(BaseModel):
             "not a regulatory-defensible COU statement."
         ),
     )
+    model_influence: Literal["low", "medium", "high"] | None = Field(
+        default=None,
+        description="ASME V&V40 model-influence tier for Gate 2.5 risk grading.",
+    )
+    decision_consequence: Literal["low", "medium", "high"] | None = Field(
+        default=None,
+        description="ASME V&V40 decision-consequence tier for Gate 2.5 risk grading.",
+    )
     # Plan Task 34: opt-in flag honoured by the lifespan startup sweep.
     # Stored on the RunRecord so a re-queue worker (out of scope for
     # v0.6-rc1) can replay INTERRUPTED rows automatically.

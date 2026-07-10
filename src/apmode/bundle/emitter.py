@@ -33,6 +33,7 @@ from apmode.bundle.models import (
     CategoricalEncodingProvenance,
     CredibilityReport,
     DataManifest,
+    DataProvenance,
     EvidenceManifest,
     FailedCandidate,
     GateResult,
@@ -50,6 +51,8 @@ from apmode.bundle.models import (
     Ranking,
     ReparameterizationRecommendation,
     ReportProvenance,
+    ReviewerAttestation,
+    RiskGradingReport,
     RunLineage,
     SamplerConfig,
     SBCManifest,
@@ -66,6 +69,7 @@ from apmode.dsl.canonical import (
     spec_fingerprint,
     structure_fingerprint,
 )
+from apmode.dsl.grammar import grammar_version
 from apmode.dsl.nlmixr2_emitter import emit_nlmixr2
 from apmode.dsl.priors import (
     PriorSpec,
@@ -96,6 +100,14 @@ _SBOM_FILENAME = "bom.cdx.json"
 # artefact in another subdir is *not* exempted.
 _SBC_MANIFEST_FILENAME = "sbc_manifest.json"
 _SBC_MANIFEST_RELPATH = "artifacts/sbc/sbc_manifest.json"
+# Reviewer attestation sidecar (QA/QC remediation: human-in-the-loop
+# sign-off gate before export). Written by ``apmode attest`` strictly
+# *after* ``_COMPLETE`` exists — the attestation reviews a sealed run,
+# it does not participate in producing one. Excluded from the sealed
+# digest for the same reason as the SBOM/SBC sidecars: attaching or
+# re-attaching (with ``--force``) a reviewer sign-off must never
+# invalidate the integrity anchor it is reviewing.
+_ATTESTATION_FILENAME = "attestation.json"
 # The seal step writes ``_COMPLETE.tmp`` first and atomically renames it
 # to ``_COMPLETE``; including the temp file in the digest would taint
 # bundles whose seal happened to be retried after a partial rename, so
@@ -120,6 +132,9 @@ _DIGEST_EXCLUDED_RELATIVE_PATHS: frozenset[str] = frozenset(
         # ``compiled_specs/<id>/sbc_manifest.json`` would *not* be
         # silently exempted.
         _SBC_MANIFEST_RELPATH,
+        # Reviewer attestation sidecar lives at the bundle root, so its
+        # relative path is just the basename (mirrors the SBOM entry).
+        _ATTESTATION_FILENAME,
     }
 )
 _HASH_CHUNK_SIZE = 1024 * 1024
@@ -146,6 +161,17 @@ _COMPLETE_SCHEMA_VERSION = 2
 
 class BundleAlreadySealedError(RuntimeError):
     """Raised when an attempt is made to modify a sealed bundle."""
+
+
+class BundleNotSealedError(RuntimeError):
+    """Raised when an operation that requires a sealed bundle runs early.
+
+    Distinct from :class:`apmode.bundle.rocrate.projector.BundleNotSealedError`
+    (same name, different module — kept independent rather than imported
+    across the emitter/rocrate boundary, mirroring the existing precedent
+    of the importer carrying its own copy of the digest-exclusion set
+    rather than importing it from ``emitter.py``).
+    """
 
 
 def _prior_family_hyperparams(
@@ -471,6 +497,20 @@ class BundleEmitter:
         path = self.run_dir / "data_manifest.json"
         return self._write_text(path, manifest.model_dump_json(indent=2))
 
+    def write_data_provenance(self, provenance: DataProvenance) -> Path:
+        """Write data_provenance.json (optional input-lineage sidecar).
+
+        Unlike ``bom.cdx.json``/``sbc_manifest.json``, this sidecar is
+        *producer-side* and written before sealing when supplied, so it
+        is **not** added to ``_DIGEST_EXCLUDED_RELATIVE_PATHS`` — it
+        participates in the sealed-bundle digest like any other
+        pre-seal artifact. Callers that never invoke this method get a
+        bundle that is bit-identical to one produced before this method
+        existed.
+        """
+        path = self.run_dir / "data_provenance.json"
+        return self._write_text(path, provenance.model_dump_json(indent=2))
+
     def write_seed_registry(self, registry: SeedRegistry) -> Path:
         """Write seed_registry.json."""
         path = self.run_dir / "seed_registry.json"
@@ -555,6 +595,7 @@ class BundleEmitter:
         self,
         spec: DSLSpec,
         initial_estimates: dict[str, float] | None = None,
+        dsl_grammar_version: str | None = None,
     ) -> tuple[Path, Path | None]:
         """Write compiled_specs/{candidate_id}.json and .R.
 
@@ -572,6 +613,17 @@ class BundleEmitter:
         the spec's ``UnitCoverageReport`` under the ``"units_coverage"`` key —
         ``{"status":
         "not_declared", ...}`` when the spec has no ``units:`` block.
+        And it carries the compiling grammar's identity under the
+        ``"dsl_grammar_version"`` key — a sha256 hex digest of
+        ``pk_grammar.lark``'s bytes (:func:`apmode.dsl.grammar.grammar_version`)
+        — so a historical bundle's compiled spec can be checked against the
+        grammar that produced it even after ``pk_grammar.lark`` changes.
+        Defaults to the current ``grammar_version()`` when the caller does
+        not supply one; this is compiler provenance, not model content, so
+        it is deliberately excluded from ``structure_fingerprint`` /
+        ``spec_fingerprint`` (same sugar-vs-semantics treatment
+        ``canonical.py`` gives ``macros_used``) — identical specs compiled
+        under different grammar versions still fingerprint identically.
 
         When ``spec.macros_used`` is non-empty (a top-level ``use <macro>``
         statement expanded during compilation), also writes
@@ -601,6 +653,7 @@ class BundleEmitter:
             "justification_hash": justification_hash(spec),
             "metadata": spec.metadata.model_dump() if spec.metadata is not None else None,
             "units_coverage": unit_coverage_report(spec).model_dump(),
+            "dsl_grammar_version": dsl_grammar_version or grammar_version(),
         }
         self._write_text(fingerprints_path, json.dumps(fingerprints, indent=2, sort_keys=True))
 
@@ -725,6 +778,19 @@ class BundleEmitter:
         """Write credibility/{candidate_id}.json."""
         _validate_path_component(report.candidate_id, "candidate_id")
         path = self._credibility_dir() / f"{report.candidate_id}.json"
+        return self._write_text(path, report.model_dump_json(indent=2))
+
+    # --- Risk grading reports (per-candidate, V&V40-style) ---
+
+    def _risk_grading_dir(self) -> Path:
+        """Ensure and return the risk_grading/ subdirectory."""
+        rg_dir = self.run_dir / "risk_grading"
+        return self._ensure_artifact_dir(rg_dir)
+
+    def write_risk_grading_report(self, report: RiskGradingReport) -> Path:
+        """Write risk_grading/{candidate_id}.json."""
+        _validate_path_component(report.candidate_id, "candidate_id")
+        path = self._risk_grading_dir() / f"{report.candidate_id}.json"
         return self._write_text(path, report.model_dump_json(indent=2))
 
     # --- LORO-CV results (Phase 3, Optimization lane) ---
@@ -857,6 +923,38 @@ class BundleEmitter:
         sbc_dir.mkdir(parents=True, exist_ok=True)
         path = sbc_dir / _SBC_MANIFEST_FILENAME
         return self._write_text(path, manifest.model_dump_json(indent=2), allow_sealed=True)
+
+    def write_attestation(self, attestation: ReviewerAttestation, *, force: bool = False) -> Path:
+        """Write attestation.json — human-in-the-loop reviewer sign-off sidecar.
+
+        Unlike every other ``write_*`` method on this class, this one
+        *requires* the bundle to already be sealed: an attestation is a
+        review of a completed run, not an artifact produced during the
+        run itself. Calling before ``seal()`` raises
+        :class:`BundleNotSealedError`.
+
+        Excluded from the sealed-bundle digest (see
+        ``_DIGEST_EXCLUDED_RELATIVE_PATHS``) so writing it never changes
+        ``_compute_bundle_digest(run_dir)`` or invalidates the
+        previously-computed ``_COMPLETE`` sentinel — mirrors the SBOM
+        sidecar precedent (``bundle/rocrate/cli_hooks.py::sbom_command``).
+
+        Refuses to silently overwrite an existing attestation unless
+        ``force=True`` is passed, so a re-review always requires an
+        explicit, auditable decision to replace the prior sign-off
+        rather than an accidental double-write.
+        """
+        if not self.is_sealed():
+            msg = (
+                f"bundle {self.run_dir} is not sealed; attestation requires a "
+                "completed run (call seal() first)"
+            )
+            raise BundleNotSealedError(msg)
+        path = self.run_dir / _ATTESTATION_FILENAME
+        if path.exists() and not force:
+            msg = f"{path} already exists; pass force=True to overwrite"
+            raise FileExistsError(msg)
+        return self._write_text(path, attestation.model_dump_json(indent=2), allow_sealed=True)
 
     def write_loo_summary(self, summary: LOOSummary) -> Path:
         """Write bayesian/{candidate_id}_loo_summary.json (plan Task 18).

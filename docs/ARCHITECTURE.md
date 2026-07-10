@@ -220,8 +220,15 @@ here.
 
 GitHub Actions: `uv sync --all-extras` → pytest → mypy strict → ruff check + format.
 Pre-commit runs ruff + mypy + the policy validator. Matrix is Python 3.12 / 3.13 /
-3.14. Suite C has a dedicated workflow in `.github/workflows/suite_c_phase1.yml`;
-other benchmark cadences are operator-driven unless a workflow exists in `.github/workflows/`.
+3.14. Suite C has no scheduled workflow — its weekly cron
+(`.github/workflows/suite_c_phase1.yml`) was removed because it only
+re-scored a static committed JSON snapshot with no live `nlmixr2` fit,
+which created a false impression of continuous validation. Scoring is
+now operator-driven: `python -m apmode.benchmarks.suite_c_phase1_runner`
+regenerates `benchmarks/suite_c/phase1_npe_inputs.json` from a live fit,
+then `python -m apmode.benchmarks.suite_c_phase1_cli` scores it (see
+`benchmarks/suite_c/README.md`). All other benchmark cadences are
+likewise operator-driven unless a workflow exists in `.github/workflows/`.
 
 ---
 

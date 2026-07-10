@@ -228,6 +228,50 @@ class PITCalibrationSummary(BaseModel):
         return self
 
 
+class NPDESummary(BaseModel):
+    """True decorrelated NPDE (Comets & Brendel 2008, 2010).
+
+    Per-subject simulated replicates are decorrelated via the Cholesky
+    factor of the within-subject simulated covariance, ECDF-ranked
+    against the decorrelated observation, and normal-quantile
+    transformed (``scipy.stats.norm.ppf``) to produce ``npde`` values
+    that are i.i.d. N(0, 1) under a correctly-specified model. Distinct
+    from :class:`PITCalibrationSummary` (marginal, no decorrelation)
+    and from ``DiagnosticBundle.npe_score`` (point-accuracy MedAE, not
+    a distributional calibration test). See
+    :func:`apmode.backends.predictive_summary._compute_npde`.
+
+    ``censoring_mode="cdf"`` here means "simulated replicates below
+    ``loq_value`` are floored to ``loq_value`` before decorrelation" —
+    a cruder operation than the ``npde`` R-package's cdf decensoring
+    method (which reconstructs the *observed* censored value from its
+    truncated conditional distribution, Comets et al. 2010 §3.3). Do
+    not treat this pass's ``"cdf"`` label as equivalent to the
+    published cdf method; ``"loq"``/``"ypred"``/``"omit"`` (the other
+    Beal 2001 M3/M4-aligned modes) are reserved literal values not yet
+    implemented.
+    """
+
+    n_subjects: int = Field(ge=0)
+    n_observations: int = Field(ge=0)
+    decorrelation_failed_subjects: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Subjects whose simulated within-subject covariance was "
+            "singular/near-singular; decorrelation fell back to a "
+            "marginal (uncorrelated) transform for that subject."
+        ),
+    )
+    npde_mean: float
+    npde_variance: float = Field(ge=0.0)
+    wilcoxon_p: float = Field(ge=0.0, le=1.0)
+    shapiro_p: float = Field(ge=0.0, le=1.0)
+    fisher_variance_p: float = Field(ge=0.0, le=1.0)
+    bonferroni_p: float = Field(ge=0.0, le=1.0)
+    censoring_mode: Literal["cdf", "loq", "ypred", "omit"] | None = None
+
+
 class IdentifiabilityFlags(BaseModel):
     """Practical identifiability assessment."""
 
@@ -358,6 +402,19 @@ class DiagnosticBundle(BaseModel):
     (:func:`apmode.governance.ranking.compute_cwres_npe_proxy`) —
     never silently redefining NPE.
 
+    ``npde`` carries the *true* decorrelated Comets/Mentré NPDE
+    (Wilcoxon/Shapiro/Fisher-variance battery) once a backend has
+    populated it via
+    :func:`apmode.backends.predictive_summary.build_predictive_diagnostics`.
+    ``None`` when the backend has not yet run posterior-predictive
+    simulation (a legacy caller predating this field), or is not
+    reachable through :class:`~apmode.backends.predictive_summary.PredictiveSummaryBundle`
+    (which itself always populates a degenerate sentinel — see
+    :class:`~apmode.bundle.models.NPDESummary` docstring — rather than
+    ``None``). Gated separately from ``pit_calibration`` via
+    ``Gate1Config.npde_required`` (default ``False``, additive not a
+    replacement in this pass).
+
     ``auc_cmax_be_score`` is the per-subject AUC/Cmax bioequivalence rate:
     fraction of subjects whose geometric mean ratios (candidate sim ÷ NCA
     reference) fall in [0.80, 1.25] for *both* AUC and Cmax (see
@@ -375,6 +432,7 @@ class DiagnosticBundle(BaseModel):
     split_gof: SplitGOFMetrics | None = None
     vpc: VPCSummary | None = None
     pit_calibration: PITCalibrationSummary | None = None
+    npde: NPDESummary | None = None
     identifiability: IdentifiabilityFlags
     blq: BLQHandling
     # Non-negative by construction: NPE is an absolute-error summary.
@@ -661,6 +719,54 @@ class DataManifest(BaseModel):
     has_steady_state: bool = False
     blq_coding: str | None = None
     covariates: list[CovariateMetadata] = Field(default_factory=list)
+
+
+# --- Data Provenance (input curation lineage) ---
+
+
+class CurationStep(BaseModel):
+    """One recorded step in the human curation history of the input dataset.
+
+    ``DataProvenance.curation_steps`` is an append-only, ordered list —
+    new steps are appended, never mutated or removed, so the list order
+    itself is the curation timeline.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    description: str
+    applied_by: str | None = None
+    applied_at: str | None = None
+
+
+class DataProvenance(BaseModel):
+    """data_provenance.json — human/source-system lineage for the input data.
+
+    Complements :class:`DataManifest`, which captures only what is
+    computable from the file itself (SHA-256, column mapping, counts,
+    ``blq_coding`` as a *column-flagging* convention). ``DataProvenance``
+    records the *human* decisions and upstream lineage that produced the
+    file: where it came from, how BLQ was *statistically* handled (as
+    opposed to how it is flagged in columns), what time-zero means, and
+    what curation steps were applied before ingestion. Optional sidecar —
+    written only when the caller supplies it (e.g. ``apmode run --provenance``).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    source_system: str
+    time_zero_definition: str
+    blq_handling_method: Literal[
+        "M1_discard",
+        "M3_likelihood",
+        "M4_likelihood",
+        "substitution_lloq_half",
+        "substitution_zero",
+        "other",
+    ]
+    curation_steps: list[CurationStep] = Field(default_factory=list)
+    source_file_reference: str | None = None
+    notes: str | None = None
 
 
 # --- Split Manifest ---
@@ -1159,6 +1265,35 @@ class SearchGraph(BaseModel):
         if missing:
             msg = f"search graph edges reference unknown candidate_id values: {sorted(missing)}"
             raise ValueError(msg)
+
+        # Kahn's algorithm topological sort: detect cycles (including
+        # self-loops) among edges once uniqueness/referential integrity are
+        # confirmed above. A cycle in candidate lineage would mean a
+        # candidate is its own (transitive) ancestor, which is impossible
+        # for a real search trajectory and indicates a bundle-writer bug.
+        in_degree: dict[str, int] = dict.fromkeys(seen, 0)
+        adjacency: dict[str, list[str]] = {node_id: [] for node_id in seen}
+        for edge in self.edges:
+            adjacency[edge.parent_id].append(edge.child_id)
+            in_degree[edge.child_id] += 1
+
+        queue = sorted(node_id for node_id, degree in in_degree.items() if degree == 0)
+        visited: set[str] = set()
+        while queue:
+            current = queue.pop(0)
+            visited.add(current)
+            next_batch: list[str] = []
+            for child_id in adjacency[current]:
+                in_degree[child_id] -= 1
+                if in_degree[child_id] == 0:
+                    next_batch.append(child_id)
+            queue.extend(next_batch)
+            queue.sort()
+
+        if len(visited) < len(seen):
+            remaining = sorted(seen - visited)
+            msg = f"search graph contains a cycle among candidate_id values: {remaining}"
+            raise ValueError(msg)
         return self
 
 
@@ -1178,6 +1313,12 @@ class AgenticIterationEntry(BaseModel):
     bic: float | None = None
     error: str | None = None
     validation_feedback: list[str] = Field(default_factory=list)
+    # Trajectory-level gaming-detection signals, consumed by
+    # governance/trajectory_evaluator.py. Additive/optional fields — both
+    # default None so existing trace artifacts remain schema-compatible
+    # without a digest/RO-Crate lockstep bump.
+    eta_shrinkage_max: float | None = None
+    auc_cmax_be_score: float | None = None
 
 
 # --- Backend Versions ---
@@ -1244,6 +1385,64 @@ class GateResult(BaseModel):
     timestamp: str
 
 
+# --- Reviewer Attestation (human-in-the-loop sign-off, QA/QC remediation) ---
+
+
+class GateOverride(BaseModel):
+    """A single reviewer override of an automated gate check's verdict.
+
+    Mirrors the shape of :class:`GateCheckResult` it overrides
+    (``gate_id`` + ``check_id`` identify which entry in which
+    ``gate_decisions/gate*_<candidate_id>.json`` the override applies
+    to) plus the human-accountability fields that make the override
+    auditable: ``original_passed`` records what the automated gate
+    actually decided (so the override's *effect* is reconstructable
+    without re-reading the gate file), ``override_justification`` is
+    the human-readable reason, and ``authorized_by`` names the person
+    who approved the override (which may differ from
+    ``ReviewerAttestation.reviewer_id`` when a second sign-off is
+    required for overrides).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    gate_id: str
+    check_id: str
+    original_passed: bool
+    override_justification: str = Field(min_length=1)
+    authorized_by: str = Field(min_length=1)
+
+
+class ReviewerAttestation(BaseModel):
+    """attestation.json — human-in-the-loop reviewer sign-off sidecar.
+
+    A *post-seal* provenance artifact, written by ``apmode attest``
+    after ``_COMPLETE`` exists (see
+    ``BundleEmitter.write_attestation`` /
+    ``apmode.bundle.emitter._DIGEST_EXCLUDED_RELATIVE_PATHS``). It
+    records that a named human reviewed the sealed bundle's gate
+    decisions and either approved, conditionally approved, or
+    rejected the run for export/downstream use, plus any explicit
+    overrides of automated gate verdicts.
+
+    Excluded from the sealed-bundle digest for the same reason as the
+    SBOM sidecar (``bundle/emitter.py`` L86-126): attestation reviews
+    a completed run rather than mutating it, so writing (or
+    re-writing, with ``--force``) this file must never invalidate
+    ``_COMPLETE``.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    attestation_schema_version: Literal["1.0"] = "1.0"
+    reviewer_id: str = Field(min_length=1)
+    reviewer_role: str = Field(min_length=1)
+    timestamp: str  # ISO-8601 UTC
+    decision: Literal["approved", "approved_with_conditions", "rejected"]
+    rationale: str = Field(min_length=1)
+    gate_overrides: list[GateOverride] = Field(default_factory=list)
+
+
 # --- Report Provenance ---
 
 
@@ -1290,6 +1489,8 @@ class CredibilityContext(BaseModel):
 
     context_of_use: str | None = None
     risk_level: Literal["low", "medium", "high"] | None = None
+    model_influence: Literal["low", "medium", "high"] | None = None
+    decision_consequence: Literal["low", "medium", "high"] | None = None
     n_observations: int = Field(ge=0, default=0)
     n_parameters: int = Field(ge=0, default=0)
     sensitivity_available: bool = False
@@ -1320,6 +1521,33 @@ class CredibilityReport(BaseModel):
     # an auditor can re-derive every field from the original bundle
     # entry. Both fields are optional for legacy bundles emitted before
     # the field existed; new code MUST populate them.
+    source_result_path: str | None = None
+    source_result_sha256: str | None = None
+
+
+# --- Risk Grading Report Models (V&V40-style, Gate 2.5 companion) ---
+
+
+class CredibilityActivity(BaseModel):
+    """One Kuemmel 2020 credibility factor evaluated against its tier floor."""
+
+    factor: str
+    target_rigor: str
+    obtained_rigor: str | None = None
+    gap: bool
+    evidence_ref: str | None = None
+
+
+class RiskGradingReport(BaseModel):
+    """Per-candidate V&V40 risk-grading assessment (Gate 2.5)."""
+
+    candidate_id: str
+    context_of_use: str
+    model_influence: Literal["low", "medium", "high"]
+    decision_consequence: Literal["low", "medium", "high"]
+    risk_tier: Literal["low", "medium", "high"]
+    credibility_activities: list[CredibilityActivity] = Field(default_factory=list)
+    gaps: list[str] = Field(default_factory=list)
     source_result_path: str | None = None
     source_result_sha256: str | None = None
 

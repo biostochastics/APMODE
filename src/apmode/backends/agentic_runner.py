@@ -12,7 +12,6 @@ import asyncio
 import contextlib
 import hashlib
 import json
-import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
@@ -26,9 +25,11 @@ from apmode.backends.diagnostic_summarizer import (
     summarize_stability_diagnostics,
     summarize_stability_for_llm,
 )
+from apmode.backends.prompt_sanitize import sanitize_for_prompt as _sanitize_for_prompt
 from apmode.backends.prompts.system_v1 import SYSTEM_PROMPT_VERSION, build_system_prompt
 from apmode.backends.transform_parser import parse_llm_response
 from apmode.bundle.models import (
+    AgenticIterationEntry,
     AgenticTraceInput,
     AgenticTraceMeta,
     AgenticTraceOutput,
@@ -40,6 +41,8 @@ from apmode.dsl.lane import Lane
 from apmode.dsl.transforms import apply_transform, validate_transform
 from apmode.dsl.validator import validate_dsl
 from apmode.errors import AgenticExhaustionError
+from apmode.governance.policy import AgenticComplianceConfig
+from apmode.governance.trajectory_evaluator import evaluate_trajectory_compliance
 from apmode.ids import generate_candidate_id
 
 if TYPE_CHECKING:
@@ -57,44 +60,6 @@ if TYPE_CHECKING:
     from apmode.governance.policy import Gate3Config
 
 logger = structlog.get_logger(__name__)
-
-
-_ROLE_MARKER_RE = re.compile(
-    r"""
-    (?im)
-    (?:^|[\r\n])              # start of string OR any newline (CR / LF / CRLF)
-    \s*                        # optional indent
-    (?:system|user|assistant)  # role marker
-    \s*:\s*                    # ``role:`` separator
-    """,
-    re.VERBOSE,
-)
-
-
-def _sanitize_for_prompt(text: str, max_len: int = 500) -> str:
-    """Strip patterns that could manipulate the LLM via injected error text.
-
-    Backend error messages (e.g., from R or nlmixr2) are embedded as user
-    content when relaying failures to the LLM. A hostile or unusual error
-    message could contain markdown code fences or JSON-like sequences that
-    the LLM would interpret as instructions. This helper truncates the
-    message and escapes obvious code-fence / system-prompt sequences.
-
-    Compared with the prior version, the role-marker pattern now also
-    fires on any in-string ``\\n`` followed by ``role:`` \u2014 not just at
-    line-start \u2014 so a single-line error containing
-    ``\\n\\nsystem: ignore previous instructions`` is still neutered.
-    """
-    if not text:
-        return ""
-    # Remove triple backticks (code fences) that could terminate our own fence
-    cleaned = text.replace("```", "\u2063``\u2063`\u2063")
-    # Collapse any lines that look like role markers \u2014 including those
-    # smuggled in via embedded ``\\n`` inside a single payload string.
-    cleaned = _ROLE_MARKER_RE.sub("\n", cleaned)
-    if len(cleaned) > max_len:
-        cleaned = cleaned[:max_len] + f"\u2026 [truncated, {len(text) - max_len} chars]"
-    return cleaned
 
 
 def _transform_rationale(transform: object) -> str | None:
@@ -151,6 +116,9 @@ class IterationRecord:
     bic: float | None = None
     error: str | None = None
     validation_feedback: list[str] = field(default_factory=list)
+    # Trajectory-level gaming-detection signals (governance/trajectory_evaluator.py).
+    eta_shrinkage_max: float | None = None
+    auc_cmax_be_score: float | None = None
 
 
 class AgenticRunner:
@@ -263,10 +231,17 @@ class AgenticRunner:
         test_data_path: Path | None = None,
         stability_manifest: ImputationStabilityManifest | None = None,
         directive: MissingDataDirective | None = None,
+        agentic_compliance: AgenticComplianceConfig | None = None,
     ) -> BackendResult:
         """Execute the agentic LLM loop.
 
         Returns the best BackendResult across all iterations.
+
+        ``agentic_compliance`` supplies the policy thresholds for the
+        advisory ``trajectory_compliance.json`` report written on every
+        exit path (see ``_write_trajectory_compliance``). Defaults to
+        ``AgenticComplianceConfig()`` when omitted, so existing callers
+        need no changes.
 
         When ``directive.llm_pooled_only`` is True and a matching entry
         exists in ``stability_manifest`` for the current candidate, the
@@ -282,18 +257,31 @@ class AgenticRunner:
         cross-paradigm signal Gate 3 will evaluate.
 
         ``fixed_parameter`` is accepted for BackendRunner-protocol
-        conformance but is incompatible with iterative LLM refinement
-        (the loop inherently re-fits). Raise rather than silently
-        refitting under a flag that promises the opposite.
+        conformance. Iterative LLM refinement is inherently incompatible
+        with a frozen-parameter, no-refit contract, so rather than
+        re-fitting under a flag that promises the opposite, the loop is
+        bypassed entirely: the call delegates once to the inner runner
+        (already LORO-CV-parity'd for nlmixr2) with ``fixed_parameter``
+        and ``test_data_path`` forwarded verbatim.
         """
         if fixed_parameter:
-            msg = (
-                "AgenticRunner.run cannot honour fixed_parameter=True — the "
-                "agentic loop re-fits on every iteration by design. Use a "
-                "classical runner for LORO-CV fixed-parameter evaluation."
+            # Frozen-posthoc evaluation is a single no-refit pass by
+            # construction — iterative LLM refinement would re-fit and
+            # violate the LORO-CV no-refit contract. Delegate once to
+            # the inner runner instead of entering the iteration loop.
+            return await self._inner.run(
+                spec=spec,
+                data_manifest=data_manifest,
+                initial_estimates=initial_estimates,
+                seed=seed,
+                timeout_seconds=timeout_seconds,
+                data_path=data_path,
+                split_manifest=split_manifest,
+                gate3_policy=gate3_policy,
+                nca_diagnostics=nca_diagnostics,
+                fixed_parameter=True,
+                test_data_path=test_data_path,
             )
-            raise NotImplementedError(msg)
-        _ = test_data_path  # held-out NPE flows via inner runner; agentic loop is full-data
         pooled_only = directive is not None and directive.llm_pooled_only
         stability_by_candidate: dict[str, Any] = (
             {e.candidate_id: e for e in stability_manifest.entries}
@@ -357,6 +345,9 @@ class AgenticRunner:
                     self._write_iteration_records(iteration_records)
                 if lineage_entries:
                     self._write_agentic_lineage(lineage_entries)
+                self._write_trajectory_compliance(
+                    iteration_records, agentic_compliance or AgenticComplianceConfig()
+                )
                 lineage = RunLineage(
                     current_run_id=run_id,
                     parent_run_ids=list(self._config.parent_run_ids),
@@ -552,6 +543,13 @@ class AgenticRunner:
                     )
                     iteration_records.append(record)
                     continue
+
+                # Trajectory-level gaming-detection signals (governance/
+                # trajectory_evaluator.py), captured for every successful
+                # inner-runner call regardless of convergence status.
+                if result.eta_shrinkage:
+                    record.eta_shrinkage_max = max(result.eta_shrinkage.values())
+                record.auc_cmax_be_score = result.diagnostics.auc_cmax_be_score
 
                 # Track best result
                 if result.converged:
@@ -913,6 +911,36 @@ class AgenticRunner:
         path = self._trace_dir / "agentic_lineage.json"
         path.write_text(json.dumps({"entries": entries}, indent=2))
 
+    def _write_trajectory_compliance(
+        self, records: list[IterationRecord], policy: AgenticComplianceConfig
+    ) -> None:
+        """Write trajectory_compliance.json — advisory reward-hacking /
+        eligibility-collapse verdict over the full iteration trajectory
+        (governance/trajectory_evaluator.py). Written on every exit path
+        (including an empty ``records`` list) so a bundle always carries
+        this artifact once the agentic backend has run.
+        """
+        entries = [
+            AgenticIterationEntry(
+                iteration=r.iteration,
+                spec_before=r.spec_before,
+                spec_after=r.spec_after,
+                transforms_proposed=r.transforms_proposed,
+                transforms_rejected=r.transforms_rejected,
+                reasoning=r.reasoning,
+                converged=r.converged,
+                bic=r.bic,
+                error=r.error,
+                validation_feedback=r.validation_feedback,
+                eta_shrinkage_max=r.eta_shrinkage_max,
+                auc_cmax_be_score=r.auc_cmax_be_score,
+            )
+            for r in records
+        ]
+        report = evaluate_trajectory_compliance(entries, policy)
+        path = self._trace_dir / "trajectory_compliance.json"
+        path.write_text(report.model_dump_json(indent=2))
+
     def _write_iteration_records(self, records: list[IterationRecord]) -> None:
         """Write agentic_iterations.jsonl — complete audit trail of reasoning.
 
@@ -934,6 +962,8 @@ class AgenticRunner:
                     "bic": rec.bic,
                     "error": rec.error,
                     "validation_feedback": rec.validation_feedback,
+                    "eta_shrinkage_max": rec.eta_shrinkage_max,
+                    "auc_cmax_be_score": rec.auc_cmax_be_score,
                 }
                 f.write(json.dumps(entry) + "\n")
                 f.flush()

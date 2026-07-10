@@ -8,6 +8,7 @@ Semantic validation (dim ceilings, constraint enforcement) is a separate phase.
 from __future__ import annotations
 
 import functools
+import hashlib
 from pathlib import Path
 
 from lark import Lark, Tree
@@ -31,6 +32,30 @@ def load_grammar() -> Lark:
         start="start",
         propagate_positions=True,
     )
+
+
+def _grammar_version_for_path(path: Path) -> str:
+    """sha256 hex digest of a grammar file's raw bytes.
+
+    Lower-level helper so tests (and any future multi-grammar tooling) can
+    compute the digest for an arbitrary path without going through the
+    cached, module-pinned :func:`grammar_version`.
+    """
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+@functools.lru_cache(maxsize=1)
+def grammar_version() -> str:
+    """Stable sha256 hex digest of ``pk_grammar.lark``'s bytes.
+
+    Grammar identity is derived from file content — not a hand-maintained
+    version string — so an unbumped grammar edit cannot silently drift the
+    reproducibility bundle's compiler-provenance record (see
+    docs/FINGERPRINT_MIGRATION.md for the analogous spec-content treatment).
+    Cached after first call, mirroring :func:`load_grammar` immediately
+    above.
+    """
+    return _grammar_version_for_path(_GRAMMAR_PATH)
 
 
 def parse_dsl(text: str) -> Tree:  # type: ignore[type-arg]

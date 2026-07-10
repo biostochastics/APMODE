@@ -1,5 +1,5 @@
 {
-  "policy_version": "0.6.0",
+  "policy_version": "0.7.1",
   "lane": "submission",
   "gate1": {
     "convergence_required": true,
@@ -66,7 +66,21 @@
     "data_adequacy_required": true,
     "data_adequacy_ratio_min": 5.0,
     "sensitivity_analysis_required": true,
-    "ai_ml_transparency_required": false
+    "ai_ml_transparency_required": false,
+    "risk_grading": {
+      "enabled": true,
+      "matrix": {
+        "low": { "low": "low", "medium": "low", "high": "medium" },
+        "medium": { "low": "low", "medium": "medium", "high": "high" },
+        "high": { "low": "medium", "medium": "high", "high": "high" }
+      },
+      "credibility_factors": {
+        "low": {},
+        "medium": { "vpc_coverage": "b", "npe_agreement": "b" },
+        "high": { "vpc_coverage": "c", "npe_agreement": "c", "nca_eligibility": "c" }
+      }
+    },
+    "risk_grading_required": true
   },
   "missing_data": {
     "mi_pmm_max_missingness": 0.2,
@@ -90,5 +104,10 @@
       "npe"
     ],
     "laplace_draws": 2000
+  },
+  "agentic_compliance": {
+    "reward_hacking_shrinkage_slope_max": 0.5,
+    "rationale_action_coherence_min": 0.5,
+    "eligibility_collapse_bic_improvement_min": 1.0
   }
 }

@@ -392,6 +392,41 @@ class TestTraceCommand:
         assert result.exit_code == 0
         assert "0.15" in result.output  # 3 x $0.05
 
+    def test_trace_compliance(self, tmp_path: Path) -> None:
+        bundle = _make_agentic_bundle(tmp_path)
+        trace_dir = bundle / "agentic_trace"
+        (trace_dir / "trajectory_compliance.json").write_text(
+            json.dumps(
+                {
+                    "n_iterations_considered": 3,
+                    "reward_hacking_suspected": True,
+                    "reward_hacking_detail": "bic_slope=-10.0, shrinkage_slope=1.0",
+                    "eligibility_collapse_suspected": False,
+                    "eligibility_collapse_detail": None,
+                }
+            )
+        )
+        result = runner.invoke(app, ["trace", str(bundle), "--compliance"])
+        assert result.exit_code == 0
+        assert "reward_hacking_suspected" in result.output
+
+    def test_trace_compliance_json(self, tmp_path: Path) -> None:
+        bundle = _make_agentic_bundle(tmp_path)
+        trace_dir = bundle / "agentic_trace"
+        (trace_dir / "trajectory_compliance.json").write_text(
+            json.dumps({"n_iterations_considered": 3, "reward_hacking_suspected": False})
+        )
+        result = runner.invoke(app, ["trace", str(bundle), "--compliance", "--json"])
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["default"]["reward_hacking_suspected"] is False
+
+    def test_trace_compliance_missing_file(self, tmp_path: Path) -> None:
+        bundle = _make_agentic_bundle(tmp_path)
+        result = runner.invoke(app, ["trace", str(bundle), "--compliance"])
+        assert result.exit_code == 0
+        assert "No trajectory_compliance.json" in result.output
+
     def test_trace_no_agentic(self, tmp_path: Path) -> None:
         bundle = tmp_path / "run_empty"
         bundle.mkdir()

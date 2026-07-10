@@ -33,6 +33,9 @@ from apmode.bundle.rocrate.entities import (
     agentic as ent_agentic,
 )
 from apmode.bundle.rocrate.entities import (
+    attestation as ent_attestation,
+)
+from apmode.bundle.rocrate.entities import (
     backend as ent_backend,
 )
 from apmode.bundle.rocrate.entities import (
@@ -55,6 +58,9 @@ from apmode.bundle.rocrate.entities import (
 )
 from apmode.bundle.rocrate.entities import (
     policy as ent_policy,
+)
+from apmode.bundle.rocrate.entities import (
+    risk_grading as ent_risk_grading,
 )
 from apmode.bundle.rocrate.entities import (
     sbom as ent_sbom,
@@ -314,6 +320,7 @@ class RoCrateEmitter:
 
         # 7. Credibility / Bayesian / Agentic
         ent_credibility.add_credibility_reports(graph, bundle_dir)
+        ent_risk_grading.add_risk_grading_reports(graph, bundle_dir)
         ent_credibility.add_report_provenance(graph, bundle_dir, root_id)
         ent_bayesian.add_bayesian_artifacts(graph, bundle_dir)
         # Agentic iterations are *orchestrator-side* actions (part of
@@ -347,6 +354,11 @@ class RoCrateEmitter:
         # by CI). Excluded from the sealed digest so this is purely a
         # projector-side addition — no integrity implications.
         ent_sbom.add_sbom(graph, bundle_dir, root_id)
+
+        # 9b. Reviewer attestation sidecar (optional; present when the
+        # bundle was post-processed with ``apmode attest``). Excluded
+        # from the sealed digest for the same reason as the SBOM.
+        ent_attestation.add_attestation(graph, bundle_dir, root_id)
 
         # 10. Finalise — sort graph deterministically
         ordered_graph = self._order_graph(graph)

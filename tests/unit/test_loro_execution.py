@@ -12,6 +12,8 @@ from unittest.mock import AsyncMock
 import pandas as pd
 import pytest
 
+from apmode.backends.agentic_runner import AgenticConfig, AgenticRunner
+from apmode.backends.llm_client import LLMResponse
 from apmode.bundle.models import (
     BackendResult,
     BLQHandling,
@@ -135,6 +137,22 @@ def _make_folds(n_groups: int = 4, subjects_per_group: int = 10) -> list[SplitMa
             )
         )
     return folds
+
+
+def _stop_response() -> LLMResponse:
+    """A terminal (``stop: true``) LLM response for AgenticRunner's loop."""
+    import json
+
+    return LLMResponse(
+        raw_text=json.dumps({"transforms": [], "stop": True, "reasoning": "Adequate."}),
+        model_id="test",
+        model_version="v1",
+        input_tokens=100,
+        output_tokens=50,
+        cost_usd=0.001,
+        wall_time_seconds=1.0,
+        request_payload_hash="d" * 64,
+    )
 
 
 def _make_df(n_groups: int = 4, subjects_per_group: int = 10) -> pd.DataFrame:
@@ -287,6 +305,74 @@ class TestEvaluateLoroCV:
         assert step2_kwargs["initial_estimates"]["V"] == 45.0
         assert step2_kwargs["fixed_parameter"] is True
         assert step2_kwargs["data_path"] == tmp_path / "data.csv"
+
+    @pytest.mark.asyncio
+    async def test_loro_cv_no_longer_hits_not_implemented_for_agentic(
+        self, tmp_path: Path
+    ) -> None:
+        """Regression guard: fixed_parameter=True must not raise
+        NotImplementedError through the real ``AgenticRunner`` now that it
+        delegates to its inner runner instead of refusing (agentic_runner.py).
+
+        This exercises the production ``AgenticRunner`` class (not a mock
+        standing in for it) as the ``runner`` argument to ``evaluate_loro_cv``,
+        so both step 1 (``fixed_parameter=False`` train-only refit) and step 2
+        (``fixed_parameter=True`` frozen posthoc eval) flow through
+        ``AgenticRunner.run`` exactly as the orchestrator's LORO-CV dispatch
+        does for an ``agentic_llm`` Gate-1 survivor. NODE and bayesian_stan
+        are deliberately NOT covered here — their own LORO-CV parity is an
+        explicitly deferred follow-up (see the plan's scope note); the two
+        backends' runners still raise NotImplementedError for
+        fixed_parameter=True today.
+        """
+        inner_runner = AsyncMock()
+        inner_runner.run = AsyncMock(return_value=_mock_backend_result())
+        mock_llm = AsyncMock()
+        # Step 1 of each fold calls AgenticRunner.run with
+        # fixed_parameter=False (the default), which *does* enter the
+        # iterative loop — unlike step 2's fixed_parameter=True bypass.
+        # A stop-signal response lets step 1 terminate after one
+        # iteration instead of exhausting max_iterations.
+        mock_llm.complete = AsyncMock(return_value=_stop_response())
+
+        agentic_runner = AgenticRunner(
+            inner_runner=inner_runner,
+            llm_client=mock_llm,
+            config=AgenticConfig(max_iterations=5, lane="optimization"),
+            trace_dir=tmp_path / "agentic_trace",
+        )
+
+        folds = _make_folds(n_groups=2)
+        result = await evaluate_loro_cv(
+            candidate_spec=_base_spec(),
+            candidate_result=_mock_backend_result(model_id="agentic_cand"),
+            folds=folds,
+            runner=agentic_runner,
+            data_manifest=_mock_data_manifest(),
+            data_path=tmp_path / "data.csv",
+            df=_make_df(n_groups=2),
+            initial_estimates={"CL": 5.0, "V": 30.0},
+            seed=1,
+        )
+
+        assert result is not None
+        assert result.candidate_id == "agentic_cand"
+        # Both folds converged: step 2's fixed_parameter=True bypassed the
+        # LLM loop entirely and delegated straight to the inner runner
+        # (which always returns a converged BackendResult), rather than
+        # raising NotImplementedError.
+        assert all(f.converged for f in result.fold_results)
+        # Step 1 (fixed_parameter=False) legitimately runs the LLM loop —
+        # once per fold, terminating on the stop signal — so this call
+        # count is the loop, not the bypass under test. Step 2's bypass
+        # is confirmed by the fold convergence + inner-runner call count
+        # below, which excludes any LLM-mediated transform iterations.
+        assert mock_llm.complete.call_count == len(folds)
+        # Each fold makes two calls: step 1 (fixed_parameter=False refit,
+        # via the LLM loop's single iteration) and step 2
+        # (fixed_parameter=True frozen eval, via the bypass), both
+        # ultimately delegated to the inner runner.
+        assert inner_runner.run.call_count == 2 * len(folds)
 
 
 class TestAggregateLoroMetrics:

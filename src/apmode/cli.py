@@ -17,6 +17,8 @@ Commands:
   apmode policies [lane] [--validate]
   apmode graph <bundle-dir> [--format tree|dot|mermaid|json] [--converged]
   apmode serve [--host] [--port] [--runs-dir] [--db-path] [--allow-public]
+  apmode attest <bundle-dir> --reviewer-id --reviewer-role --decision --rationale
+      [--gate-override GATE_ID:CHECK_ID:ORIGINAL_PASSED:JUSTIFICATION[:AUTHORIZED_BY]]...
 
 Exit codes:
   0  Success
@@ -34,7 +36,7 @@ import ipaddress
 import json
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, Literal, cast
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -142,6 +144,14 @@ app.add_typer(completion_app, name="completion")
 from apmode.cli_formular import formular_app  # noqa: E402
 
 app.add_typer(formular_app, name="formular")
+
+# ``apmode attest`` — human-in-the-loop reviewer attestation sidecar
+# (QA/QC remediation: sign-off gate before export). Kept in its own
+# module following the same out-of-``cli.py`` precedent as
+# ``cli_formular.py`` / ``bundle/rocrate/cli_hooks.py``.
+from apmode.cli_attest import register_attest_command  # noqa: E402
+
+register_attest_command(app)
 
 # Default model per provider for the agentic backend
 _DEFAULT_MODELS: dict[str, str] = {
@@ -567,6 +577,42 @@ def run(
             ),
         ),
     ] = None,
+    provenance: Annotated[
+        Path | None,
+        typer.Option(
+            "--provenance",
+            rich_help_panel="Execution",
+            help=(
+                "Optional DataProvenance JSON file (source system, "
+                "time-zero definition, BLQ statistical handling, curation "
+                "history) written as the data_provenance.json bundle "
+                "sidecar. Documentation-grade metadata, not gate-relevant. "
+                "Omit to produce a bundle identical to a --provenance-less run."
+            ),
+            show_default=False,
+        ),
+    ] = None,
+    model_influence: Annotated[
+        str | None,
+        typer.Option(
+            "--model-influence",
+            rich_help_panel="Credibility (Gate 2.5)",
+            help=(
+                "ASME V&V40 model-influence tier (low/medium/high) for "
+                "risk-graded credibility (Gate 2.5). Combined with "
+                "--decision-consequence via the policy's risk_grading "
+                "matrix to derive a risk tier."
+            ),
+        ),
+    ] = None,
+    decision_consequence: Annotated[
+        str | None,
+        typer.Option(
+            "--decision-consequence",
+            rich_help_panel="Credibility (Gate 2.5)",
+            help="ASME V&V40 decision-consequence tier (low/medium/high).",
+        ),
+    ] = None,
 ) -> None:
     """Run the full APMODE pipeline on a PK dataset.
 
@@ -599,6 +645,40 @@ def run(
     if policy is not None and not policy.is_file():
         err_console.print(f"[red bold]Error:[/] policy file not found: {escape(str(policy))}")
         raise typer.Exit(code=1)
+
+    if provenance is not None and not provenance.is_file():
+        err_console.print(
+            f"[red bold]Error:[/] provenance file not found: {escape(str(provenance))}"
+        )
+        raise typer.Exit(code=1)
+
+    from apmode.bundle.models import DataProvenance
+
+    data_provenance_obj: DataProvenance | None = None
+    if provenance is not None:
+        try:
+            data_provenance_obj = DataProvenance.model_validate_json(provenance.read_text())
+        except Exception as e:
+            err_console.print(f"[red bold]Invalid --provenance file:[/] {escape(str(e))}")
+            raise typer.Exit(code=1) from None
+
+    _risk_levels = ("low", "medium", "high")
+    if model_influence is not None and model_influence not in _risk_levels:
+        err_console.print(
+            f"[red bold]Error:[/] --model-influence must be one of {_risk_levels}, "
+            f"got {escape(model_influence)}"
+        )
+        raise typer.Exit(code=1)
+    if decision_consequence is not None and decision_consequence not in _risk_levels:
+        err_console.print(
+            f"[red bold]Error:[/] --decision-consequence must be one of {_risk_levels}, "
+            f"got {escape(decision_consequence)}"
+        )
+        raise typer.Exit(code=1)
+    validated_model_influence = cast("Literal['low', 'medium', 'high'] | None", model_influence)
+    validated_decision_consequence = cast(
+        "Literal['low', 'medium', 'high'] | None", decision_consequence
+    )
 
     # --- Parse --binary-encode flag (must happen before ingestion) ---
     binary_encode_overrides: dict[str, dict[object, int]] | None = None
@@ -767,6 +847,8 @@ def run(
         max_concurrency=parallel_models,
         binary_encode_overrides=binary_encode_overrides,
         context_of_use=context_of_use,
+        model_influence=validated_model_influence,
+        decision_consequence=validated_decision_consequence,
     )
 
     # --- Backend selection ---
@@ -863,7 +945,13 @@ def run(
 
     try:
         result = asyncio.run(
-            orchestrator.run(manifest, df, data_csv, skip_classical=resume_agentic)
+            orchestrator.run(
+                manifest,
+                df,
+                data_csv,
+                skip_classical=resume_agentic,
+                data_provenance=data_provenance_obj,
+            )
         )
     except BackendError as e:
         err_console.print(f"[red bold]Backend error:[/] {escape(str(e))}")
@@ -1587,6 +1675,16 @@ def _inspect_emit_json(bundle_dir: Path) -> None:
         text = fc_path.read_text().strip()
         payload["n_failed_candidates"] = len(text.split("\n")) if text else 0
 
+    # Reviewer attestation (QA/QC remediation: human-in-the-loop sign-off).
+    # Unlike the other artifacts above, this key is always present (as
+    # ``None`` when absent) rather than omitted — "no attestation yet" is
+    # itself a governance-relevant fact scripting callers need to check
+    # for, not merely an artifact that hasn't been produced yet.
+    att_path = bundle_dir / "attestation.json"
+    payload["attestation"] = (
+        _load_json(att_path, "attestation.json") if att_path.exists() else None
+    )
+
     print(json.dumps(payload, indent=2, default=str))
 
 
@@ -1953,6 +2051,40 @@ def inspect(
                     bv_table.add_row("R seed", str(sr.get("r_seed", "?")))
                     bv_table.add_row("NumPy seed", str(sr.get("np_seed", "?")))
             console.print(Panel(bv_table, title="[bold]Versions & Seeds[/]", border_style="dim"))
+            sections_shown += 1
+
+    # --- Reviewer attestation (QA/QC remediation: human-in-the-loop sign-off) ---
+    att_path = bundle_dir / "attestation.json"
+    if att_path.exists():
+        att = _load_json(att_path, "attestation.json")
+        if att:
+            decision = str(att.get("decision", "?"))
+            decision_style = {
+                "approved": "green bold",
+                "approved_with_conditions": "yellow bold",
+                "rejected": "red bold",
+            }.get(decision, "bold")
+            att_table = Table(show_header=False, box=None, padding=(0, 2))
+            att_table.add_column(style="dim")
+            att_table.add_column()
+            att_table.add_row("Decision", f"[{decision_style}]{escape(decision)}[/]")
+            att_table.add_row("Reviewer", escape(str(att.get("reviewer_id", "?"))))
+            att_table.add_row("Role", escape(str(att.get("reviewer_role", "?"))))
+            att_table.add_row("Timestamp", escape(str(att.get("timestamp", "?"))))
+            att_table.add_row("Rationale", escape(str(att.get("rationale", "?"))))
+            overrides = att.get("gate_overrides") or []
+            if overrides:
+                att_table.add_row("Gate overrides", str(len(overrides)))
+                for ov in overrides:
+                    ov_desc = (
+                        f"{ov.get('gate_id', '?')}/{ov.get('check_id', '?')} "
+                        f"(was {'pass' if ov.get('original_passed') else 'fail'}, "
+                        f"by {ov.get('authorized_by', '?')})"
+                    )
+                    att_table.add_row("", escape(ov_desc))
+            console.print(
+                Panel(att_table, title="[bold]Reviewer Attestation[/]", border_style="magenta")
+            )
             sections_shown += 1
 
     # --- Deep inspection hints ---
@@ -3180,6 +3312,10 @@ def trace(
         bool,
         typer.Option("--cost", help="Show token/cost aggregation."),
     ] = False,
+    compliance: Annotated[
+        bool,
+        typer.Option("--compliance", help="Show the trajectory_compliance.json advisory verdict."),
+    ] = False,
     mode: Annotated[
         str | None,
         typer.Option(
@@ -3234,6 +3370,11 @@ def trace(
         _show_trace_cost_multi(mode_dirs, output_json)
         return
 
+    # --- Trajectory compliance verdict (advisory reward-hacking QA) ---
+    if compliance:
+        _show_trace_compliance_multi(mode_dirs, output_json)
+        return
+
     # --- Single iteration detail (requires --mode when multiple) ---
     if iteration is not None:
         if len(mode_dirs) > 1:
@@ -3248,6 +3389,32 @@ def trace(
 
     # --- Summary table across modes ---
     _show_trace_summary_multi(mode_dirs, output_json)
+
+
+def _show_trace_compliance_multi(mode_dirs: dict[str, Path], as_json: bool) -> None:
+    """Show the trajectory_compliance.json advisory verdict per mode.
+
+    The file is written by AgenticRunner._write_trajectory_compliance on
+    every exit path once the agentic loop has run at least one
+    iteration; a mode directory without it (e.g. an interrupted run
+    before the finally-block flushed) is reported, not treated as fatal.
+    """
+    if as_json:
+        payload: dict[str, Any] = {}
+        for mode, mode_dir in mode_dirs.items():
+            path = mode_dir / "trajectory_compliance.json"
+            payload[mode] = json.loads(path.read_text()) if path.exists() else None
+        print(json.dumps(payload, indent=2))
+        return
+
+    for mode, mode_dir in mode_dirs.items():
+        path = mode_dir / "trajectory_compliance.json"
+        if path.exists():
+            console.print(
+                Panel(path.read_text(), title=f"[bold]Trajectory Compliance — {mode}[/]")
+            )
+        else:
+            console.print(f"[dim]No trajectory_compliance.json found for mode '{mode}'.[/]")
 
 
 def _show_trace_summary_multi(mode_dirs: dict[str, Path], as_json: bool) -> None:

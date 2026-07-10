@@ -61,20 +61,57 @@ uses: does the predictive CDF hit its nominal coverage, `calibration["p50"]
 every Suite C fit but discarded before this field existed. It is a real
 calibration diagnostic (closer in spirit to NPDE than the NPE point-
 accuracy number above, though still without decorrelation or the formal
-Wilcoxon/Fisher/KS test battery) and is reported for visibility in
+distributional test battery) and is reported for visibility in
 `render_markdown_summary`'s output — it does **not** feed the win/loss
 gate.
+
+**True decorrelated NPDE now exists** as of the "Implement true NPDE"
+plan gap: `apmode.backends.predictive_summary._compute_npde` Cholesky-
+decorrelates each subject's simulated replicate covariance (Comets &
+Brendel 2008 eq. 3-5), ECDF-ranks and normal-quantile-transforms, and
+pools across subjects into `DiagnosticBundle.npde`
+(`NPDESummary`) — a Wilcoxon (mean=0) / Shapiro-Wilk (normality) /
+chi-square (var=1) battery with Bonferroni correction, **not** a KS
+test (correcting an earlier draft of this note that misnamed the
+battery). It is opt-in at Gate 1 via `Gate1Config.npde_required`
+(default `False`) and additive to, not a replacement for, the
+PIT/NPDE-lite check above. **`phase1_npe_inputs.json` / `suite_c_phase1_runner.py`
+/ `suite_c_phase1_scoring.py` have not been extended to surface
+`npde` fields** — that wiring is a still-open follow-up, not part of
+this pass. Until it lands, Suite C scorecards continue to report only
+`npe_*` (point-accuracy proxy) and `pit_calibration_*` (marginal
+calibration); do not read their absence as "NPDE was checked and
+passed."
 
 The committed `phase1_npe_inputs.json` was last regenerated
 2026-04-25 and reports `fraction_beats_literature_median = 40%
 (2/5)` — **below** the `>= 60%` CI target
-(`PHASE1_FRACTION_BEATS_TARGET`). The weekly
-`.github/workflows/suite_c_phase1.yml` job re-scores this static
-JSON (arithmetic only); it does not re-run the live nlmixr2 fits, so a
-green CI run only confirms the scoring math is self-consistent with
-the last live measurement, not that the measurement is current. Before
-citing Suite C results as evidence of methodology improvement, confirm
-(a) the scorecard has been regenerated via a live
+(`PHASE1_FRACTION_BEATS_TARGET`). **There is no scheduled CI job for
+Suite C.** An earlier weekly cron workflow
+(`.github/workflows/suite_c_phase1.yml`) was removed because it only
+re-scored this static committed JSON via
+`suite_c_phase1_cli.py` — pure arithmetic, no R, no `nlmixr2`, no live
+fit — and a perpetually-green weekly check created a false impression
+of ongoing live validation. The scoring math it ran is still available
+and correct; it is just not automated on a schedule.
+
+Regenerating and scoring the snapshot is a manual, on-demand operator
+step:
+
+1. Regenerate `phase1_npe_inputs.json` with a live run:
+   `python -m apmode.benchmarks.suite_c_phase1_runner` (requires R 4.4+
+   with a compiled `nlmixr2`; see "Metric definition" above for what
+   the honest-mode fit contract guarantees).
+2. Score the regenerated snapshot:
+   `python -m apmode.benchmarks.suite_c_phase1_cli --inputs
+   benchmarks/suite_c/phase1_npe_inputs.json --out scorecard.json
+   --markdown-summary scorecard.md`.
+3. Commit the refreshed `phase1_npe_inputs.json` alongside the change
+   that motivated the re-run, and update the "last regenerated" date
+   and scorecard numbers in this README.
+
+Before citing Suite C results as evidence of methodology improvement,
+confirm (a) the scorecard has been regenerated via a live
 `suite_c_phase1_runner.py` run since the change in question landed, and
 (b) `apmode.data.initial_estimates.NCAEstimator` was not seeded with
 `fallback_estimates` derived from the fixture's own
@@ -92,5 +129,7 @@ for the regression test that pins this).
 4. Append the new id to `PHASE1_MLE_FIXTURE_IDS` in
    `src/apmode/benchmarks/literature_loader.py` so the integration test
    picks it up.
-5. The Suite C scoring CI workflow (Task 41) iterates over
-   `PHASE1_MLE_FIXTURE_IDS` directly — no additional registration required.
+5. `suite_c_phase1_runner.py` and `suite_c_phase1_cli.py` iterate over
+   `PHASE1_MLE_FIXTURE_IDS` directly — no additional registration
+   required. Re-run both manually per the "Metric definition" section
+   above to refresh the committed scorecard.

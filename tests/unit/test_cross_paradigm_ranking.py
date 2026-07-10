@@ -3,11 +3,20 @@
 
 from __future__ import annotations
 
+import csv
 import json
+import math
 from pathlib import Path
+from typing import Literal
 
+import numpy as np
 import pytest
 
+from apmode.backends.predictive_summary import (
+    PredictiveSummaryBundle,
+    SubjectSimulation,
+    build_predictive_diagnostics,
+)
 from apmode.bundle.models import (
     BackendResult,
     BLQHandling,
@@ -23,6 +32,7 @@ from apmode.governance.gates import evaluate_gate3
 from apmode.governance.policy import Gate3Config, GatePolicy
 from apmode.governance.ranking import (
     compute_cwres_npe_proxy,
+    compute_paradigm_metric_spread,
     compute_vpc_concordance,
     is_cross_paradigm,
     rank_cross_paradigm,
@@ -35,6 +45,7 @@ _DEFAULT_GATE3 = Gate3Config()
 _DEFAULT_VPC_TARGET = 0.90
 
 POLICY_DIR = Path(__file__).parent.parent.parent / "policies"
+SUITE_A_DIR = Path(__file__).parent.parent.parent / "benchmarks" / "suite_a"
 
 
 def _scoring_contract_for_backend(backend: str, blq_method: str) -> ScoringContract:
@@ -128,6 +139,184 @@ def _make_result(
 def _load_policy(lane: str) -> GatePolicy:
     data = json.loads((POLICY_DIR / f"{lane}.json").read_text())
     return GatePolicy.model_validate(data)
+
+
+# ---------------------------------------------------------------------------
+# ADR 0004 sensitivity-test helpers: two structurally-identical-but-
+# numerically-distinct forward simulators over the real Suite A A1 DGP,
+# used by TestSimulationMetricParadigmSensitivity below.
+# ---------------------------------------------------------------------------
+
+
+def _load_a1_subjects(
+    *, limit: int | None = None
+) -> list[tuple[str, np.ndarray, np.ndarray, float]]:
+    """Load Suite A scenario A1 into ``(subject_id, t_observed, observed_dv, dose)`` tuples.
+
+    Reads the real committed fixture (``benchmarks/suite_a/a1_1cmt_oral_linear.csv``)
+    rather than synthesizing data, so the sensitivity test below exercises
+    the actual Suite A ground-truth DGP referenced by ADR 0004.
+    """
+    path = SUITE_A_DIR / "a1_1cmt_oral_linear.csv"
+    with path.open(newline="") as f:
+        rows = list(csv.DictReader(f))
+    subjects: dict[str, dict[str, object]] = {}
+    for row in rows:
+        sid = row["NMID"]
+        rec = subjects.setdefault(sid, {"t": [], "dv": [], "dose": 0.0})
+        if row["EVID"] == "1":
+            rec["dose"] = float(row["AMT"])
+            continue
+        rec["t"].append(float(row["TIME"]))  # type: ignore[union-attr]
+        rec["dv"].append(float(row["DV"]))  # type: ignore[union-attr]
+    ids = sorted(subjects, key=int)
+    if limit is not None:
+        ids = ids[:limit]
+    out: list[tuple[str, np.ndarray, np.ndarray, float]] = []
+    for sid in ids:
+        rec = subjects[sid]
+        out.append(
+            (
+                sid,
+                np.array(rec["t"], dtype=float),
+                np.array(rec["dv"], dtype=float),
+                float(rec["dose"]),  # type: ignore[arg-type]
+            )
+        )
+    return out
+
+
+def _closed_form_conc(
+    t: np.ndarray, *, dose: float, ka: float, ke: float, vd: float
+) -> np.ndarray:
+    """Analytic 1-compartment oral solution — stands in for the classical/
+    nlmixr2 simulator path (an exact closed-form solve of the same ODE the
+    RK4 path below integrates numerically)."""
+    return dose * ka / (vd * (ka - ke)) * (np.exp(-ke * t) - np.exp(-ka * t))
+
+
+def _rk4_conc(
+    t_eval: np.ndarray, *, dose: float, ka: float, ke: float, vd: float, dt: float = 0.05
+) -> np.ndarray:
+    """Fixed-step RK4 integration of the identical depot/central ODE system
+    — stands in for a NODE-style numerical forward pass. Deliberately a
+    different numerical method from :func:`_closed_form_conc`, not merely a
+    finer discretization of it, so the two simulator paths are genuinely
+    distinct code even though they solve the same governing equations."""
+    order = np.argsort(t_eval)
+    result = np.zeros_like(t_eval)
+    state = np.array([dose, 0.0])
+    t_cur = 0.0
+
+    def deriv(y: np.ndarray) -> np.ndarray:
+        depot, central = y
+        return np.array([-ka * depot, ka * depot - ke * central])
+
+    for idx in order:
+        t_target = float(t_eval[idx])
+        if t_target <= t_cur:
+            result[idx] = state[1] / vd
+            continue
+        n_steps = max(1, math.ceil((t_target - t_cur) / dt))
+        h = (t_target - t_cur) / n_steps
+        for _ in range(n_steps):
+            k1 = deriv(state)
+            k2 = deriv(state + h / 2 * k1)
+            k3 = deriv(state + h / 2 * k2)
+            k4 = deriv(state + h * k3)
+            state = state + (h / 6) * (k1 + 2 * k2 + 2 * k3 + k4)
+        t_cur = t_target
+        result[idx] = state[1] / vd
+    return result
+
+
+def _build_subject_simulations(
+    subjects: list[tuple[str, np.ndarray, np.ndarray, float]],
+    *,
+    ka: float,
+    ke: float,
+    vd: float,
+    sigma_prop: float,
+    n_sims: int,
+    simulator: Literal["closed_form", "rk4"],
+    seed: int,
+) -> list[SubjectSimulation]:
+    """Build per-subject simulation matrices from identical population
+    parameters via one of the two forward simulators.
+
+    Noise draws are seeded per-subject with a base ``seed`` shared across
+    both simulator calls, so the *only* difference between a
+    ``"closed_form"`` and an ``"rk4"`` call over the same ``subjects``/
+    ``seed`` is the deterministic structural trajectory — isolating the
+    numerical-method effect the sensitivity test measures.
+    """
+    out: list[SubjectSimulation] = []
+    for sid, t_obs, dv_obs, dose in subjects:
+        rng = np.random.default_rng(seed + int(sid))
+        noise = rng.normal(0.0, 1.0, size=(n_sims, t_obs.shape[0]))
+        if simulator == "closed_form":
+            core = _closed_form_conc(t_obs, dose=dose, ka=ka, ke=ke, vd=vd)
+        else:
+            core = _rk4_conc(t_obs, dose=dose, ka=ka, ke=ke, vd=vd)
+        sims = np.clip(core[None, :] * (1.0 + sigma_prop * noise), a_min=0.0, a_max=None)
+        out.append(
+            SubjectSimulation(
+                subject_id=sid,
+                t_observed=t_obs,
+                observed_dv=dv_obs,
+                sims_at_observed=sims,
+            )
+        )
+    return out
+
+
+def _diagnostic_backend_result(
+    *,
+    model_id: str,
+    backend: str,
+    bundle: PredictiveSummaryBundle,
+    bic: float = 170.0,
+) -> BackendResult:
+    """Wrap a real :class:`PredictiveSummaryBundle` (from the canonical
+    ``build_predictive_diagnostics`` helper) into a ``BackendResult`` tagged
+    with ``backend``, for feeding into :func:`rank_cross_paradigm`."""
+    return BackendResult(
+        model_id=model_id,
+        backend=backend,  # type: ignore[arg-type]
+        converged=True,
+        ofv=150.0,
+        aic=160.0,
+        bic=bic,
+        parameter_estimates={
+            "CL": ParameterEstimate(name="CL", estimate=5.0, category="structural"),
+            "V": ParameterEstimate(name="V", estimate=70.0, category="structural"),
+        },
+        eta_shrinkage={"CL": 0.05, "V": 0.08},
+        convergence_metadata=ConvergenceMetadata(
+            method="saem",
+            converged=True,
+            iterations=200,
+            minimization_status="successful",
+            wall_time_seconds=45.0,
+        ),
+        diagnostics=DiagnosticBundle(
+            gof=GOFMetrics(cwres_mean=0.0, cwres_sd=1.0, outlier_fraction=0.0),
+            vpc=bundle.vpc,
+            npe_score=bundle.npe_score,
+            auc_cmax_be_score=bundle.auc_cmax_be_score,
+            auc_cmax_source=bundle.auc_cmax_source,
+            identifiability=IdentifiabilityFlags(
+                condition_number=15.0,
+                profile_likelihood_ci={"CL": True, "V": True},
+                ill_conditioned=False,
+            ),
+            blq=BLQHandling(method="none", n_blq=0, blq_fraction=0.0),
+            scoring_contract=_scoring_contract_for_backend(backend, "none"),
+        ),
+        wall_time_seconds=45.0,
+        backend_versions={"nlmixr2": "2.1.2"},
+        initial_estimate_source="nca",
+    )
 
 
 class TestIsCrossParadigm:
@@ -1016,3 +1205,133 @@ class TestAUCCmaxInGate3Ranking:
         r2.diagnostics.auc_cmax_be_score = None
         result = _rank([r1, r2], gate3=_DEFAULT_GATE3)
         assert "auc_cmax_be unavailable" not in result.qualification_reason
+
+
+class TestSimulationMetricParadigmSensitivity:
+    """ADR 0004: does paradigm identity alone move Gate 3 simulation-based
+    ranking, independent of actual predictive quality?
+
+    See ``docs/adr/0004-cross-paradigm-simulation-metric-circularity.md``
+    for the full risk statement and the (narrower) empirical result these
+    tests pin.
+    """
+
+    # Documented in ADR 0004's Decision: the composite-score gap tolerance
+    # for candidates whose underlying simulated parameters are numerically
+    # identical. Not a Gate 3 threshold (nothing here gates a candidate),
+    # so it is a test constant, not a policy-JSON value.
+    _ADR_0004_TOLERANCE = 0.05
+
+    def test_identical_simulation_inputs_tie_regardless_of_backend_label(self) -> None:
+        """Regression baseline (plan step 2): candidates sharing identical
+        VPC/NPE/AUC-Cmax inputs but tagged with different ``backend`` values
+        must produce identical composite_score — pins that the *current*
+        aggregation math is paradigm-blind by construction. This is
+        expected to pass today; it is the floor the harder step-3 test
+        below builds on.
+        """
+        r_nlmixr2 = _make_result(model_id="classical", backend="nlmixr2")
+        r_node = _make_result(model_id="node", backend="jax_node")
+        r_bayes = _make_result(model_id="bayes", backend="bayesian_stan")
+        for r in (r_nlmixr2, r_node, r_bayes):
+            r.diagnostics.npe_score = 0.05
+
+        result = rank_cross_paradigm(
+            [r_nlmixr2, r_node, r_bayes],
+            gate3=_DEFAULT_GATE3,
+            vpc_concordance_target=_DEFAULT_VPC_TARGET,
+        )
+        scores = {m.candidate_id: m.composite_score for m in result.ranked_candidates}
+        assert scores["classical"] == pytest.approx(scores["node"])
+        assert scores["classical"] == pytest.approx(scores["bayes"])
+        spread = compute_paradigm_metric_spread(result)
+        assert spread is not None
+        assert spread == pytest.approx(0.0, abs=1e-9)
+
+    def test_no_spread_when_single_backend(self) -> None:
+        """``compute_paradigm_metric_spread`` returns ``None`` when there is
+        nothing cross-paradigm to compare (observability signal only fires
+        when it can say something meaningful)."""
+        r1 = _make_result(model_id="m1", backend="nlmixr2")
+        r2 = _make_result(model_id="m2", backend="nlmixr2")
+        result = rank_cross_paradigm(
+            [r1, r2], gate3=_DEFAULT_GATE3, vpc_concordance_target=_DEFAULT_VPC_TARGET
+        )
+        assert compute_paradigm_metric_spread(result) is None
+
+    def test_identical_parameters_across_simulator_paths_stay_within_tolerance(
+        self,
+    ) -> None:
+        """Plan step 3: real Suite A A1 ground-truth parameters
+        (``benchmarks/suite_a/reference_params.json``), simulated via two
+        structurally-identical-but-numerically-distinct forward simulators
+        (closed-form analytic solve vs. fixed-step RK4 ODE integration of
+        the same governing equations), scored through the canonical
+        ``build_predictive_diagnostics`` helper (not hand-rolled VPC/NPE
+        math) and tagged with different backend labels.
+
+        This characterizes drift rather than assuming stability: if the
+        simulation metrics showed a material paradigm-correlated gap even
+        under numerically-identical parameters, this assertion would fail
+        loudly and point at ADR 0004. It does *not* cover the harder case
+        the ADR flags as unresolved — a simulator whose learned dynamics
+        only approximate, rather than exactly solve, the governing ODE —
+        see the ADR's re-evaluation trigger.
+        """
+        reference = json.loads((SUITE_A_DIR / "reference_params.json").read_text())["A1"]
+        ka = float(reference["ka"])
+        vd = float(reference["V"])
+        cl = float(reference["CL"])
+        ke = cl / vd
+        sigma_prop = float(reference["sigma"]["prop"])
+
+        subjects = _load_a1_subjects(limit=20)
+        gate3 = Gate3Config()  # weighted_sum default: vpc_weight=npe_weight=0.5
+
+        closed_form_sims = _build_subject_simulations(
+            subjects,
+            ka=ka,
+            ke=ke,
+            vd=vd,
+            sigma_prop=sigma_prop,
+            n_sims=200,
+            simulator="closed_form",
+            seed=20260710,
+        )
+        rk4_sims = _build_subject_simulations(
+            subjects,
+            ka=ka,
+            ke=ke,
+            vd=vd,
+            sigma_prop=sigma_prop,
+            n_sims=200,
+            simulator="rk4",
+            seed=20260710,
+        )
+
+        closed_form_bundle = build_predictive_diagnostics(closed_form_sims, policy=gate3)
+        rk4_bundle = build_predictive_diagnostics(rk4_sims, policy=gate3)
+
+        r_classical = _diagnostic_backend_result(
+            model_id="classical_closed_form", backend="nlmixr2", bundle=closed_form_bundle
+        )
+        r_node = _diagnostic_backend_result(
+            model_id="node_rk4", backend="jax_node", bundle=rk4_bundle
+        )
+
+        result = rank_cross_paradigm(
+            [r_classical, r_node], gate3=gate3, vpc_concordance_target=0.90
+        )
+        scores = {m.candidate_id: m.composite_score for m in result.ranked_candidates}
+        gap = abs(scores["classical_closed_form"] - scores["node_rk4"])
+        assert gap <= self._ADR_0004_TOLERANCE, (
+            f"composite_score gap {gap:.4f} between structurally-identical "
+            f"simulators exceeds the ADR 0004 tolerance "
+            f"({self._ADR_0004_TOLERANCE}) — this would be evidence of a "
+            "numerical-integration-driven paradigm bias; see "
+            "docs/adr/0004-cross-paradigm-simulation-metric-circularity.md"
+        )
+
+        spread = compute_paradigm_metric_spread(result)
+        assert spread is not None
+        assert spread <= self._ADR_0004_TOLERANCE

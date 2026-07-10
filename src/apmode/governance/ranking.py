@@ -28,6 +28,17 @@ chooses between:
 
 Within-paradigm BIC ranking (``_gate3_within_paradigm`` in
 ``gates.py``) is NOT governed by this module and is unchanged.
+
+**Circularity risk (unresolved, tracked).** VPC/NPE/AUC-Cmax are all
+computed by simulating each candidate's *own* fitted model forward and
+comparing to observed data. Whether that makes these metrics
+paradigm-neutral (as opposed to merely likelihood-scale-neutral, which
+is the §10 Q2 concern above) is an open question — see
+``docs/adr/0004-cross-paradigm-simulation-metric-circularity.md`` for the
+finding, the narrow empirical check that currently passes
+(``tests/unit/test_cross_paradigm_ranking.py::TestSimulationMetricParadigmSensitivity``),
+and the re-evaluation trigger for the harder DGP-mismatch case that check
+does not cover.
 """
 
 from __future__ import annotations
@@ -641,6 +652,35 @@ def rank_cross_paradigm(
         qualified_comparison=True,
         qualification_reason=qualification_reason,
     )
+
+
+def compute_paradigm_metric_spread(result: CrossParadigmRankingResult) -> float | None:
+    """Composite-score spread between the best candidate of each backend.
+
+    Observability signal for the circularity risk documented in
+    ``docs/adr/0004-cross-paradigm-simulation-metric-circularity.md``:
+    VPC/NPE/AUC-Cmax are simulation-based metrics computed from each
+    candidate's *own* fitted model, so a systematic per-paradigm
+    advantage would show up as a persistent gap between backends' best
+    composite scores even when predictive quality is comparable. This
+    does not gate anything — it is a diagnostic surfaced via
+    ``GateCheckResult`` (see ``_gate3_cross_paradigm`` in ``gates.py``)
+    so the ranking audit trail records it, per ADR 0004's Decision.
+
+    Returns ``None`` when fewer than two backends are represented (no
+    spread to report) or there are no ranked candidates.
+    """
+    if len(result.backends_compared) < 2 or not result.ranked_candidates:
+        return None
+    best_by_backend: dict[str, float] = {}
+    for m in result.ranked_candidates:
+        current = best_by_backend.get(m.backend)
+        if current is None or m.composite_score < current:
+            best_by_backend[m.backend] = m.composite_score
+    if len(best_by_backend) < 2:
+        return None
+    values = list(best_by_backend.values())
+    return float(max(values) - min(values))
 
 
 # --- ScoringContract-grouped ranking ---

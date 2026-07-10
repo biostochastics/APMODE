@@ -199,6 +199,44 @@ async def test_stops_on_stop_signal(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_fixed_parameter_bypasses_llm_loop_and_delegates_once(tmp_path: Path) -> None:
+    """LORO-CV contract: fixed_parameter=True must bypass the LLM loop and
+    delegate to the inner runner exactly once, forwarding fixed_parameter
+    and test_data_path verbatim (CLAUDE.md: no-refit contract)."""
+    inner_runner = AsyncMock()
+    inner_runner.run = AsyncMock(return_value=_mock_backend_result())
+
+    mock_llm = AsyncMock()
+    mock_llm.complete = AsyncMock(return_value=_stop_response())
+
+    config = AgenticConfig(max_iterations=25, lane="discovery")
+    runner = AgenticRunner(
+        inner_runner=inner_runner,
+        llm_client=mock_llm,
+        config=config,
+        trace_dir=tmp_path / "agentic_trace",
+    )
+    test_csv = tmp_path / "held_out.csv"
+    test_csv.write_text("ID,TIME,DV\n99,0.0,0\n")
+
+    result = await runner.run(
+        spec=_base_spec(),
+        data_manifest=_mock_data_manifest(),
+        initial_estimates={"CL": 2.0, "V": 30.0, "ka": 1.0},
+        seed=42,
+        fixed_parameter=True,
+        test_data_path=test_csv,
+    )
+
+    assert result is not None
+    mock_llm.complete.assert_not_called()
+    assert inner_runner.run.call_count == 1
+    _, kwargs = inner_runner.run.call_args
+    assert kwargs["fixed_parameter"] is True
+    assert kwargs["test_data_path"] == test_csv
+
+
+@pytest.mark.asyncio
 async def test_writes_trace_files(tmp_path: Path) -> None:
     inner_runner = AsyncMock()
     inner_runner.run = AsyncMock(return_value=_mock_backend_result())
@@ -938,3 +976,63 @@ async def test_compound_multi_transform_proposal_applies_atomically(tmp_path: Pa
     fitted_spec = inner_runner.run.call_args_list[-1].kwargs["spec"]
     assert fitted_spec.absorption.type == "Erlang"
     assert any(p.target == "CL" for p in fitted_spec.priors)
+
+
+@pytest.mark.asyncio
+async def test_iteration_record_captures_shrinkage_and_auc_cmax(tmp_path: Path) -> None:
+    """Trajectory-level gaming detection needs per-iteration shrinkage and
+    auc_cmax_be_score, not just bic — these must be persisted to
+    agentic_iterations.jsonl."""
+    inner_runner = AsyncMock()
+    result = _mock_backend_result(bic=200.0)
+    result.diagnostics.auc_cmax_be_score = 0.75
+    inner_runner.run = AsyncMock(return_value=result)
+    llm = AsyncMock()
+    llm.complete = AsyncMock(return_value=_stop_response())
+
+    runner = AgenticRunner(
+        inner_runner=inner_runner,
+        llm_client=llm,
+        config=AgenticConfig(max_iterations=1, run_id="test-run"),
+        trace_dir=tmp_path,
+    )
+    await runner.run(
+        spec=_base_spec(),
+        data_manifest=_mock_data_manifest(),
+        initial_estimates={"CL": 2.0, "V": 30.0},
+        seed=1,
+    )
+
+    lines = (tmp_path / "agentic_iterations.jsonl").read_text().strip().split("\n")
+    entry = json.loads(lines[0])
+    assert entry["eta_shrinkage_max"] == max(result.eta_shrinkage.values())
+    assert entry["auc_cmax_be_score"] == 0.75
+
+
+@pytest.mark.asyncio
+async def test_trajectory_compliance_json_written_on_every_run(tmp_path: Path) -> None:
+    """AgenticRunner.run() must write trajectory_compliance.json into the
+    trace dir on every exit path, since _finalise_trace runs in the
+    ``finally`` block."""
+    inner_runner = AsyncMock()
+    inner_runner.run = AsyncMock(return_value=_mock_backend_result(bic=200.0))
+    llm = AsyncMock()
+    llm.complete = AsyncMock(return_value=_stop_response())
+
+    runner = AgenticRunner(
+        inner_runner=inner_runner,
+        llm_client=llm,
+        config=AgenticConfig(max_iterations=1, run_id="test-run-compliance"),
+        trace_dir=tmp_path,
+    )
+    await runner.run(
+        spec=_base_spec(),
+        data_manifest=_mock_data_manifest(),
+        initial_estimates={"CL": 2.0, "V": 30.0},
+        seed=1,
+    )
+
+    path = tmp_path / "trajectory_compliance.json"
+    assert path.exists()
+    report = json.loads(path.read_text())
+    assert "reward_hacking_suspected" in report

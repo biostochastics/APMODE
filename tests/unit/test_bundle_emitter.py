@@ -4,20 +4,26 @@
 import json
 from pathlib import Path
 
-from apmode.bundle.emitter import BundleEmitter
+import pytest
+
+from apmode.bundle.emitter import BundleEmitter, BundleNotSealedError, _compute_bundle_digest
 from apmode.bundle.models import (
     BackendResult,
     BackendVersions,
     BLQHandling,
     ColumnMapping,
     ConvergenceMetadata,
+    CurationStep,
     DataManifest,
+    DataProvenance,
     DiagnosticBundle,
+    GateOverride,
     GOFMetrics,
     IdentifiabilityFlags,
     ParameterEstimate,
     RankedCandidateEntry,
     Ranking,
+    ReviewerAttestation,
     SeedRegistry,
 )
 from apmode.dsl.ast_models import (
@@ -61,6 +67,18 @@ def _test_seed_registry() -> SeedRegistry:
         r_seed=42,
         r_rng_kind="L'Ecuyer-CMRG",
         np_seed=42,
+    )
+
+
+def _test_provenance() -> DataProvenance:
+    return DataProvenance(
+        source_system="NONMEM dataset",
+        time_zero_definition="first dose administration, protocol-defined",
+        blq_handling_method="M3_likelihood",
+        curation_steps=[
+            CurationStep(description="Removed duplicate dosing records", applied_by="J. Analyst")
+        ],
+        source_file_reference="Study XYZ-101 SDTM PC domain, extracted 2026-03-01",
     )
 
 
@@ -173,6 +191,80 @@ class TestBundleEmitter:
         )
         data = json.loads(fingerprints_path.read_text())
         assert data["metadata"] is None
+
+    def test_write_compiled_spec_pins_grammar_version_in_fingerprints(
+        self, tmp_path: Path
+    ) -> None:
+        """dsl_grammar_version defaults to apmode.dsl.grammar.grammar_version()."""
+        from apmode.dsl.grammar import grammar_version
+
+        emitter = BundleEmitter(tmp_path, run_id="test_run_grammar_version")
+        emitter.initialize()
+        emitter.write_compiled_spec(_test_spec())
+
+        fingerprints_path = (
+            tmp_path
+            / "test_run_grammar_version"
+            / "compiled_specs"
+            / "test_model_emitter_000_fingerprints.json"
+        )
+        data = json.loads(fingerprints_path.read_text())
+        assert data["dsl_grammar_version"] == grammar_version()
+        assert len(data["dsl_grammar_version"]) == 64
+
+    def test_write_compiled_spec_grammar_version_override(self, tmp_path: Path) -> None:
+        """Explicit dsl_grammar_version overrides the default (caller-supplied pin)."""
+        emitter = BundleEmitter(tmp_path, run_id="test_run_grammar_override")
+        emitter.initialize()
+        emitter.write_compiled_spec(_test_spec(), dsl_grammar_version="deadbeef" * 8)
+
+        fingerprints_path = (
+            tmp_path
+            / "test_run_grammar_override"
+            / "compiled_specs"
+            / "test_model_emitter_000_fingerprints.json"
+        )
+        data = json.loads(fingerprints_path.read_text())
+        assert data["dsl_grammar_version"] == "deadbeef" * 8
+
+    def test_write_compiled_spec_grammar_version_is_additive_not_content(
+        self, tmp_path: Path
+    ) -> None:
+        """Different dsl_grammar_version pins must not perturb spec-content
+        fingerprints (structure_fingerprint / spec_fingerprint) — proves
+        grammar identity is compiler provenance, not model content, matching
+        the ``macros_used`` exclusion-by-omission precedent in canonical.py.
+        """
+        emitter_a = BundleEmitter(tmp_path, run_id="test_run_grammar_a")
+        emitter_a.initialize()
+        emitter_a.write_compiled_spec(_test_spec(), dsl_grammar_version="a" * 64)
+
+        emitter_b = BundleEmitter(tmp_path, run_id="test_run_grammar_b")
+        emitter_b.initialize()
+        emitter_b.write_compiled_spec(_test_spec(), dsl_grammar_version="b" * 64)
+
+        data_a = json.loads(
+            (
+                tmp_path
+                / "test_run_grammar_a"
+                / "compiled_specs"
+                / "test_model_emitter_000_fingerprints.json"
+            ).read_text()
+        )
+        data_b = json.loads(
+            (
+                tmp_path
+                / "test_run_grammar_b"
+                / "compiled_specs"
+                / "test_model_emitter_000_fingerprints.json"
+            ).read_text()
+        )
+
+        assert data_a["dsl_grammar_version"] != data_b["dsl_grammar_version"]
+        assert data_a["structure_fingerprint"] == data_b["structure_fingerprint"]
+        assert data_a["spec_fingerprint"] == data_b["spec_fingerprint"]
+        assert data_a["initial_fingerprint"] == data_b["initial_fingerprint"]
+        assert data_a["justification_hash"] == data_b["justification_hash"]
 
     def test_write_policy_file(self, tmp_path: Path) -> None:
         emitter = BundleEmitter(tmp_path, run_id="test_run_policy")
@@ -360,3 +452,145 @@ class TestBundleEmitter:
         assert data["best_candidate_id"] == "c1"
         assert len(data["ranked_candidates"]) == 2
         assert data["ranked_candidates"][0]["rank"] == 1
+
+
+class TestDataProvenanceSidecar:
+    """DataProvenance is an optional input-lineage sidecar (data_provenance.json)."""
+
+    def test_write_data_provenance(self, tmp_path: Path) -> None:
+        emitter = BundleEmitter(tmp_path, run_id="test_provenance")
+        emitter.initialize()
+        path = emitter.write_data_provenance(_test_provenance())
+        assert path.exists()
+        assert path.name == "data_provenance.json"
+        data = json.loads(path.read_text())
+        assert data["source_system"] == "NONMEM dataset"
+        assert data["blq_handling_method"] == "M3_likelihood"
+        assert len(data["curation_steps"]) == 1
+
+    def test_omitted_sidecar_does_not_change_digest(self, tmp_path: Path) -> None:
+        """A bundle that never calls write_data_provenance is bit-identical
+        (digest-wise) to a bundle produced before this feature existed —
+        no new required-artifact check, no exclusion-set entry needed."""
+        emitter_a = BundleEmitter(tmp_path, run_id="run_without_provenance")
+        emitter_a.initialize()
+        emitter_a.write_data_manifest(_test_manifest())
+        emitter_a.write_seed_registry(_test_seed_registry())
+
+        emitter_b = BundleEmitter(tmp_path, run_id="run_without_provenance_dup")
+        emitter_b.initialize()
+        emitter_b.write_data_manifest(_test_manifest())
+        emitter_b.write_seed_registry(_test_seed_registry())
+
+        assert _compute_bundle_digest(emitter_a.run_dir) == _compute_bundle_digest(
+            emitter_b.run_dir
+        )
+
+    def test_present_sidecar_changes_digest(self, tmp_path: Path) -> None:
+        """When present, data_provenance.json participates in the sealed
+        digest like any other bundle file — no exemption."""
+        emitter_without = BundleEmitter(tmp_path, run_id="run_no_prov")
+        emitter_without.initialize()
+        emitter_without.write_data_manifest(_test_manifest())
+        emitter_without.write_seed_registry(_test_seed_registry())
+        digest_without = _compute_bundle_digest(emitter_without.run_dir)
+
+        emitter_with = BundleEmitter(tmp_path, run_id="run_with_prov")
+        emitter_with.initialize()
+        emitter_with.write_data_manifest(_test_manifest())
+        emitter_with.write_seed_registry(_test_seed_registry())
+        emitter_with.write_data_provenance(_test_provenance())
+        digest_with = _compute_bundle_digest(emitter_with.run_dir)
+
+        assert digest_with != digest_without
+
+    def test_sidecar_participates_in_seal_digest(self, tmp_path: Path) -> None:
+        """Sealing a bundle with the sidecar present includes it in the
+        sentinel's recorded digest (round-trip via seal + re-compute)."""
+        emitter = BundleEmitter(tmp_path, run_id="run_seal_prov")
+        emitter.initialize()
+        emitter.write_data_manifest(_test_manifest())
+        emitter.write_seed_registry(_test_seed_registry())
+        emitter.write_data_provenance(_test_provenance())
+        run_dir = emitter.seal()
+
+        sentinel = json.loads((run_dir / "_COMPLETE").read_text())
+        assert sentinel["sha256"] == _compute_bundle_digest(run_dir)
+
+
+def _test_attestation() -> ReviewerAttestation:
+    return ReviewerAttestation(
+        reviewer_id="jdoe",
+        reviewer_role="PK reviewer",
+        timestamp="2026-07-10T00:00:00+00:00",
+        decision="approved",
+        rationale="Reviewed gate decisions and diagnostics; no concerns.",
+        gate_overrides=[
+            GateOverride(
+                gate_id="gate2",
+                check_id="shrinkage_max",
+                original_passed=False,
+                override_justification="Sparse design; expected shrinkage.",
+                authorized_by="senior_pharmacometrician",
+            )
+        ],
+    )
+
+
+def _seal_minimal_bundle(tmp_path: Path, run_id: str) -> BundleEmitter:
+    emitter = BundleEmitter(tmp_path, run_id=run_id)
+    emitter.initialize()
+    emitter.write_data_manifest(_test_manifest())
+    emitter.write_seed_registry(_test_seed_registry())
+    emitter.seal()
+    return emitter
+
+
+class TestAttestationSidecar:
+    """attestation.json — human-in-the-loop reviewer sign-off (QA/QC remediation)."""
+
+    def test_refuses_on_unsealed_bundle(self, tmp_path: Path) -> None:
+        emitter = BundleEmitter(tmp_path, run_id="run_attest_unsealed")
+        emitter.initialize()
+        emitter.write_data_manifest(_test_manifest())
+        with pytest.raises(BundleNotSealedError, match="not sealed"):
+            emitter.write_attestation(_test_attestation())
+
+    def test_write_attestation_on_sealed_bundle(self, tmp_path: Path) -> None:
+        emitter = _seal_minimal_bundle(tmp_path, "run_attest_sealed")
+        path = emitter.write_attestation(_test_attestation())
+        assert path.exists()
+        assert path.name == "attestation.json"
+        data = json.loads(path.read_text())
+        assert data["reviewer_id"] == "jdoe"
+        assert data["decision"] == "approved"
+        assert len(data["gate_overrides"]) == 1
+
+    def test_attestation_does_not_change_digest(self, tmp_path: Path) -> None:
+        emitter = _seal_minimal_bundle(tmp_path, "run_attest_digest")
+        digest_before = _compute_bundle_digest(emitter.run_dir)
+        emitter.write_attestation(_test_attestation())
+        digest_after = _compute_bundle_digest(emitter.run_dir)
+        assert digest_before == digest_after
+
+    def test_attestation_does_not_invalidate_sentinel(self, tmp_path: Path) -> None:
+        emitter = _seal_minimal_bundle(tmp_path, "run_attest_sentinel")
+        sentinel_before = json.loads((emitter.run_dir / "_COMPLETE").read_text())
+        emitter.write_attestation(_test_attestation())
+        sentinel_after = json.loads((emitter.run_dir / "_COMPLETE").read_text())
+        assert sentinel_before == sentinel_after
+        assert sentinel_after["sha256"] == _compute_bundle_digest(emitter.run_dir)
+
+    def test_double_write_without_force_raises(self, tmp_path: Path) -> None:
+        emitter = _seal_minimal_bundle(tmp_path, "run_attest_double")
+        emitter.write_attestation(_test_attestation())
+        with pytest.raises(FileExistsError):
+            emitter.write_attestation(_test_attestation())
+
+    def test_double_write_with_force_overwrites(self, tmp_path: Path) -> None:
+        emitter = _seal_minimal_bundle(tmp_path, "run_attest_force")
+        emitter.write_attestation(_test_attestation())
+        updated = _test_attestation().model_copy(update={"decision": "rejected"})
+        path = emitter.write_attestation(updated, force=True)
+        data = json.loads(path.read_text())
+        assert data["decision"] == "rejected"

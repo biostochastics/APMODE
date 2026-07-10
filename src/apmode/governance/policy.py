@@ -107,6 +107,33 @@ class Gate1Config(BaseModel):
     pit_z_alpha: float = Field(default=1.5, gt=0.0, le=5.0)
     pit_tol_tail_floor: float = Field(default=0.03, gt=0.0, le=1.0)
     pit_tol_median_floor: float = Field(default=0.05, gt=0.0, le=1.0)
+    # True decorrelated NPDE (Comets & Brendel 2008/2010) — additive to
+    # PIT/NPDE-lite, not a replacement, in this pass. Opt-in per lane;
+    # PIT-lite (``pit_required`` above) remains the default Gate 1
+    # calibration gate. See ``NPDESummary`` docstring
+    # (``apmode.bundle.models``) for the decorrelation/test-battery
+    # design and ``_check_npde_calibration`` (``governance/gates.py``)
+    # for the consuming check. Distinct from the CWRES-derived
+    # ``loro_npde_mean_max``/``loro_npde_variance_min``/``_max`` fields
+    # on ``Gate2Config`` below, which are a LORO-CV proxy metric that
+    # predates this true-simulation implementation and is not yet
+    # relabeled (tracked as a follow-up, not part of this pass).
+    npde_required: bool = False
+    npde_bonferroni_alpha: float = Field(
+        default=0.05,
+        gt=0.0,
+        le=1.0,
+        description="Significance threshold on NPDESummary.bonferroni_p; "
+        "below this the candidate fails the NPDE calibration check.",
+    )
+    npde_min_k_sims: int = Field(
+        default=300,
+        ge=100,
+        description="Minimum posterior-predictive replicate count (K) "
+        "required before the NPDE test battery is trusted — K<300 "
+        "inflates Monte Carlo noise in the decorrelated quantiles "
+        "(Comets 2008).",
+    )
     seed_stability_n: int = Field(ge=1)
     seed_stability_cv_max: float = Field(default=0.10, gt=0.0, le=1.0)
     # State trajectory validity thresholds
@@ -171,7 +198,16 @@ class Gate2Config(BaseModel):
     identifiability_required: bool
     node_eligible: bool
     loro_required: bool
-    # LORO-CV thresholds (Phase 3 — Optimization lane)
+    # LORO-CV thresholds (Phase 3 — Optimization lane). NOTE: despite the
+    # "npde" name, these consume a CWRES-derived proxy computed by
+    # ``loro_cv.py`` (``LOROMetrics.pooled_npde_mean``/``pooled_npde_variance``),
+    # NOT the true decorrelated Comets/Brendel NPDE implemented by
+    # ``apmode.backends.predictive_summary._compute_npde`` /
+    # ``NPDESummary`` / ``Gate1Config.npde_required``. Relabeling this
+    # proxy to a simulation-based per-fold NPDE requires threading
+    # ``RSubprocessRequest.test_data_path`` through LORO-CV's per-fold
+    # posterior-predictive path — an explicit near-term follow-up, not
+    # part of this pass. Do not conflate the two "npde" checks.
     loro_npde_mean_max: float = Field(default=0.3, gt=0.0)
     loro_npde_variance_min: float = Field(default=0.5, gt=0.0)
     loro_npde_variance_max: float = Field(default=1.5, gt=0.0)
@@ -306,6 +342,12 @@ class Gate3Config(BaseModel):
     # 0.5 = half the requested bins; below that the post-hoc binning is
     # producing a noisy VPC the audit log must flag.
     vpc_n_bin_collapse_warn_ratio: float = Field(default=0.5, ge=0.0, le=1.0)
+    # Ridge added to each subject's simulated-replicate covariance before
+    # Cholesky decorrelation in true NPDE — numerical stabilization only
+    # (near-duplicate sim draws can produce a singular covariance on
+    # small K), not a scientific tuning knob. See
+    # ``apmode.backends.predictive_summary._npde_decorrelate_subject``.
+    npde_covariance_ridge: float = Field(default=1e-8, gt=0.0, le=1e-2)
     # NPE aggregation across subjects. ``"flatten"`` (default, rc8 behavior)
     # pools all observed (obs, sim-median) pairs before the median-absolute-
     # error; well-sampled subjects contribute more. ``"per_subject_median"``
@@ -319,13 +361,36 @@ class Gate3Config(BaseModel):
     # subject and takes the median of those scalar AUC/Cmax values —
     # preserves distributional uncertainty for nonlinear profiles.
     auc_cmax_aggregation: Literal["median_trajectory", "median_of_aucs"] = "median_trajectory"
-    # When True, backends emit a second simulation pass on a pooled time
-    # grid (uniform spacing across observed range) in addition to the
-    # observed-time sims. The resulting VPCSummary carries
-    # ``prediction_corrected=True`` and is preferred by the ranker for
-    # regulatory-facing runs where a smoothed VPC curve is expected.
-    # Default False: rc8 ships the observed-time VPC only. The R harness
-    # side of the second pass is tracked as a follow-up commit.
+    # Prediction-corrected VPC (pcVPC, Bergstrand 2011 / Karlsson & Holford
+    # 2008): normalizes both observed and simulated values by a per-
+    # observation "typical prediction" before VPC binning, so between-
+    # subject dose/covariate spread doesn't inflate bin-level variance —
+    # useful when a cohort mixes doses/covariates enough that raw-scale
+    # VPC bins conflate model misfit with between-subject design spread.
+    #
+    # The current implementation (``_compute_vpc_from_sims`` in
+    # ``backends/predictive_summary.py``) approximates the typical
+    # prediction with the **per-subject median of the existing
+    # ``sims_at_observed`` replicates** — the same single-observed-time-
+    # grid simulation matrix every other Gate 3 diagnostic uses (no
+    # second simulation pass, no pooled VPC grid; see the module
+    # docstring's "Single-solve design"). This is a standard proxy for
+    # the "typical" prediction when a fixed-effects-only PRED isn't
+    # available (PsN falls back to the same idea), but it is *not*
+    # textbook pcVPC: it conflates the reference curve with the model's
+    # own simulated central tendency rather than a pure ETA=0 fixed-
+    # effects solve. A literature-exact pcVPC would thread a
+    # deterministic ``rxSolve(..., addCol="PRED")`` pass through the R
+    # harness (``r/harness.R``) and a new field on
+    # ``PredictedSimulationsSubject`` (``backends/r_schemas.py``) — real
+    # protocol surgery across the R↔Python boundary that also needs a
+    # documented decision on how to obtain PRED for held-out
+    # (``test_data_path``) subjects, since ``fit$PRED`` only covers the
+    # training fit. Tracked as a follow-up, same status as the NPDE/PIT
+    # follow-up notes above.
+    #
+    # Default False: opt-in diagnostic refinement, not a behavior change
+    # to existing lanes.
     vpc_include_prediction_corrected: bool = False
 
     # Gate 3 anti-metric-shopping whitelist (plan Task 24). Candidates
@@ -460,6 +525,92 @@ class Gate1BayesianConfig(BaseModel):
         return self
 
 
+_RiskLevel = Literal["low", "medium", "high"]
+_RISK_ORDER: dict[_RiskLevel, int] = {"low": 0, "medium": 1, "high": 2}
+
+_KNOWN_RISK_FACTORS = frozenset(
+    {"data_adequacy", "vpc_coverage", "npe_agreement", "nca_eligibility"}
+)
+
+
+class RiskGradingConfig(BaseModel):
+    """ASME V&V40-2018 §2 risk matrix + Kuemmel 2020 credibility-activity floors.
+
+    ``matrix[influence][consequence] -> tier`` must be non-decreasing along
+    both axes: raising either model influence or decision consequence must
+    never *lower* the resulting risk tier. ``credibility_factors[tier]``
+    maps a factor name (e.g. "vpc_coverage") to a minimum rigor letter
+    ("a".."d", ascending) that Gate 2.5 requires the candidate to meet.
+    Legal factor names are constrained to ``_KNOWN_RISK_FACTORS`` so a
+    typo'd key in a policy JSON fails validation loudly instead of
+    silently no-op'ing inside ``_obtained_rigor``'s dispatch chain.
+    """
+
+    enabled: bool = False
+    matrix: dict[_RiskLevel, dict[_RiskLevel, _RiskLevel]] = Field(default_factory=dict)
+    credibility_factors: dict[_RiskLevel, dict[str, str]] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def matrix_monotonic(self) -> Self:
+        if not self.matrix:
+            return self
+        for influence in ("low", "medium", "high"):
+            row = self.matrix.get(influence)
+            if row is None:
+                continue
+            ordered = [row[c] for c in ("low", "medium", "high") if c in row]
+            if any(
+                _RISK_ORDER[ordered[i]] > _RISK_ORDER[ordered[i + 1]]
+                for i in range(len(ordered) - 1)
+            ):
+                msg = (
+                    f"risk_grading.matrix row '{influence}' must be monotonic "
+                    "non-decreasing by consequence"
+                )
+                raise ValueError(msg)
+        for consequence in ("low", "medium", "high"):
+            col = [
+                self.matrix[i][consequence]
+                for i in ("low", "medium", "high")
+                if i in self.matrix and consequence in self.matrix[i]
+            ]
+            if any(_RISK_ORDER[col[i]] > _RISK_ORDER[col[i + 1]] for i in range(len(col) - 1)):
+                msg = (
+                    f"risk_grading.matrix column '{consequence}' must be monotonic "
+                    "non-decreasing by influence"
+                )
+                raise ValueError(msg)
+        return self
+
+    @model_validator(mode="after")
+    def credibility_factor_names_known(self) -> Self:
+        """Reject unrecognized factor keys so a policy-JSON typo fails
+        loudly at load time instead of silently no-op'ing inside
+        ``_obtained_rigor``'s dispatch chain (per code-review finding)."""
+        unknown = {
+            name
+            for factors in self.credibility_factors.values()
+            for name in factors
+            if name not in _KNOWN_RISK_FACTORS
+        }
+        if unknown:
+            msg = (
+                f"risk_grading.credibility_factors contains unknown factor name(s): "
+                f"{sorted(unknown)}; known: {sorted(_KNOWN_RISK_FACTORS)}"
+            )
+            raise ValueError(msg)
+        return self
+
+    def tier_for(self, influence: _RiskLevel, consequence: _RiskLevel) -> _RiskLevel:
+        """Single source of truth for the influence x consequence -> tier lookup.
+
+        Called identically from ``gates.py``, ``orchestrator/__init__.py``,
+        and ``report/risk_grading.py`` so the computed tier can never drift
+        between the gate decision and the emitted report.
+        """
+        return self.matrix[influence][consequence]
+
+
 class Gate25Config(BaseModel):
     """Gate 2.5: Credibility Qualification (Phase 2, PRD §4.3.1 / ICH M15).
 
@@ -473,6 +624,8 @@ class Gate25Config(BaseModel):
     data_adequacy_ratio_min: float = Field(default=5.0, gt=0)
     sensitivity_analysis_required: bool = False
     ai_ml_transparency_required: bool = False
+    risk_grading: RiskGradingConfig | None = None
+    risk_grading_required: bool = False
 
 
 class MissingDataPolicy(BaseModel):
@@ -544,6 +697,37 @@ class MissingDataPolicy(BaseModel):
         return self
 
 
+class AgenticComplianceConfig(BaseModel):
+    """Trajectory-level compliance thresholds for the agentic-LLM backend
+    (PRD §4.2.6 addendum). Consumed by
+    ``governance/trajectory_evaluator.py``, not by evaluate_gate2/3 —
+    this is an advisory audit verdict written alongside the gate
+    decisions, not a new hard-blocking gate, until the heuristic has
+    been calibrated against real runs.
+
+    ``reward_hacking_shrinkage_slope_max`` bounds the per-iteration
+    slope of eta_shrinkage_max against iteration index for candidates
+    whose BIC is simultaneously improving — a rising-shrinkage /
+    falling-BIC trajectory is the signature of over-regularization
+    masquerading as a residual-fit improvement.
+    ``rationale_action_coherence_min`` is the minimum fraction of
+    applied transforms whose stated rationale keyword-overlaps with the
+    transform's own type/param (crude coherence proxy; see
+    trajectory_evaluator.py for the scoring method).
+    """
+
+    reward_hacking_shrinkage_slope_max: float = Field(default=0.5, ge=0.0)
+    rationale_action_coherence_min: float = Field(default=0.5, ge=0.0, le=1.0)
+    # AND-combined with Gate3Config.auc_cmax_nca_min_eligible* — flags when
+    # auc_cmax_be_score collapses to None across successive iterations
+    # while BIC keeps improving (eligibility-floor-gaming signature).
+    eligibility_collapse_bic_improvement_min: float = Field(default=1.0, ge=0.0)
+
+
+def _default_agentic_compliance() -> AgenticComplianceConfig:
+    return AgenticComplianceConfig()
+
+
 class GatePolicy(BaseModel):
     """Top-level policy file: versioned gate configuration per lane.
 
@@ -558,6 +742,9 @@ class GatePolicy(BaseModel):
     gate2_5: Gate25Config | None = None
     gate3: Gate3Config = Field(default_factory=Gate3Config)
     missing_data: MissingDataPolicy = Field(default_factory=MissingDataPolicy)
+    agentic_compliance: AgenticComplianceConfig = Field(
+        default_factory=_default_agentic_compliance
+    )
     vpc_concordance_target: float = Field(default=0.90, ge=0.0, le=1.0)
 
     @model_validator(mode="after")
@@ -567,6 +754,20 @@ class GatePolicy(BaseModel):
             msg = (
                 "NODE models are not eligible in the Submission lane "
                 "(PRD §3 hard rule). Set gate2.node_eligible=false."
+            )
+            raise ValueError(msg)
+        return self
+
+    @model_validator(mode="after")
+    def npde_k_sims_floor_respected(self) -> Self:
+        """When NPDE is required, K-sims must clear the MC-noise floor."""
+        npde_required = self.gate1.npde_required
+        k_sims = self.gate3.n_posterior_predictive_sims
+        if npde_required and k_sims < self.gate1.npde_min_k_sims:
+            msg = (
+                f"gate1.npde_min_k_sims ({self.gate1.npde_min_k_sims}) exceeds "
+                f"gate3.n_posterior_predictive_sims ({self.gate3.n_posterior_predictive_sims}); "
+                "raise n_posterior_predictive_sims or lower npde_min_k_sims."
             )
             raise ValueError(msg)
         return self

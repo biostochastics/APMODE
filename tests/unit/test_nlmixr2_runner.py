@@ -761,3 +761,106 @@ class TestParseResponseWithPredictedSimulations:
         assert backend_result.diagnostics.npe_score is not None
         assert backend_result.diagnostics.auc_cmax_be_score is None
         assert backend_result.diagnostics.auc_cmax_source is None
+
+    def test_diagnostics_npde_mapped_from_predictive_bundle(self, tmp_path: Path) -> None:
+        """npde is populated onto DiagnosticBundle atomically alongside
+        vpc/pit_calibration/npe_score whenever predicted_simulations is
+        present (mirrors the existing vpc/npe_score assertions above)."""
+        from apmode.governance.policy import Gate3Config
+
+        runner = Nlmixr2Runner(work_dir=tmp_path)
+        response_path = tmp_path / "response.json"
+
+        result = self._base_result()
+        result["predicted_simulations"] = self._predicted_sims_cohort(
+            n_subjects=12, n_obs=6, n_sims=30
+        )
+        response_path.write_text(json.dumps(self._wrap_response(result)))
+
+        policy = Gate3Config(
+            composite_method="weighted_sum",
+            vpc_weight=0.5,
+            npe_weight=0.5,
+            bic_weight=0.0,
+            auc_cmax_weight=0.0,
+            n_posterior_predictive_sims=100,
+            vpc_n_bins=4,
+        )
+        backend_result = runner._parse_response(
+            response_path,
+            0,
+            "test_model_id_0000000",
+            gate3_policy=policy,
+        )
+        assert backend_result.diagnostics.npde is not None
+        assert backend_result.diagnostics.npde.n_subjects == 12
+
+    def test_vpc_include_prediction_corrected_survives_full_path(self, tmp_path: Path) -> None:
+        """Gate3Config(vpc_include_prediction_corrected=True) reaches
+        DiagnosticBundle.vpc.prediction_corrected through the full
+        Nlmixr2Runner._parse_response -> build_predictive_diagnostics path
+        — pins that the policy flag isn't dropped between RSubprocessRequest
+        plumbing and the diagnostic bundle."""
+        from apmode.governance.policy import Gate3Config
+
+        runner = Nlmixr2Runner(work_dir=tmp_path)
+        response_path = tmp_path / "response.json"
+
+        result = self._base_result()
+        result["predicted_simulations"] = self._predicted_sims_cohort(
+            n_subjects=12, n_obs=6, n_sims=30
+        )
+        response_path.write_text(json.dumps(self._wrap_response(result)))
+
+        policy = Gate3Config(
+            composite_method="weighted_sum",
+            vpc_weight=0.5,
+            npe_weight=0.5,
+            bic_weight=0.0,
+            auc_cmax_weight=0.0,
+            n_posterior_predictive_sims=100,
+            vpc_n_bins=4,
+            vpc_include_prediction_corrected=True,
+        )
+        backend_result = runner._parse_response(
+            response_path,
+            0,
+            "test_model_id_0000000",
+            gate3_policy=policy,
+        )
+        assert backend_result.diagnostics.vpc is not None
+        assert backend_result.diagnostics.vpc.prediction_corrected is True
+
+    def test_vpc_include_prediction_corrected_default_false_survives_full_path(
+        self, tmp_path: Path
+    ) -> None:
+        """Default (False) policy also survives the full path unchanged —
+        companion regression pin to the True-flag assertion above."""
+        from apmode.governance.policy import Gate3Config
+
+        runner = Nlmixr2Runner(work_dir=tmp_path)
+        response_path = tmp_path / "response.json"
+
+        result = self._base_result()
+        result["predicted_simulations"] = self._predicted_sims_cohort(
+            n_subjects=12, n_obs=6, n_sims=30
+        )
+        response_path.write_text(json.dumps(self._wrap_response(result)))
+
+        policy = Gate3Config(
+            composite_method="weighted_sum",
+            vpc_weight=0.5,
+            npe_weight=0.5,
+            bic_weight=0.0,
+            auc_cmax_weight=0.0,
+            n_posterior_predictive_sims=100,
+            vpc_n_bins=4,
+        )
+        backend_result = runner._parse_response(
+            response_path,
+            0,
+            "test_model_id_0000000",
+            gate3_policy=policy,
+        )
+        assert backend_result.diagnostics.vpc is not None
+        assert backend_result.diagnostics.vpc.prediction_corrected is False

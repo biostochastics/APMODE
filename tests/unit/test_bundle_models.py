@@ -17,17 +17,25 @@ from apmode.bundle.models import (
     ConvergenceMetadata,
     CovariateMetadata,
     CovariateSpec,
+    CurationStep,
     DataManifest,
+    DataProvenance,
     DiagnosticBundle,
     EvidenceManifest,
     FailedCandidate,
+    GateOverride,
     GOFMetrics,
     IdentifiabilityFlags,
     InitialEstimateEntry,
     InitialEstimates,
+    NPDESummary,
     ParameterEstimate,
     PolicyFile,
     ReportProvenance,
+    ReviewerAttestation,
+    SearchGraph,
+    SearchGraphEdge,
+    SearchGraphNode,
     SearchTrajectoryEntry,
     SeedRegistry,
     SplitManifest,
@@ -140,6 +148,84 @@ class TestDiagnosticBundle:
             diagnostic_plots={},
         )
         assert db.vpc is None
+
+
+class TestNPDESummarySchema:
+    def test_valid_construction(self) -> None:
+        s = NPDESummary(
+            n_subjects=20,
+            n_observations=100,
+            decorrelation_failed_subjects=0,
+            npde_mean=0.01,
+            npde_variance=1.02,
+            wilcoxon_p=0.83,
+            shapiro_p=0.41,
+            fisher_variance_p=0.77,
+            bonferroni_p=1.0,
+            censoring_mode=None,
+        )
+        assert s.n_subjects == 20
+        assert s.censoring_mode is None
+
+    def test_bonferroni_p_above_one_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            NPDESummary(
+                n_subjects=1,
+                n_observations=1,
+                npde_mean=0.0,
+                npde_variance=1.0,
+                wilcoxon_p=0.5,
+                shapiro_p=0.5,
+                fisher_variance_p=0.5,
+                bonferroni_p=1.5,
+            )
+
+    def test_negative_n_subjects_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            NPDESummary(
+                n_subjects=-1,
+                n_observations=1,
+                npde_mean=0.0,
+                npde_variance=1.0,
+                wilcoxon_p=0.5,
+                shapiro_p=0.5,
+                fisher_variance_p=0.5,
+                bonferroni_p=1.0,
+            )
+
+
+class TestDiagnosticBundleNPDEField:
+    def test_defaults_to_none(self) -> None:
+        bundle = DiagnosticBundle(
+            gof=GOFMetrics(cwres_mean=0.0, cwres_sd=1.0, outlier_fraction=0.0, obs_vs_pred_r2=0.9),
+            identifiability=IdentifiabilityFlags(
+                condition_number=10.0, profile_likelihood_ci={"CL": True}, ill_conditioned=False
+            ),
+            blq=BLQHandling(method="none", n_blq=0, blq_fraction=0.0),
+        )
+        assert bundle.npde is None
+
+    def test_accepts_populated_summary(self) -> None:
+        npde = NPDESummary(
+            n_subjects=10,
+            n_observations=40,
+            npde_mean=0.0,
+            npde_variance=1.0,
+            wilcoxon_p=0.9,
+            shapiro_p=0.8,
+            fisher_variance_p=0.7,
+            bonferroni_p=1.0,
+        )
+        bundle = DiagnosticBundle(
+            gof=GOFMetrics(cwres_mean=0.0, cwres_sd=1.0, outlier_fraction=0.0, obs_vs_pred_r2=0.9),
+            identifiability=IdentifiabilityFlags(
+                condition_number=10.0, profile_likelihood_ci={"CL": True}, ill_conditioned=False
+            ),
+            blq=BLQHandling(method="none", n_blq=0, blq_fraction=0.0),
+            npde=npde,
+        )
+        assert bundle.npde is not None
+        assert bundle.npde.n_subjects == 10
 
 
 class TestBackendResult:
@@ -298,6 +384,85 @@ class TestDataManifest:
         )
         with pytest.raises(ValidationError):
             dm.n_subjects = 99  # type: ignore[misc]
+
+
+class TestDataProvenance:
+    def test_valid_minimal(self) -> None:
+        dp = DataProvenance(
+            source_system="NONMEM dataset",
+            time_zero_definition="first dose administration, protocol-defined",
+            blq_handling_method="M3_likelihood",
+        )
+        assert dp.source_system == "NONMEM dataset"
+        assert dp.blq_handling_method == "M3_likelihood"
+        assert dp.curation_steps == []
+        assert dp.source_file_reference is None
+        assert dp.notes is None
+
+    def test_valid_with_curation_steps(self) -> None:
+        dp = DataProvenance(
+            source_system="CDISC ADaM SDTM export",
+            time_zero_definition="first dose administration, protocol-defined",
+            blq_handling_method="substitution_lloq_half",
+            curation_steps=[
+                CurationStep(
+                    description="Removed duplicate dosing records",
+                    applied_by="J. Analyst",
+                    applied_at="2026-03-01T00:00:00Z",
+                ),
+                CurationStep(description="Merged demographics from DM domain"),
+            ],
+            source_file_reference="Study XYZ-101 SDTM PC domain, extracted 2026-03-01",
+            notes="Ad hoc QC pass by data management.",
+        )
+        assert len(dp.curation_steps) == 2
+        assert dp.curation_steps[0].applied_by == "J. Analyst"
+        assert dp.curation_steps[1].applied_by is None
+
+    def test_invalid_blq_handling_method(self) -> None:
+        with pytest.raises(ValidationError):
+            DataProvenance(
+                source_system="NONMEM dataset",
+                time_zero_definition="first dose",
+                blq_handling_method="not_a_real_method",  # type: ignore[arg-type]
+            )
+
+    def test_missing_required_fields(self) -> None:
+        with pytest.raises(ValidationError):
+            DataProvenance(blq_handling_method="M1_discard")  # type: ignore[call-arg]
+
+    def test_frozen(self) -> None:
+        dp = DataProvenance(
+            source_system="NONMEM dataset",
+            time_zero_definition="first dose",
+            blq_handling_method="M1_discard",
+        )
+        with pytest.raises(ValidationError):
+            dp.source_system = "changed"  # type: ignore[misc]
+
+    def test_curation_step_frozen(self) -> None:
+        step = CurationStep(description="test step")
+        with pytest.raises(ValidationError):
+            step.description = "changed"  # type: ignore[misc]
+
+    def test_round_trip_json(self) -> None:
+        dp = DataProvenance(
+            source_system="NONMEM dataset",
+            time_zero_definition="first dose administration, protocol-defined",
+            blq_handling_method="M4_likelihood",
+            curation_steps=[
+                CurationStep(
+                    description="Excluded pre-dose samples",
+                    applied_by="Data Manager",
+                    applied_at="2026-01-15T12:00:00Z",
+                )
+            ],
+            source_file_reference="internal://study-101/pc-domain",
+            notes="No further notes.",
+        )
+        payload = dp.model_dump_json()
+        restored = DataProvenance.model_validate_json(payload)
+        assert restored == dp
 
 
 class TestSplitManifest:
@@ -462,6 +627,109 @@ class TestCandidateLineage:
         # Round-trips through JSON serialization unchanged.
         restored = CandidateLineageEntry.model_validate_json(entry.model_dump_json())
         assert restored == entry
+
+
+class TestSearchGraph:
+    def test_accepts_valid_dag(self) -> None:
+        graph = SearchGraph(
+            nodes=[
+                SearchGraphNode(candidate_id="A"),
+                SearchGraphNode(candidate_id="B", parent_id="A"),
+                SearchGraphNode(candidate_id="C", parent_id="B"),
+            ],
+            edges=[
+                SearchGraphEdge(parent_id="A", child_id="B", transform="t1"),
+                SearchGraphEdge(parent_id="B", child_id="C", transform="t2"),
+            ],
+        )
+        assert len(graph.nodes) == 3
+
+    def test_rejects_cycle(self) -> None:
+        with pytest.raises(ValidationError, match="cycle"):
+            SearchGraph(
+                nodes=[
+                    SearchGraphNode(candidate_id="A"),
+                    SearchGraphNode(candidate_id="B", parent_id="A"),
+                    SearchGraphNode(candidate_id="C", parent_id="B"),
+                ],
+                edges=[
+                    SearchGraphEdge(parent_id="A", child_id="B", transform="t1"),
+                    SearchGraphEdge(parent_id="B", child_id="C", transform="t2"),
+                    SearchGraphEdge(parent_id="C", child_id="A", transform="t3"),
+                ],
+            )
+
+    def test_rejects_self_loop(self) -> None:
+        with pytest.raises(ValidationError, match="cycle"):
+            SearchGraph(
+                nodes=[SearchGraphNode(candidate_id="A")],
+                edges=[SearchGraphEdge(parent_id="A", child_id="A", transform="t1")],
+            )
+
+
+class TestReviewerAttestation:
+    def test_valid_no_overrides(self) -> None:
+        att = ReviewerAttestation(
+            reviewer_id="jdoe",
+            reviewer_role="PK reviewer",
+            timestamp=datetime.now(tz=UTC).isoformat(),
+            decision="approved",
+            rationale="Reviewed gate decisions and diagnostics; no concerns.",
+        )
+        assert att.decision == "approved"
+        assert att.gate_overrides == []
+        assert att.attestation_schema_version == "1.0"
+
+    def test_valid_with_overrides(self) -> None:
+        att = ReviewerAttestation(
+            reviewer_id="jdoe",
+            reviewer_role="PK reviewer",
+            timestamp=datetime.now(tz=UTC).isoformat(),
+            decision="approved_with_conditions",
+            rationale="Shrinkage borderline but justified by sparse sampling design.",
+            gate_overrides=[
+                GateOverride(
+                    gate_id="gate2",
+                    check_id="shrinkage_max",
+                    original_passed=False,
+                    override_justification=(
+                        "Sparse design (2 samples/subject); expected shrinkage."
+                    ),
+                    authorized_by="senior_pharmacometrician",
+                )
+            ],
+        )
+        assert len(att.gate_overrides) == 1
+        assert att.gate_overrides[0].original_passed is False
+
+    def test_missing_required_field_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            ReviewerAttestation(  # type: ignore[call-arg]
+                reviewer_role="PK reviewer",
+                timestamp=datetime.now(tz=UTC).isoformat(),
+                decision="approved",
+                rationale="ok",
+            )
+
+    def test_invalid_decision_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            ReviewerAttestation(
+                reviewer_id="jdoe",
+                reviewer_role="PK reviewer",
+                timestamp=datetime.now(tz=UTC).isoformat(),
+                decision="maybe",  # type: ignore[arg-type]
+                rationale="ok",
+            )
+
+    def test_gate_override_requires_nonempty_justification(self) -> None:
+        with pytest.raises(ValidationError):
+            GateOverride(
+                gate_id="gate2",
+                check_id="shrinkage_max",
+                original_passed=False,
+                override_justification="",
+                authorized_by="senior_pharmacometrician",
+            )
 
 
 class TestBackendVersions:

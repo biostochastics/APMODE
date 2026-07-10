@@ -7,7 +7,14 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from apmode.governance.policy import Gate1Config, Gate2Config, Gate25Config, GatePolicy
+from apmode.dsl.lane import Lane
+from apmode.governance.policy import (
+    Gate1Config,
+    Gate2Config,
+    Gate25Config,
+    GatePolicy,
+    RiskGradingConfig,
+)
 from apmode.governance.validate_policies import validate_policy_file
 
 
@@ -84,6 +91,48 @@ class TestGate25Config:
         g25 = Gate25Config()
         assert g25.context_of_use_required is True
         assert g25.sensitivity_analysis_required is False
+
+
+class TestRiskGradingConfig:
+    def test_defaults_disabled(self) -> None:
+        rg = RiskGradingConfig()
+        assert rg.enabled is False
+        assert rg.matrix == {}
+
+    def test_monotonic_matrix_accepted(self) -> None:
+        rg = RiskGradingConfig(
+            enabled=True,
+            matrix={
+                "low": {"low": "low", "medium": "low", "high": "medium"},
+                "medium": {"low": "low", "medium": "medium", "high": "high"},
+                "high": {"low": "medium", "medium": "high", "high": "high"},
+            },
+        )
+        assert rg.tier_for("high", "medium") == "high"
+        assert rg.tier_for("low", "low") == "low"
+
+    def test_non_monotonic_matrix_rejected(self) -> None:
+        with pytest.raises(ValueError, match="monotonic"):
+            RiskGradingConfig(
+                enabled=True,
+                matrix={
+                    "low": {"low": "high", "medium": "low", "high": "low"},
+                    "medium": {"low": "low", "medium": "medium", "high": "high"},
+                    "high": {"low": "medium", "medium": "high", "high": "high"},
+                },
+            )
+
+    def test_gate25_config_has_risk_grading_field(self) -> None:
+        g25 = Gate25Config()
+        assert g25.risk_grading is None
+        assert g25.risk_grading_required is False
+
+    def test_unknown_credibility_factor_rejected(self) -> None:
+        with pytest.raises(ValueError, match="unknown factor"):
+            RiskGradingConfig(
+                enabled=True,
+                credibility_factors={"high": {"bogus_factor": "a"}},
+            )
 
 
 class TestGatePolicy:
@@ -222,8 +271,22 @@ class TestLanePoliciesGate3Contract:
         # hard-gates added (plan Tasks 20 + 21). Submission requires
         # both; Discovery / Optimization default the new ``*_required``
         # knobs to False.
+        # 0.7.0 bump: V&V40-style risk-grading matrix (model_influence x
+        # decision_consequence -> tier -> credibility-factor rigor floors)
+        # added to gate2_5 across all three lanes. Submission/Optimization
+        # enable it; Discovery ships the matrix disabled by default.
+        # 0.7.1 bump: agentic_compliance block (AgenticComplianceConfig)
+        # added across all three lanes for trajectory-level reward-hacking
+        # / rationale-coherence QA on the agentic-LLM backend. Submission
+        # ships the same defaults even though the Submission lane excludes
+        # the agentic backend, per this test's own lockstep convention.
         for lane in ("submission", "discovery", "optimization"):
-            assert self._load(lane).policy_version == "0.6.0"
+            assert self._load(lane).policy_version == "0.7.1"
+
+    def test_agentic_compliance_defaults_present_on_discovery_policy(self) -> None:
+        policy = self._load("discovery")
+        assert policy.agentic_compliance.reward_hacking_shrinkage_slope_max > 0
+        assert 0.0 <= policy.agentic_compliance.rationale_action_coherence_min <= 1.0
 
     def test_all_lanes_pit_tolerance_calibration(self) -> None:
         """0.4.2: PIT calibration replaces VPC coverage as the Gate 1 gate.
@@ -252,3 +315,55 @@ class TestLanePoliciesGate3Contract:
             assert g1.pit_z_alpha == pytest.approx(z_alpha)
             assert g1.pit_tol_tail_floor == pytest.approx(floor_tail)
             assert g1.pit_tol_median_floor == pytest.approx(floor_med)
+
+
+class TestNPDEPolicyKnobs:
+    """True decorrelated NPDE (Comets & Brendel 2008/2010) Gate 1/3 knobs.
+
+    Additive to PIT/NPDE-lite (``pit_required`` stays the default Gate 1
+    calibration gate); ``npde_required`` is opt-in per lane.
+    """
+
+    def test_defaults(self) -> None:
+        g1 = _gate1()
+        assert g1.npde_required is False
+        assert g1.npde_bonferroni_alpha == pytest.approx(0.05)
+        assert g1.npde_min_k_sims == 300
+
+    def test_npde_min_k_sims_below_gate3_sims_rejected_when_required(self) -> None:
+        from apmode.governance.policy import Gate3Config
+
+        with pytest.raises(ValidationError):
+            GatePolicy(
+                policy_version="0.7.0",
+                lane=Lane.SUBMISSION,
+                gate1=_gate1(npde_required=True, npde_min_k_sims=500),
+                gate2=_gate2(),
+                gate3=Gate3Config(n_posterior_predictive_sims=300),
+            )
+
+    def test_npde_min_k_sims_at_or_above_gate3_sims_accepted(self) -> None:
+        from apmode.governance.policy import Gate3Config
+
+        policy = GatePolicy(
+            policy_version="0.7.0",
+            lane=Lane.SUBMISSION,
+            gate1=_gate1(npde_required=True, npde_min_k_sims=300),
+            gate2=_gate2(),
+            gate3=Gate3Config(n_posterior_predictive_sims=300),
+        )
+        assert policy.gate1.npde_required is True
+
+    def test_npde_covariance_ridge_default(self) -> None:
+        from apmode.governance.policy import Gate3Config
+
+        assert Gate3Config().npde_covariance_ridge == pytest.approx(1e-8)
+
+    def test_all_lanes_npde_opt_in_default_false(self) -> None:
+        """Lane policies do not flip npde_required on in this pass — it
+        stays False across submission/discovery/optimization until a
+        separate values decision retires PIT-lite as the sole gate."""
+        for lane in ("submission", "discovery", "optimization"):
+            data = json.loads((Path("policies") / f"{lane}.json").read_text())
+            policy = GatePolicy.model_validate(data)
+            assert policy.gate1.npde_required is False

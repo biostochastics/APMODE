@@ -42,6 +42,7 @@ if TYPE_CHECKING:
 
     from apmode.backends.predictive_summary import PredictiveSummaryBundle
     from apmode.bundle.models import NCASubjectDiagnostic
+    from apmode.dsl.ast_models import DSLSpec
     from apmode.governance.policy import Gate3Config
 
 # Optional imports — deferred so tests and import-time checks don't fail when
@@ -1173,6 +1174,7 @@ def build_predictive_from_draws(
     observed_dv: npt.ArrayLike,
     nca_diagnostics: list[NCASubjectDiagnostic] | None,
     gate3_policy: Gate3Config,
+    spec: DSLSpec | None = None,
 ) -> PredictiveSummaryBundle:
     """Reshape posterior predictive draws into :class:`PredictiveSummaryBundle`.
 
@@ -1196,9 +1198,23 @@ def build_predictive_from_draws(
       so ``nca_diagnostics[s - 1]`` matches Stan subject index ``s``.
     * ``gate3_policy`` — :class:`apmode.governance.policy.Gate3Config`
       (floors, bin counts).
+    * ``spec`` — optional DSL spec, forwarded to
+      ``build_predictive_diagnostics`` so a BLQM3/BLQM4 observation
+      model drives NPDE's ``censoring_mode``/``loq_value`` (see
+      ``_npde_censoring_mode``) and the NPE residual scaling (see
+      ``_observation_error_model``). ``None`` preserves prior behaviour.
 
     Returns a :class:`PredictiveSummaryBundle`. Shape mismatches raise
     ``ValueError`` — same contract as ``build_predictive_diagnostics``.
+
+    **Not yet reachable from the live Bayesian pipeline.** This helper
+    is Python-side plumbing that ``bayesian_runner.py`` does not call
+    today — per its own module comment, Bayesian VPC/NPE/AUC-Cmax/NPDE
+    diagnostics remain unwired pending a ``stan_emitter`` change to add
+    a ``y_pred[n]`` generated-quantities block. Threading ``spec``
+    through here is prep work for that follow-up, not a live-path fix;
+    it changes no observable runtime behaviour until the emitter change
+    lands and a caller passes ``spec``.
     """
     import numpy as np
 
@@ -1240,7 +1256,7 @@ def build_predictive_from_draws(
                 nca_diagnostic=diag_by_idx.get(int(s)),
             )
         )
-    return build_predictive_diagnostics(subject_sims, policy=gate3_policy)
+    return build_predictive_diagnostics(subject_sims, policy=gate3_policy, spec=spec)
 
 
 def sample_with_provenance(

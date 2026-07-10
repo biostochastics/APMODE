@@ -314,6 +314,69 @@ class TestRun:
         # Must get past parsing into the pipeline.
         assert "invalid --binary-encode" not in result.output.lower()
 
+    def test_provenance_missing_file_exits_1(self, tmp_path: Path) -> None:
+        csv = tmp_path / "data.csv"
+        csv.write_text("NMID,TIME,DV,MDV,EVID,AMT,CMT\n")
+        result = runner.invoke(
+            app,
+            ["run", str(csv), "--provenance", str(tmp_path / "missing_provenance.json")],
+        )
+        assert result.exit_code == 1
+        assert "provenance" in result.output.lower()
+
+    def test_provenance_invalid_json_exits_1(self, tmp_path: Path) -> None:
+        csv = Path("tests/fixtures/suite_a/a4_1cmt_oral_mm.csv").resolve()
+        if not csv.exists():
+            pytest.skip("fixture CSV missing")
+        bad_provenance = tmp_path / "bad_provenance.json"
+        bad_provenance.write_text(json.dumps({"source_system": "NONMEM dataset"}))
+        result = runner.invoke(
+            app,
+            [
+                "run",
+                str(csv),
+                "--output",
+                str(tmp_path / "runs"),
+                "--provenance",
+                str(bad_provenance),
+            ],
+        )
+        assert result.exit_code == 1
+        assert "invalid --provenance" in result.output.lower()
+
+    def test_model_influence_invalid_value_exits_1(self, tmp_path: Path) -> None:
+        csv = tmp_path / "data.csv"
+        csv.write_text("NMID,TIME,DV,MDV,EVID,AMT,CMT\n")
+        result = runner.invoke(app, ["run", str(csv), "--model-influence", "extreme"])
+        assert result.exit_code == 1
+        assert "--model-influence" in result.output.lower()
+
+    def test_decision_consequence_invalid_value_exits_1(self, tmp_path: Path) -> None:
+        csv = tmp_path / "data.csv"
+        csv.write_text("NMID,TIME,DV,MDV,EVID,AMT,CMT\n")
+        result = runner.invoke(app, ["run", str(csv), "--decision-consequence", "extreme"])
+        assert result.exit_code == 1
+        assert "--decision-consequence" in result.output.lower()
+
+    def test_model_influence_and_decision_consequence_valid_parse(self, tmp_path: Path) -> None:
+        csv = tmp_path / "data.csv"
+        csv.write_text("NMID,TIME,DV,MDV,EVID,AMT,CMT\n")
+        result = runner.invoke(
+            app,
+            [
+                "run",
+                str(csv),
+                "--model-influence",
+                "high",
+                "--decision-consequence",
+                "high",
+            ],
+        )
+        # Must get past parsing/validation into the pipeline (empty CSV
+        # then fails at ingestion, not at flag validation).
+        assert "--model-influence" not in result.output.lower()
+        assert "--decision-consequence" not in result.output.lower()
+
 
 # ---------------------------------------------------------------------------
 # `validate` command
@@ -404,6 +467,70 @@ class TestInspect:
         assert result.exit_code == 0
         # Evidence / gate panels should be populated:
         assert "cand_00" in result.output or "Gate" in result.output
+
+
+class TestInspectAttestation:
+    """QA/QC remediation: ``apmode inspect`` surfaces attestation.json."""
+
+    def _attestation_payload(self) -> dict[str, Any]:
+        return {
+            "attestation_schema_version": "1.0",
+            "reviewer_id": "jdoe",
+            "reviewer_role": "PK reviewer",
+            "timestamp": "2026-07-10T00:00:00+00:00",
+            "decision": "approved_with_conditions",
+            "rationale": "Shrinkage borderline but justified by sparse design.",
+            "gate_overrides": [
+                {
+                    "gate_id": "gate2",
+                    "check_id": "shrinkage_max",
+                    "original_passed": False,
+                    "override_justification": "Sparse design; expected shrinkage.",
+                    "authorized_by": "senior_reviewer",
+                }
+            ],
+        }
+
+    def test_json_output_includes_none_when_absent(self, tmp_path: Path) -> None:
+        bundle = _make_minimal_bundle(tmp_path)
+        result = runner.invoke(app, ["inspect", str(bundle), "--json"])
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert "attestation" in payload
+        assert payload["attestation"] is None
+
+    def test_json_output_includes_parsed_attestation(self, tmp_path: Path) -> None:
+        bundle = _make_minimal_bundle(tmp_path)
+        _write_json(bundle / "attestation.json", self._attestation_payload())
+        result = runner.invoke(app, ["inspect", str(bundle), "--json"])
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["attestation"]["reviewer_id"] == "jdoe"
+        assert payload["attestation"]["decision"] == "approved_with_conditions"
+        assert len(payload["attestation"]["gate_overrides"]) == 1
+
+    def test_rich_output_renders_attestation_panel(self, tmp_path: Path) -> None:
+        bundle = _make_minimal_bundle(tmp_path)
+        _write_json(bundle / "attestation.json", self._attestation_payload())
+        result = runner.invoke(app, ["inspect", str(bundle)])
+        assert result.exit_code == 0
+        assert "Reviewer Attestation" in result.output
+        assert "jdoe" in result.output
+        assert "approved_with_conditions" in result.output
+
+    def test_rich_output_omits_panel_when_absent(self, tmp_path: Path) -> None:
+        bundle = _make_minimal_bundle(tmp_path)
+        result = runner.invoke(app, ["inspect", str(bundle)])
+        assert result.exit_code == 0
+        assert "Reviewer Attestation" not in result.output
+
+    def test_pre_existing_bundle_without_attestation_does_not_crash(self, tmp_path: Path) -> None:
+        """Bundles produced before this feature existed have no attestation.json
+        — ``inspect`` must degrade gracefully, not crash."""
+        bundle = _make_full_bundle(tmp_path)
+        assert not (bundle / "attestation.json").exists()
+        result = runner.invoke(app, ["inspect", str(bundle)])
+        assert result.exit_code == 0
 
 
 # ---------------------------------------------------------------------------
@@ -822,6 +949,75 @@ class TestRunWiring:
         assert captured.get("lane") == "discovery", result.output
         assert captured.get("seed") == 424242
         assert captured.get("timeout") == 123
+
+    def test_provenance_flag_forwarded_to_orchestrator_run(self, tmp_path: Path) -> None:
+        """--provenance is parsed and forwarded as a DataProvenance kwarg to
+        Orchestrator.run; omitting the flag forwards None (byte-identical
+        bundle to a --provenance-less run — no new required artifact)."""
+        from apmode.bundle.models import DataProvenance
+
+        csv = Path("tests/fixtures/suite_a/a4_1cmt_oral_mm.csv").resolve()
+        if not csv.exists():
+            pytest.skip("fixture CSV missing")
+
+        provenance_path = tmp_path / "provenance.json"
+        provenance_path.write_text(
+            DataProvenance(
+                source_system="NONMEM dataset",
+                time_zero_definition="first dose administration, protocol-defined",
+                blq_handling_method="M3_likelihood",
+            ).model_dump_json()
+        )
+
+        captured: dict[str, Any] = {}
+
+        class _FakeOrch:
+            def __init__(self, _runner: Any, _out: Path, _config: Any, **_kw: Any) -> None:
+                del _runner, _out, _config, _kw
+
+            async def run(self, *_args: Any, **kwargs: Any) -> Any:
+                captured["data_provenance"] = kwargs.get("data_provenance")
+                raise RuntimeError("stop-after-capture")
+
+        with (
+            patch("apmode.backends.nlmixr2_runner.Nlmixr2Runner") as _fake_runner,
+            patch("apmode.orchestrator.Orchestrator", _FakeOrch),
+        ):
+            _fake_runner.return_value = MagicMock()
+            runner.invoke(
+                app,
+                [
+                    "run",
+                    str(csv),
+                    "--provenance",
+                    str(provenance_path),
+                    "--output",
+                    str(tmp_path / "with_prov"),
+                ],
+            )
+        assert isinstance(captured.get("data_provenance"), DataProvenance)
+        assert captured["data_provenance"].source_system == "NONMEM dataset"
+
+        captured_no_prov: dict[str, Any] = {}
+
+        class _FakeOrchNoProv:
+            def __init__(self, _runner: Any, _out: Path, _config: Any, **_kw: Any) -> None:
+                del _runner, _out, _config, _kw
+
+            async def run(self, *_args: Any, **kwargs: Any) -> Any:
+                captured_no_prov["data_provenance"] = kwargs.get("data_provenance")
+                raise RuntimeError("stop-after-capture")
+
+        with (
+            patch("apmode.backends.nlmixr2_runner.Nlmixr2Runner") as _fake_runner,
+            patch("apmode.orchestrator.Orchestrator", _FakeOrchNoProv),
+        ):
+            _fake_runner.return_value = MagicMock()
+            runner.invoke(
+                app,
+                ["run", str(csv), "--output", str(tmp_path / "without_prov")],
+            )
+        assert captured_no_prov.get("data_provenance") is None
 
     def test_agentic_flag_only_builds_runner_on_discovery(self, tmp_path: Path) -> None:
         csv = Path("tests/fixtures/suite_a/a4_1cmt_oral_mm.csv").resolve()

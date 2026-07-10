@@ -128,7 +128,7 @@ _FIXTURE_TO_REGISTRY_KEY: dict[str, str] = {
 
 # Exit codes mirror the CLI scorer (suite_c_phase1_cli.py) for operator
 # muscle-memory: 0 happy path, 2 usage, 3 input validation, 5 R-harness
-# / fit failure (distinct from 3 so the workflow can route differently).
+# / fit failure (distinct from 3 so a caller can route differently).
 _EXIT_OK: int = 0
 _EXIT_USAGE: int = 2
 _EXIT_VALIDATION: int = 3
@@ -347,9 +347,9 @@ async def run_fixture(
 
     ``n_sims`` matches Bergstrand 2011 VPC convention at 500 by default
     in :class:`Gate3Config`; the runner default of 200 trades a touch of
-    posterior-predictive precision for ~2.5x faster fold turnaround so
-    the weekly workflow finishes inside the 30-minute job budget.
-    Override via the ``--n-sims`` CLI flag for higher fidelity.
+    posterior-predictive precision for ~2.5x faster fold turnaround,
+    which keeps a manual/on-demand run practical. Override via the
+    ``--n-sims`` CLI flag for higher fidelity.
     """
     overrides = dataset_overrides or {}
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -621,7 +621,7 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
         default=Path("benchmarks/suite_c/phase1_npe_inputs.json"),
         help=(
             "Destination path for phase1_npe_inputs.json. Default points "
-            "at the location the weekly workflow's scorer reads."
+            "at the location suite_c_phase1_cli.py reads for scoring."
         ),
     )
     parser.add_argument(
@@ -695,7 +695,7 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
             "Comma-separated nlmixr2 estimation methods (e.g. 'focei' or "
             "'saem,focei'). Default uses Nlmixr2Runner's default "
             "(['saem','focei']). Single-method overrides are useful for "
-            "the smoke / weekly cadence where SAEM+FOCEI can blow the "
+            "quick smoke runs where SAEM+FOCEI can blow the "
             "per-fit timeout on the first uncached run."
         ),
     )
@@ -777,7 +777,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             sys.stderr.write(f"error: failed to write {args.out}: {exc}\n")
             return _EXIT_VALIDATION
 
-        # Echo a one-line summary so the workflow log captures progress
+        # Echo a one-line summary so console/log output captures progress
         # without needing to cat the JSON.
         for fid, item in inputs.items():
             sys.stderr.write(

@@ -499,6 +499,127 @@ class TestBuildPredictiveDiagnosticsDeterministic:
 
 
 # ---------------------------------------------------------------------------
+# Prediction-corrected VPC (pcVPC) — Gate3Config.vpc_include_prediction_corrected
+# ---------------------------------------------------------------------------
+
+
+class TestPredictionCorrectedVPC:
+    """Wiring for the previously dead ``vpc_include_prediction_corrected`` knob.
+
+    The implementation is a simulated-median proxy for the "typical"
+    (fixed-effects-only) prediction, not a literature-exact Bergstrom 2011
+    pcVPC — see ``Gate3Config.vpc_include_prediction_corrected`` docstring.
+    These tests pin the proxy's behavior, not textbook pcVPC.
+    """
+
+    def _uniform_cohort(
+        self, *, sim_value: float, observed_value: float, n_subjects: int = 10
+    ) -> list[SubjectSimulation]:
+        times = np.array([0.0, 1.0, 2.0, 3.0, 4.0])
+        obs = np.full(times.shape, observed_value)
+        return [
+            _constant_subject(
+                f"s{i}",
+                times=times,
+                observed=obs,
+                simulated_constant=sim_value,
+                n_sims=50,
+            )
+            for i in range(n_subjects)
+        ]
+
+    def _policy(self, *, prediction_corrected: bool, vpc_n_bins: int = 3) -> Gate3Config:
+        return _policy_with_floors(min_eligible=8, vpc_n_bins=vpc_n_bins).model_copy(
+            update={"vpc_include_prediction_corrected": prediction_corrected}
+        )
+
+    def test_default_false_keeps_prediction_corrected_false(self) -> None:
+        cohort = self._uniform_cohort(sim_value=5.0, observed_value=5.0)
+        bundle = build_predictive_diagnostics(
+            cohort, policy=self._policy(prediction_corrected=False)
+        )
+        assert bundle.vpc.prediction_corrected is False
+
+    def test_default_false_coverage_matches_non_pc_baseline(self) -> None:
+        """Regression pin: the False path must stay byte-identical to the
+        pre-existing non-pc VPC math (branch is behind the flag)."""
+        cohort = self._uniform_cohort(sim_value=5.0, observed_value=5.0)
+        bundle = build_predictive_diagnostics(
+            cohort, policy=self._policy(prediction_corrected=False)
+        )
+        assert bundle.vpc.coverage == {"p5": 1.0, "p50": 1.0, "p95": 1.0}
+
+    def test_flag_true_sets_prediction_corrected_true(self) -> None:
+        cohort = self._uniform_cohort(sim_value=5.0, observed_value=5.0)
+        bundle = build_predictive_diagnostics(
+            cohort, policy=self._policy(prediction_corrected=True)
+        )
+        assert bundle.vpc.prediction_corrected is True
+
+    def _scale_offset_cohort(self) -> list[SubjectSimulation]:
+        """Six subjects whose per-time scale is *not* proportional across
+        the cohort (each subject's own dose/covariate-driven magnitude
+        varies independently by time bin) — a fixture where pc
+        normalization by the per-bin pooled typical prediction actually
+        changes bin-level CI-containment rather than being a no-op global
+        rescale (a *constant* cross-subject ratio would cancel out).
+        """
+        times = np.array([0.0, 1.0, 2.0, 3.0])
+        bases = [
+            np.array([20.0, 10.0, 15.0, 8.0]),
+            np.array([4.0, 5.0, 3.0, 4.0]),
+            np.array([50.0, 5.0, 40.0, 3.0]),
+            np.array([2.0, 20.0, 1.0, 25.0]),
+            np.array([30.0, 30.0, 2.0, 2.0]),
+            np.array([8.0, 8.0, 8.0, 8.0]),
+        ]
+        cohort = []
+        for i, base in enumerate(bases):
+            rng = np.random.default_rng(i + 1)
+            noise = rng.normal(0.0, 0.2, size=(80, times.shape[0]))
+            sims = base[np.newaxis, :] + noise
+            cohort.append(
+                SubjectSimulation(
+                    subject_id=f"s{i}",
+                    t_observed=times,
+                    observed_dv=base.copy(),
+                    sims_at_observed=sims,
+                    nca_diagnostic=_eligible_diagnostic(f"s{i}"),
+                )
+            )
+        return cohort
+
+    def test_pc_normalization_changes_coverage_but_not_bin_count(self) -> None:
+        cohort = self._scale_offset_cohort()
+        bundle_false = build_predictive_diagnostics(
+            cohort, policy=self._policy(prediction_corrected=False, vpc_n_bins=4)
+        )
+        bundle_true = build_predictive_diagnostics(
+            cohort, policy=self._policy(prediction_corrected=True, vpc_n_bins=4)
+        )
+        assert bundle_true.vpc.n_bins == bundle_false.vpc.n_bins
+        assert bundle_true.vpc.coverage != bundle_false.vpc.coverage
+
+    def test_near_zero_typical_does_not_produce_nan_or_inf(self) -> None:
+        times = np.array([0.0, 1.0])
+        # BLQ-adjacent: observed and simulated values hover near zero, so
+        # the per-subject "typical" (median of sims) is ~0 — exercises the
+        # divide-by-zero guard on the pcVPC normalization denominator.
+        subject = SubjectSimulation(
+            subject_id="blq",
+            t_observed=times,
+            observed_dv=np.array([0.0, 1e-9]),
+            sims_at_observed=np.zeros((20, 2)),
+            nca_diagnostic=_eligible_diagnostic("blq"),
+        )
+        bundle = build_predictive_diagnostics(
+            [subject], policy=self._policy(prediction_corrected=True, vpc_n_bins=3)
+        )
+        for value in bundle.vpc.coverage.values():
+            assert np.isfinite(value)
+
+
+# ---------------------------------------------------------------------------
 # Per-subject NCA eligibility — floor behavior
 # ---------------------------------------------------------------------------
 
@@ -588,6 +709,16 @@ class TestBundleSchema:
                 "n_observations": 96,
                 "n_subjects": 12,
                 "aggregation": "subject_robust",
+            },
+            "npde": {
+                "n_subjects": 12,
+                "n_observations": 96,
+                "npde_mean": 0.0,
+                "npde_variance": 1.0,
+                "wilcoxon_p": 0.9,
+                "shapiro_p": 0.8,
+                "fisher_variance_p": 0.7,
+                "bonferroni_p": 1.0,
             },
             "npe_score": 0.5,
             "auc_cmax_be_score": 0.75,
@@ -711,3 +842,218 @@ class TestRankerIntegration:
         for rc in ranking.ranked_candidates:
             assert rc.npe_source == "simulation"
             assert rc.npe == pytest.approx(bundle.npe_score)
+
+
+# ---------------------------------------------------------------------------
+# True decorrelated NPDE (Comets & Brendel 2008/2010)
+# ---------------------------------------------------------------------------
+
+
+class TestNPDEDecorrelation:
+    def test_identity_covariance_matches_marginal_zscore(self) -> None:
+        """Independent sims (near-diagonal covariance): decorrelation is
+        a no-op, so npde ~ Phi^-1((rank+0.5)/(K+1)) computed marginally."""
+        from apmode.backends.predictive_summary import _npde_decorrelate_subject
+
+        rng = np.random.default_rng(0)
+        n_obs, k = 3, 2000
+        sims = rng.normal(loc=0.0, scale=1.0, size=(k, n_obs))
+        obs = np.array([0.0, 0.0, 0.0])  # dead-center of the sim distribution
+        npde_vals, fell_back = _npde_decorrelate_subject(obs, sims, covariance_ridge=1e-8)
+        assert npde_vals.shape == (3,)
+        assert fell_back is False
+        # Obs at the sim mean -> pde ~ 0.5 -> npde ~ 0
+        assert np.all(np.abs(npde_vals) < 0.3)
+
+    def test_correlated_covariance_actually_decorrelates(self) -> None:
+        """A strongly-correlated sim covariance must change the ranked
+        position of the observation relative to a naive marginal rank —
+        proof the Cholesky whitening step is doing real work."""
+        from apmode.backends.predictive_summary import _npde_decorrelate_subject
+
+        rng = np.random.default_rng(1)
+        k = 5000
+        cov = np.array([[1.0, 0.95], [0.95, 1.0]])
+        chol = np.linalg.cholesky(cov)
+        sims = (chol @ rng.normal(size=(2, k))).T  # (k, 2), corr ~ 0.95
+        # An observation off the correlation ridge should look extreme
+        # only after decorrelation.
+        obs = np.array([2.0, -2.0])
+        npde_vals, fell_back = _npde_decorrelate_subject(obs, sims, covariance_ridge=1e-8)
+        assert fell_back is False
+        assert np.all(np.isfinite(npde_vals))
+        assert np.max(np.abs(npde_vals)) > 1.5
+
+    def test_single_observation_falls_back_to_marginal(self) -> None:
+        from apmode.backends.predictive_summary import _npde_decorrelate_subject
+
+        rng = np.random.default_rng(2)
+        sims = rng.normal(loc=1.0, scale=0.5, size=(500, 1))
+        obs = np.array([1.0])
+        npde_vals, fell_back = _npde_decorrelate_subject(obs, sims, covariance_ridge=1e-8)
+        assert npde_vals.shape == (1,)
+        assert fell_back is True
+
+
+class TestComputeNPDE:
+    def test_well_calibrated_model_does_not_reject(self) -> None:
+        """Sims drawn from the same distribution as obs -> NPDE ~ N(0,1),
+        none of the three tests should reject at alpha=0.05."""
+        from apmode.backends.predictive_summary import _compute_npde
+
+        rng = np.random.default_rng(42)
+        subjects = []
+        for i in range(30):
+            times = np.array([0.5, 1.0, 2.0, 4.0])
+            true_mean = rng.uniform(2.0, 8.0, size=4)
+            sims = true_mean + rng.normal(scale=1.0, size=(400, 4))
+            obs = true_mean + rng.normal(scale=1.0, size=4)
+            subjects.append(
+                SubjectSimulation(
+                    subject_id=f"s{i}", t_observed=times, observed_dv=obs, sims_at_observed=sims
+                )
+            )
+        summary = _compute_npde(subjects, covariance_ridge=1e-8)
+        assert summary.n_subjects == 30
+        assert summary.decorrelation_failed_subjects == 0
+        assert summary.bonferroni_p > 0.05
+        assert abs(summary.npde_mean) < 0.3
+
+    def test_miscalibrated_model_rejects(self) -> None:
+        """Sims systematically too narrow vs obs -> Fisher variance test rejects."""
+        from apmode.backends.predictive_summary import _compute_npde
+
+        rng = np.random.default_rng(7)
+        subjects = []
+        for i in range(30):
+            times = np.array([0.5, 1.0, 2.0, 4.0])
+            true_mean = rng.uniform(2.0, 8.0, size=4)
+            sims = true_mean + rng.normal(scale=0.3, size=(400, 4))  # too narrow
+            obs = true_mean + rng.normal(scale=2.0, size=4)  # observed much wider
+            subjects.append(
+                SubjectSimulation(
+                    subject_id=f"s{i}", t_observed=times, observed_dv=obs, sims_at_observed=sims
+                )
+            )
+        summary = _compute_npde(subjects, covariance_ridge=1e-8)
+        assert summary.bonferroni_p < 0.05
+
+    def test_empty_input_raises(self) -> None:
+        from apmode.backends.predictive_summary import _compute_npde
+
+        with pytest.raises(ValueError, match="insufficient"):
+            _compute_npde([], covariance_ridge=1e-8)
+
+    def test_too_few_subjects_raises(self) -> None:
+        from apmode.backends.predictive_summary import _compute_npde
+
+        rng = np.random.default_rng(9)
+        times = np.array([0.5, 1.0])
+        subjects = [
+            SubjectSimulation(
+                subject_id=f"s{i}",
+                t_observed=times,
+                observed_dv=rng.normal(size=2),
+                sims_at_observed=rng.normal(size=(50, 2)),
+            )
+            for i in range(2)
+        ]
+        with pytest.raises(ValueError, match="insufficient"):
+            _compute_npde(subjects, covariance_ridge=1e-8)
+
+    def test_blq_censoring_applied_when_cdf_mode(self) -> None:
+        """Simulated replicates below loq_value get re-censored to
+        loq_value before decorrelation when censoring_mode='cdf'."""
+        from apmode.backends.predictive_summary import _compute_npde
+
+        rng = np.random.default_rng(3)
+        times = np.array([0.5, 1.0])
+        sims = np.column_stack(
+            [rng.normal(loc=0.05, scale=0.3, size=300), rng.normal(loc=5.0, scale=1.0, size=300)]
+        )
+        obs = np.array([0.1, 5.1])
+        subj = [
+            SubjectSimulation(
+                subject_id="s1", t_observed=times, observed_dv=obs, sims_at_observed=sims
+            )
+        ]
+        # A single subject is below the n_subj_used>=3 floor, so this
+        # exercises the censoring branch through the ValueError path;
+        # combine with two more plain subjects to clear the floor.
+        subj.append(
+            SubjectSimulation(
+                subject_id="s2",
+                t_observed=times,
+                observed_dv=np.array([0.08, 5.2]),
+                sims_at_observed=sims,
+            )
+        )
+        subj.append(
+            SubjectSimulation(
+                subject_id="s3",
+                t_observed=times,
+                observed_dv=np.array([0.12, 4.9]),
+                sims_at_observed=sims,
+            )
+        )
+        summary = _compute_npde(subj, covariance_ridge=1e-8, loq_value=0.1, censoring_mode="cdf")
+        assert summary.censoring_mode == "cdf"
+        assert summary.n_subjects == 3
+
+
+class TestBuildPredictiveDiagnosticsNPDEWire:
+    def test_bundle_carries_npde_summary(self) -> None:
+        rng = np.random.default_rng(11)
+        subjects = []
+        for i in range(20):
+            times = np.array([0.5, 1.0, 2.0])
+            true_mean = rng.uniform(2.0, 8.0, size=3)
+            sims = true_mean + rng.normal(scale=1.0, size=(150, 3))
+            obs = true_mean + rng.normal(scale=1.0, size=3)
+            subjects.append(
+                SubjectSimulation(
+                    subject_id=f"s{i}", t_observed=times, observed_dv=obs, sims_at_observed=sims
+                )
+            )
+        bundle = build_predictive_diagnostics(subjects, policy=_policy_with_floors(vpc_n_bins=3))
+        assert bundle.npde is not None
+        assert bundle.npde.n_subjects == 20
+
+    def test_degenerate_npde_returns_sentinel_not_crash(self) -> None:
+        # A single subject with a single observation: below the n_subj_used
+        # floor (3) inside _compute_npde -> build_predictive_diagnostics
+        # must catch the ValueError and emit a zero-subject sentinel
+        # instead of crashing the orchestrator.
+        subj = [
+            SubjectSimulation(
+                subject_id="s1",
+                t_observed=np.array([1.0]),
+                observed_dv=np.array([5.0]),
+                sims_at_observed=np.full((10, 1), 5.0),
+            )
+        ]
+        bundle = build_predictive_diagnostics(subj, policy=_policy_with_floors(vpc_n_bins=3))
+        assert bundle.npde is not None
+        assert bundle.npde.n_subjects == 0
+
+    def test_blq_spec_drives_npde_censoring_mode(self) -> None:
+        from apmode.dsl.ast_models import BLQM3
+
+        spec = _spec_with_obs(BLQM3(loq_value=0.05, error_model="proportional"))
+        rng = np.random.default_rng(13)
+        subjects = []
+        for i in range(20):
+            times = np.array([0.5, 1.0, 2.0])
+            true_mean = rng.uniform(2.0, 8.0, size=3)
+            sims = true_mean + rng.normal(scale=1.0, size=(150, 3))
+            obs = true_mean + rng.normal(scale=1.0, size=3)
+            subjects.append(
+                SubjectSimulation(
+                    subject_id=f"s{i}", t_observed=times, observed_dv=obs, sims_at_observed=sims
+                )
+            )
+        bundle = build_predictive_diagnostics(
+            subjects, policy=_policy_with_floors(vpc_n_bins=3), spec=spec
+        )
+        assert bundle.npde is not None
+        assert bundle.npde.censoring_mode == "cdf"

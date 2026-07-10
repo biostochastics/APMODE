@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed — Suite C weekly CI job
+
+- Deleted `.github/workflows/suite_c_phase1.yml`. The job only re-scored
+  the static committed `benchmarks/suite_c/phase1_npe_inputs.json` via
+  `suite_c_phase1_cli.py` (pure arithmetic — no R, no `nlmixr2`, no
+  live fit); a perpetually-green weekly check created a false
+  impression of ongoing live validation that the README's own prose
+  already disclosed but the CI surface did not. Suite C scoring is now
+  an explicit manual/on-demand operator step: regenerate the snapshot
+  with `python -m apmode.benchmarks.suite_c_phase1_runner`, then score
+  it with `python -m apmode.benchmarks.suite_c_phase1_cli` (see
+  `benchmarks/suite_c/README.md`). No functional code changed —
+  `suite_c_phase1_scoring.py`, `suite_c_phase1_cli.py`, and
+  `suite_c_phase1_runner.py` are unaffected; only their docstrings/help
+  text and `benchmarks/suite_c/README.md` / `docs/ARCHITECTURE.md` /
+  `README.md` were updated to stop describing a scheduled job that no
+  longer exists.
+
+### Added — Adversarial + trajectory-level QA for the agentic-LLM backend
+
+- Fixed a real prompt-injection vector: `covariate_sign_consistency` keys
+  (raw CSV column names, unvalidated except for case-insensitive
+  existence) flowed unsanitized from `summarize_stability_for_llm` into
+  the agentic LLM prompt, letting a maliciously-named data column smuggle
+  role-marker/instruction text into the propose-validate-compile-fit
+  loop. Extracted the existing error-text sanitizer into a new leaf
+  module `backends/prompt_sanitize.py` and applied it to this path too.
+- Added a red-team test suite (`tests/adversarial/agentic/`) covering
+  the injection fix, parameterized payload-shape coverage of
+  `sanitize_for_prompt`, and an end-to-end positive/negative control for
+  the new reward-hacking heuristic below.
+- `agentic_iterations.jsonl` now carries two additional per-iteration
+  fields, `eta_shrinkage_max` and `auc_cmax_be_score` (additive/optional,
+  no digest/RO-Crate lockstep bump required), enabling trajectory-level
+  (not just single-candidate) governance signal.
+- Added `governance/trajectory_evaluator.py`: an advisory
+  `trajectory_compliance.json` verdict, written by `AgenticRunner.run()`
+  on every exit path, that flags two degenerate-optimization patterns
+  across an agentic run's full iteration history — rising eta-shrinkage
+  alongside improving BIC (over-regularization/reward-hacking), and
+  `auc_cmax_be_score` collapsing to `None` while BIC keeps improving
+  (NCA-eligibility-floor gaming). Thresholds live in the new
+  `AgenticComplianceConfig` policy block (`policies/*.json`,
+  `policy_version` bumped `0.7.0` → `0.7.1` in lockstep across all three
+  lanes). This is advisory, not a new hard Gate 1-3 rejection — it does
+  not touch `evaluate_gate2`/`evaluate_gate3` signatures.
+- `apmode trace --compliance` surfaces the verdict for operators
+  inspecting a bundle.
+
 ### Fixed — Suite A ingest crash; Suite A/B/C validated end-to-end
 
 - `CanonicalPKSchema.DV` was declared non-nullable, rejecting Suite A

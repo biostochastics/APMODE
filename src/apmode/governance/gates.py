@@ -80,12 +80,16 @@ def evaluate_gate1(
     """Evaluate Gate 1: Technical Validity.
 
     7 core checks per PRD §4.3.1, plus an optional imputation-stability
-    check when Multiple Imputation is the resolved covariate method:
+    check when Multiple Imputation is the resolved covariate method, plus
+    an opt-in true-NPDE check:
       1. Convergence: estimation algorithm converged
       2. Parameter plausibility: no extreme/negative structural params
       3. State trajectory validity: no negative concentrations, no NaN
       4. CWRES diagnostics: |mean| < threshold, outlier fraction < threshold
       5. VPC coverage: |coverage - target| <= tolerance per band (0.4.1)
+      5b. True decorrelated NPDE (Comets & Brendel 2008/2010) — additive
+          to 5, gated only when ``Gate1Config.npde_required`` is True
+          (default False; see ``_check_npde_calibration``).
       6. Split integrity: (placeholder — requires train/test comparison)
       7. Seed stability: results consistent across ≥N random seeds
       8. Imputation stability (MI runs only): convergence_rate and
@@ -109,6 +113,7 @@ def evaluate_gate1(
     checks.append(_check_state_trajectory(result, g1))
     checks.extend(_check_cwres(result, g1))
     checks.append(_check_pit_calibration(result, g1))
+    checks.append(_check_npde_calibration(result, g1))
     checks.append(_check_split_integrity(result, g1))
     checks.append(_check_seed_stability(result, seed_results, g1))
     checks.append(
@@ -392,6 +397,61 @@ def _check_pit_calibration(result: BackendResult, g1: Gate1Config) -> GateCheckR
         passed=passed,
         observed="; ".join(violations) if violations else "all_within_tolerance",
         threshold=f"|c_p - p| n-scaled (z_alpha={z_alpha}, n_subj={n_eff}): {threshold_desc}",
+    )
+
+
+def _check_npde_calibration(result: BackendResult, g1: Gate1Config) -> GateCheckResult:
+    """Check: true decorrelated NPDE (Comets & Brendel 2008/2010).
+
+    Additive to ``_check_pit_calibration`` — gated separately via
+    ``Gate1Config.npde_required`` (default ``False``) so PIT-lite
+    stays the default Gate 1 calibration gate while NPDE is opt-in.
+    Fails when ``NPDESummary.bonferroni_p <= npde_bonferroni_alpha``
+    (Bonferroni-corrected across the Wilcoxon/Shapiro/Fisher-variance
+    battery) — i.e. rejects H0 that the model is correctly specified.
+
+    Distinct from ``Gate2Config.loro_npde_mean_max``/``loro_npde_variance_*``,
+    which consume a CWRES-derived proxy computed by LORO-CV, not this
+    true simulation-based diagnostic (see ``Gate2Config`` docstring).
+    """
+    npde = result.diagnostics.npde
+    if npde is None:
+        if not g1.npde_required:
+            return GateCheckResult(
+                check_id="npde_calibration",
+                passed=True,
+                observed="npde_not_configured",
+            )
+        return GateCheckResult(
+            check_id="npde_calibration",
+            passed=False,
+            observed="npde_not_available",
+        )
+    if not g1.npde_required:
+        # Backend populated NPDE but the lane doesn't gate on it yet —
+        # surface the evidence without failing the candidate.
+        return GateCheckResult(
+            check_id="npde_calibration",
+            passed=True,
+            observed=f"npde_not_required (bonferroni_p={npde.bonferroni_p:.4f})",
+        )
+    if npde.n_subjects == 0 or npde.n_observations == 0:
+        return GateCheckResult(
+            check_id="npde_calibration",
+            passed=False,
+            observed="npde_degenerate_no_finite_sims",
+        )
+    passed = npde.bonferroni_p > g1.npde_bonferroni_alpha
+    return GateCheckResult(
+        check_id="npde_calibration",
+        passed=passed,
+        observed=(
+            f"bonferroni_p={npde.bonferroni_p:.4f} "
+            f"(wilcoxon={npde.wilcoxon_p:.4f}, shapiro={npde.shapiro_p:.4f}, "
+            f"fisher_var={npde.fisher_variance_p:.4f}, "
+            f"mean={npde.npde_mean:.3f}, var={npde.npde_variance:.3f})"
+        ),
+        threshold=g1.npde_bonferroni_alpha,
     )
 
 
@@ -1236,8 +1296,16 @@ def _gate3_cross_paradigm(
     either because survivors span multiple backends (classical cross-
     paradigm) or because within a single backend the BLQ handling
     methods differ (within-paradigm comparability failure).
+
+    VPC/NPE/AUC-Cmax — the metrics this path ranks on — are themselves
+    computed from each candidate's own fitted-model simulation, which
+    carries an unresolved circularity risk distinct from the §10 Q2
+    likelihood-scale problem; see
+    ``docs/adr/0004-cross-paradigm-simulation-metric-circularity.md``.
+    The ``paradigm_metric_spread`` check below is the observability
+    signal that ADR tracks against.
     """
-    from apmode.governance.ranking import rank_cross_paradigm
+    from apmode.governance.ranking import compute_paradigm_metric_spread, rank_cross_paradigm
 
     cp_result = rank_cross_paradigm(
         survivors,
@@ -1308,6 +1376,26 @@ def _gate3_cross_paradigm(
         ),
     ]
 
+    # Observability only (passed=True unconditionally) — not a gating
+    # threshold. ADR 0004 tracks whether a sustained spread here
+    # correlates with paradigm identity rather than fit quality; no
+    # policy-JSON threshold exists for this yet because no concrete
+    # bias has been confirmed (see ADR 0004 Decision).
+    paradigm_spread = compute_paradigm_metric_spread(cp_result)
+    if paradigm_spread is not None:
+        checks.append(
+            GateCheckResult(
+                check_id="paradigm_metric_spread",
+                passed=True,
+                observed=round(paradigm_spread, 4),
+                units="composite_score_delta",
+                evidence_ref=(
+                    f"backends: {backends_str}; see "
+                    "docs/adr/0004-cross-paradigm-simulation-metric-circularity.md"
+                ),
+            )
+        )
+
     best_id = ranked[0].candidate_id if ranked else "none"
     return (
         GateResult(
@@ -1344,6 +1432,8 @@ def evaluate_gate2_5(
       3. Data adequacy: n_observations / n_parameters >= threshold
       4. Sensitivity: results available when required
       5. AI/ML transparency: statement present for NODE/agentic backends
+      6. Risk grading: V&V40-style model-influence x decision-consequence
+         tier meets its policy-configured credibility-factor rigor floors
 
     Args:
         result: BackendResult from estimation.
@@ -1387,6 +1477,9 @@ def evaluate_gate2_5(
 
     # Check 5: AI/ML transparency
     checks.append(_check_ml_transparency(result, ctx, g25))
+
+    # Check 6: V&V40-style risk grading
+    checks.append(_check_risk_grading(result, ctx, g25))
 
     passed = all(c.passed for c in checks)
     failed_names = [c.check_id for c in checks if not c.passed]
@@ -1521,6 +1614,77 @@ def _check_ml_transparency(
         passed=has_statement,
         observed="present" if has_statement else "missing",
         threshold="required",
+    )
+
+
+_RIGOR_ORDER: dict[str, int] = {"a": 0, "b": 1, "c": 2, "d": 3}
+
+
+def _obtained_rigor(result: BackendResult, factor: str) -> str | None:
+    """Map a Kuemmel-2020 credibility factor to an obtained rigor letter.
+
+    First-pass deterministic bucketing sourced from DiagnosticBundle
+    fields already populated by build_predictive_diagnostics (see
+    CLAUDE.md's canonical VPC/NPE/AUC-Cmax helper note). Returns None
+    when the underlying diagnostic was never computed (treated as a gap).
+    The ``data_adequacy`` factor is intentionally out of scope here — it
+    is already covered by the separate ``_check_data_adequacy`` check
+    (ctx.n_observations / ctx.n_parameters ratio) and is not yet mapped
+    onto this a..d rigor scale; a policy JSON that assigns
+    ``data_adequacy`` as a ``risk_grading`` factor will therefore always
+    register as a gap until that follow-on wiring lands.
+    """
+    diag = result.diagnostics
+    if factor == "vpc_coverage" and diag.vpc is not None:
+        cov = min(diag.vpc.coverage.values()) if diag.vpc.coverage else 0.0
+        for letter, floor in (("d", 0.95), ("c", 0.85), ("b", 0.70), ("a", 0.50)):
+            if cov >= floor:
+                return letter
+        return None
+    if factor == "npe_agreement" and diag.npe_score is not None:
+        for letter, ceiling in (("d", 0.10), ("c", 0.20), ("b", 0.30), ("a", 0.50)):
+            if diag.npe_score <= ceiling:
+                return letter
+        return None
+    if factor == "nca_eligibility" and diag.auc_cmax_be_score is not None:
+        for letter, floor in (("d", 0.90), ("c", 0.80), ("b", 0.60), ("a", 0.40)):
+            if diag.auc_cmax_be_score >= floor:
+                return letter
+        return None
+    return None
+
+
+def _check_risk_grading(
+    result: BackendResult,
+    ctx: CredibilityContext,
+    g25: Gate25Config,
+) -> GateCheckResult:
+    """V&V40-style risk-graded credibility floor (Kuemmel 2020 factors)."""
+    rg = g25.risk_grading
+    if rg is None or not rg.enabled:
+        return GateCheckResult(
+            check_id="risk_grading",
+            passed=True,
+            observed="not_required",
+        )
+    # Conservative default: missing axis -> "high" so an unspecified
+    # context-of-use never silently resolves to a lenient tier.
+    influence = ctx.model_influence or "high"
+    consequence = ctx.decision_consequence or "high"
+    tier = rg.tier_for(influence, consequence)
+    factors = rg.credibility_factors.get(tier, {})
+    gaps: list[str] = []
+    for factor, target in factors.items():
+        obtained = _obtained_rigor(result, factor)
+        if obtained is None or _RIGOR_ORDER[obtained] < _RIGOR_ORDER[target]:
+            gaps.append(factor)
+    passed = len(gaps) == 0
+    return GateCheckResult(
+        check_id="risk_grading",
+        passed=passed,
+        observed=f"tier={tier} gaps={gaps}",
+        threshold="all_factors_meet_target",
+        evidence_ref=f"risk_grading:{tier}",
     )
 
 

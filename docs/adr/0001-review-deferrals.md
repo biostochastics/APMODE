@@ -199,3 +199,37 @@ records present-day facts only.
   research branch), but the original decision text is left unedited
   per this ADR's own convention — this bullet only fixes the citation
   and flags the trigger for owner re-evaluation.
+
+---
+
+## Process note — CLAUDE.md roadmap-drift review checklist (2026-07-09)
+
+**Finding.** CLAUDE.md's Core-Invariants and Phasing sections had accumulated
+stale roadmap language (a Phase 3 bullet listing "report generator with
+credibility framework" as forward-looking, and a Core-Invariants bullet
+calling cross-paradigm NLPD comparability an unspecified "architectural
+blocker") describing code that had since shipped — `src/apmode/report/
+credibility.py`, `CredibilityReport`, `write_credibility_report`, the
+RO-Crate credibility projector, `governance/gates.py`'s
+`credibility_qualification` check, and `governance/ranking.py::
+rank_cross_paradigm` were all already implemented and wired in at the time
+the stale prose was still describing them as unbuilt.
+
+**Decision.** This is a documentation-only class of defect (code shipped,
+prose didn't catch up), not a code defect, so there is no natural runtime
+hook to pin "CLAUDE.md prose" to "module existence" without a brittle
+string-matching test. Instead of adding such a test, reviewers should apply
+this checklist manually:
+
+> When a CLAUDE.md bullet describes something as Phase-N roadmap,
+> "not yet built," "architectural blocker," or similar forward-looking
+> language, **grep for the module or symbol it names before accepting the
+> PR**. If the module exists and is wired into gates/emitter/ranking (not
+> just present as a stub), the bullet is stale and must be corrected in the
+> same PR that lands the feature — do not leave it for a later docs pass.
+> This applies symmetrically: don't mark a whole multi-part bullet "done" if
+> only some of its sub-items shipped (see the Phase 3 bullet's per-item
+> breakout as the pattern to follow).
+
+**Re-evaluation trigger:** none — this is a standing review practice, not a
+deferred finding with a technical condition to watch for.

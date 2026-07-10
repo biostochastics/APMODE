@@ -62,9 +62,11 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 PHASE1_FRACTION_BEATS_TARGET: float = 0.60
-"""CI target. ``fraction_beats_literature_median`` must
-hit at least this number for the weekly Suite C run to pass. A miss
-opens a GitHub issue — it is *not* a release block (the suite measures
+"""Target. ``fraction_beats_literature_median`` must
+hit at least this number for a Suite C scoring run to pass. There is
+no scheduled CI job for Suite C (see ``benchmarks/suite_c/README.md``);
+this target is checked when an operator manually regenerates and
+scores the snapshot. It is *not* a release block (the suite measures
 methodology drift, not a release-critical contract)."""
 
 PHASE1_MIN_FIXTURES_FOR_AGGREGATE: int = 3
@@ -154,10 +156,12 @@ class SuiteCPhase1Scorecard(BaseModel):
     :data:`PHASE1_MIN_FIXTURES_FOR_AGGREGATE` entries (avoids reporting
     a 1-of-1 = 100% as a meaningful win-rate).
 
-    ``passes_gate`` is the CI gate: ``True`` iff
+    ``passes_gate`` is the gate: ``True`` iff
     ``fraction_beats_literature_median >= PHASE1_FRACTION_BEATS_TARGET``
-    (and the aggregate is computable). The weekly workflow uses this
-    field to decide whether to open a GitHub issue.
+    (and the aggregate is computable). Checked manually by an operator
+    running ``suite_c_phase1_cli`` on demand (see
+    ``benchmarks/suite_c/README.md``) — there is no scheduled job that
+    consumes this field.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -226,12 +230,13 @@ def aggregate_phase1_scorecard(
     ``min_fixtures`` is the floor below which the aggregate fraction
     is reported as ``None`` (and ``passes_gate=False`` regardless of
     the partial wins) — this prevents a 1-of-1 = 100% from looking
-    like a green Suite C run. ``target`` defaults to
-    :data:`PHASE1_FRACTION_BEATS_TARGET` (``0.60``); the weekly workflow reads this off
-    ``SuiteCPhase1Scorecard.passes_gate``.
+    like a passing Suite C run. ``target`` defaults to
+    :data:`PHASE1_FRACTION_BEATS_TARGET` (``0.60``); operators read the
+    result off ``SuiteCPhase1Scorecard.passes_gate`` after an on-demand
+    ``suite_c_phase1_cli`` run.
 
     The returned scorecard preserves the input order of ``scores`` for
-    determinism — callers that need a stable diff across CI runs
+    determinism — callers that need a stable diff across runs
     should pass ``scores`` sorted by ``fixture_id`` (the helper does
     not re-sort to avoid surprising callers who pass a meaningful
     ordering).
@@ -269,9 +274,9 @@ def aggregate_phase1_scorecard(
 def phase1_roster_dois() -> dict[str, str]:
     """Return ``{fixture_id: DOI}`` for the canonical literature MLE roster.
 
-    Used by the weekly workflow to render a table in the GitHub issue
-    that fires on a missed gate, so a reviewer can map each fixture
-    back to its literature anchor without grepping the YAMLs.
+    Used when reporting a scoring run (e.g. in a PR description or
+    issue) to render a table mapping each fixture back to its
+    literature anchor without grepping the YAMLs.
     """
     out: dict[str, str] = {}
     for fid in PHASE1_MLE_FIXTURE_IDS:

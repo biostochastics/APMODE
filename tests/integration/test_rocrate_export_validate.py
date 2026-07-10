@@ -66,6 +66,14 @@ _SCENARIOS = [
     ),
     pytest.param(
         {
+            "candidate_ids": ("c001",),
+            "add_credibility": True,
+            "add_risk_grading": True,
+        },
+        id="credibility-and-risk-grading",
+    ),
+    pytest.param(
+        {
             "candidate_ids": ("c001", "c002"),
             "add_agentic": True,
             "add_regulatory": True,
@@ -76,6 +84,7 @@ _SCENARIOS = [
         {
             "candidate_ids": ("c001", "c002", "c003"),
             "add_credibility": True,
+            "add_risk_grading": True,
             "add_bayesian": True,
             "add_agentic": True,
             "add_regulatory": True,
@@ -188,6 +197,53 @@ def test_complete_sentinel_is_a_file_entity_with_additional_type(
     root = next(e for e in meta["@graph"] if e["@id"] == "./")
     ids = {ref["@id"] for ref in root["hasPart"] if isinstance(ref, dict)}
     assert "_COMPLETE" in ids
+
+
+def test_attestation_projected(tmp_path: Path) -> None:
+    """attestation.json (when present) is projected as a File entity tagged
+    ``apmode:attestation`` and the exported crate still validates at REQUIRED
+    severity (QA/QC remediation: human-in-the-loop reviewer attestation)."""
+    import json
+
+    bundle = build_submission_bundle(tmp_path, candidate_ids=("c001",))
+    # Written directly (not via BundleEmitter.write_attestation) since this
+    # fixture builds bundles by writing JSON straight to disk rather than
+    # through the emitter — mirrors how ``apmode attest`` drops the sidecar
+    # in after sealing.
+    (bundle / "attestation.json").write_text(
+        json.dumps(
+            {
+                "attestation_schema_version": "1.0",
+                "reviewer_id": "jdoe",
+                "reviewer_role": "PK reviewer",
+                "timestamp": "2026-07-10T00:00:00+00:00",
+                "decision": "approved",
+                "rationale": "Reviewed gate decisions and diagnostics; no concerns.",
+                "gate_overrides": [],
+            },
+            indent=2,
+        )
+    )
+
+    out = tmp_path / "crate_attested"
+    RoCrateEmitter().export_from_sealed_bundle(
+        bundle,
+        out,
+        RoCrateExportOptions(date_published="2026-04-17T10:00:00Z"),
+    )
+    meta = json.loads((out / "ro-crate-metadata.json").read_text())
+
+    att_entity = next(
+        (e for e in meta["@graph"] if e.get("additionalType") == "apmode:attestation"), None
+    )
+    assert att_entity is not None
+    assert att_entity["@type"] == "File"
+    root = next(e for e in meta["@graph"] if e["@id"] == "./")
+    ids = {ref["@id"] for ref in root["hasPart"] if isinstance(ref, dict)}
+    assert att_entity["@id"] in ids
+
+    ok, messages = _validate_crate(out)
+    assert ok, "REQUIRED-level issues:\n  " + "\n  ".join(messages)
 
 
 def test_refuses_unsealed_bundle(tmp_path: Path) -> None:

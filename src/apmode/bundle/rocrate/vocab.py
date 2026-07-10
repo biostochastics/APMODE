@@ -54,6 +54,7 @@ DSL_SPEC = "apmode:dslSpec"
 DSL_TRANSFORM = "apmode:dslTransform"
 LLM_INVOCATION = "apmode:llmInvocation"
 CREDIBILITY_REPORT = "apmode:credibilityReport"
+RISK_GRADING_REPORT = "apmode:riskGradingReport"
 LORO_CV = "apmode:loroCV"
 SCORING_CONTRACT = "apmode:scoringContract"
 NLPD_COMPARABILITY_PROTOCOL = "apmode:nlpdComparabilityProtocol"
@@ -71,6 +72,15 @@ SBOM_TYPE = "apmode:sbom"
 Python dependency graph that produced the bundle without fetching
 release-asset sidecars. Excluded from the sealed-bundle digest so
 regenerating the SBOM never invalidates ``_COMPLETE``."""
+
+ATTESTATION_TYPE = "apmode:attestation"
+"""``additionalType`` value for the human-in-the-loop reviewer
+attestation sidecar (``attestation.json``, written by ``apmode
+attest`` after sealing). Carried in the crate so consumers can see
+whether — and by whom — a bundle was reviewed without opening the
+bundle directory directly. Excluded from the sealed-bundle digest so
+attesting (or re-attesting with ``--force``) never invalidates
+``_COMPLETE``."""
 
 
 class RegulatoryContext(StrEnum):

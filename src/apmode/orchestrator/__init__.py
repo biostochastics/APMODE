@@ -56,6 +56,7 @@ from apmode.governance.gates import (
 )
 from apmode.governance.policy import GatePolicy
 from apmode.report.credibility import generate_credibility_report
+from apmode.report.risk_grading import generate_risk_grading_report
 from apmode.routing import route
 
 if TYPE_CHECKING:
@@ -68,6 +69,7 @@ if TYPE_CHECKING:
     from apmode.bundle.models import (
         BackendResult,
         DataManifest,
+        DataProvenance,
         EvidenceManifest,
         ImputationStabilityManifest,
         MissingDataDirective,
@@ -75,7 +77,7 @@ if TYPE_CHECKING:
         Ranking,
     )
     from apmode.dsl.ast_models import DSLSpec
-    from apmode.governance.policy import Gate3Config
+    from apmode.governance.policy import AgenticComplianceConfig, Gate3Config
     from apmode.routing import DispatchDecision
     from apmode.search.engine import SearchOutcome, SearchResult
     from apmode.search.stability import ImputationProvider
@@ -180,6 +182,16 @@ class RunConfig:
     # so the Gate 2.5 record carries a reviewer-specified COU rather than
     # a boilerplate one.
     context_of_use: str | None = None
+    # ASME V&V40 risk-grading axes (Gate 2.5 companion track). When both are
+    # provided and the active lane policy's ``gate2_5.risk_grading`` is
+    # enabled, they feed ``RiskGradingConfig.tier_for`` to derive
+    # ``CredibilityContext.risk_level`` and drive the ``risk_grading`` gate
+    # check + emitted ``risk_grading/{id}.json`` report. Left unset,
+    # risk-grading is inert (see ``_check_risk_grading``'s
+    # conservative-default fallback to "high" when the policy requires it
+    # but no axis was supplied).
+    model_influence: Literal["low", "medium", "high"] | None = None
+    decision_consequence: Literal["low", "medium", "high"] | None = None
 
     def __post_init__(self) -> None:
         self.max_concurrency = max(1, self.max_concurrency)
@@ -263,6 +275,7 @@ class Orchestrator:
         *,
         skip_classical: bool = False,
         run_id: str | None = None,
+        data_provenance: DataProvenance | None = None,
     ) -> RunOutcome:
         """Execute the full APMODE pipeline.
 
@@ -285,6 +298,13 @@ class Orchestrator:
                 without an extra lookup. Mutually exclusive with
                 ``skip_classical=True`` (resume already binds to an
                 existing run dir).
+            data_provenance: Optional human/source-system lineage for the
+                input dataset (source system, time-zero definition, BLQ
+                statistical handling, curation history). When supplied,
+                written as the optional ``data_provenance.json`` sidecar
+                immediately after the data manifest. Omitted by default —
+                a run without it produces a bundle identical to one
+                produced before this parameter existed.
         """
         from apmode.search.engine import SearchEngine
 
@@ -326,6 +346,10 @@ class Orchestrator:
 
         # Write data manifest
         emitter.write_data_manifest(manifest)
+
+        # Write optional input-lineage/curation-provenance sidecar
+        if data_provenance is not None:
+            emitter.write_data_provenance(data_provenance)
 
         # Write seed registry
         emitter.write_seed_registry(
@@ -450,6 +474,12 @@ class Orchestrator:
         # atomically. ``policy is None`` (no GatePolicy loaded) → Gate 3
         # falls back to the CWRES NPE proxy.
         gate3_policy = policy.gate3 if policy is not None else None
+        # Trajectory-level compliance thresholds (reward-hacking /
+        # eligibility-collapse QA) for the agentic-LLM backend (Task 5/6/7,
+        # governance/trajectory_evaluator.py). ``policy is None`` (no
+        # GatePolicy loaded) → AgenticRunner.run() falls back to
+        # AgenticComplianceConfig() defaults.
+        agentic_compliance = policy.agentic_compliance if policy is not None else None
         nca_diagnostics = list(estimator.diagnostics) if estimator.diagnostics else None
 
         # --- Stage 3: Data Splitting ---
@@ -521,6 +551,7 @@ class Orchestrator:
                 split_manifest_dict=split_manifest_dict,
                 gate3_policy=gate3_policy,
                 nca_diagnostics=nca_diagnostics,
+                agentic_compliance=agentic_compliance,
             )
             # Merge agentic results into search outcome
             for ar in agentic_results:
@@ -893,13 +924,25 @@ class Orchestrator:
 
                 # Gate 2.5: Credibility Qualification
 
+                g25_config = policy.gate2_5
+                risk_grading_config = g25_config.risk_grading if g25_config is not None else None
+                if risk_grading_config is not None and risk_grading_config.enabled:
+                    computed_risk_level = risk_grading_config.tier_for(
+                        self._config.model_influence or "high",
+                        self._config.decision_consequence or "high",
+                    )
+                else:
+                    computed_risk_level = None
+
                 cred_ctx = CredibilityContext(
                     context_of_use=(
                         self._config.context_of_use
                         if self._config.context_of_use
                         else f"{self._config.lane} lane analysis"
                     ),
-                    risk_level="medium",
+                    risk_level=computed_risk_level,
+                    model_influence=self._config.model_influence,
+                    decision_consequence=self._config.decision_consequence,
                     n_observations=manifest.n_observations,
                     n_parameters=len(sr_result.parameter_estimates),
                     ml_transparency_statement=(
@@ -937,6 +980,15 @@ class Orchestrator:
                     directive=dispatch.missing_data_directive,
                 )
                 emitter.write_credibility_report(cred_report)
+
+                if g25_config is not None and g25_config.risk_grading is not None:
+                    risk_report = generate_risk_grading_report(
+                        sr_result,
+                        lane=self._config.lane,
+                        credibility_context=cred_ctx,
+                        gate25_config=g25_config,
+                    )
+                    emitter.write_risk_grading_report(risk_report)
 
                 outcome.recommended.append(sr_result.model_id)
                 gate12_survivors.append(sr_result)
@@ -1109,6 +1161,7 @@ class Orchestrator:
         *,
         gate3_policy: Gate3Config | None = None,
         nca_diagnostics: list[NCASubjectDiagnostic] | None = None,
+        agentic_compliance: AgenticComplianceConfig | None = None,
     ) -> list[SearchResult]:
         """Run the agentic LLM refinement stage (PRD §4.2.6).
 
@@ -1186,6 +1239,7 @@ class Orchestrator:
                         split_manifest=split_manifest_dict,
                         gate3_policy=gate3_policy,
                         nca_diagnostics=nca_diagnostics,
+                        agentic_compliance=agentic_compliance,
                     )
                 results.append(
                     SR(
@@ -1249,6 +1303,7 @@ class Orchestrator:
                     split_manifest=split_manifest_dict,
                     gate3_policy=gate3_policy,
                     nca_diagnostics=nca_diagnostics,
+                    agentic_compliance=agentic_compliance,
                 )
             results.append(
                 SR(
