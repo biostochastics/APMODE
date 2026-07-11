@@ -11,10 +11,37 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from apmode.bundle.emitter import BundleEmitter
-from apmode.bundle.models import ColumnMapping, DataManifest, SeedRegistry
+from apmode.bundle.models import (
+    ColumnMapping,
+    DataManifest,
+    GateCheckResult,
+    GateResult,
+    SeedRegistry,
+)
 from apmode.cli import app
 
 runner = CliRunner()
+
+
+def _gate_result(gate_id: str, gate_name: str, check_id: str, *, passed: bool) -> GateResult:
+    """Minimal sealed gate decision an override in these tests can reference.
+
+    The attest CLI validates each ``--gate-override`` against the sealed gate
+    files: the override's ``gate_id``/``check_id`` must exist and its
+    ``original_passed`` must equal the sealed ``check.passed``.
+    """
+    return GateResult(
+        gate_id=gate_id,
+        gate_name=gate_name,
+        candidate_id="cand_attest",
+        passed=passed,
+        checks=[
+            GateCheckResult(check_id=check_id, passed=passed, observed=passed, threshold=None)
+        ],
+        summary_reason="ok" if passed else f"Failed: {check_id}",
+        policy_version="0.7.1",
+        timestamp="2026-07-11T00:00:00+00:00",
+    )
 
 
 def _seal_bundle(tmp_path: Path, run_id: str) -> Path:
@@ -34,6 +61,15 @@ def _seal_bundle(tmp_path: Path, run_id: str) -> Path:
     )
     emitter.write_seed_registry(
         SeedRegistry(root_seed=42, r_seed=42, r_rng_kind="L'Ecuyer-CMRG", np_seed=42)
+    )
+    # Gate decisions the override tests reference: gate1/cwres_mean_max (passed)
+    # and gate2/shrinkage_max (failed — the override lifts it). The attest CLI
+    # validates each override against these sealed files.
+    emitter.write_gate_decision(
+        _gate_result("gate1", "technical_validity", "cwres_mean_max", passed=True), 1
+    )
+    emitter.write_gate_decision(
+        _gate_result("gate2", "lane_admissibility", "shrinkage_max", passed=False), 2
     )
     return emitter.seal()
 

@@ -299,6 +299,8 @@ class TestSearchEngineParallel:
             timeout_seconds=123,
             allowed_backends=["nlmixr2", "jax_node"],
         )
-        node_spec = _make_spec("node").model_copy(update={"elimination": NODEElimination(dim=3)})
+        node_spec = _make_spec("node").model_copy(
+            update={"elimination": NODEElimination(dim=3, constraint_template="bounded_positive")}
+        )
         await engine._evaluate_candidate(node_spec, {"CL": 2.0, "V": 30.0})
         assert node.run.await_args.kwargs["timeout_seconds"] is None

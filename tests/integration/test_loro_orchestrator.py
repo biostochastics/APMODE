@@ -33,6 +33,7 @@ from apmode.bundle.models import (
     ParameterEstimate,
     PITCalibrationSummary,
     ScoringContract,
+    SplitGOFMetrics,
     VPCSummary,
 )
 from apmode.dsl.ast_models import IIV, DSLSpec, FirstOrder, LinearElim, OneCmt, Proportional
@@ -89,6 +90,7 @@ def _make_mock_result(model_id: str, bic: float = 540.0) -> BackendResult:
             wall_time_seconds=1.0,
         ),
         diagnostics=DiagnosticBundle(
+            state_trajectory_valid=True,
             gof=GOFMetrics(
                 cwres_mean=0.02,
                 cwres_sd=1.01,
@@ -395,7 +397,31 @@ class _AgenticStandInRunner:
             self.fixed_parameter_calls += 1
         _ = test_data_path
         result = _make_mock_result(spec.model_id, self._bic)
-        return result.model_copy(update={"backend": "agentic_llm"})
+        updates: dict[str, object] = {"backend": "agentic_llm"}
+        # A real runner given a split_manifest partitions residuals by
+        # train/test and reports split_gof; without it a LORO fold is not
+        # "complete" and cannot pass. Mimic that here for the fold-eval call.
+        if split_manifest is not None:
+            assignments = (
+                split_manifest.get("assignments", []) if isinstance(split_manifest, dict) else []
+            )
+            n_test = sum(1 for a in assignments if a.get("fold") == "test") or 1
+            n_train = sum(1 for a in assignments if a.get("fold") == "train") or 1
+            updates["diagnostics"] = result.diagnostics.model_copy(
+                update={
+                    "split_gof": SplitGOFMetrics(
+                        train_cwres_mean=0.02,
+                        train_cwres_sd=1.0,
+                        train_outlier_fraction=0.01,
+                        test_cwres_mean=0.03,
+                        test_cwres_sd=1.02,
+                        test_outlier_fraction=0.02,
+                        n_train=n_train,
+                        n_test=n_test,
+                    )
+                }
+            )
+        return result.model_copy(update=updates)
 
 
 def test_loro_cv_agentic_leg_succeeds_node_bayesian_fail_closed(tmp_path: Path) -> None:

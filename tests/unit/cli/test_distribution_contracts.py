@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[3]
 
 def test_wheel_includes_runtime_policies() -> None:
     config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    assert config["tool"]["hatch"]["version"]["fallback-version"] == "0.6.1-rc2"
+    assert config["tool"]["hatch"]["version"]["fallback-version"] == "0.7.0-rc1"
     assert "matplotlib>=3.8,<3.11" in config["project"]["optional-dependencies"]["bayesian"]
     force_include = config["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"]
     assert force_include["policies"] == "apmode/policies"

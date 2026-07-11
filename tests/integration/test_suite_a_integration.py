@@ -149,6 +149,7 @@ def _make_mock_fit(
             wall_time_seconds=60.0,
         ),
         diagnostics=DiagnosticBundle(
+            state_trajectory_valid=True,
             gof=GOFMetrics(
                 cwres_mean=0.02, cwres_sd=1.01, outlier_fraction=0.01, obs_vs_pred_r2=0.95
             ),

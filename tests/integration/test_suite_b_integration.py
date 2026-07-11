@@ -309,6 +309,7 @@ def _make_node_fit(
             wall_time_seconds=45.0,
         ),
         diagnostics=DiagnosticBundle(
+            state_trajectory_valid=True,
             gof=GOFMetrics(
                 cwres_mean=0.03, cwres_sd=1.02, outlier_fraction=0.01, obs_vs_pred_r2=0.94
             ),

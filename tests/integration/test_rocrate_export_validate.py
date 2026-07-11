@@ -207,23 +207,23 @@ def test_attestation_projected(tmp_path: Path) -> None:
     severity (QA/QC remediation: human-in-the-loop reviewer attestation)."""
     import json
 
-    bundle = build_submission_bundle(tmp_path, candidate_ids=("c001",))
-    # Written directly (not via BundleEmitter.write_attestation) since this
-    # fixture builds bundles by writing JSON straight to disk rather than
-    # through the emitter — mirrors how ``apmode attest`` drops the sidecar
-    # in after sealing.
-    (bundle / "attestation.json").write_text(
-        json.dumps(
-            {
-                "attestation_schema_version": "1.0",
-                "reviewer_id": "jdoe",
-                "reviewer_role": "PK reviewer",
-                "timestamp": "2026-07-10T00:00:00+00:00",
-                "decision": "approved",
-                "rationale": "Reviewed gate decisions and diagnostics; no concerns.",
-                "gate_overrides": [],
-            },
-            indent=2,
+    from apmode.bundle.emitter import BundleEmitter
+    from apmode.bundle.models import ReviewerAttestation
+
+    bundle = build_submission_bundle(
+        tmp_path, run_id="canonical-submission-run", candidate_ids=("c001",)
+    )
+    # Attach the attestation through the real emitter path (as ``apmode attest``
+    # does after sealing): it binds the sidecar to this bundle's seal and writes
+    # a schema-2.0 payload. The projector refuses to export a legacy unbound
+    # (schema-1.0) attestation, so writing raw JSON would fail integrity.
+    BundleEmitter(tmp_path, run_id="canonical-submission-run").write_attestation(
+        ReviewerAttestation(
+            reviewer_id="jdoe",
+            reviewer_role="PK reviewer",
+            timestamp="2026-07-10T00:00:00+00:00",
+            decision="approved",
+            rationale="Reviewed gate decisions and diagnostics; no concerns.",
         )
     )
 

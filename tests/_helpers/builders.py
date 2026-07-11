@@ -295,6 +295,7 @@ def mock_backend_result(
             wall_time_seconds=30.0,
         ),
         diagnostics=DiagnosticBundle(
+            state_trajectory_valid=True,
             gof=GOFMetrics(cwres_mean=0.05, cwres_sd=1.0, outlier_fraction=0.02),
             identifiability=IdentifiabilityFlags(
                 condition_number=50.0,

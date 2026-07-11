@@ -11,6 +11,7 @@ import pytest
 
 from apmode.backends.agentic_runner import AgenticConfig, AgenticRunner
 from apmode.backends.llm_client import LLMResponse
+from apmode.errors import AgenticExhaustionError
 from tests._helpers.builders import base_spec as _base_spec
 from tests._helpers.builders import mock_backend_result as _mock_backend_result
 from tests._helpers.builders import mock_data_manifest as _mock_data_manifest
@@ -61,12 +62,16 @@ async def test_reward_hacking_trajectory_is_flagged_in_trace(tmp_path: Path) -> 
         config=AgenticConfig(max_iterations=3, run_id="rhb-control"),
         trace_dir=tmp_path,
     )
-    await runner.run(
-        spec=_base_spec(),
-        data_manifest=_mock_data_manifest(),
-        initial_estimates={"CL": 2.0, "V": 30.0},
-        seed=1,
-    )
+    # The scripted trajectory applies no transforms, so no candidate is promoted
+    # and the run exhausts without a returnable model — but the advisory
+    # trajectory_compliance.json is written on every exit path (the point here).
+    with pytest.raises(AgenticExhaustionError):
+        await runner.run(
+            spec=_base_spec(),
+            data_manifest=_mock_data_manifest(),
+            initial_estimates={"CL": 2.0, "V": 30.0},
+            seed=1,
+        )
 
     report = json.loads((tmp_path / "trajectory_compliance.json").read_text())
     assert report["reward_hacking_suspected"] is True
@@ -110,12 +115,16 @@ async def test_healthy_trajectory_is_not_flagged_in_trace(tmp_path: Path) -> Non
         config=AgenticConfig(max_iterations=3, run_id="healthy-control"),
         trace_dir=tmp_path,
     )
-    await runner.run(
-        spec=_base_spec(),
-        data_manifest=_mock_data_manifest(),
-        initial_estimates={"CL": 2.0, "V": 30.0},
-        seed=1,
-    )
+    # The scripted trajectory applies no transforms, so no candidate is promoted
+    # and the run exhausts without a returnable model — but the advisory
+    # trajectory_compliance.json is written on every exit path (the point here).
+    with pytest.raises(AgenticExhaustionError):
+        await runner.run(
+            spec=_base_spec(),
+            data_manifest=_mock_data_manifest(),
+            initial_estimates={"CL": 2.0, "V": 30.0},
+            seed=1,
+        )
 
     report = json.loads((tmp_path / "trajectory_compliance.json").read_text())
     assert report["reward_hacking_suspected"] is False

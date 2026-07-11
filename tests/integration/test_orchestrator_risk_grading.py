@@ -64,6 +64,7 @@ def _make_mock_result(model_id: str, bic: float = 540.0) -> BackendResult:
             wall_time_seconds=60.0,
         ),
         diagnostics=DiagnosticBundle(
+            state_trajectory_valid=True,
             gof=GOFMetrics(cwres_mean=0.02, cwres_sd=1.01, outlier_fraction=0.01),
             vpc=VPCSummary(
                 percentiles=[5.0, 50.0, 95.0],

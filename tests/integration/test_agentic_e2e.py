@@ -38,6 +38,7 @@ def _base_spec() -> DSLSpec:
         elimination=LinearElim(),
         variability=[IIV(params=["CL", "V"], structure="diagonal")],
         observation=Proportional(sigma_prop=0.1),
+        initial={"CL": 2.0, "V": 30.0, "ka": 1.0},
     )
 
 
@@ -98,13 +99,16 @@ def _mock_result(bic: float = 220.0) -> BackendResult:
 @pytest.mark.asyncio
 async def test_agentic_e2e_produces_valid_bundle(tmp_path: Path) -> None:
     """Full agentic run: base spec → 1 covariate add → stop → verify trace."""
+    # The runner asserts best_result.model_id == best_spec.model_id, so a real
+    # inner runner stamps the evaluated spec's id onto its result. Mirror that
+    # here (a fixed side_effect list would return a mismatched model_id).
     inner_runner = AsyncMock()
-    inner_runner.run = AsyncMock(
-        side_effect=[
-            _mock_result(bic=220.0),  # iteration 1: evaluate base
-            _mock_result(bic=215.0),  # iteration 2: evaluate after transform
-        ]
-    )
+    _bics = iter([220.0, 215.0])  # iter 1: base, iter 2: after transform
+
+    async def _inner_run(*, spec: DSLSpec, **_kwargs: object) -> BackendResult:
+        return _mock_result(bic=next(_bics)).model_copy(update={"model_id": spec.model_id})
+
+    inner_runner.run = _inner_run
 
     responses = [
         # Iteration 1: propose adding weight covariate on CL
