@@ -12,10 +12,11 @@ Two training entry points share the same eager multidose solver:
 * :func:`train_node` — pooled population fit (no per-subject random effects).
 * :func:`train_node_vi` — mixed-effects fit via native reparameterized
   variational inference. Random effects act multiplicatively on the NODE
-  input-layer weights (Bräm et al. 2024, doi:10.1007/s10928-023-09886-4:
-  ``W_i = W_pop * exp(eta_i)``); the ELBO uses the path-derivative /
-  reparameterization estimator with an analytic diagonal-Gaussian KL
-  (Janssen et al. 2024, doi:10.1007/s10928-024-09931-w).
+  input-layer weights (``W_i = W_pop * exp(eta_i)``, the pmxNODE inter-individual
+  variability parameterization: Bräm et al. 2024, *CPT:PSP*,
+  doi:10.1002/psp4.13265); the ELBO uses the path-derivative / reparameterization
+  estimator with an analytic diagonal-Gaussian KL (Janssen et al. 2024,
+  doi:10.1007/s10928-024-09931-w).
 """
 
 from __future__ import annotations
@@ -421,8 +422,9 @@ def train_node_vi(
     """Fit a mixed-effects NODE via native reparameterized variational inference.
 
     Random effects act multiplicatively on the NODE input-layer weights
-    (Bräm et al. 2024, doi:10.1007/s10928-023-09886-4: ``W_i = W_pop*exp(eta_i)``,
-    one ``eta`` per hidden unit). The variational family is a per-subject diagonal
+    (``W_i = W_pop*exp(eta_i)``, one ``eta`` per hidden unit — the pmxNODE IIV
+    parameterization: Bräm et al. 2024, *CPT:PSP*, doi:10.1002/psp4.13265). The
+    variational family is a per-subject diagonal
     Gaussian ``q_i(eta_i) = N(mu_i, diag(s_i^2))`` under the population prior
     ``eta_i ~ N(0, diag(omega^2))``. The loss is the negative ELBO summed over
     subjects (consistent with :func:`_population_nll`, which *sums* the

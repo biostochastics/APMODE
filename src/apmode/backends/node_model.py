@@ -5,9 +5,15 @@ Low-dimensional MLP that learns a PK sub-function (absorption or elimination
 rate). Random effects on input-layer weights for per-subject variation.
 Constraint template on output for physiological plausibility.
 
-Reference: Bräm DS, Nahum U, Schropp J, Pfister M, Koch G (2024).
-Low-dimensional neural ODEs and their application in pharmacokinetics.
-J Pharmacokinet Pharmacodyn 51:123-140. doi:10.1007/s10928-023-09886-4
+References:
+- Low-dimensional NODE structure: Bräm DS, Nahum U, Schropp J, Pfister M, Koch G
+  (2023). Low-dimensional neural ODEs and their application in pharmacokinetics.
+  J Pharmacokinet Pharmacodyn 51:123-140. doi:10.1007/s10928-023-09886-4.
+- Inter-individual variability (``W = lW * exp(etaW)``, the multiplicative
+  random-effect parameterization implemented in ``apply_random_effects``):
+  Bräm DS, Steiert B, Pfister M, Steffens B, Koch G (2024). Low-dimensional neural
+  ODEs accounting for inter-individual variability implemented in Monolix and
+  NONMEM (pmxNODE). CPT:PSP. doi:10.1002/psp4.13265.
 """
 
 from __future__ import annotations
@@ -69,8 +75,9 @@ class NODESubModel(eqx.Module):
     def apply_random_effects(self, re: jax.Array) -> NODESubModel:
         """Return a new model with RE-perturbed input-layer weights.
 
-        Per Bräm et al. 2024 (doi:10.1007/s10928-023-09886-4), random effects
-        act *multiplicatively* on the log scale: ``W_i = W_pop * exp(eta_i)``,
+        Per the pmxNODE IIV parameterization (Bräm et al. 2024, *CPT:PSP*,
+        doi:10.1002/psp4.13265), random effects act *multiplicatively* on the
+        log scale: ``W_i = W_pop * exp(eta_i)``,
         with ``eta_i`` broadcast per hidden unit across the ``input_dim``
         columns. This preserves the sign and identity of each population weight
         (``re == 0`` leaves the weight bit-identical) — unlike an additive shift,
