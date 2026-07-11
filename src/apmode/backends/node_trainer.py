@@ -173,6 +173,40 @@ def _solve_multidose_eager(
     return jnp.stack(predictions)
 
 
+def predict_subject_conc(model: HybridPKODE, subject: SubjectRecord) -> jax.Array:
+    """Structural predicted concentration at a subject's observation times.
+
+    Single source of truth for the PRED trajectory: both the population
+    likelihood (:func:`_population_nll`) and the posterior-predictive
+    simulation path in ``node_runner`` call this, so the simulated PRED is
+    byte-identical to the PRED the fit objective minimised against (no drift
+    between the loss and the diagnostics).
+
+    Subjects may use either:
+    - Legacy single-dose: dose in ``y0[0]``, no ``dose_events`` key.
+    - Multi-dose / infusion: ``dose_events`` as a Python list of
+      ``(time, amt, cmt, evid, inf_rate, inf_id)`` tuples (eager, non-JIT).
+
+    Returns the predicted concentration vector, shape ``(n_obs,)``.
+    """
+    times = subject["times"]
+    y0 = subject["y0"]
+    _obs_cmt = subject.get("obs_cmt", jnp.array(1))
+    cmt_idx = int(_obs_cmt)
+
+    # Multi-dose path (eager, non-JIT): dose_events is a Python list.
+    dose_events = subject.get("dose_events")
+    if dose_events is not None and len(dose_events) > 0:
+        sol = _solve_multidose_eager(model, y0, times, dose_events)
+    else:
+        # Legacy single-dose path: dose is in y0[0], JIT-compatible.
+        sol = model.solve(y0, times)
+
+    # Use the appropriate volume for the observed compartment.
+    v_scale = model.V if cmt_idx <= 1 else model.V2
+    return sol[:, cmt_idx] / v_scale
+
+
 def _population_nll(
     model: HybridPKODE,
     log_sigma: jax.Array,
@@ -183,36 +217,15 @@ def _population_nll(
     For each subject: solve ODE at observation times, compute
     -log N(y_obs | y_pred, sigma^2).
 
-    Subjects may use either:
-    - Legacy single-dose: dose in y0[0], no dose_events key
-    - Multi-dose: dose_events as Python list of (time, amt, cmt, evid) tuples
+    The structural PRED is computed by :func:`predict_subject_conc` so the
+    likelihood and the posterior-predictive diagnostics share one code path.
     """
     sigma = jnp.exp(log_sigma)
     total_nll = jnp.array(0.0)
 
     for subj in subjects:
-        times = subj["times"]
         obs = subj["observations"]
-        y0 = subj["y0"]
-        _obs_cmt = subj.get("obs_cmt", jnp.array(1))
-        cmt_idx = int(_obs_cmt)
-
-        # Multi-dose path (eager, non-JIT): dose_events is a Python list
-        dose_events = subj.get("dose_events")
-        if dose_events is not None and len(dose_events) > 0:
-            sol = _solve_multidose_eager(
-                model,
-                y0,
-                times,
-                dose_events,
-            )
-        else:
-            # Legacy single-dose path: dose is in y0[0], JIT-compatible
-            sol = model.solve(y0, times)
-
-        # Use appropriate volume for compartment
-        v_scale = model.V if cmt_idx <= 1 else model.V2
-        pred = sol[:, cmt_idx] / v_scale
+        pred = predict_subject_conc(model, subj)
 
         # Normal negative log-likelihood (full, for cross-backend comparability)
         residuals = obs - pred

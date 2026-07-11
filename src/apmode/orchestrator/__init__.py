@@ -150,6 +150,36 @@ def _promote_mi_pooled_results(
         sr.n_params = len(pooled.parameter_estimates)
 
 
+def _median_observed_conc(df: pd.DataFrame, manifest: DataManifest) -> float:
+    """Median positive observed concentration for a cohort (default ``1.0``).
+
+    Threaded into :func:`surrogate_to_formular` as ``reference_conc`` so a
+    distilled *linear* elimination surrogate's per-unit first-order rate is
+    read at a concentration representative of the cohort rather than at the
+    ``1.0`` unit default (which would systematically mis-scale ``CL = ke * V``
+    for datasets whose concentrations are far from unity). Returns ``1.0``
+    whenever the observed-DV column is missing, empty, or non-positive so the
+    linear→CL mapping stays well-defined.
+    """
+    import pandas as pd
+
+    cm = manifest.column_mapping
+    try:
+        obs = df
+        if cm.evid in obs.columns:
+            obs = obs[obs[cm.evid] == 0]
+        if cm.mdv is not None and cm.mdv in obs.columns:
+            obs = obs[obs[cm.mdv] == 0]
+        dv = pd.to_numeric(obs[cm.dv], errors="coerce").dropna()
+        dv = dv[dv > 0]
+        if len(dv) == 0:
+            return 1.0
+        median = float(dv.median())
+    except (KeyError, ValueError, TypeError):
+        return 1.0
+    return median if median > 0 else 1.0
+
+
 @dataclass
 class RunConfig:
     """Configuration for a single APMODE run."""
@@ -621,6 +651,33 @@ class Orchestrator:
                 ) as e:
                     logger.warning("MI execution failed: %s", e, exc_info=True)
 
+        # --- Stage 5d: NODE functional-distillation promotion (B1b-refit) ---
+        # A NODE candidate whose distilled parametric surrogate clears fidelity
+        # is re-fit through the classical Nlmixr2Runner and admitted into the
+        # SAME Gate 1/2/3 pipeline as any other nlmixr2 candidate — it is
+        # within-classical-paradigm BIC/NLPD-comparable, so ADR-0004's
+        # cross-paradigm-metric concern does not apply to the *promoted*
+        # candidate. The edges (source NODE run -> distilled candidate) are
+        # folded into candidate_lineage.json below.
+        #
+        # LEAKAGE CAVEAT (hardening follow-up; plan §3 risk #1): the promoted
+        # candidate is ranked IN-SAMPLE in this pass, consistent with the rest
+        # of the current pipeline and ADR-0004's documented circularity caveat.
+        # A held-out-subject split — discover/distill on a training fold and
+        # evaluate the re-fit on held-out subjects via ``test_data_path`` —
+        # is the required follow-up to remove the train/eval overlap.
+        distilled_lineage_entries = await self._run_node_distillation_promotion(
+            search_outcome=search_outcome,
+            manifest=manifest,
+            data_path=data_path,
+            df=df,
+            nca_estimates=nca_estimates,
+            split_manifest_dict=split_manifest_dict,
+            emitter=emitter,
+            gate3_policy=gate3_policy,
+            nca_diagnostics=nca_diagnostics,
+        )
+
         # Write candidate lineage — classical entries come from the search DAG,
         # agentic entries from the _run_agentic_stage results (the DAG's
         # SearchNode requires a full DSLSpec that matches the final candidate
@@ -677,6 +734,28 @@ class Orchestrator:
                     )
                 )
                 dag_ids.add(ar.candidate_id)
+        # Fold in the NODE-distillation promotion edges (source NODE run ->
+        # distilled classical candidate) recorded by Stage 5d, deduping against
+        # entries already present from the DAG / agentic fallback. When the
+        # source NODE run is not itself already a lineage node (it is not
+        # produced by the automated-search DAG and the agentic fallback only
+        # captures ``agentic_llm`` results), add it as a root entry first so the
+        # search-graph edge (source -> distilled) references a known node.
+        for distilled_entry in distilled_lineage_entries:
+            parent = distilled_entry.parent_id
+            if parent is not None and parent not in dag_ids:
+                lineage_entries.append(
+                    CandidateLineageEntry(
+                        candidate_id=parent,
+                        parent_id=None,
+                        transform="jax_node",
+                        applied_at=distilled_entry.applied_at,
+                    )
+                )
+                dag_ids.add(parent)
+            if distilled_entry.candidate_id not in dag_ids:
+                lineage_entries.append(distilled_entry)
+                dag_ids.add(distilled_entry.candidate_id)
         emitter.write_candidate_lineage(CandidateLineage(entries=lineage_entries))
 
         # --- Stage 6: Governance Gates ---
@@ -1341,6 +1420,193 @@ class Orchestrator:
             logger.warning("Agentic independent failed (backend error): %s", e)
 
         return results
+
+    async def _run_node_distillation_promotion(
+        self,
+        *,
+        search_outcome: SearchOutcome,
+        manifest: DataManifest,
+        data_path: Path,
+        df: pd.DataFrame,
+        nca_estimates: dict[str, float],
+        split_manifest_dict: dict[str, object],
+        emitter: BundleEmitter,
+        gate3_policy: Gate3Config | None = None,
+        nca_diagnostics: list[NCASubjectDiagnostic] | None = None,
+    ) -> list[CandidateLineageEntry]:
+        """Promote fidelity-clearing NODE distillations into Gate 3 (plan §4.1).
+
+        For every ``jax_node`` search result whose distilled parametric
+        surrogate clears fidelity (:func:`distillation_passes_fidelity` at the
+        NODE runner's ``fidelity_min_r_squared`` threshold), emit the promoted
+        classical ``DSLSpec`` via :func:`surrogate_to_formular` and re-fit it
+        through the classical ``Nlmixr2Runner`` (``self._runner``). The
+        converged re-fit is appended to ``search_outcome.results`` and
+        ``self._spec_map`` so it flows through the SAME Gate 1/2/3 pipeline as
+        any nlmixr2 candidate — the gate logic is never duplicated here.
+
+        Promotion is *fidelity*-gated, not convergence-gated on the source
+        NODE fit: the distilled surrogate captures the learned sub-function's
+        shape, and the source fit's structural estimates are used only as
+        re-fit warm-starts (nlmixr2 re-estimates them). The *promoted*
+        candidate is admitted only when its own fresh nlmixr2 re-fit converges.
+
+        Fail-soft (plan §3 risk #2): a faithful surrogate can still fail the
+        re-fit (unidentifiable Ω, structural unidentifiability, init
+        sensitivity, non-convergence, an unmappable absorption-position
+        surrogate). Any such failure is recorded as a
+        ``FailedCandidate(gate_failed="distillation_refit")`` and the run
+        continues — a distillation failure never aborts the pipeline.
+
+        Returns the candidate-lineage edges (source NODE run -> distilled
+        candidate) for the caller to fold into ``candidate_lineage.json``.
+
+        LEAKAGE CAVEAT: ranking is IN-SAMPLE for this pass (consistent with the
+        rest of the pipeline and ADR-0004). A held-out-subject split for the
+        promoted candidate is the required hardening follow-up (plan §3 #1).
+        """
+        from apmode.backends.node_distillation import (
+            distillation_passes_fidelity,
+            surrogate_to_formular,
+        )
+        from apmode.search.engine import SearchResult as _SR
+
+        # Fidelity threshold is a NodeBackendRunner ctor param (kept off the
+        # versioned Gate3Config on purpose — see plan §4.1 contract). Falls
+        # back to the shipped 0.8 default when no NODE runner is configured.
+        min_r2 = float(getattr(self._node_runner, "fidelity_min_r_squared", 0.8))
+        reference_conc = _median_observed_conc(df, manifest)
+
+        lineage_edges: list[CandidateLineageEntry] = []
+        # Snapshot the result list: promoted candidates are appended to it
+        # inside the loop and must not be re-scanned for promotion.
+        for sr in list(search_outcome.results):
+            result = sr.result
+            if result is None or result.backend != "jax_node":
+                continue
+            report = result.distillation
+            if report is None or not distillation_passes_fidelity(report, min_r_squared=min_r2):
+                continue
+            surrogate = report.surrogate
+            if surrogate is None:  # defensive — passes_fidelity already implies non-None
+                continue
+
+            distilled_id = f"{result.model_id}_distilled"
+            if distilled_id in self._spec_map:
+                # Idempotency guard (e.g. --resume-agentic re-entry): never
+                # promote the same NODE candidate twice.
+                continue
+
+            mechanistic_params = {
+                name: pe.estimate for name, pe in result.parameter_estimates.items()
+            }
+            try:
+                spec2 = surrogate_to_formular(
+                    surrogate,
+                    report.node_position,
+                    model_id=distilled_id,
+                    mechanistic_params=mechanistic_params,
+                    reference_conc=reference_conc,
+                    source_candidate_id=result.model_id,
+                    fidelity=report.fidelity,
+                )
+                refit_estimates = {k: v for k, v in spec2.initial.items() if not k.startswith("_")}
+                refit = await self._runner.run(
+                    spec=spec2,
+                    data_manifest=manifest,
+                    initial_estimates=refit_estimates,
+                    seed=self._config.seed,
+                    timeout_seconds=self._config.timeout_seconds,
+                    data_path=data_path,
+                    split_manifest=split_manifest_dict,
+                    gate3_policy=gate3_policy,
+                    nca_diagnostics=nca_diagnostics,
+                )
+            except (
+                BackendError,
+                NotImplementedError,
+                KeyError,
+                ValueError,
+                RuntimeError,
+            ) as exc:
+                logger.warning(
+                    "node_distillation_refit_failed",
+                    source_candidate=result.model_id,
+                    distilled_candidate=distilled_id,
+                    error=str(exc),
+                )
+                emitter.append_failed_candidate(
+                    FailedCandidate(
+                        candidate_id=distilled_id,
+                        backend="nlmixr2",
+                        gate_failed="distillation_refit",
+                        failed_checks=["distillation_refit"],
+                        summary_reason=(
+                            f"Distilled surrogate re-fit failed: {type(exc).__name__}: {exc}"
+                        ),
+                        timestamp=datetime.now(tz=UTC).isoformat(),
+                    )
+                )
+                continue
+
+            if not refit.converged:
+                # Non-convergence is a fail-soft distillation outcome, recorded
+                # as such rather than admitted to governance as a Gate-1 reject.
+                logger.warning(
+                    "node_distillation_refit_nonconverged",
+                    source_candidate=result.model_id,
+                    distilled_candidate=distilled_id,
+                )
+                emitter.append_failed_candidate(
+                    FailedCandidate(
+                        candidate_id=distilled_id,
+                        backend="nlmixr2",
+                        gate_failed="distillation_refit",
+                        failed_checks=["convergence"],
+                        summary_reason="Distilled surrogate re-fit did not converge",
+                        timestamp=datetime.now(tz=UTC).isoformat(),
+                    )
+                )
+                continue
+
+            # Success: admit the promoted candidate into the classical pipeline.
+            search_outcome.results.append(
+                _SR(
+                    candidate_id=distilled_id,
+                    spec=spec2,
+                    result=refit,
+                    converged=refit.converged,
+                    bic=refit.bic,
+                    aic=refit.aic,
+                    n_params=len(refit.parameter_estimates),
+                )
+            )
+            self._spec_map[distilled_id] = spec2
+
+            # Record provenance on the report and re-seal it. The report object
+            # is shared with the NODE SearchResult, so the Gate-1 loop's own
+            # write_distillation_report re-emits the same promoted=True payload.
+            report.promoted = True
+            report.promoted_model_id = distilled_id
+            emitter.write_distillation_report(report)
+
+            lineage_edges.append(
+                CandidateLineageEntry(
+                    candidate_id=distilled_id,
+                    parent_id=result.model_id,
+                    transform="distillation_refit",
+                    applied_at=datetime.now(tz=UTC).isoformat(),
+                )
+            )
+            logger.info(
+                "node_distillation_promoted",
+                source_candidate=result.model_id,
+                distilled_candidate=distilled_id,
+                surrogate=surrogate.surrogate_type,
+                bic=refit.bic,
+            )
+
+        return lineage_edges
 
     async def _run_frem_stage(
         self,
