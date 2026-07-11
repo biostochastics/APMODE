@@ -50,7 +50,7 @@ model {{
     absorption: FirstOrder(ka)
     distribution: OneCmt(V)
     elimination: Linear(CL)
-    variability: IIV(params=[CL, V], structure=diagonal)
+    variability: IIV(params=[CL, V], structure=block)
     observation: Proportional(sigma_prop=0.1)
     initial: {{ ka = 1.0, V = 70.0, CL = 5.0 }}
     {priors_section}
@@ -69,7 +69,7 @@ def _base_spec() -> DSLSpec:
         absorption=FirstOrder(),
         distribution=OneCmt(),
         elimination=LinearElim(),
-        variability=[IIV(params=["CL", "V"], structure="diagonal")],
+        variability=[IIV(params=["CL", "V"], structure="block")],
         observation=Proportional(sigma_prop=0.1),
         initial={"ka": 1.0, "V": 70.0, "CL": 5.0},
     )

@@ -88,6 +88,10 @@ def _cov_is_ill_conditioned(cov: NDArray[np.float64]) -> bool:
     if not np.allclose(cov, cov.T, rtol=1e-8, atol=1e-10):
         return True
     try:
+        eigvals = np.linalg.eigvalsh(cov)
+        scale = max(1.0, float(np.max(np.abs(eigvals))))
+        if float(np.min(eigvals)) < -1e-10 * scale:
+            return True
         cond = float(np.linalg.cond(cov))
     except np.linalg.LinAlgError:
         return True
@@ -113,7 +117,7 @@ def _empirical_bootstrap_draws(
     downstream credibility check flags the fit, rather than letting a
     silent zero-variance sample masquerade as a real estimate.
     """
-    raw_diag = np.abs(np.diag(cov))
+    raw_diag = np.diag(cov)
     # Use ``np.errstate`` to silence the "invalid value encountered in
     # greater" warning that NaN entries would otherwise raise; we
     # explicitly route NaN/inf entries to the floor below.

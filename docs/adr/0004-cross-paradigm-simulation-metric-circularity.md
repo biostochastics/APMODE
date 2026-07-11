@@ -2,7 +2,7 @@
 
 ## Related documentation
 
-- [../PRD_APMODE_v0.3.md](../PRD_APMODE_v0.3.md) — §4.3.1 (Gate 3 cross-paradigm ranking) and §10 Q2 (cross-paradigm NLPD comparability), the two sections this ADR's finding sits between.
+- [../ARCHITECTURE.md](../ARCHITECTURE.md) — public pipeline, governance-funnel, and cross-paradigm ranking context for this decision.
 - `src/apmode/governance/ranking.py` — module docstring cross-links here; `rank_cross_paradigm` implements the metrics this ADR analyzes.
 - `src/apmode/governance/gates.py` — `_gate3_cross_paradigm` docstring cross-links here; consumes `rank_cross_paradigm`'s output and surfaces `paradigm_metric_spread` as an observability check.
 - `tests/unit/test_cross_paradigm_ranking.py::TestSimulationMetricParadigmSensitivity` — pins the empirical result this ADR's Decision section reports.

@@ -19,6 +19,7 @@ import json
 import platform
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 import structlog
@@ -60,8 +61,6 @@ from apmode.report.risk_grading import generate_risk_grading_report
 from apmode.routing import route
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     import pandas as pd
 
     from apmode.backends.nlmixr2_runner import Nlmixr2Runner
@@ -148,36 +147,6 @@ def _promote_mi_pooled_results(
         sr.aic = pooled.aic
         sr.converged = pooled.converged
         sr.n_params = len(pooled.parameter_estimates)
-
-
-def _median_observed_conc(df: pd.DataFrame, manifest: DataManifest) -> float:
-    """Median positive observed concentration for a cohort (default ``1.0``).
-
-    Threaded into :func:`surrogate_to_formular` as ``reference_conc`` so a
-    distilled *linear* elimination surrogate's per-unit first-order rate is
-    read at a concentration representative of the cohort rather than at the
-    ``1.0`` unit default (which would systematically mis-scale ``CL = ke * V``
-    for datasets whose concentrations are far from unity). Returns ``1.0``
-    whenever the observed-DV column is missing, empty, or non-positive so the
-    linear→CL mapping stays well-defined.
-    """
-    import pandas as pd
-
-    cm = manifest.column_mapping
-    try:
-        obs = df
-        if cm.evid in obs.columns:
-            obs = obs[obs[cm.evid] == 0]
-        if cm.mdv is not None and cm.mdv in obs.columns:
-            obs = obs[obs[cm.mdv] == 0]
-        dv = pd.to_numeric(obs[cm.dv], errors="coerce").dropna()
-        dv = dv[dv > 0]
-        if len(dv) == 0:
-            return 1.0
-        median = float(dv.median())
-    except (KeyError, ValueError, TypeError):
-        return 1.0
-    return median if median > 0 else 1.0
 
 
 @dataclass
@@ -813,7 +782,11 @@ class Orchestrator:
                                 data_manifest=manifest,
                                 initial_estimates=cand_est,
                                 seed=self._config.seed + seed_offset,
-                                timeout_seconds=self._config.timeout_seconds,
+                                timeout_seconds=(
+                                    None
+                                    if sr.spec.has_node_modules()
+                                    else self._config.timeout_seconds
+                                ),
                                 data_path=data_path,
                                 split_manifest=split_manifest_dict,
                                 gate3_policy=gate3_policy,
@@ -857,6 +830,17 @@ class Orchestrator:
                 if sr.result is None:
                     continue
 
+                if sr.result.backend == "bayesian_stan" and sr.result.posterior_draws_path:
+                    source_draws = Path(sr.result.posterior_draws_path)
+                    if not source_draws.is_file():
+                        raise RuntimeError(
+                            f"Bayesian result {sr.result.model_id} references missing "
+                            f"posterior draws: {source_draws}"
+                        )
+                    bundled_draws = emitter.copy_posterior_draws(source_draws, sr.result.model_id)
+                    sr.result.posterior_draws_path = bundled_draws.relative_to(
+                        emitter.run_dir
+                    ).as_posix()
                 emitter.write_backend_result(sr.result)
 
                 # Seal the NODE functional-distillation report (if the NODE
@@ -1021,6 +1005,23 @@ class Orchestrator:
                 else:
                     computed_risk_level = None
 
+                # Build the report before Gate 2.5 so the exact limitation
+                # inventory being gated is the one later persisted.
+                cred_report = generate_credibility_report(
+                    sr_result,
+                    lane=self._config.lane,
+                    n_observations=manifest.n_observations,
+                    directive=dispatch.missing_data_directive,
+                    source_result_path=f"results/{sr_result.model_id}_result.json",
+                )
+                prior_sensitivity_computed = (
+                    sr_result.prior_sensitivity is not None
+                    and sr_result.prior_sensitivity.status == "computed"
+                )
+                seed_sensitivity_computed = (
+                    1 + len(seed_results_map.get(sr_result.model_id, []))
+                    >= policy.gate1.seed_stability_n
+                )
                 cred_ctx = CredibilityContext(
                     context_of_use=(
                         self._config.context_of_use
@@ -1032,6 +1033,10 @@ class Orchestrator:
                     decision_consequence=self._config.decision_consequence,
                     n_observations=manifest.n_observations,
                     n_parameters=len(sr_result.parameter_estimates),
+                    limitations=cred_report.limitations,
+                    sensitivity_available=(
+                        prior_sensitivity_computed or seed_sensitivity_computed
+                    ),
                     ml_transparency_statement=(
                         f"Backend: {sr_result.backend}"
                         if sr_result.backend in ("jax_node", "agentic_llm")
@@ -1060,12 +1065,6 @@ class Orchestrator:
                 # Passed gates 1, 2, 2.5 — emit credibility report.
                 # The directive is forwarded so that MI Ω-pooling caveats
                 # are appended to the limitations block automatically.
-                cred_report = generate_credibility_report(
-                    sr_result,
-                    lane=self._config.lane,
-                    n_observations=manifest.n_observations,
-                    directive=dispatch.missing_data_directive,
-                )
                 emitter.write_credibility_report(cred_report)
 
                 if (
@@ -1105,8 +1104,16 @@ class Orchestrator:
                         )
                         for rc in ranked
                     ],
-                    best_candidate_id=ranked[0].candidate_id if ranked else None,
-                    ranking_metric="bic",
+                    best_candidate_id=(
+                        g3_result.candidate_id
+                        if g3_result.candidate_id not in {"none", "multiple_contract_groups"}
+                        else None
+                    ),
+                    ranking_metric=(
+                        "contract_grouped"
+                        if g3_result.gate_name == "contract_grouped_ranking"
+                        else "bic"
+                    ),
                     n_survivors=len(ranked),
                 )
                 emitter.write_ranking(ranking)
@@ -1332,10 +1339,15 @@ class Orchestrator:
                         nca_diagnostics=nca_diagnostics,
                         agentic_compliance=agentic_compliance,
                     )
+                agentic_spec = agentic.last_best_spec
+                if agentic_spec is None or agentic_spec.model_id != agentic_result.model_id:
+                    raise RuntimeError(
+                        "agentic refine result has no matching transformed DSL spec"
+                    )
                 results.append(
                     SR(
                         candidate_id=agentic_result.model_id,
-                        spec=best_sr.spec,
+                        spec=agentic_spec,
                         result=agentic_result,
                         converged=agentic_result.converged,
                         bic=agentic_result.bic,
@@ -1396,10 +1408,18 @@ class Orchestrator:
                     nca_diagnostics=nca_diagnostics,
                     agentic_compliance=agentic_compliance,
                 )
+            independent_spec = agentic.last_best_spec
+            if (
+                independent_spec is None
+                or independent_spec.model_id != independent_result.model_id
+            ):
+                raise RuntimeError(
+                    "agentic independent result has no matching transformed DSL spec"
+                )
             results.append(
                 SR(
                     candidate_id=independent_result.model_id,
-                    spec=base_spec,
+                    spec=independent_spec,
                     result=independent_result,
                     converged=independent_result.converged,
                     bic=independent_result.bic,
@@ -1475,7 +1495,6 @@ class Orchestrator:
         # versioned Gate3Config on purpose — see plan §4.1 contract). Falls
         # back to the shipped 0.8 default when no NODE runner is configured.
         min_r2 = float(getattr(self._node_runner, "fidelity_min_r_squared", 0.8))
-        reference_conc = _median_observed_conc(df, manifest)
 
         lineage_edges: list[CandidateLineageEntry] = []
         # Snapshot the result list: promoted candidates are appended to it
@@ -1506,7 +1525,6 @@ class Orchestrator:
                     report.node_position,
                     model_id=distilled_id,
                     mechanistic_params=mechanistic_params,
-                    reference_conc=reference_conc,
                     source_candidate_id=result.model_id,
                     fidelity=report.fidelity,
                 )

@@ -142,6 +142,8 @@ class SeedRunResult:
     bic: float | None
     wall_time_seconds: float
     fold: int | None = None
+    heldout_npe: float | None = None
+    heldout_vpc_min_coverage: float | None = None
 
 
 @dataclass(frozen=True)
@@ -157,6 +159,8 @@ class SuiteBCaseResult:
     convergence_rate: float = 0.0
     cross_seed_cv_max: float | None = None
     cross_seed_cv_per_param: dict[str, float] = field(default_factory=dict)
+    heldout_npe_mean: float | None = None
+    heldout_vpc_min_coverage_mean: float | None = None
     skipped: bool = False
     skip_reason: str | None = None
 
@@ -264,15 +268,6 @@ def _compute_cross_seed_stability(
         if abs(mean) < 1e-12:
             continue
         sd = statistics.stdev(values)
-        # A parameter that came back identical across every seed contributes
-        # ``sd == 0`` (no cross-seed information). Including it as ``CV=0``
-        # doesn't affect ``max(cv_per_param.values())`` but pollutes the
-        # per-param map and the report layer's stability narrative — the
-        # parameter literally has nothing to tell us about reproducibility.
-        # Exclude so the dict only carries parameters with measurable
-        # cross-seed dispersion.
-        if sd < 1e-12:
-            continue
         cv_per_param[name] = float(sd / abs(mean))
 
     if not cv_per_param:
@@ -324,6 +319,18 @@ async def _fit_one_seed(
         bic=float(result.bic) if result.bic is not None else None,
         wall_time_seconds=float(result.wall_time_seconds or 0.0),
         fold=fold,
+        heldout_npe=(
+            float(result.diagnostics.npe_score)
+            if test_data_path is not None and result.diagnostics.npe_score is not None
+            else None
+        ),
+        heldout_vpc_min_coverage=(
+            min(result.diagnostics.vpc.coverage.values())
+            if test_data_path is not None
+            and result.diagnostics.vpc is not None
+            and result.diagnostics.vpc.coverage
+            else None
+        ),
     )
 
 
@@ -545,7 +552,23 @@ async def run_case(
     convergence_rate = (
         sum(1 for r in seed_results if r.converged) / len(seed_results) if seed_results else 0.0
     )
-    cv_per_param, cv_max = _compute_cross_seed_stability(seed_results)
+    fold_results = [result for result in seed_results if result.fold is not None]
+    cv_per_param: dict[str, float]
+    cv_max: float | None
+    if fold_results:
+        # Fold-to-fold estimate variation includes training-sample variation
+        # and is not random-seed stability.
+        cv_per_param, cv_max = {}, None
+    else:
+        cv_per_param, cv_max = _compute_cross_seed_stability(seed_results)
+    heldout_npes = [
+        result.heldout_npe for result in fold_results if result.heldout_npe is not None
+    ]
+    heldout_vpcs = [
+        result.heldout_vpc_min_coverage
+        for result in fold_results
+        if result.heldout_vpc_min_coverage is not None
+    ]
 
     return SuiteBCaseResult(
         case_id=case.case_id,
@@ -557,6 +580,8 @@ async def run_case(
         convergence_rate=convergence_rate,
         cross_seed_cv_max=cv_max,
         cross_seed_cv_per_param=cv_per_param,
+        heldout_npe_mean=(statistics.fmean(heldout_npes) if heldout_npes else None),
+        heldout_vpc_min_coverage_mean=(statistics.fmean(heldout_vpcs) if heldout_vpcs else None),
     )
 
 
@@ -607,6 +632,8 @@ def _serialize_case(result: SuiteBCaseResult) -> dict[str, object]:
         "convergence_rate": result.convergence_rate,
         "cross_seed_cv_max": result.cross_seed_cv_max,
         "cross_seed_cv_per_param": result.cross_seed_cv_per_param,
+        "heldout_npe_mean": result.heldout_npe_mean,
+        "heldout_vpc_min_coverage_mean": result.heldout_vpc_min_coverage_mean,
         "perturbation_manifests": list(result.perturbation_manifests),
         "seed_results": [
             {
@@ -617,6 +644,8 @@ def _serialize_case(result: SuiteBCaseResult) -> dict[str, object]:
                 "parameter_estimates": r.parameter_estimates,
                 "bic": r.bic,
                 "wall_time_seconds": r.wall_time_seconds,
+                "heldout_npe": r.heldout_npe,
+                "heldout_vpc_min_coverage": r.heldout_vpc_min_coverage,
             }
             for r in result.seed_results
         ],

@@ -173,6 +173,7 @@ def _check_parameter_plausibility(result: BackendResult, g1: Gate1Config) -> Gat
     rse_max = g1.param_rse_max
 
     issues: list[str] = []
+    n_structural = 0
     # Pathological fits can return log-space estimates >710, which
     # overflow ``np.exp`` to ``inf`` with a noisy RuntimeWarning. The
     # plausibility check below already rejects ``inf`` (it lands above
@@ -182,18 +183,27 @@ def _check_parameter_plausibility(result: BackendResult, g1: Gate1Config) -> Gat
         for name, pe in result.parameter_estimates.items():
             if pe.category != "structural":
                 continue
+            n_structural += 1
             is_log = len(name) >= 2 and name[0] == "l" and name[1].isalpha()
             value = float(np.exp(pe.estimate)) if is_log else pe.estimate
             label = f"exp({name})" if is_log else name
 
-            if value <= 0:
+            if not np.isfinite(pe.estimate) or not np.isfinite(value):
+                issues.append(f"{label}=non-finite")
+            elif value <= 0:
                 issues.append(f"{label}={value:.4g} (non-positive)")
             elif value <= lower_bound:
                 issues.append(f"{label}={value:.4g} (at lower bound)")
             elif value >= upper_bound:
                 issues.append(f"{label}={value:.4g} (at upper bound)")
-            if pe.rse is not None and pe.rse > rse_max:
-                issues.append(f"{name} RSE={pe.rse:.1f}% (>{rse_max:g}%)")
+            if pe.rse is not None:
+                if not np.isfinite(pe.rse):
+                    issues.append(f"{name} RSE=non-finite")
+                elif pe.rse > rse_max:
+                    issues.append(f"{name} RSE={pe.rse:.1f}% (>{rse_max:g}%)")
+
+    if n_structural == 0:
+        issues.append("no_structural_parameters")
 
     passed = len(issues) == 0
     return GateCheckResult(
@@ -224,9 +234,18 @@ def _check_state_trajectory(result: BackendResult, g1: Gate1Config) -> GateCheck
     gof = result.diagnostics.gof
     meta = result.convergence_metadata
 
+    trajectory_valid = result.diagnostics.state_trajectory_valid
+    if trajectory_valid is None:
+        issues.append("state_trajectory_evidence=unavailable")
+    elif not trajectory_valid:
+        issues.append("state_trajectory_contains_negative_or_nonfinite_values")
+
     # R² check: model must explain at least obs_vs_pred_r2_min of variance
-    if gof.obs_vs_pred_r2 is not None and gof.obs_vs_pred_r2 < g1.obs_vs_pred_r2_min:
-        issues.append(f"R²={gof.obs_vs_pred_r2:.3f} (<{g1.obs_vs_pred_r2_min})")
+    if gof.obs_vs_pred_r2 is not None:
+        if not np.isfinite(gof.obs_vs_pred_r2):
+            issues.append("R²=non-finite")
+        elif gof.obs_vs_pred_r2 < g1.obs_vs_pred_r2_min:
+            issues.append(f"R²={gof.obs_vs_pred_r2:.3f} (<{g1.obs_vs_pred_r2_min})")
 
     # CWRES SD: should be near 1.0; far from it signals misspecification.
     # ``None`` means residuals were undefined for this fit (Karlsson 2007;
@@ -234,14 +253,19 @@ def _check_state_trajectory(result: BackendResult, g1: Gate1Config) -> GateCheck
     # validity without a usable diagnostic stream.
     if gof.cwres_sd is None:
         issues.append("cwres_sd=unavailable (residuals undefined)")
+    elif not np.isfinite(gof.cwres_sd):
+        issues.append("cwres_sd=non-finite")
     elif gof.cwres_sd < g1.cwres_sd_min:
         issues.append(f"cwres_sd={gof.cwres_sd:.3f} (<{g1.cwres_sd_min})")
     elif gof.cwres_sd > g1.cwres_sd_max:
         issues.append(f"cwres_sd={gof.cwres_sd:.3f} (>{g1.cwres_sd_max})")
 
     # Gradient norm: high values signal non-physical ODE solver valleys
-    if meta.gradient_norm is not None and meta.gradient_norm > g1.gradient_norm_max:
-        issues.append(f"gradient={meta.gradient_norm:.2e} (>{g1.gradient_norm_max})")
+    if meta.gradient_norm is not None:
+        if not np.isfinite(meta.gradient_norm):
+            issues.append("gradient=non-finite")
+        elif meta.gradient_norm > g1.gradient_norm_max:
+            issues.append(f"gradient={meta.gradient_norm:.2e} (>{g1.gradient_norm_max})")
 
     # Rounding errors: direct signal of numerical instability
     if meta.minimization_status == "rounding_errors":
@@ -539,18 +563,15 @@ def _check_seed_stability(
         )
 
     if seed_results is None or len(seed_results) < g1.seed_stability_n - 1:
-        # No replicates supplied for this candidate. The orchestrator
-        # runs seed replicates only for a top-K subset by BIC — absence
-        # of evidence is the orchestrator's choice, not a candidate
-        # defect. Treat as "not applicable" so the check does not
-        # eliminate otherwise-valid non-top-K candidates; top-K
-        # candidates that were actually probed still face the real CV
-        # comparison below.
+        # A versioned policy that requires N seeds is an evidence contract.
+        # Missing replicates cannot satisfy it, regardless of an upstream
+        # top-K optimization choice.
         n_have = 1 + (len(seed_results) if seed_results else 0)
         return GateCheckResult(
             check_id="seed_stability",
-            passed=True,
-            observed=f"not_probed ({n_have}/{g1.seed_stability_n} seeds — top-K only)",
+            passed=False,
+            observed=f"insufficient_seeds ({n_have}/{g1.seed_stability_n})",
+            threshold=g1.seed_stability_n,
         )
 
     # Collect OFVs from primary + seed runs; filter NaN/Inf
@@ -828,12 +849,17 @@ def _check_identifiability(result: BackendResult, g2: Gate2Config) -> GateCheckR
     ident = result.diagnostics.identifiability
     issues: list[str] = []
 
+    if ident.condition_number is None or not np.isfinite(ident.condition_number):
+        issues.append("condition_number_unavailable")
+
     # Condition number: >1000 is ill-conditioned
     if ident.ill_conditioned:
         cn_str = f"{ident.condition_number:.1f}" if ident.condition_number else "unknown"
         issues.append(f"ill_conditioned (CN={cn_str})")
 
     # Profile-likelihood CI: each parameter should have a valid CI
+    if not ident.profile_likelihood_ci:
+        issues.append("profile_CI_unavailable")
     missing_ci = [p for p, has_ci in ident.profile_likelihood_ci.items() if not has_ci]
     if missing_ci:
         issues.append(f"no_profile_CI: {', '.join(missing_ci)}")
@@ -923,19 +949,25 @@ def _check_loro_requirement(
 
     issues: list[str] = []
 
+    if not loro_metrics.overall_pass:
+        issues.append("incomplete_or_failed_folds")
+
     if loro_metrics.n_folds < g2.loro_min_folds:
         issues.append(f"insufficient_folds ({loro_metrics.n_folds}<{g2.loro_min_folds})")
 
     # NaN safety: abs(nan) > x is False in Python, so NaN would silently pass.
     # Explicit finite check: abs(nan) > x is False in Python.
     npde_mean = loro_metrics.pooled_npde_mean
-    if not np.isfinite(npde_mean) or abs(npde_mean) > g2.loro_npde_mean_max:
-        issues.append(f"npde_mean={npde_mean:.3f}" if np.isfinite(npde_mean) else "npde_mean=NaN")
+    if npde_mean is None or not np.isfinite(npde_mean):
+        issues.append("npde_mean=unavailable")
+    elif abs(npde_mean) > g2.loro_npde_mean_max:
+        issues.append(f"npde_mean={npde_mean:.3f}")
 
     npde_var = loro_metrics.pooled_npde_variance
-    var_in_range = g2.loro_npde_variance_min <= npde_var <= g2.loro_npde_variance_max
-    if not np.isfinite(npde_var) or not var_in_range:
-        issues.append(f"npde_var={npde_var:.3f}" if np.isfinite(npde_var) else "npde_var=NaN")
+    if npde_var is None or not np.isfinite(npde_var):
+        issues.append("npde_var=unavailable")
+    elif not (g2.loro_npde_variance_min <= npde_var <= g2.loro_npde_variance_max):
+        issues.append(f"npde_var={npde_var:.3f}")
 
     if loro_metrics.vpc_coverage_concordance < g2.loro_vpc_coverage_min:
         issues.append(f"vpc_cov={loro_metrics.vpc_coverage_concordance:.3f}")
@@ -1165,7 +1197,7 @@ class RankedCandidate:
 
     candidate_id: str
     rank: int
-    bic: float
+    bic: float | None
     aic: float | None
     n_params: int
     backend: str
@@ -1188,7 +1220,10 @@ def evaluate_gate3(
     Returns:
         Tuple of (GateResult, ranked list of candidates).
     """
-    from apmode.governance.ranking import ranking_requires_simulation_metrics
+    from apmode.governance.ranking import (
+        group_by_scoring_contract,
+        ranking_requires_simulation_metrics,
+    )
 
     if not survivors:
         return (
@@ -1211,6 +1246,12 @@ def evaluate_gate3(
             [],
         )
 
+    # Exact scoring contracts are a hard comparability boundary.  Never
+    # produce one composite across conditional/marginal, pooled/integrated,
+    # integrator, BLQ, observation-model, or precision differences.
+    if len(group_by_scoring_contract(survivors)) > 1:
+        return _gate3_contract_grouped(survivors, policy)
+
     requires_sim, qualification_reason = ranking_requires_simulation_metrics(
         survivors, gate3=policy.gate3
     )
@@ -1228,8 +1269,36 @@ def _gate3_within_paradigm(
     policy: GatePolicy,
 ) -> tuple[GateResult, list[RankedCandidate]]:
     """Within-paradigm ranking by BIC (Phase 1 behavior, preserved)."""
+    # Missing/non-finite BIC is absent scoring evidence, not ``+inf`` evidence.
+    # Exclude such candidates; if every candidate lacks BIC, fail closed rather
+    # than selecting a lexicographic winner with BIC=inf.
+    finite_survivors = [
+        result for result in survivors if result.bic is not None and np.isfinite(result.bic)
+    ]
+    if not finite_survivors:
+        return (
+            GateResult(
+                gate_id=generate_gate_id(),
+                gate_name="within_paradigm_ranking",
+                candidate_id="none",
+                passed=False,
+                checks=[
+                    GateCheckResult(
+                        check_id="ranking",
+                        passed=False,
+                        observed="no_finite_bic",
+                        threshold="at least one finite BIC",
+                    )
+                ],
+                summary_reason="No candidate had finite BIC scoring evidence",
+                policy_version=policy.policy_version,
+                timestamp=datetime.now(tz=UTC).isoformat(),
+            ),
+            [],
+        )
+
     # Secondary key on model_id breaks BIC ties deterministically.
-    sorted_survivors = sorted(survivors, key=lambda r: (_safe_bic(r), r.model_id))
+    sorted_survivors = sorted(finite_survivors, key=lambda r: (_safe_bic(r), r.model_id))
 
     ranked: list[RankedCandidate] = []
     for i, result in enumerate(sorted_survivors):
@@ -1244,6 +1313,9 @@ def _gate3_within_paradigm(
             )
         )
 
+    best_bic = ranked[0].bic
+    worst_bic = ranked[-1].bic
+    assert best_bic is not None and worst_bic is not None
     checks = [
         GateCheckResult(
             check_id="ranking",
@@ -1258,13 +1330,13 @@ def _gate3_within_paradigm(
         GateCheckResult(
             check_id="best_bic",
             passed=True,
-            observed=ranked[0].bic if ranked else float("inf"),
+            observed=best_bic,
             units="BIC",
         ),
         GateCheckResult(
             check_id="bic_spread",
             passed=True,
-            observed=round(ranked[-1].bic - ranked[0].bic, 2) if len(ranked) > 1 else 0.0,
+            observed=(round(worst_bic - best_bic, 2) if len(ranked) > 1 else 0.0),
             units="delta_BIC",
         ),
     ]
@@ -1281,6 +1353,108 @@ def _gate3_within_paradigm(
             timestamp=datetime.now(tz=UTC).isoformat(),
         ),
         ranked,
+    )
+
+
+def _gate3_contract_grouped(
+    survivors: list[BackendResult],
+    policy: GatePolicy,
+) -> tuple[GateResult, list[RankedCandidate]]:
+    """Rank within exact scoring-contract buckets, never across them.
+
+    The returned flat list is a deterministic serialization of separate
+    leaderboards only; its ordinal values are not a cross-contract score.
+    Submission produces a recommendation only when exactly one eligible
+    integrated+marginal contract group exists.
+    """
+    from apmode.governance.ranking import rank_by_scoring_contract
+
+    ordered_survivors = sorted(
+        survivors,
+        key=lambda result: (
+            result.diagnostics.scoring_contract.model_dump_json(),
+            result.model_id,
+        ),
+    )
+    grouped = rank_by_scoring_contract(
+        ordered_survivors,
+        gate3=policy.gate3,
+        vpc_concordance_target=policy.vpc_concordance_target,
+        lane=policy.lane,
+        qualification_reason="exact scoring-contract boundary",
+    )
+    survivors_by_id = {result.model_id: result for result in survivors}
+    flattened: list[RankedCandidate] = []
+    next_rank = 1
+    for group in grouped.groups:
+        for metric in group.ranked_candidates:
+            original = survivors_by_id[metric.candidate_id]
+            flattened.append(
+                RankedCandidate(
+                    candidate_id=original.model_id,
+                    rank=next_rank,
+                    bic=(
+                        float(original.bic)
+                        if original.bic is not None and np.isfinite(original.bic)
+                        else None
+                    ),
+                    aic=original.aic,
+                    n_params=len(original.parameter_estimates),
+                    backend=original.backend,
+                )
+            )
+            next_rank += 1
+
+    recommended_id = grouped.recommended_candidate_id
+    if recommended_id is not None:
+        # Put the sole policy-eligible recommendation first for downstream
+        # consumers while keeping every other contract as a separate group.
+        flattened.sort(key=lambda item: (item.candidate_id != recommended_id, item.rank))
+        flattened = [
+            RankedCandidate(
+                candidate_id=item.candidate_id,
+                rank=index,
+                bic=item.bic,
+                aic=item.aic,
+                n_params=item.n_params,
+                backend=item.backend,
+            )
+            for index, item in enumerate(flattened, start=1)
+        ]
+
+    passed = bool(flattened)
+    candidate_id = recommended_id or "multiple_contract_groups"
+    checks = [
+        GateCheckResult(
+            check_id="ranking",
+            passed=passed,
+            observed=f"{len(flattened)} candidates in {len(grouped.groups)} contract groups",
+        ),
+        GateCheckResult(
+            check_id="ranking_method",
+            passed=passed,
+            observed="contract_grouped_no_cross_contract_composite",
+            evidence_ref=grouped.recommended_warning,
+        ),
+    ]
+    summary = (
+        f"Recommended {recommended_id} from the sole eligible contract group"
+        if recommended_id is not None
+        else grouped.recommended_warning
+        or f"Emitted {len(grouped.groups)} separate contract leaderboards; no recommendation"
+    )
+    return (
+        GateResult(
+            gate_id=generate_gate_id(),
+            gate_name="contract_grouped_ranking",
+            candidate_id=candidate_id,
+            passed=passed,
+            checks=checks,
+            summary_reason=summary,
+            policy_version=policy.policy_version,
+            timestamp=datetime.now(tz=UTC).isoformat(),
+        ),
+        flattened,
     )
 
 
@@ -1341,7 +1515,7 @@ def _gate3_cross_paradigm(
             RankedCandidate(
                 candidate_id=m.candidate_id,
                 rank=i + 1,
-                bic=_safe_bic(orig),
+                bic=(float(orig.bic) if orig.bic is not None and np.isfinite(orig.bic) else None),
                 aic=orig.aic,
                 n_params=len(orig.parameter_estimates),
                 backend=m.backend,
@@ -1551,8 +1725,9 @@ def _check_data_adequacy(
     if ctx.n_parameters == 0:
         return GateCheckResult(
             check_id="data_adequacy",
-            passed=True,
-            observed="no_parameters",
+            passed=False,
+            observed="parameter_count_unavailable",
+            threshold=g25.data_adequacy_ratio_min,
         )
     ratio = ctx.n_observations / ctx.n_parameters
     passed = ratio >= g25.data_adequacy_ratio_min
@@ -1935,17 +2110,17 @@ def evaluate_gate1_bayesian(
     # ``warn``-level signal so the operator sees it but the gate does
     # not collapse on missing telemetry.
     ebfmi_severity = g.severity["ebfmi"]
-    if not np.isfinite(diag.ebfmi_min):
+    if diag.ebfmi_min is None or not np.isfinite(diag.ebfmi_min):
         checks.append(
             GateCheckResult(
                 check_id="bayesian_ebfmi",
                 passed=True,
                 observed="not_computed",
                 threshold=g.e_bfmi_min,
-                evidence_ref="ebfmi=NaN — arviz could not compute energy diagnostics",
+                evidence_ref="ebfmi unavailable — arviz could not compute energy diagnostics",
             )
         )
-        warning_reasons.append("E-BFMI not computed (arviz returned NaN)")
+        warning_reasons.append("E-BFMI not computed")
     else:
         ebfmi_violates = diag.ebfmi_min < g.e_bfmi_min
         ebfmi_is_failure = ebfmi_violates and ebfmi_severity == "fail"

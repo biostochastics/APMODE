@@ -33,6 +33,7 @@ from __future__ import annotations
 
 from apmode.bundle.rocrate.importer import RoCrateImportError, import_crate
 from apmode.bundle.rocrate.projector import (
+    BundleIntegrityError,
     BundleNotSealedError,
     ReportableSelection,
     RoCrateEmitter,
@@ -41,6 +42,7 @@ from apmode.bundle.rocrate.projector import (
 )
 
 __all__ = [
+    "BundleIntegrityError",
     "BundleNotSealedError",
     "ReportableSelection",
     "RoCrateEmitter",

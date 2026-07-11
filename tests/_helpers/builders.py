@@ -167,6 +167,7 @@ def make_backend_result(
                 n_blq=0,
                 blq_fraction=0.0,
             ),
+            state_trajectory_valid=True,
             scoring_contract=_scoring_contract_for_backend(backend),
             # Default split_gof so the required-check path doesn't
             # auto-fail non-split-related tests. Individual tests can

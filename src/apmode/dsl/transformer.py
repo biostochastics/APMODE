@@ -34,6 +34,7 @@ from apmode.dsl.ast_models import (
     DSLSpec,
     EliminationModule,
     Erlang,
+    ExperimentalFlags,
     FirstOrder,
     IVBolus,
     LaggedFirstOrder,
@@ -188,6 +189,9 @@ class DSLTransformer(Transformer):  # type: ignore[type-arg]
 
     def PRIOR_SOURCE(self, token: str) -> str:
         return str(token)
+
+    def BOOL(self, token: str) -> bool:
+        return str(token) == "true"
 
     def DOTTED_NAME(self, token: str) -> str:
         return str(token)
@@ -408,6 +412,9 @@ class DSLTransformer(Transformer):  # type: ignore[type-arg]
             time=time, amount=amount, concentration=concentration, volume=volume
         )
 
+    def experimental_block(self, node: bool) -> ExperimentalFlags:
+        return ExperimentalFlags(node=node)
+
     # --- Priors (P1.5) ---
     #
     # Numeric-expression and prior-family constructors below build the exact
@@ -602,6 +609,7 @@ class DSLTransformer(Transformer):  # type: ignore[type-arg]
         observation: ObservationModule | None = None
         metadata: Metadata | None = None
         units: UnitsDeclaration | None = None
+        experimental = ExperimentalFlags()
         initial: dict[str, float] = {}
         variability: list[VariabilityItem] = []
 
@@ -623,6 +631,8 @@ class DSLTransformer(Transformer):  # type: ignore[type-arg]
                 metadata = item
             elif isinstance(item, UnitsDeclaration):
                 units = item
+            elif isinstance(item, ExperimentalFlags):
+                experimental = item
             elif isinstance(item, _ABSORPTION_TYPES):
                 absorption = item
             elif isinstance(item, _DISTRIBUTION_TYPES):
@@ -667,6 +677,7 @@ class DSLTransformer(Transformer):  # type: ignore[type-arg]
             initial=initial,
             metadata=metadata,
             units=units,
+            experimental=experimental,
         )
 
     def model(self, spec: DSLSpec) -> DSLSpec:

@@ -7,11 +7,18 @@ Models are validated before writing to disk.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from enum import StrEnum
 from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+
+# DSLSpec is a frozen Pydantic model; a distilled LASSO structure carries its
+# promoted spec directly. bundle -> dsl is an established dependency direction
+# (see emitter.py); dsl never imports bundle, so this adds no cycle.
+from apmode.dsl.ast_models import DSLSpec  # noqa: TC001 — Pydantic resolves at runtime
 
 
 class SignalId(StrEnum):
@@ -94,7 +101,12 @@ class ConvergenceMetadata(BaseModel):
     iterations: int = Field(ge=0)
     gradient_norm: float | None = None
     minimization_status: Literal[
-        "successful", "terminated", "boundary", "rounding_errors", "max_evaluations"
+        "successful",
+        "terminated",
+        "marginal",
+        "boundary",
+        "rounding_errors",
+        "max_evaluations",
     ]
     wall_time_seconds: float = Field(ge=0.0)
 
@@ -316,8 +328,10 @@ class SplitGOFMetrics(BaseModel):
     """
 
     train_cwres_mean: float
+    train_cwres_sd: float | None = None
     train_outlier_fraction: float = Field(ge=0.0, le=1.0)
     test_cwres_mean: float
+    test_cwres_sd: float | None = None
     test_outlier_fraction: float = Field(ge=0.0, le=1.0)
     n_train: int = Field(gt=0)
     n_test: int = Field(gt=0)
@@ -435,6 +449,10 @@ class DiagnosticBundle(BaseModel):
     npde: NPDESummary | None = None
     identifiability: IdentifiabilityFlags
     blq: BLQHandling
+    # Direct backend evidence that the predicted concentration/state stream
+    # contained no negative or non-finite values. ``None`` means the backend
+    # did not evaluate the trajectory contract.
+    state_trajectory_valid: bool | None = None
     # Non-negative by construction: NPE is an absolute-error summary.
     # Backends that can't compute it must leave this None and let the
     # ranking layer fall back to the documented CWRES proxy.
@@ -483,7 +501,10 @@ class PosteriorDiagnostics(BaseModel):
     ess_tail_min: float = Field(ge=0.0)
     n_divergent: int = Field(ge=0)
     n_max_treedepth: int = Field(ge=0)
-    ebfmi_min: float
+    # ``None`` means ArviZ could not compute E-BFMI.  NaN is not used as
+    # a sentinel because it serializes to JSON null and cannot round-trip
+    # into a required float.
+    ebfmi_min: float | None
     pareto_k_max: float | None = None
     pareto_k_counts: dict[str, int] = Field(default_factory=dict)  # "good/ok/bad/very_bad"
     mcse_by_param: dict[str, float] = Field(default_factory=dict)  # headline params only
@@ -1045,7 +1066,9 @@ class ImputationStabilityEntry(BaseModel):
     # ``dof``: Barnard-Rubin degrees of freedom for inference
     # Empty when the backend did not emit per-parameter (estimate, SE) on
     # converged imputations.
-    pooled_parameters: dict[str, dict[str, float]] = Field(default_factory=dict)
+    # Individual statistics can be unavailable (notably Rubin degrees of
+    # freedom when B=0, and within/total variance when SEs are omitted).
+    pooled_parameters: dict[str, dict[str, float | None]] = Field(default_factory=dict)
 
 
 class ImputationStabilityManifest(BaseModel):
@@ -1449,13 +1472,52 @@ class ReviewerAttestation(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    attestation_schema_version: Literal["1.0"] = "1.0"
+    attestation_schema_version: Literal["1.0", "2.0"] = "1.0"
     reviewer_id: str = Field(min_length=1)
     reviewer_role: str = Field(min_length=1)
     timestamp: str  # ISO-8601 UTC
     decision: Literal["approved", "approved_with_conditions", "rejected"]
     rationale: str = Field(min_length=1)
     gate_overrides: list[GateOverride] = Field(default_factory=list)
+    # Schema 2 binds this post-seal sidecar to a specific seal and hashes
+    # the canonical sidecar payload.  Optionality preserves readability of
+    # legacy schema-1 bundles; every new emitter write upgrades to schema 2.
+    run_id: str | None = None
+    bundle_sha256: str | None = None
+    seal_sha256: str | None = None
+    previous_attestation_sha256: str | None = None
+    attestation_sha256: str | None = None
+
+    @model_validator(mode="after")
+    def validate_bound_attestation(self) -> Self:
+        if self.attestation_schema_version == "1.0":
+            return self
+        required = {
+            "run_id": self.run_id,
+            "bundle_sha256": self.bundle_sha256,
+            "seal_sha256": self.seal_sha256,
+            "attestation_sha256": self.attestation_sha256,
+        }
+        missing = [name for name, value in required.items() if not value]
+        if missing:
+            raise ValueError(f"schema-2 attestation missing binding fields: {', '.join(missing)}")
+        expected = _attestation_payload_sha256(self.model_dump(mode="json"))
+        if self.attestation_sha256 != expected:
+            raise ValueError("attestation_sha256 does not match the canonical attestation payload")
+        return self
+
+
+def _attestation_payload_sha256(payload: dict[str, object]) -> str:
+    """Hash an attestation payload excluding its self-referential digest."""
+    canonical = dict(payload)
+    canonical.pop("attestation_sha256", None)
+    encoded = json.dumps(
+        canonical,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 # --- Report Provenance ---
@@ -1466,7 +1528,7 @@ class RankedCandidateEntry(BaseModel):
 
     candidate_id: str
     rank: int = Field(ge=1)
-    bic: float
+    bic: float | None = None
     aic: float | None = None
     n_params: int = Field(ge=0)
     backend: str
@@ -1598,6 +1660,70 @@ class DistillationReport(BaseModel):
     source_result_sha256: str | None = None
 
 
+class LassoSelectionResult(BaseModel):
+    """Sealed NODE-LASSO structural-selection artifact (Bräm 2025).
+
+    LASSO selection over a candidate library in derivative space replaces the
+    ad-hoc ``curve_fit`` distillation: the trained NODE's neural RHS is evaluated
+    over the observed input support, and a penalized regression selects which
+    PMX candidate families (constant / linear / exponential / Emax-Hill) explain
+    the learned rate law (doi:10.1002/psp4.70285).
+
+    ``coefficients`` are raw-scale (de-standardized) unpenalized-refit estimates
+    for the *mappable* selected terms only.  In the current derivative library,
+    only the constant elimination-rate coefficient maps directly to
+    ``LinearElim`` clearance.  A linear-in-concentration rate term and an Emax
+    shape are not dimensionally equivalent to ``LinearElim`` or
+    ``MichaelisMenten`` concentration-time dynamics. ``rejected_nonmappable``
+    records selected terms with no valid DSL mapping; they are
+    never silently mismapped, preserving the DSL-moat invariant. ``bic`` is the
+    ``LassoLarsIC(criterion='bic')`` score of the initial fit; ``derivative_r_squared``
+    is the R^2 of the unpenalized refit against the NODE-derivative target.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    selected_terms: list[str] = Field(default_factory=list)
+    coefficients: dict[str, float] = Field(default_factory=dict)
+    rejected_nonmappable: list[str] = Field(default_factory=list)
+    selection_frequency: dict[str, float] = Field(default_factory=dict)
+    bic: float | None = None
+    derivative_r_squared: float
+
+
+class LassoDistillationReport(BaseModel):
+    """Sealed NODE-LASSO distillation artifact (Bräm 2025).
+
+    Wraps the derivative-space :class:`LassoSelectionResult` with the outcome of
+    promoting the selected structure to a classical ``DSLSpec``. Promotion is
+    attempted only for an elimination-position NODE and succeeds only when the
+    selected support is *fully* DSL-mappable — at least one mappable term
+    (``LinearElim`` / ``MichaelisMenten``) and **no** selected non-mappable term
+    (exponential, Emax h!=1). A selected non-mappable term is recorded on
+    ``selection.rejected_nonmappable`` and blocks promotion rather than being
+    silently mismapped, preserving the DSL-moat invariant that NODE structures
+    enter Gate 1/2/3 only through DSL modules.
+
+    Fidelity: the primary metric is ``selection.derivative_r_squared`` (R^2 of the
+    unpenalized refit against the NODE-derivative target); ``derivative_mare`` is
+    the companion mean absolute relative error of the same refit over the
+    derivative grid (``None`` when no term was selected).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    candidate_id: str
+    node_position: Literal["absorption", "elimination"]
+    selection: LassoSelectionResult
+    promoted: bool = False
+    promoted_model_id: str | None = None
+    promoted_spec: DSLSpec | None = None
+    derivative_mare: float | None = None
+    # Exposure fidelity must be calculated on concentration-time trajectories;
+    # derivative-grid ratios are not PK AUC/Cmax bioequivalence evidence.
+    timecourse_fidelity: FidelityResult | None = None
+
+
 # --- Risk Grading Report Models (V&V40-style, Gate 2.5 companion) ---
 
 
@@ -1705,8 +1831,10 @@ class LOROMetrics(BaseModel):
 
     n_folds: int = Field(ge=1)
     n_total_test_subjects: int = Field(ge=1)
-    pooled_npde_mean: float
-    pooled_npde_variance: float
+    # ``None`` means no complete converged-fold diagnostic was available.
+    # Earlier bundles used NaN, which serialized as null but could not reload.
+    pooled_npde_mean: float | None
+    pooled_npde_variance: float | None
     vpc_coverage_concordance: float = Field(ge=0.0, le=1.0)
     auc_gmr: float | None = None
     cmax_gmr: float | None = None

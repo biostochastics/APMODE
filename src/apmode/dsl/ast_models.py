@@ -10,8 +10,9 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from apmode.dsl.normalize import normalize_param_name
 from apmode.dsl.priors import PriorSpec  # noqa: TC001 — Pydantic resolves type at runtime
 
 # ---------------------------------------------------------------------------
@@ -375,6 +376,19 @@ class IIV(BaseModel):
     params: list[StanIdentifier]
     structure: Literal["diagonal", "block"]
 
+    @field_validator("params", mode="before")
+    @classmethod
+    def _canonicalize_params(cls, value: object) -> object:
+        """Store the canonical spelling the emitters use for PK parameters.
+
+        Formular deliberately accepts parameter references case-insensitively.
+        Canonicalizing once at the AST boundary prevents validation from
+        accepting a spelling that a backend later fails to match.
+        """
+        if isinstance(value, (list, tuple)):
+            return [normalize_param_name(str(item)) for item in value]
+        return value
+
 
 class IOV(BaseModel):
     """Inter-occasion variability: params with occasion specification."""
@@ -383,6 +397,13 @@ class IOV(BaseModel):
     type: Literal["IOV"] = "IOV"
     params: list[StanIdentifier]
     occasions: OccasionSpec
+
+    @field_validator("params", mode="before")
+    @classmethod
+    def _canonicalize_params(cls, value: object) -> object:
+        if isinstance(value, (list, tuple)):
+            return [normalize_param_name(str(item)) for item in value]
+        return value
 
 
 VariabilityItem = Annotated[
@@ -483,6 +504,11 @@ class CovariateLink(BaseModel):
     reference: str | None = None
     tm50: float | None = None
     hill: float | None = None
+
+    @field_validator("param", mode="before")
+    @classmethod
+    def _canonicalize_param(cls, value: object) -> object:
+        return normalize_param_name(str(value)) if isinstance(value, str) else value
 
     @model_validator(mode="after")
     def _check_field_shape(self) -> CovariateLink:
@@ -618,7 +644,7 @@ class ObservationEndpoint(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
     name: str
-    dvid: int
+    dvid: int = Field(ge=1)
     prediction: StanIdentifier
     error: ObservationModule
 
@@ -784,7 +810,10 @@ class DSLSpec(BaseModel):
         is addressable by -- see :meth:`known_prediction_variables`).
         """
         if self.observations:
-            return list(self.observations.values())
+            # nlmixr/FREM route endpoint statements positionally. Explicit
+            # DVID, not dictionary insertion order, is therefore the canonical
+            # ordering for every downstream consumer and survives formatting.
+            return sorted(self.observations.values(), key=lambda endpoint: endpoint.dvid)
         return [
             ObservationEndpoint(
                 name="default", dvid=1, prediction="C_central", error=self.observation
@@ -868,7 +897,9 @@ class DSLSpec(BaseModel):
             # machinery sees plain StanIdentifier strings. k itself is
             # structural (validator restricts to {1, 2}); not exposed for
             # variability.
-            names.extend(["MT_1", "MT_2", "RD2_1", "RD2_2", "weight_1"])
+            names.extend(["MT_1", "RD2_1"])
+            if abs_mod.k >= 2:
+                names.extend(["MT_2", "RD2_2", "weight_1"])
         elif isinstance(abs_mod, IVBolus):
             # IV bolus has no absorption parameters.
             pass

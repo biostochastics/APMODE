@@ -21,7 +21,7 @@ from apmode.backends.node_distillation import (
     visualize_sub_function,
 )
 from apmode.backends.node_ode import HybridPKODE, ODEConfig
-from apmode.dsl.ast_models import FirstOrder, LinearElim, MichaelisMenten, OneCmt
+from apmode.dsl.ast_models import FirstOrder, LinearElim, OneCmt
 
 
 def _make_model(seed: int = 0) -> HybridPKODE:
@@ -226,7 +226,7 @@ class TestSurrogateToFormular:
         assert isinstance(spec.absorption, FirstOrder)
         assert isinstance(spec.distribution, OneCmt)
         assert isinstance(spec.elimination, LinearElim)
-        # ke_ref = slope*ref + intercept = 0.05 at reference_conc=1.0; CL = ke_ref*V.
+        # A constant NODE coefficient is CL/V, hence CL = coefficient * V.
         assert spec.initial["CL"] == pytest.approx(0.05 * 30.0)
         assert spec.initial["V"] == pytest.approx(30.0)
         assert spec.initial["ka"] == pytest.approx(1.0)
@@ -236,23 +236,36 @@ class TestSurrogateToFormular:
         assert spec.metadata is not None
         assert spec.metadata.intent is not None and "distill" in spec.metadata.intent
 
-    def test_michaelis_menten_surrogate_maps_to_mm_elimination(self) -> None:
+    def test_michaelis_menten_shaped_coefficient_fails_closed(self) -> None:
         surrogate = SurrogateResult(
             surrogate_type="michaelis_menten",
             params={"Vmax": 12.0, "Km": 3.0},
             residual_ss=0.0,
             r_squared=0.98,
         )
-        spec = surrogate_to_formular(
-            surrogate,
-            "elimination",
-            model_id="m_mm",
-            mechanistic_params={"ka": 1.0, "V": 25.0},
+        with pytest.raises(ValueError, match="per-unit rate"):
+            surrogate_to_formular(
+                surrogate,
+                "elimination",
+                model_id="m_mm",
+                mechanistic_params={"ka": 1.0, "V": 25.0},
+            )
+
+    def test_nonzero_slope_is_not_frozen_at_reference_concentration(self) -> None:
+        surrogate = SurrogateResult(
+            surrogate_type="linear",
+            params={"slope": 0.05, "intercept": 0.01},
+            residual_ss=0.0,
+            r_squared=0.99,
         )
-        assert isinstance(spec.elimination, MichaelisMenten)
-        assert spec.initial["Vmax"] == pytest.approx(12.0)
-        assert spec.initial["Km"] == pytest.approx(3.0)
-        assert spec.initial["V"] == pytest.approx(25.0)
+        with pytest.raises(ValueError, match="concentration-dependent"):
+            surrogate_to_formular(
+                surrogate,
+                "elimination",
+                model_id="m_bad",
+                mechanistic_params={"ka": 1.0, "V": 25.0},
+                reference_conc=10.0,
+            )
 
     def test_absorption_position_is_out_of_scope(self) -> None:
         surrogate = SurrogateResult(

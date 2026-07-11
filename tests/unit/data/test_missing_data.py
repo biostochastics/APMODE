@@ -346,7 +346,7 @@ class TestRubinPool:
         assert within == pytest.approx(0.25)  # SE²
         assert between == pytest.approx(0.0)
         assert total == pytest.approx(0.25)
-        assert dof == float("inf")
+        assert dof is None  # infinite/undefined df is persisted as JSON null
 
     def test_two_imputations_decomposes_variance(self) -> None:
         from apmode.search.stability import rubin_pool
@@ -360,14 +360,14 @@ class TestRubinPool:
         # Total: Ū + (1 + 1/2)*B = 0.09 + 1.5*0.08 = 0.21
         assert total == pytest.approx(0.21)
 
-    def test_none_ses_zero_within_variance(self) -> None:
+    def test_none_ses_preserve_missing_uncertainty(self) -> None:
         from apmode.search.stability import rubin_pool
 
         pooled, within, between, total, _ = rubin_pool([5.0, 5.4, 4.8], [None, None, None])
         assert pooled == pytest.approx(5.0666, rel=1e-3)
-        assert within == pytest.approx(0.0)
-        # Only between-imputation variance contributes to total.
-        assert total == pytest.approx((1 + 1 / 3) * between)
+        assert between > 0
+        assert within is None
+        assert total is None
 
     def test_misaligned_inputs_raise(self) -> None:
         from apmode.search.stability import rubin_pool

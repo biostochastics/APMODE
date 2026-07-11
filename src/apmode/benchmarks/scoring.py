@@ -27,7 +27,12 @@ from apmode.benchmarks.models import (
 )
 
 if TYPE_CHECKING:
-    from apmode.bundle.models import BackendResult, EvidenceManifest, NCASubjectDiagnostic
+    from apmode.bundle.models import (
+        BackendResult,
+        EvidenceManifest,
+        GateResult,
+        NCASubjectDiagnostic,
+    )
     from apmode.dsl.ast_models import DSLSpec
 
 # Smith (2000) FDA BE goalposts: a candidate is "bioequivalent per subject"
@@ -549,6 +554,7 @@ def score_case(
     all_candidate_results: list[BackendResult] | None = None,
     discovered_spec: DSLSpec | None = None,
     dispatched_backends: list[str] | None = None,
+    gate1_result: GateResult | None = None,
 ) -> BenchmarkScore:
     """Score a single benchmark case given the selected result.
 
@@ -558,6 +564,8 @@ def score_case(
         all_candidate_results: All candidate results for convergence stats.
         discovered_spec: The DSLSpec of the selected candidate (Suite A).
         dispatched_backends: Backends dispatched by the Lane Router (Suite B).
+        gate1_result: Actual governance decision for the selected result.
+            Missing gate evidence fails closed; convergence alone is not Gate 1.
     """
     metrics: list[MetricValue] = []
 
@@ -589,17 +597,19 @@ def score_case(
         )
 
     if param_coverage:
-        scored_coverage = [v for v in param_coverage.values() if v is not None]
-        if scored_coverage:
-            coverage_rate = sum(scored_coverage) / len(scored_coverage)
-            metrics.append(
-                MetricValue(
-                    name="param_coverage_rate",
-                    value=coverage_rate,
-                    passed=coverage_rate >= 0.90,
-                )
+        # A missing interval is failed required coverage evidence, not a
+        # reason to shrink the denominator until only successful CIs remain.
+        coverage_rate = sum(value is True for value in param_coverage.values()) / len(
+            param_coverage
+        )
+        n_unscorable = sum(1 for value in param_coverage.values() if value is None)
+        metrics.append(
+            MetricValue(
+                name="param_coverage_rate",
+                value=coverage_rate,
+                passed=coverage_rate >= 0.90 and n_unscorable == 0,
             )
-        n_unscorable = sum(1 for v in param_coverage.values() if v is None)
+        )
         if n_unscorable > 0:
             metrics.append(
                 MetricValue(
@@ -633,12 +643,13 @@ def score_case(
     )
 
     # --- Gate passage ---
-    gate1_passed = result.converged
+    gate1_passed = gate1_result is not None and gate1_result.passed
     metrics.append(
         MetricValue(
             name="gate1_pass",
             value=1.0 if gate1_passed else 0.0,
             passed=gate1_passed,
+            unit="actual GateResult" if gate1_result is not None else "not evaluated",
         )
     )
 

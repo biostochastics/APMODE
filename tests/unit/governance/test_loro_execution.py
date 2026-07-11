@@ -25,8 +25,10 @@ from apmode.bundle.models import (
     IdentifiabilityFlags,
     LOROFoldResult,
     ParameterEstimate,
+    SplitGOFMetrics,
     SplitManifest,
     SubjectAssignment,
+    VPCSummary,
 )
 from apmode.dsl.ast_models import IIV, DSLSpec, FirstOrder, LinearElim, OneCmt, Proportional
 from apmode.evaluation.loro_cv import _aggregate_loro_metrics, evaluate_loro_cv
@@ -83,6 +85,22 @@ def _mock_backend_result(
         ),
         diagnostics=DiagnosticBundle(
             gof=GOFMetrics(cwres_mean=cwres_mean, cwres_sd=cwres_sd, outlier_fraction=0.02),
+            split_gof=SplitGOFMetrics(
+                train_cwres_mean=0.0,
+                train_cwres_sd=1.0,
+                train_outlier_fraction=0.01,
+                test_cwres_mean=cwres_mean,
+                test_cwres_sd=cwres_sd,
+                test_outlier_fraction=0.02,
+                n_train=10,
+                n_test=10,
+            ),
+            vpc=VPCSummary(
+                percentiles=[5.0, 50.0, 95.0],
+                coverage={"p5": 0.9, "p50": 0.9, "p95": 0.9},
+                n_bins=5,
+                prediction_corrected=False,
+            ),
             identifiability=IdentifiabilityFlags(
                 condition_number=50.0,
                 profile_likelihood_ci={"CL": True, "V": True},
@@ -152,6 +170,36 @@ def _stop_response() -> LLMResponse:
         cost_usd=0.001,
         wall_time_seconds=1.0,
         request_payload_hash="d" * 64,
+    )
+
+
+def _transform_response() -> LLMResponse:
+    """A valid transform so AgenticRunner evaluates a distinct candidate."""
+    import json
+
+    return LLMResponse(
+        raw_text=json.dumps(
+            {
+                "transforms": [
+                    {
+                        "type": "add_covariate_link",
+                        "param": "CL",
+                        "covariate": "WT",
+                        "form": "power",
+                        "theta": 0.75,
+                        "ref": 70.0,
+                    }
+                ],
+                "reasoning": "Evaluate an allometric CL candidate.",
+            }
+        ),
+        model_id="test",
+        model_version="v1",
+        input_tokens=100,
+        output_tokens=50,
+        cost_usd=0.001,
+        wall_time_seconds=1.0,
+        request_payload_hash="e" * 64,
     )
 
 
@@ -326,14 +374,21 @@ class TestEvaluateLoroCV:
         fixed_parameter=True today.
         """
         inner_runner = AsyncMock()
-        inner_runner.run = AsyncMock(return_value=_mock_backend_result())
+
+        async def _fit_matching_spec(**kwargs: object) -> BackendResult:
+            fitted_spec = kwargs["spec"]
+            assert isinstance(fitted_spec, DSLSpec)
+            return _mock_backend_result(model_id=fitted_spec.model_id)
+
+        inner_runner.run = AsyncMock(side_effect=_fit_matching_spec)
         mock_llm = AsyncMock()
         # Step 1 of each fold calls AgenticRunner.run with
         # fixed_parameter=False (the default), which *does* enter the
         # iterative loop — unlike step 2's fixed_parameter=True bypass.
-        # A stop-signal response lets step 1 terminate after one
-        # iteration instead of exhausting max_iterations.
-        mock_llm.complete = AsyncMock(return_value=_stop_response())
+        # Each training fold must evaluate at least one transformed candidate;
+        # an immediate stop on the starting classical model now correctly
+        # exhausts rather than mislabelling it as agentic.
+        mock_llm.complete = AsyncMock(side_effect=[_transform_response(), _stop_response()] * 2)
 
         agentic_runner = AgenticRunner(
             inner_runner=inner_runner,
@@ -344,7 +399,9 @@ class TestEvaluateLoroCV:
 
         folds = _make_folds(n_groups=2)
         result = await evaluate_loro_cv(
-            candidate_spec=_base_spec(),
+            candidate_spec=_base_spec().model_copy(
+                update={"initial": {"CL": 5.0, "V": 30.0, "ka": 1.0}}
+            ),
             candidate_result=_mock_backend_result(model_id="agentic_cand"),
             folds=folds,
             runner=agentic_runner,
@@ -363,16 +420,16 @@ class TestEvaluateLoroCV:
         # raising NotImplementedError.
         assert all(f.converged for f in result.fold_results)
         # Step 1 (fixed_parameter=False) legitimately runs the LLM loop —
-        # once per fold, terminating on the stop signal — so this call
+        # twice per fold (transform, then stop) — so this call
         # count is the loop, not the bypass under test. Step 2's bypass
         # is confirmed by the fold convergence + inner-runner call count
         # below, which excludes any LLM-mediated transform iterations.
-        assert mock_llm.complete.call_count == len(folds)
-        # Each fold makes two calls: step 1 (fixed_parameter=False refit,
-        # via the LLM loop's single iteration) and step 2
+        assert mock_llm.complete.call_count == 2 * len(folds)
+        # Each fold makes three calls: two step-1 evaluations (starting model,
+        # then transformed candidate) and one step-2
         # (fixed_parameter=True frozen eval, via the bypass), both
         # ultimately delegated to the inner runner.
-        assert inner_runner.run.call_count == 2 * len(folds)
+        assert inner_runner.run.call_count == 3 * len(folds)
 
 
 class TestAggregateLoroMetrics:
@@ -389,6 +446,7 @@ class TestAggregateLoroMetrics:
                 test_npde_mean=0.05 * (i + 1),
                 test_npde_variance=1.0 + 0.02 * i,
                 test_bic=200.0 + i * 5,
+                fold_vpc_min_coverage=0.9,
             )
             for i in range(4)
         ]

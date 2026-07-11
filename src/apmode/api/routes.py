@@ -102,6 +102,11 @@ _api_key_scheme = APIKeyHeader(name=_API_KEY_HEADER, auto_error=False)
 _MAX_CONCURRENT_RUNS_ENV = "APMODE_MAX_CONCURRENT_RUNS"
 _DEFAULT_MAX_CONCURRENT_RUNS = 8
 
+_BACKEND_LANES: dict[str, frozenset[str]] = {
+    "nlmixr2": frozenset({"submission", "discovery", "optimization"}),
+    "bayesian_stan": frozenset({"discovery", "optimization"}),
+}
+
 
 def _resolve_max_concurrent_runs() -> int:
     raw = os.environ.get(_MAX_CONCURRENT_RUNS_ENV)
@@ -215,6 +220,15 @@ def build_router(
                     f"allow_backends={list(allow_backends)}"
                 ),
             )
+        admitted_lanes = _BACKEND_LANES.get(body.backend)
+        if admitted_lanes is not None and body.lane not in admitted_lanes:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"backend {body.backend!r} is not admissible in lane "
+                    f"{body.lane!r}; allowed lanes={sorted(admitted_lanes)}"
+                ),
+            )
 
         # Cap concurrency BEFORE allocating a run_id / inserting a row,
         # so a flooded server does not pollute the SQLite store with
@@ -268,6 +282,35 @@ def build_router(
             )
             active_tasks[run_id] = task
 
+            def _task_done(done_task: asyncio.Task[None], *, rid: str = run_id) -> None:
+                active_tasks.pop(rid, None)
+                if not done_task.cancelled():
+                    # Retrieve unexpected BaseException subclasses so the event
+                    # loop does not emit "Task exception was never retrieved".
+                    done_task.exception()
+                    return
+
+                async def _reconcile_early_cancel() -> None:
+                    await store.transition_status(
+                        rid,
+                        RunStatus.CANCELLED,
+                        from_statuses=frozenset({RunStatus.PENDING, RunStatus.RUNNING}),
+                        error="run task cancelled before or during execution",
+                    )
+
+                cleanup = asyncio.create_task(
+                    _reconcile_early_cancel(),
+                    name=f"apmode-run-cleanup-{rid}",
+                )
+                cleanup_tasks = cast(
+                    "set[asyncio.Task[None]]",
+                    request.app.state.cleanup_tasks,
+                )
+                cleanup_tasks.add(cleanup)
+                cleanup.add_done_callback(cleanup_tasks.discard)
+
+            task.add_done_callback(_task_done)
+
         # Setting Retry-After lets a polite client back off rather than
         # busy-poll. 5 s is short enough that a fast NLME fit is visible
         # within seconds and long enough that a 30-min SAEM fit doesn't
@@ -310,6 +353,7 @@ def build_router(
     async def cancel_run(  # pyright: ignore[reportUnusedFunction]
         run_id: str,
         request: Request,
+        response: Response,
     ) -> RunStatusResponse:
         """Cancel a PENDING / RUNNING run.
 
@@ -362,11 +406,22 @@ def build_router(
             # from a past process restart that the lifespan sweep
             # somehow missed). Mark CANCELLED directly so a subsequent
             # GET reflects the state.
-            await store.update_status(
+            changed = await store.transition_status(
                 run_id,
                 RunStatus.CANCELLED,
+                from_statuses=frozenset({RunStatus.PENDING, RunStatus.RUNNING}),
                 error="DELETE /runs/{id} on a row with no active task",
             )
+            if not changed:
+                latest = await store.get(run_id)
+                latest_status = latest.status.value if latest is not None else "missing"
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        f"run {run_id!r} reached terminal status "
+                        f"{latest_status!r} before cancellation"
+                    ),
+                )
 
         updated = await store.get(run_id)
         if updated is None:
@@ -378,6 +433,14 @@ def build_router(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"run_id {run_id!r} disappeared after cancellation",
             )
+        if updated.status == RunStatus.COMPLETED:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"run {run_id!r} completed before cancellation took effect",
+            )
+        if updated.status not in _TERMINAL_STATUSES:
+            response.status_code = status.HTTP_202_ACCEPTED
+            response.headers["Retry-After"] = "1"
         return _to_response(updated)
 
     # -----------------------------------------------------------------
@@ -503,7 +566,10 @@ def _to_response(row: RunRecord) -> RunStatusResponse:
     return RunStatusResponse(
         run_id=row.run_id,
         status=row.status,
-        bundle_dir=row.bundle_dir,
+        # Never expose the absolute server-side path.  The run id is the
+        # stable relative bundle directory identifier clients need; downloads
+        # are served through /runs/{id}/bundle.
+        bundle_dir=row.run_id,
         lane=row.lane,
         backend=row.backend,
         seed=row.seed,

@@ -182,10 +182,10 @@ class TestComputeCrossSeedStability:
             self._seed_result(3, ka=0.9, cl=5.0),
         ]
         cv_per_param, cv_max = _compute_cross_seed_stability(results)
-        # ka mean=1.0, sample sd=0.1, CV=0.1; CL has zero variance → not in dict.
+        # ka mean=1.0, sample sd=0.1, CV=0.1; CL is exactly reproducible.
         assert "ka" in cv_per_param
         assert cv_per_param["ka"] == pytest.approx(0.1, rel=0.01)
-        assert "CL" not in cv_per_param  # zero variance excluded
+        assert cv_per_param["CL"] == 0.0
         assert cv_max == cv_per_param["ka"]
 
     def test_zero_mean_skipped_safely(self) -> None:

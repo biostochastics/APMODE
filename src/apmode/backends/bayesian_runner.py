@@ -199,15 +199,22 @@ class BayesianRunner:
             str(self.harness_path),
             str(request_path),
             str(response_path),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            # Harness communication is file-based.  Discard process output
+            # instead of ``communicate()``-buffering an unbounded cmdstan
+            # transcript in API memory; classified failures are written to
+            # response.json by the harness.
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
             start_new_session=True,
             env=env,
         )
 
         try:
             async with asyncio.timeout(timeout_seconds):
-                _stdout, _stderr = await proc.communicate()
+                # Pipes are redirected to DEVNULL, so ``communicate`` cannot
+                # build unbounded in-memory output and remains compatible with
+                # asyncio's standard subprocess lifecycle (including doubles).
+                await proc.communicate()
         except TimeoutError:
             # Route through ``terminate_process_group`` so cmdstan gets
             # the SIGTERM grace window before SIGKILL. cmdstan partially

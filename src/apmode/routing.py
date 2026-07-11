@@ -181,6 +181,15 @@ def route(
         constraints.append(
             f"BLQ method {directive.blq_method} selected (burden={manifest.blq_burden:.2%})"
         )
+        if directive.blq_method in {"M3", "M4", "M6+", "M7+"} and "jax_node" in backends:
+            # The shipped NODE trainer has an additive uncensored likelihood;
+            # admitting it under a BLQ-aware directive would silently report
+            # method="none" while the lane requires censoring/substitution.
+            backends.remove("jax_node")
+            constraints.append(
+                f"jax_node removed: BLQ method {directive.blq_method} is required "
+                "but the NODE likelihood is not BLQ-aware"
+            )
 
     # Protocol heterogeneity: IOV must be tested. This also structurally
     # requires the search space to add an IOV variability item to every
@@ -189,6 +198,15 @@ def route(
     # here rather than crashing at compile time downstream.
     if manifest.protocol_heterogeneity == "pooled-heterogeneous":
         constraints.append("Pooled-heterogeneous: IOV must be tested")
+        if "jax_node" in backends:
+            # jax_node is not a registered DSL emitter, so the generic
+            # capability loop below cannot see that its pooled trainer ignores
+            # IIV/IOV.  Enforce the mandatory-IOV invariant explicitly.
+            backends.remove("jax_node")
+            data_sufficient = False
+            constraints.append(
+                "jax_node removed: pooled NODE trainer does not implement required IOV"
+            )
         for backend in _capability_incompatible_backends(
             backends, frozenset({CapabilityTag.VARIABILITY_IOV})
         ):

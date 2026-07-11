@@ -130,6 +130,7 @@ def _node_scoring_contract() -> ScoringContract:
 
 def _diagnostics(scoring_contract: ScoringContract | None = None) -> DiagnosticBundle:
     return DiagnosticBundle(
+        state_trajectory_valid=True,
         gof=GOFMetrics(
             cwres_mean=0.02,
             cwres_sd=1.01,
@@ -239,10 +240,10 @@ def _distillation_report(
         candidate_id=candidate_id,
         node_position="elimination",
         sub_function_x=[0.1, 1.0, 10.0],
-        sub_function_y=[0.05, 0.5, 5.0],
+        sub_function_y=[0.05, 0.05, 0.05],
         surrogate=SurrogateResult(
             surrogate_type="linear",
-            params={"slope": 0.05, "intercept": 0.0},
+            params={"slope": 0.0, "intercept": 0.05},
             residual_ss=0.001,
             r_squared=r_squared,
         ),

@@ -213,7 +213,7 @@ def emit_stan(
         blocks.append(_emit_functions_block(spec))
 
     blocks.append(_emit_data_block(spec))
-    blocks.append(_emit_transformed_data_block())
+    blocks.append(_emit_transformed_data_block(spec, initial_estimates))
     blocks.append(_emit_parameters_block(spec))
     blocks.append(_emit_transformed_parameters_block(spec, needs_ode))
     blocks.append(_emit_model_block(spec, initial_estimates))
@@ -233,6 +233,16 @@ def _find_prior(priors: list[PriorSpec], target: str) -> PriorSpec | None:
         if p.target == target:
             return p
     return None
+
+
+def _fixed_structural_targets(spec: DSLSpec) -> set[str]:
+    """Structural parameters declared as externally fixed, not estimated."""
+    structural = set(spec.structural_param_names())
+    return {
+        prior.target
+        for prior in spec.priors
+        if prior.source == "fixed_external" and prior.target in structural
+    }
 
 
 def _emit_user_prior(
@@ -471,7 +481,14 @@ def _emit_data_block(spec: DSLSpec) -> str:
     lines.append("  int<lower=1> N_subjects;     // number of subjects")
     lines.append("  array[N] int<lower=1,upper=N_subjects> subject;  // subject index")
     lines.append("  vector[N] time;              // observation times")
-    lines.append("  vector<lower=0>[N] dv;       // observed concentrations")
+    observation_modules = [endpoint.error for endpoint in spec.observation_endpoints()]
+    allows_negative = any(
+        isinstance(obs, (Additive, Combined))
+        or (isinstance(obs, (BLQM3, BLQM4)) and obs.error_model in {"additive", "combined"})
+        for obs in observation_modules
+    )
+    dv_decl = "vector[N]" if allows_negative else "vector<lower=0>[N]"
+    lines.append(f"  {dv_decl} dv;       // observed concentrations")
     lines.append("")
     lines.append("  // Multi-dose event schedule")
     lines.append("  int<lower=0> N_events;       // total dose/reset events across all subjects")
@@ -514,7 +531,10 @@ def _emit_data_block(spec: DSLSpec) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _emit_transformed_data_block() -> str:
+def _emit_transformed_data_block(
+    spec: DSLSpec,
+    initial_estimates: dict[str, float] | None = None,
+) -> str:
     """Emit transformed data — x_r/x_i stubs plus per-subject obs slices.
 
     #3: precompute obs_start[i] / obs_end[i] — the first and last
@@ -525,6 +545,18 @@ def _emit_transformed_data_block() -> str:
     double loop to the tight O(N) actually required.
     """
     lines = ["transformed data {"]
+    fixed_targets = _fixed_structural_targets(spec)
+    values = dict(spec.initial)
+    values.update(initial_estimates or {})
+    for target in sorted(fixed_targets):
+        value = values.get(target)
+        if value is None or value <= 0:
+            raise ValueError(
+                f"fixed_external structural target {target!r} requires a positive initial value"
+            )
+        lines.append(f"  real log_{target} = log({value:.17g});")
+    if fixed_targets:
+        lines.append("")
     lines.append("  array[0] real x_r;")
     lines.append("  array[0] int x_i;")
     lines.append("  array[N_subjects] int obs_start = rep_array(0, N_subjects);")
@@ -547,7 +579,10 @@ def _emit_parameters_block(spec: DSLSpec) -> str:
     lines = ["parameters {"]
 
     # Structural params (log-domain)
+    fixed_targets = _fixed_structural_targets(spec)
     for name in spec.structural_param_names():
+        if name in fixed_targets:
+            continue
         lines.append(f"  real log_{name};")
 
     # IIV omega
@@ -657,6 +692,8 @@ def _emit_model_block(
     # Priors on structural params — user overrides via spec.priors; otherwise default.
     lines.append("  // Priors on structural parameters")
     for name in spec.structural_param_names():
+        if name in _fixed_structural_targets(spec):
+            continue
         user_prior = _find_prior(spec.priors, name)
         if user_prior is not None:
             lines.extend(_emit_user_prior(f"log_{name}", user_prior.family, on_log_scale=True))

@@ -24,6 +24,7 @@ produced without further engineering.
 
 from __future__ import annotations
 
+import math
 import os
 from collections import defaultdict
 from dataclasses import dataclass
@@ -141,6 +142,8 @@ def label_fit(
         if name not in recovered_params:
             return "known_bad"
         recovered_value = float(recovered_params[name])
+        if not math.isfinite(recovered_value) or not math.isfinite(true_value):
+            return "known_bad"
         if true_value == 0:
             if abs(recovered_value) > tolerance:
                 return "known_bad"

@@ -44,8 +44,8 @@ def _action_status_id(converged: bool | None) -> dict[str, str]:
 _BACKEND_ENGINE_IDS: dict[str, str] = {
     "nlmixr2": "#engine-nlmixr2",
     "bayesian_stan": "#engine-bayesian-stan",
-    "node": "#engine-node",
-    "agentic": "#engine-agentic",
+    "jax_node": "#engine-node",
+    "agentic_llm": "#engine-agentic",
 }
 
 
@@ -79,8 +79,8 @@ def _ensure_backend_engine(
     version_keys = {
         "nlmixr2": ("nlmixr2_version", "rxode2_version"),
         "bayesian_stan": ("stan_version", "cmdstan_version", "cmdstanpy_version"),
-        "node": ("diffrax_version", "jax_version"),
-        "agentic": ("apmode_version",),
+        "jax_node": ("diffrax_version", "jax_version"),
+        "agentic_llm": ("apmode_version",),
     }
     software_version: str | None = None
     for key in version_keys.get(backend, ()):
@@ -104,8 +104,8 @@ def _human_engine_name(backend: str) -> str:
     return {
         "nlmixr2": "nlmixr2 (R)",
         "bayesian_stan": "Stan / CmdStan (Bayesian backend)",
-        "node": "Diffrax / JAX (Neural ODE backend)",
-        "agentic": "APMODE agentic LLM backend",
+        "jax_node": "Diffrax / JAX (Neural ODE backend)",
+        "agentic_llm": "APMODE agentic LLM backend",
     }.get(backend, backend)
 
 

@@ -9,8 +9,9 @@
  * ------------------------------------------------------------------ */
 
 @theme {
-  --font-sans: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif;
-  --font-mono: var(--font-plex-mono), ui-monospace, monospace;
+  /* Keep builds hermetic: do not fetch Google-hosted font files at compile time. */
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
 }
 
 /* Light — clinical paper, cool graphite ink, spruce-teal accent. */

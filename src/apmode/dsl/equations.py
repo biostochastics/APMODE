@@ -269,14 +269,21 @@ def _build_absorption(abs_mod: object) -> _AbsorptionResult:
         return _AbsorptionResult(odes, algebraic, influx, notes)
 
     if isinstance(abs_mod, SumIG):
-        MT_1, MT_2, RD2_1, RD2_2, weight_1, SUMIG_DOSE = symbols(
-            "MT_1 MT_2 RD2_1 RD2_2 weight_1 SUMIG_DOSE"
+        MT_1, RD2_1, SUMIG_DOSE, SUMIG_T0 = symbols("MT_1 RD2_1 SUMIG_DOSE SUMIG_T0")
+        tau = t - SUMIG_T0
+        ig_1 = sqrt(RD2_1 / (2 * pi * tau**3)) * exp(
+            -RD2_1 * (tau - MT_1) ** 2 / (2 * MT_1**2 * tau)
         )
-        weight_2 = 1 - weight_1
-        ig_1 = sqrt(RD2_1 / (2 * pi * t**3)) * exp(-RD2_1 * (t - MT_1) ** 2 / (2 * MT_1**2 * t))
-        ig_2 = sqrt(RD2_2 / (2 * pi * t**3)) * exp(-RD2_2 * (t - MT_2) ** 2 / (2 * MT_2**2 * t))
         input_rate = Function("I")(t)
-        algebraic.append(Eq(input_rate, weight_1 * ig_1 + weight_2 * ig_2))
+        if abs_mod.k >= 2:
+            MT_2, RD2_2, weight_1 = symbols("MT_2 RD2_2 weight_1")
+            weight_2 = 1 - weight_1
+            ig_2 = sqrt(RD2_2 / (2 * pi * tau**3)) * exp(
+                -RD2_2 * (tau - MT_2) ** 2 / (2 * MT_2**2 * tau)
+            )
+            algebraic.append(Eq(input_rate, weight_1 * ig_1 + weight_2 * ig_2))
+        else:
+            algebraic.append(Eq(input_rate, ig_1))
         notes.append(
             "SumIG has no differential equation for its own compartment — "
             "I(t) is a closed-form Sum-of-Inverse-Gaussians input rate "

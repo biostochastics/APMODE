@@ -36,6 +36,15 @@ jobs:
       - name: Build wheel + sdist
         run: uv build
 
+      - name: Smoke-test release wheel
+        run: |
+          uv venv .release-smoke
+          uv pip install --python .release-smoke/bin/python dist/*.whl
+          cd "$(mktemp -d)"
+          "$GITHUB_WORKSPACE/.release-smoke/bin/python" -c \
+            "from apmode.data.profiler import profile_data; from apmode.paths import policies_dir; assert policies_dir() is not None"
+          "$GITHUB_WORKSPACE/.release-smoke/bin/apmode" policies --validate
+
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

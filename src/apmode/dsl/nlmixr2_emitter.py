@@ -167,11 +167,11 @@ def _emit_ini(
 
     lines.append("")
     lines.append("# Inter-individual variability")
-    lines.extend(_emit_variability_ini(spec))
+    lines.extend(_emit_variability_ini(spec, initial_estimates=initial_estimates))
 
     lines.append("")
     lines.append("# Residual error")
-    lines.extend(_emit_sigma_ini(spec))
+    lines.extend(_emit_sigma_ini(spec, initial_estimates=initial_estimates))
 
     return lines
 
@@ -244,24 +244,27 @@ def _emit_structural_ini(
             )
         lines.append(f"logit_frac <- log({frac_clamped} / (1 - {frac_clamped}))")
     elif isinstance(abs_mod, SumIG):
-        # Per-component params on log scale; weight_1 on logit scale.
-        # Positive-difference parameterisation for MT_2 (delta = MT_2 - MT_1)
-        # prevents label switching during FOCEI.
+        # Per-component params on log scale. The second component and
+        # mixture weight exist only for k=2.
         mt_1 = val("MT_1")
-        mt_2 = val("MT_2")
         lines.append(f"lMT_1 <- log({mt_1})")
-        delta = mt_2 - mt_1
-        lines.append(f"ldelta_MT_2 <- log({max(delta, 1e-6)})  # MT_2 = MT_1 + exp(ldelta_MT_2)")
         lines.append(f"lRD2_1 <- log({val('RD2_1')})")
-        lines.append(f"lRD2_2 <- log({val('RD2_2')})")
-        weight_raw = val("weight_1", 0.5)
-        _weight_epsilon = 1e-4
-        weight_clamped = min(max(weight_raw, _weight_epsilon), 1.0 - _weight_epsilon)
-        if weight_clamped != weight_raw:
+        if abs_mod.k >= 2:
+            mt_2 = val("MT_2")
+            delta = mt_2 - mt_1
             lines.append(
-                f"# weight_1 clamped from {weight_raw} to {weight_clamped} to avoid singular logit"
+                f"ldelta_MT_2 <- log({max(delta, 1e-6)})  # MT_2 = MT_1 + exp(ldelta_MT_2)"
             )
-        lines.append(f"logit_weight_1 <- log({weight_clamped} / (1 - {weight_clamped}))")
+            lines.append(f"lRD2_2 <- log({val('RD2_2')})")
+            weight_raw = val("weight_1", 0.5)
+            _weight_epsilon = 1e-4
+            weight_clamped = min(max(weight_raw, _weight_epsilon), 1.0 - _weight_epsilon)
+            if weight_clamped != weight_raw:
+                lines.append(
+                    f"# weight_1 clamped from {weight_raw} to {weight_clamped} "
+                    "to avoid singular logit"
+                )
+            lines.append(f"logit_weight_1 <- log({weight_clamped} / (1 - {weight_clamped}))")
 
     # --- Distribution ---
     if isinstance(dist_mod, OneCmt):
@@ -328,19 +331,49 @@ def _emit_structural_ini(
             else:
                 lines.append(f"{coeff_name} <- 0")
 
+    fixed_targets = {
+        prior.target
+        for prior in spec.priors
+        if prior.source == "fixed_external" and prior.target in spec.structural_param_names()
+    }
+    if fixed_targets:
+        lines.append("")
+        lines.append("# Externally fixed structural parameters")
+        for target in sorted(fixed_targets):
+            ini_name = {
+                "frac": "logit_frac",
+                "weight_1": "logit_weight_1",
+                "MT_2": "ldelta_MT_2",
+            }.get(target, f"l{_sanitize_r_name(target)}")
+            for idx, line in enumerate(lines):
+                prefix = f"{ini_name} <- "
+                if line.startswith(prefix):
+                    rhs = line.removeprefix(prefix).split("  #", 1)[0].rstrip()
+                    lines[idx] = f"{ini_name} <- fix({rhs})"
+                    break
+            else:  # pragma: no cover - guarded by prior/spec target validation
+                raise ValueError(f"fixed_external target {target!r} has no nlmixr ini parameter")
+
     return lines
 
 
-def _emit_variability_ini(spec: DSLSpec) -> list[str]:
+def _emit_variability_ini(
+    spec: DSLSpec,
+    initial_estimates: dict[str, float] | None = None,
+) -> list[str]:
     """Emit IIV/IOV eta definitions in the ini block."""
     lines: list[str] = []
+    overrides = initial_estimates or {}
+
+    def omega_value(param: str, default: float) -> float:
+        return overrides.get(f"eta.{param}", overrides.get(f"omega_{param}", default))
 
     for item in spec.variability:
         if isinstance(item, IIV):
             if item.structure == "diagonal":
                 for param in item.params:
                     p = _sanitize_r_name(param)
-                    lines.append(f"eta.{p} ~ 0.1")
+                    lines.append(f"eta.{p} ~ {omega_value(param, 0.1)}")
             elif item.structure == "block":
                 n = len(item.params)
                 eta_names = " + ".join(f"eta.{_sanitize_r_name(p)}" for p in item.params)
@@ -349,7 +382,16 @@ def _emit_variability_ini(spec: DSLSpec) -> list[str]:
                 entries: list[str] = []
                 for i in range(n):
                     for j in range(i + 1):
-                        entries.append("0.1" if i == j else "0.01")
+                        if i == j:
+                            value = omega_value(item.params[i], 0.1)
+                        else:
+                            left = item.params[i]
+                            right = item.params[j]
+                            value = overrides.get(
+                                f"omega_{left}_{right}",
+                                overrides.get(f"omega_{right}_{left}", 0.01),
+                            )
+                        entries.append(str(value))
                 lines.append(f"  {', '.join(entries)}")
                 lines.append(")")
         elif isinstance(item, IOV):
@@ -357,7 +399,10 @@ def _emit_variability_ini(spec: DSLSpec) -> list[str]:
             for param in item.params:
                 p = _sanitize_r_name(param)
                 # nlmixr2 IOV syntax: eta ~ variance | occ(column)
-                lines.append(f"eta.iov.{p} ~ 0.05 | occ({col})")
+                value = overrides.get(
+                    f"eta.iov.{param}", overrides.get(f"omega_iov_{param}", 0.05)
+                )
+                lines.append(f"eta.iov.{p} ~ {value} | occ({col})")
 
     return lines
 
@@ -376,32 +421,50 @@ def _endpoint_sigma_suffix(endpoint_name: str) -> str:
     return f".{_sanitize_r_name(endpoint_name)}"
 
 
-def _emit_endpoint_sigma_ini(obs: ObservationModule, suffix: str) -> list[str]:
+def _emit_endpoint_sigma_ini(
+    obs: ObservationModule,
+    suffix: str,
+    overrides: dict[str, float] | None = None,
+) -> list[str]:
     """Emit residual error sigma definitions for one endpoint's error module."""
+    ov = overrides or {}
+    prop_name = f"prop.sd{suffix}"
+    add_name = f"add.sd{suffix}"
+    prop = ov.get(
+        prop_name,
+        ov.get("sigma_prop", obs.sigma_prop if hasattr(obs, "sigma_prop") else 0.1),
+    )
+    add = ov.get(
+        add_name,
+        ov.get("sigma_add", obs.sigma_add if hasattr(obs, "sigma_add") else 0.5),
+    )
     if isinstance(obs, Proportional):
-        return [f"prop.sd{suffix} <- {obs.sigma_prop}"]
+        return [f"{prop_name} <- {prop}"]
     elif isinstance(obs, Additive):
-        return [f"add.sd{suffix} <- {obs.sigma_add}"]
+        return [f"{add_name} <- {add}"]
     elif isinstance(obs, Combined):
         return [
-            f"prop.sd{suffix} <- {obs.sigma_prop}",
-            f"add.sd{suffix} <- {obs.sigma_add}",
+            f"{prop_name} <- {prop}",
+            f"{add_name} <- {add}",
         ]
     elif isinstance(obs, (BLQM3, BLQM4)):
         # BLQ composes with underlying error model; censoring is data-driven
         if obs.error_model == "proportional":
-            return [f"prop.sd{suffix} <- {obs.sigma_prop}"]
+            return [f"{prop_name} <- {prop}"]
         elif obs.error_model == "additive":
-            return [f"add.sd{suffix} <- {obs.sigma_add}"]
+            return [f"{add_name} <- {add}"]
         else:  # combined
             return [
-                f"prop.sd{suffix} <- {obs.sigma_prop}",
-                f"add.sd{suffix} <- {obs.sigma_add}",
+                f"{prop_name} <- {prop}",
+                f"{add_name} <- {add}",
             ]
     return []
 
 
-def _emit_sigma_ini(spec: DSLSpec) -> list[str]:
+def _emit_sigma_ini(
+    spec: DSLSpec,
+    initial_estimates: dict[str, float] | None = None,
+) -> list[str]:
     """Emit residual error sigma definitions for every observation endpoint.
 
     Formular sharpening plan §4 Phase 1 (P1.7): iterates
@@ -415,7 +478,11 @@ def _emit_sigma_ini(spec: DSLSpec) -> list[str]:
     lines: list[str] = []
     for endpoint in spec.observation_endpoints():
         lines.extend(
-            _emit_endpoint_sigma_ini(endpoint.error, _endpoint_sigma_suffix(endpoint.name))
+            _emit_endpoint_sigma_ini(
+                endpoint.error,
+                _endpoint_sigma_suffix(endpoint.name),
+                initial_estimates,
+            )
         )
     return lines
 
@@ -599,14 +666,14 @@ def _emit_backtransform(spec: DSLSpec) -> list[str]:
         lines.append(_bt_logit("frac", "logit_frac"))
     elif isinstance(abs_mod, SumIG):
         lines.append(_bt("MT_1", "lMT_1"))
-        # Positive-difference parameterisation: MT_2 = MT_1 + exp(ldelta_MT_2)
-        # ensures MT_2 > MT_1 by construction.
-        lines.append("delta_MT_2 <- exp(ldelta_MT_2)")
-        lines.append("MT_2 <- MT_1 + delta_MT_2")
         lines.append(_bt("RD2_1", "lRD2_1"))
-        lines.append(_bt("RD2_2", "lRD2_2"))
-        lines.append(_bt_logit("weight_1", "logit_weight_1"))
-        lines.append("weight_2 <- 1 - weight_1  # implicit second weight")
+        if abs_mod.k >= 2:
+            # Positive-difference parameterisation ensures MT_2 > MT_1.
+            lines.append("delta_MT_2 <- exp(ldelta_MT_2)")
+            lines.append("MT_2 <- MT_1 + delta_MT_2")
+            lines.append(_bt("RD2_2", "lRD2_2"))
+            lines.append(_bt_logit("weight_1", "logit_weight_1"))
+            lines.append("weight_2 <- 1 - weight_1  # implicit second weight")
 
     # Distribution
     if isinstance(dist_mod, OneCmt):
@@ -719,8 +786,9 @@ def _emit_ode_dynamics(spec: DSLSpec) -> list[str]:
         # the first-order route remains a depot.
         lines.append("d/dt(depot_fo) <- -ka * depot_fo")
         lines.append("f(depot_fo) <- frac")
-        lines.append("dur(centr) <- dur")
-        lines.append("f(centr) <- 1 - frac")
+        _cmt = _central_cmt_name(dist_mod)
+        lines.append(f"dur({_cmt}) <- dur")
+        lines.append(f"f({_cmt}) <- 1 - frac")
         _abs_influx = "ka * depot_fo"
     elif isinstance(abs_mod, Erlang):
         # Explicit n-compartment chain (ADR-0003 D2). Dose enters E1; each
@@ -750,21 +818,32 @@ def _emit_ode_dynamics(spec: DSLSpec) -> list[str]:
         # the integrator stable; the contribution near t=0 is ~0 anyway
         # because exp(-RD2·(t-MT)²/(2·MT²·t)) → 0 as t → 0⁺.
         lines.append("# SumIG closed-form input rate (Csajka 2005; Weiss 2022)")
-        lines.append("_t_safe <- ifelse(t > 1e-6, t, 1e-6)")
+        lines.append("_sumig_t <- t - SUMIG_T0")
+        lines.append("_t_safe <- ifelse(_sumig_t > 1e-6, _sumig_t, 1e-6)")
         lines.append(
             "ig_1 <- sqrt(RD2_1 / (2 * 3.141592653589793 * _t_safe^3)) * "
             "exp(-RD2_1 * (_t_safe - MT_1)^2 / (2 * MT_1^2 * _t_safe))"
         )
-        lines.append(
-            "ig_2 <- sqrt(RD2_2 / (2 * 3.141592653589793 * _t_safe^3)) * "
-            "exp(-RD2_2 * (_t_safe - MT_2)^2 / (2 * MT_2^2 * _t_safe))"
-        )
-        lines.append("sumig_input <- weight_1 * ig_1 + weight_2 * ig_2  # ∫sumig_input dt = 1")
+        if abs_mod.k >= 2:
+            lines.append(
+                "ig_2 <- sqrt(RD2_2 / (2 * 3.141592653589793 * _t_safe^3)) * "
+                "exp(-RD2_2 * (_t_safe - MT_2)^2 / (2 * MT_2^2 * _t_safe))"
+            )
+            lines.append(
+                "sumig_density <- weight_1 * ig_1 + weight_2 * ig_2  "
+                "# integral over post-dose time = 1"
+            )
+        else:
+            lines.append("sumig_density <- ig_1  # integral over post-dose time = 1")
+        lines.append("sumig_input <- ifelse(_sumig_t > 0, sumig_density, 0)")
         # The input rate above integrates to 1 over (0, ∞). Multiply by the
         # dose amount so the central-compartment influx has units of
         # [mass·time⁻¹]. rxode2's reserved `amt` is not persistent after the
         # event row, so the nlmixr2 data adapter provides SUMIG_DOSE as a
         # per-subject constant for the single-dose SumIG contract.
+        # Suppress the ordinary event-table bolus: the same AMT is supplied
+        # continuously through the analytical input density above.
+        lines.append(f"f({_central_cmt_name(dist_mod)}) <- 0")
         _abs_influx = "SUMIG_DOSE * sumig_input"
     else:
         _abs_influx = "0"
@@ -822,8 +901,10 @@ def _central_cmt_name(dist_mod: object) -> str:
     total-drug pool is named ``Atot`` by :func:`_emit_tmdd_core_odes` /
     :func:`_emit_tmdd_qss_odes`; all other distributions use ``centr``.
     """
-    if isinstance(dist_mod, (TMDDCore, TMDDQSS)):
+    if isinstance(dist_mod, TMDDQSS):
         return "Atot"
+    if isinstance(dist_mod, TMDDCore):
+        return "centr"
     return "centr"
 
 
@@ -983,7 +1064,7 @@ def _emit_observation_model(spec: DSLSpec) -> list[str]:
     multi-analyte data belongs in the data-adapter/runner layer.
     """
     endpoints = spec.observation_endpoints()
-    if len(endpoints) == 1:
+    if spec.observations is None:
         endpoint = endpoints[0]
         return _emit_endpoint_residual(endpoint.error, "cp", "")
 

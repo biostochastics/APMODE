@@ -29,7 +29,8 @@ class NODESubModel(eqx.Module):
     Architecture:
       input (input_dim) -> Linear -> tanh -> Linear -> constraint -> scalar output
 
-    Random effects are additive perturbations on the first Linear layer's weights.
+    Random effects are multiplicative (log-scale) perturbations on the first
+    Linear layer's weights.
     """
 
     input_dim: int
@@ -68,10 +69,15 @@ class NODESubModel(eqx.Module):
     def apply_random_effects(self, re: jax.Array) -> NODESubModel:
         """Return a new model with RE-perturbed input-layer weights.
 
-        Per Bräm et al. 2024: random effects are additive perturbations on the
-        first layer's weight matrix (broadcast across input_dim columns).
+        Per Bräm et al. 2024 (doi:10.1007/s10928-023-09886-4), random effects
+        act *multiplicatively* on the log scale: ``W_i = W_pop * exp(eta_i)``,
+        with ``eta_i`` broadcast per hidden unit across the ``input_dim``
+        columns. This preserves the sign and identity of each population weight
+        (``re == 0`` leaves the weight bit-identical) — unlike an additive shift,
+        which can flip signs and does not match the Bräm parameterization.
         """
         old_weight = self.linear1.weight  # shape: (hidden_dim, input_dim)
-        new_weight = old_weight + re[:, None]  # broadcast re across input_dim
+        # Multiplicative log-scale perturbation, broadcast across input_dim.
+        new_weight = old_weight * jnp.exp(re)[:, None]
         new_linear1 = eqx.tree_at(lambda lin: lin.weight, self.linear1, new_weight)
         return eqx.tree_at(lambda m: m.linear1, self, new_linear1)  # type: ignore[no-any-return]

@@ -412,6 +412,7 @@ def apply_transform(spec: DSLSpec, transform: FormularTransform) -> DSLSpec:
     variability: list[IIV | IOV | object] = list(spec.variability)
     covariates: list[CovariateLink] = list(spec.covariates)
     observation: ObservationModule = spec.observation
+    experimental = spec.experimental
     # Calibration values this transform introduces/changes on top of
     # spec.initial. Only names that are new or whose value the transform
     # explicitly sets go here — unchanged names carry forward automatically
@@ -472,6 +473,10 @@ def apply_transform(spec: DSLSpec, transform: FormularTransform) -> DSLSpec:
             elimination = NODEElimination(
                 dim=transform.dim, constraint_template=transform.constraint_template
             )
+        # Choosing this explicit transform is the user's opt-in to the NODE
+        # experimental route; otherwise the transform deterministically
+        # creates a candidate rejected by the NODE gate.
+        experimental = spec.experimental.model_copy(update={"node": True})
 
     elif isinstance(transform, ConvertTransitToErlang):
         # Drop terminal ka, lock n to integer. ktr carries forward under the
@@ -526,7 +531,7 @@ def apply_transform(spec: DSLSpec, transform: FormularTransform) -> DSLSpec:
         observation=observation,
         observations=spec.observations,
         priors=spec.priors,
-        experimental=spec.experimental,
+        experimental=experimental,
         metadata=spec.metadata,
         units=spec.units,
         source_meta=spec.source_meta,

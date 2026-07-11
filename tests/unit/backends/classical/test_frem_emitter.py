@@ -45,17 +45,26 @@ def _simple_spec(model_id: str = "frem_test", cov_links: bool = False) -> DSLSpe
 
 class TestFREMCovariate:
     def test_valid(self) -> None:
-        cov = FREMCovariate(name="WT", mu_init=70.0, sigma_init=15.0, dvid=10)
+        cov = FREMCovariate(name="WT", mu_init=70.0, sigma_init=15.0, dvid=2)
         assert cov.name == "WT"
         assert cov.epsilon_sd > 0
 
     def test_rejects_degenerate_sd(self) -> None:
         with pytest.raises(ValueError, match="sigma_init"):
-            FREMCovariate(name="WT", mu_init=70.0, sigma_init=0.0, dvid=10)
+            FREMCovariate(name="WT", mu_init=70.0, sigma_init=0.0, dvid=2)
 
     def test_rejects_invalid_identifier(self) -> None:
         with pytest.raises(ValueError, match="Invalid R identifier"):
-            FREMCovariate(name="1BAD", mu_init=70.0, sigma_init=1.0, dvid=10)
+            FREMCovariate(name="1BAD", mu_init=70.0, sigma_init=1.0, dvid=2)
+
+    @pytest.mark.parametrize("dvid", [0, -1])
+    def test_rejects_nonpositive_dvid(self, dvid: int) -> None:
+        with pytest.raises(ValueError, match="positive integer"):
+            FREMCovariate(name="WT", mu_init=70.0, sigma_init=1.0, dvid=dvid)
+
+    def test_rejects_nonfinite_epsilon(self) -> None:
+        with pytest.raises(ValueError, match="epsilon_sd"):
+            FREMCovariate(name="WT", mu_init=70.0, sigma_init=1.0, dvid=2, epsilon_sd=float("nan"))
 
 
 class TestSummarizeCovariates:
@@ -125,14 +134,14 @@ class TestPrepareFREMData:
                 "WT": [70.0, 70.0, 80.0, 80.0],
             }
         )
-        cov = FREMCovariate(name="WT", mu_init=75.0, sigma_init=10.0, dvid=10)
+        cov = FREMCovariate(name="WT", mu_init=75.0, sigma_init=10.0, dvid=2)
         out = prepare_frem_data(df, [cov])
         # Original rows preserved
         assert len(out) == len(df) + 2  # +1 row per subject for WT
         # DVID column added
         assert "DVID" in out.columns
-        # The WT observation rows use DVID=10
-        wt_rows = out[out["DVID"] == 10]
+        # The first FREM observation endpoint follows PK at DVID=2.
+        wt_rows = out[out["DVID"] == 2]
         assert len(wt_rows) == 2
         assert set(wt_rows["DV"].tolist()) == {70.0, 80.0}
 
@@ -144,11 +153,11 @@ class TestPrepareFREMData:
                 "EVID": [0, 0],
                 "AMT": [0.0, 0.0],
                 "DV": [5.0, 4.0],
-                "DVID": [10, 10],  # collides with FREM covariate DVID
+                "DVID": [2, 2],  # collides with FREM covariate DVID
                 "WT": [70.0, 80.0],
             }
         )
-        cov = FREMCovariate(name="WT", mu_init=75.0, sigma_init=10.0, dvid=10)
+        cov = FREMCovariate(name="WT", mu_init=75.0, sigma_init=10.0, dvid=2)
         with pytest.raises(ValueError, match="collide with FREM"):
             prepare_frem_data(df, [cov])
 
@@ -165,9 +174,9 @@ class TestPrepareFREMData:
                 "WT": [70.0, 80.0],
             }
         )
-        cov = FREMCovariate(name="WT", mu_init=4.3, sigma_init=0.2, dvid=10, transform="log")
+        cov = FREMCovariate(name="WT", mu_init=4.3, sigma_init=0.2, dvid=2, transform="log")
         out = prepare_frem_data(df, [cov])
-        wt_rows = out[out["DVID"] == 10]
+        wt_rows = out[out["DVID"] == 2]
         assert wt_rows["DV"].tolist() == pytest.approx([math.log(70.0), math.log(80.0)])
 
     def test_skips_missing_covariate_per_subject(self) -> None:
@@ -181,20 +190,74 @@ class TestPrepareFREMData:
                 "WT": [70.0, float("nan")],
             }
         )
-        cov = FREMCovariate(name="WT", mu_init=75.0, sigma_init=10.0, dvid=10)
+        cov = FREMCovariate(name="WT", mu_init=75.0, sigma_init=10.0, dvid=2)
         out = prepare_frem_data(df, [cov])
         # Only subject 1 gets an augmentation row
-        wt_rows = out[out["DVID"] == 10]
+        wt_rows = out[out["DVID"] == 2]
         assert len(wt_rows) == 1
         assert wt_rows["NMID"].iloc[0] == 1
+
+    def test_binary_override_is_used_for_prepared_rows(self) -> None:
+        df = pd.DataFrame(
+            {
+                "NMID": [1, 2],
+                "TIME": [0.0, 0.0],
+                "EVID": [1, 1],
+                "AMT": [100.0, 100.0],
+                "DV": [0.0, 0.0],
+                "GROUP": ["A", "B"],
+            }
+        )
+        cov = FREMCovariate(name="GROUP", mu_init=0.5, sigma_init=0.7, dvid=2, transform="binary")
+        out = prepare_frem_data(
+            df,
+            [cov],
+            binary_encode_overrides={"GROUP": {"A": 1, "B": 0}},
+        )
+        cov_rows = out[out["DVID"] == 2].sort_values("NMID")
+        assert cov_rows["DV"].tolist() == [1.0, 0.0]
+
+    def test_augmented_rows_clear_additional_dose_fields(self) -> None:
+        df = pd.DataFrame(
+            {
+                "NMID": [1, 2],
+                "TIME": [0.0, 0.0],
+                "EVID": [1, 1],
+                "AMT": [100.0, 100.0],
+                "DV": [0.0, 0.0],
+                "ADDL": [2, 2],
+                "II": [12.0, 12.0],
+                "WT": [70.0, 80.0],
+            }
+        )
+        cov = FREMCovariate(name="WT", mu_init=75.0, sigma_init=10.0, dvid=2)
+        out = prepare_frem_data(df, [cov])
+        cov_rows = out[out["DVID"] == 2]
+        assert cov_rows["ADDL"].tolist() == [0, 0]
+        assert cov_rows["II"].tolist() == [0.0, 0.0]
+
+    def test_rejects_dvids_that_do_not_match_endpoint_order(self) -> None:
+        df = pd.DataFrame(
+            {
+                "NMID": [1, 2],
+                "TIME": [0.0, 0.0],
+                "EVID": [0, 0],
+                "AMT": [0.0, 0.0],
+                "DV": [5.0, 4.0],
+                "WT": [70.0, 80.0],
+            }
+        )
+        cov = FREMCovariate(name="WT", mu_init=75.0, sigma_init=10.0, dvid=10)
+        with pytest.raises(ValueError, match="positional"):
+            prepare_frem_data(df, [cov])
 
 
 class TestEmitNlmixr2FREM:
     def test_produces_joint_omega_block(self) -> None:
         spec = _simple_spec()
         covs = [
-            FREMCovariate(name="WT", mu_init=70.0, sigma_init=10.0, dvid=10),
-            FREMCovariate(name="AGE", mu_init=40.0, sigma_init=15.0, dvid=11),
+            FREMCovariate(name="WT", mu_init=70.0, sigma_init=10.0, dvid=2),
+            FREMCovariate(name="AGE", mu_init=40.0, sigma_init=15.0, dvid=3),
         ]
         code = emit_nlmixr2_frem(spec, covs)
 
@@ -220,7 +283,7 @@ class TestEmitNlmixr2FREM:
     def test_strips_covariate_links(self) -> None:
         """FREM should drop CovariateLink entries and not emit beta_* coefficients."""
         spec = _simple_spec(cov_links=True)
-        covs = [FREMCovariate(name="WT", mu_init=70.0, sigma_init=10.0, dvid=10)]
+        covs = [FREMCovariate(name="WT", mu_init=70.0, sigma_init=10.0, dvid=2)]
         code = emit_nlmixr2_frem(spec, covs)
         assert "beta_CL_WT" not in code
 
@@ -243,13 +306,13 @@ class TestEmitNlmixr2FREM:
                 }
             }
         )
-        covs = [FREMCovariate(name="WT", mu_init=70.0, sigma_init=10.0, dvid=10)]
+        covs = [FREMCovariate(name="WT", mu_init=70.0, sigma_init=10.0, dvid=2)]
         with pytest.raises(NotImplementedError, match="observations"):
             emit_nlmixr2_frem(spec, covs)
 
     def test_variance_initializes_to_square_of_sd(self) -> None:
         spec = _simple_spec()
-        covs = [FREMCovariate(name="WT", mu_init=70.0, sigma_init=5.0, dvid=10)]
+        covs = [FREMCovariate(name="WT", mu_init=70.0, sigma_init=5.0, dvid=2)]
         code = emit_nlmixr2_frem(spec, covs)
         # sigma_init=5 -> variance diagonal = 25.0
         assert "25.0" in code
@@ -259,7 +322,7 @@ class TestEmitNlmixr2FREM:
         import re
 
         spec = _simple_spec()
-        covs = [FREMCovariate(name="WT", mu_init=70.0, sigma_init=3.0, dvid=10)]
+        covs = [FREMCovariate(name="WT", mu_init=70.0, sigma_init=3.0, dvid=2)]
         code = emit_nlmixr2_frem(spec, covs)
         # Extract the joint-Omega lower-triangular block:
         #   eta.CL + eta.V + eta.cov.WT ~ c( ... )

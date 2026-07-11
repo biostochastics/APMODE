@@ -58,6 +58,11 @@ _LLM_ALLOWED_TOP_LEVEL_KEYS: frozenset[str] = frozenset(
 _LLM_ALLOWED_PARAM_KEYS: frozenset[str] = frozenset({"estimate", "rse_pct"})
 
 
+def _shrinkage_percent(value: float) -> float:
+    """Normalize 0..1 harness fractions to historical percentage points."""
+    return value * 100.0 if -1.0 <= value <= 1.0 else value
+
+
 def summarize_diagnostics(result: BackendResult) -> dict[str, Any]:
     """Convert BackendResult into a structured summary dict."""
     gof = result.diagnostics.gof
@@ -184,7 +189,11 @@ def summarize_for_llm(
     # Shrinkage
     shrinkage = s["eta_shrinkage"]
     if shrinkage:
-        high_shrink = {k: v for k, v in shrinkage.items() if v > 30}
+        high_shrink = {
+            k: _shrinkage_percent(float(v))
+            for k, v in shrinkage.items()
+            if _shrinkage_percent(float(v)) > 30.0
+        }
         if high_shrink:
             lines.append(f"  **High shrinkage:** {high_shrink}")
 

@@ -73,31 +73,63 @@ async def terminate_process_group(
             ``start_new_session=True``).
         grace_seconds: Maximum wait between SIGTERM and SIGKILL.
     """
-    if proc.returncode is not None:
+    if os.name == "nt":  # pragma: no cover - exercised on Windows CI
+        if proc.returncode is not None:
+            return
+
+        async def _terminate_windows() -> None:
+            with contextlib.suppress(ProcessLookupError):
+                proc.terminate()
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=grace_seconds)
+            except TimeoutError:
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+                with contextlib.suppress(ProcessLookupError):
+                    await proc.wait()
+
+        await asyncio.shield(_terminate_windows())
         return
 
+    # Runners start a fresh session/process group whose PGID is the immediate
+    # child's PID.  Do not return merely because that child has exited: a
+    # compiler/cmdstan grandchild can still be alive in the group (and can
+    # still hold stdout/stderr open).  os.getpgid(child_pid) cannot recover the
+    # group after the leader is reaped, whereas the known PGID remains valid.
+    pgid = proc.pid
     try:
-        pgid = os.getpgid(proc.pid)
+        os.killpg(pgid, 0)
     except ProcessLookupError:
-        # Child already gone — nothing to signal.
         return
 
     async def _run_grace_then_kill() -> None:
         with contextlib.suppress(ProcessLookupError):
             os.killpg(pgid, signal.SIGTERM)
         try:
-            await asyncio.wait_for(proc.wait(), timeout=grace_seconds)
+            if proc.returncode is None:
+                await asyncio.wait_for(proc.wait(), timeout=grace_seconds)
+            else:
+                # The leader is already reaped; give surviving group members
+                # the same grace window before checking/escalating.
+                await asyncio.sleep(grace_seconds)
+            # Signal 0 tests the process *group*, not only the exited leader.
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            return
         except TimeoutError:
-            logger.warning(
-                "subprocess_terminate_grace_exceeded",
-                extra={
-                    "pid": proc.pid,
-                    "grace_seconds": grace_seconds,
-                    "trigger": "TimeoutError",
-                },
-            )
-            with contextlib.suppress(ProcessLookupError):
-                os.killpg(pgid, signal.SIGKILL)
+            pass
+
+        logger.warning(
+            "subprocess_terminate_grace_exceeded",
+            extra={
+                "pid": proc.pid,
+                "grace_seconds": grace_seconds,
+                "trigger": "process_group_still_alive",
+            },
+        )
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(pgid, signal.SIGKILL)
+        if proc.returncode is None:
             with contextlib.suppress(ProcessLookupError):
                 await proc.wait()
 

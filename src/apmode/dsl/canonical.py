@@ -137,7 +137,7 @@ if TYPE_CHECKING:
     )
     from apmode.dsl.priors import PriorSpec
 
-CANONICAL_SCHEMA_VERSION = "2.2.0"
+CANONICAL_SCHEMA_VERSION = "2.3.0"
 
 JSONScalar = str | int | float | bool | None
 JSONValue = JSONScalar | list["JSONValue"] | dict[str, "JSONValue"]
@@ -362,6 +362,15 @@ def _spec_dict(spec: DSLSpec) -> dict[str, JSONValue]:
         ),
         "priors": _sorted_by_canonical_json([_prior_full(p) for p in spec.priors]),
         "initial": cast("JSONValue", dict(spec.initial)),
+        # Units are part of the calibrated spec's numeric interpretation.
+        # Omitting them made otherwise byte-identical values collide across,
+        # for example, hour/mg/L and minute/ng/mL declarations.
+        "units": (
+            cast("JSONValue", spec.units.model_dump(mode="json"))
+            if spec.units is not None
+            else None
+        ),
+        "experimental": cast("JSONValue", spec.experimental.model_dump(mode="json")),
     }
 
 

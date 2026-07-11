@@ -177,8 +177,26 @@ class RunStore(Protocol):
         """
         ...
 
+    async def transition_status(
+        self,
+        run_id: str,
+        status: RunStatus,
+        *,
+        from_statuses: frozenset[RunStatus],
+        error: str | None = None,
+    ) -> bool:
+        """Atomically transition a row only from one of ``from_statuses``.
+
+        Returns ``True`` when the row was changed and ``False`` when it
+        exists in some other state.  Raises :class:`KeyError` when the row
+        does not exist.  Lifecycle callers use this compare-and-set form to
+        prevent a late cancellation/failure write from overwriting a terminal
+        ``COMPLETED`` row.
+        """
+        ...
+
     async def sweep_interrupted_on_startup(self) -> int:
-        """Mark every ``RUNNING`` row as ``INTERRUPTED``. Returns count.
+        """Mark stale ``PENDING``/``RUNNING`` rows ``INTERRUPTED``. Returns count.
 
         Called from :meth:`initialize` so the API never returns
         ``RUNNING`` for a job whose process is gone.
@@ -363,8 +381,51 @@ class SQLiteRunStore:
                 await conn.rollback()
                 raise
 
+    async def transition_status(
+        self,
+        run_id: str,
+        status: RunStatus,
+        *,
+        from_statuses: frozenset[RunStatus],
+        error: str | None = None,
+    ) -> bool:
+        """Compare-and-set a status transition in one SQLite statement."""
+        if not from_statuses:
+            msg = "from_statuses must contain at least one status"
+            raise ValueError(msg)
+        conn = self._require_conn()
+        now = datetime.now(UTC).isoformat()
+        allowed = tuple(sorted(s.value for s in from_statuses))
+        placeholders = ", ".join("?" for _ in allowed)
+        async with self._write_lock:
+            await conn.execute("BEGIN IMMEDIATE;")
+            try:
+                cur = await conn.execute(
+                    "UPDATE runs SET status = ?, error = ?, updated_at = ? "
+                    f"WHERE run_id = ? AND status IN ({placeholders})",
+                    (status.value, error, now, run_id, *allowed),
+                )
+                if cur.rowcount == 1:
+                    await conn.commit()
+                    return True
+
+                async with conn.execute(
+                    "SELECT 1 FROM runs WHERE run_id = ?",
+                    (run_id,),
+                ) as exists_cur:
+                    exists = await exists_cur.fetchone()
+                if exists is None:
+                    await conn.rollback()
+                    msg = f"run_id {run_id!r} not found in run store"
+                    raise KeyError(msg)
+                await conn.rollback()
+                return False
+            except Exception:
+                await conn.rollback()
+                raise
+
     async def sweep_interrupted_on_startup(self) -> int:
-        """Set status = INTERRUPTED for every row currently RUNNING.
+        """Set status = INTERRUPTED for every stale active row.
 
         Returns the number of rows mutated. Called from
         :meth:`initialize`; safe to call again at any time, though the
@@ -377,12 +438,13 @@ class SQLiteRunStore:
             await conn.execute("BEGIN IMMEDIATE;")
             try:
                 cur = await conn.execute(
-                    "UPDATE runs SET status = ?, error = ?, updated_at = ? WHERE status = ?",
+                    "UPDATE runs SET status = ?, error = ?, updated_at = ? WHERE status IN (?, ?)",
                     (
                         RunStatus.INTERRUPTED.value,
                         sweep_note,
                         now,
                         RunStatus.RUNNING.value,
+                        RunStatus.PENDING.value,
                     ),
                 )
                 count = cur.rowcount

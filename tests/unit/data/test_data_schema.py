@@ -47,6 +47,11 @@ class TestCanonicalPKSchema:
         validated = CanonicalPKSchema.validate(df, lazy=True)
         assert len(validated) == 1
 
+    def test_reset_and_dose_requires_positive_amount(self) -> None:
+        df = pd.DataFrame([self._minimal_dose_row(EVID=4, AMT=0.0)])
+        with pytest.raises(pa.errors.SchemaErrors):
+            CanonicalPKSchema.validate(df, lazy=True)
+
     def test_valid_mixed_dataset(self) -> None:
         df = pd.DataFrame(
             [
@@ -124,6 +129,22 @@ class TestCanonicalPKSchema:
         )
         validated = CanonicalPKSchema.validate(df, lazy=True)
         assert "RATE" in validated.columns
+
+    def test_inconsistent_rate_duration_and_amount_rejected(self) -> None:
+        df = pd.DataFrame([self._minimal_dose_row(AMT=100.0, RATE=30.0, DUR=2.0)])
+        with pytest.raises(pa.errors.SchemaErrors):
+            CanonicalPKSchema.validate(df, lazy=True)
+
+    def test_sparse_addl_and_ss_columns_accept_missing_cells(self) -> None:
+        df = pd.DataFrame(
+            [
+                self._minimal_dose_row(ADDL=2, II=12.0, SS=None),
+                self._minimal_observation_row(TIME=1.0, ADDL=None, II=None, SS=None),
+            ]
+        )
+        validated = CanonicalPKSchema.validate(df, lazy=True)
+        assert validated["ADDL"].isna().sum() == 1
+        assert validated["SS"].isna().all()
 
     def test_ss_accepts_acop_99_sentinel(self) -> None:
         """ACOP-2016 simulated datasets (Oral_1CPT, Bolus_1CPT, ...) carry

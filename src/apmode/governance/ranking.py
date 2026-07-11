@@ -776,36 +776,24 @@ def _apply_submission_dominance_rule(
             "'recommended' in the Submission lane. See separate leaderboards.",
         )
 
-    # Deterministic tiebreak: composite_score ascending (lower is better
-    # for both weighted-sum and Borda aggregations — see plan §3).
-    # Secondary key is the top candidate_id (lexicographic) — this is
-    # stable across runs *regardless* of survivor insertion order, which
-    # the previous insertion-index approach was not. The nlpd_integrator
-    # is the tertiary key so that identical candidate ids across
-    # contracts still resolve deterministically.
-    eligible.sort(
-        key=lambda e: (
-            e[2].ranked_candidates[0].composite_score,
-            e[2].ranked_candidates[0].candidate_id,
-            str(getattr(e[1], "nlpd_integrator", "")),
-        )
-    )
-    best_idx, best_contract, best_ranking = eligible[0]
-    warning: str | None = None
     if len(eligible) > 1:
-        others = [
-            f"{getattr(c, 'nlpd_integrator', 'unknown')}"
-            f"(top_composite={r.ranked_candidates[0].composite_score:.4f})"
-            for _, c, r in eligible[1:]
-        ]
-        warning = (
-            f"Multiple integrated+marginal contract groups were eligible for "
-            f"the Submission 'recommended' slot — chose "
-            f"{getattr(best_contract, 'nlpd_integrator', 'unknown')} by lowest "
-            f"per-group composite_score; other eligible groups: {', '.join(others)}. "
-            f"Review the separate leaderboards before accepting the recommendation."
+        # A within-group composite has no common scale across contracts (and
+        # Borda magnitudes also depend on group size).  Selecting the smallest
+        # such number would silently recreate the cross-contract comparison
+        # that grouping is meant to prohibit.
+        integrators = sorted(
+            str(getattr(contract, "nlpd_integrator", "unknown")) for _, contract, _ in eligible
         )
-    return (best_ranking.ranked_candidates[0].candidate_id, best_idx, warning)
+        return (
+            None,
+            None,
+            "Multiple integrated+marginal contract groups are eligible "
+            f"({', '.join(integrators)}); no cross-contract recommendation was made. "
+            "Review the separate leaderboards.",
+        )
+
+    best_idx, _best_contract, best_ranking = eligible[0]
+    return (best_ranking.ranked_candidates[0].candidate_id, best_idx, None)
 
 
 def rank_by_scoring_contract(

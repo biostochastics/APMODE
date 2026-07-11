@@ -19,14 +19,12 @@ if TYPE_CHECKING:
 
 
 def _compute_result_sha256(result: BackendResult) -> str:
-    """Deterministic SHA-256 of the JSON-serialised BackendResult.
+    """SHA-256 of the canonical bytes written by ``BundleEmitter``.
 
-    #19: matches the hash we would compute by reading
-    ``results/{id}_result.json`` off disk and hashing the bytes — Pydantic
-    ``model_dump_json`` with stable field order (ConfigDict on the models)
-    guarantees the serialisation is reproducible.
+    Result artifacts use ``model_dump_json(indent=2)``.  Hashing compact JSON
+    produced a different digest even though the model values were identical.
     """
-    payload = result.model_dump_json().encode("utf-8")
+    payload = result.model_dump_json(indent=2).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
 
 
@@ -59,7 +57,10 @@ def generate_credibility_report(
     """
     is_ml = result.backend in ("jax_node", "agentic_llm")
 
-    limitations: list[str] = []
+    limitations: list[str] = [
+        "Inference is conditional on the declared structural, variability, "
+        "and observation-model assumptions."
+    ]
     if is_ml:
         limitations.append(
             "NODE random effects are on latent computational weights, not physiological parameters"

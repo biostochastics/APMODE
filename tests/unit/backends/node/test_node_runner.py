@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -107,6 +109,9 @@ class TestNodeElimination:
         assert result.backend == "jax_node"
         assert result.model_id == "test_node_elim"
         assert result.wall_time_seconds > 0
+        assert result.diagnostics.scoring_contract.observation_model == "additive"
+        assert result.diagnostics.state_trajectory_valid is True
+        assert result.diagnostics.gof.outlier_fraction is not None
 
     @pytest.mark.slow
     @pytest.mark.asyncio
@@ -165,6 +170,50 @@ class TestInvalidSpec:
                 initial_estimates={"ka": 1.0, "V": 30.0, "CL": 2.0},
                 seed=42,
             )
+
+    @pytest.mark.asyncio
+    async def test_missing_explicit_data_path_fails_instead_of_using_mock_data(
+        self, tmp_path: Path
+    ) -> None:
+        runner = NodeBackendRunner(
+            work_dir=tmp_path,
+            training_config=TrainingConfig(epochs=1),
+        )
+        missing = tmp_path / "does-not-exist.csv"
+        with pytest.raises(FileNotFoundError, match="data_path"):
+            await runner.run(
+                spec=_node_elim_spec(),
+                data_manifest=_make_data_manifest(),
+                initial_estimates={"ka": 1.0, "V": 30.0, "CL": 2.0},
+                seed=42,
+                data_path=missing,
+            )
+
+    @pytest.mark.asyncio
+    async def test_jax_work_is_offloaded_from_event_loop(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        runner = NodeBackendRunner(work_dir=tmp_path)
+        sentinel = object()
+
+        def _blocking(*args: object, **kwargs: object) -> object:
+            del args, kwargs
+            time.sleep(0.1)
+            return sentinel
+
+        monkeypatch.setattr(runner, "_run_sync", _blocking)
+        run_task = asyncio.create_task(
+            runner.run(
+                spec=_node_elim_spec(),
+                data_manifest=_make_data_manifest(),
+                initial_estimates={},
+                seed=1,
+            )
+        )
+        # This heartbeat would be delayed by ~100 ms if JAX ran directly on
+        # the asyncio thread.
+        await asyncio.wait_for(asyncio.sleep(0.01), timeout=0.05)
+        assert await run_task is sentinel
 
 
 def _infusion_manifest() -> DataManifest:

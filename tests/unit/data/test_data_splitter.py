@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import pandas as pd  # type: ignore[import-untyped]
+import pytest
 
 from apmode.bundle.models import SplitManifest
 from apmode.data.splitter import k_fold_split, split_subjects
@@ -97,6 +98,37 @@ class TestSplitSubjects:
         result = split_subjects(df, seed=12345)
         assert result.split_seed == 12345
 
+    def test_singleton_strata_do_not_consume_entire_training_set(self) -> None:
+        df = _make_pk_df(n_subjects=10)
+        df["STRATUM"] = df["NMID"].map(lambda subject: f"s{subject}")
+        result = split_subjects(
+            df,
+            seed=42,
+            test_fraction=0.2,
+            strategy="stratified",
+            stratify_by="STRATUM",
+        )
+        assert sum(assignment.fold == "test" for assignment in result.assignments) == 2
+        assert sum(assignment.fold == "train" for assignment in result.assignments) == 8
+
+    def test_stratified_requires_column(self) -> None:
+        df = _make_pk_df()
+        with pytest.raises(ValueError, match="stratify_by is required"):
+            split_subjects(df, seed=42, strategy="stratified")
+
+    def test_identical_regimens_fall_back_to_nonempty_random_split(self) -> None:
+        df = _make_pk_df(n_subjects=10)
+        df.loc[df["EVID"] == 1, "AMT"] = 100.0
+        result = split_subjects(df, seed=42, strategy="regimen_level")
+        folds = {assignment.fold for assignment in result.assignments}
+        assert folds == {"train", "test"}
+
+    def test_regimen_split_recognizes_evid4_doses(self) -> None:
+        df = _make_pk_df(n_subjects=6)
+        df.loc[df["EVID"] == 1, "EVID"] = 4
+        result = split_subjects(df, seed=42, strategy="regimen_level")
+        assert {assignment.fold for assignment in result.assignments} == {"train", "test"}
+
 
 class TestKFoldSplit:
     """K-fold cross-validation."""
@@ -141,3 +173,9 @@ class TestKFoldSplit:
             json_str = m.model_dump_json()
             roundtrip = SplitManifest.model_validate_json(json_str)
             assert len(roundtrip.assignments) == len(m.assignments)
+
+    @pytest.mark.parametrize("k", [0, 1, 11])
+    def test_rejects_invalid_k(self, k: int) -> None:
+        df = _make_pk_df(n_subjects=10)
+        with pytest.raises(ValueError, match="k"):
+            k_fold_split(df, seed=42, k=k)

@@ -43,10 +43,22 @@ def split_subjects(
     if not (0 < test_fraction < 1):
         msg = f"test_fraction must be in (0, 1), got {test_fraction}"
         raise ValueError(msg)
+    valid_strategies = {"subject_level", "stratified", "regimen_level"}
+    if strategy not in valid_strategies:
+        raise ValueError(
+            f"Unknown split strategy {strategy!r}; expected {sorted(valid_strategies)}"
+        )
+    if strategy == "stratified":
+        if stratify_by is None:
+            raise ValueError("stratify_by is required when strategy='stratified'")
+        if stratify_by not in df.columns:
+            raise ValueError(f"stratify_by column {stratify_by!r} is not present")
     rng = np.random.default_rng(seed)
     subjects = sorted(df["NMID"].unique().tolist())
     n_subjects = len(subjects)
-    n_test = max(1, int(n_subjects * test_fraction))
+    if n_subjects < 2:
+        raise ValueError("At least two subjects are required for a train/test split")
+    n_test = min(n_subjects - 1, max(1, int(n_subjects * test_fraction)))
 
     if strategy == "stratified" and stratify_by is not None:
         assignments = _stratified_split(df, subjects, n_test, rng, stratify_by)
@@ -73,6 +85,10 @@ def k_fold_split(
     """
     rng = np.random.default_rng(seed)
     subjects = sorted(df["NMID"].unique().tolist())
+    if k < 2:
+        raise ValueError(f"k must be >= 2, got {k}")
+    if k > len(subjects):
+        raise ValueError(f"k={k} exceeds the number of subjects ({len(subjects)})")
 
     # Shuffle subjects
     shuffled = list(subjects)
@@ -164,7 +180,7 @@ def _identify_regimen_groups(df: pd.DataFrame) -> dict[str, str]:
     Uses the most frequent dose amount from EVID==1 records per subject
     as the regimen signature (more robust than total AMT).
     """
-    doses = df[df["EVID"] == 1].copy()
+    doses = df[df["EVID"].isin([1, 4])].copy()
     if doses.empty:
         subjects = sorted(df["NMID"].unique().tolist())
         return {str(s): "no_dose" for s in subjects}
@@ -215,14 +231,33 @@ def _stratified_split(
     """Stratified split: proportional test allocation per stratum."""
     # Get stratum for each subject
     subj_strata = df.groupby("NMID")[stratify_by].first()
-    strata = subj_strata.unique()
-
-    test_subjects: set[str] = set()
-    for stratum in strata:
+    grouped: list[list[str]] = []
+    for stratum in subj_strata.unique():
         stratum_subjs = [str(s) for s in subjects if str(subj_strata.get(s, None)) == str(stratum)]
-        n_stratum_test = max(1, int(len(stratum_subjs) * n_test / len(subjects)))
         rng.shuffle(stratum_subjs)
-        test_subjects.update(stratum_subjs[:n_stratum_test])
+        grouped.append(stratum_subjs)
+
+    # Largest-remainder allocation hits the requested global test size
+    # exactly. In particular, singleton strata do not each force one test
+    # subject and consume the entire training set.
+    ideals = [len(group) * n_test / len(subjects) for group in grouped]
+    allocations = [int(np.floor(ideal)) for ideal in ideals]
+    remainder_order = sorted(
+        range(len(grouped)), key=lambda i: ideals[i] - allocations[i], reverse=True
+    )
+    remaining = n_test - sum(allocations)
+    for idx in remainder_order:
+        if remaining == 0:
+            break
+        if allocations[idx] < len(grouped[idx]):
+            allocations[idx] += 1
+            remaining -= 1
+
+    test_subjects = {
+        subject
+        for group, allocation in zip(grouped, allocations, strict=True)
+        for subject in group[:allocation]
+    }
 
     assignments: list[SubjectAssignment] = []
     for subj in subjects:
@@ -241,12 +276,14 @@ def _regimen_level_split(
     For Optimization lane LORO-CV (PRD §3.3).
     """
     # Determine dose groups from dosing records
-    doses = df[df["EVID"] == 1].copy()
+    doses = df[df["EVID"].isin([1, 4])].copy()
     if doses.empty:
         return _random_split(subjects, max(1, len(subjects) // 5), rng)
 
     # Per-subject total dose as proxy for regimen
     per_subj_dose = doses.groupby("NMID")["AMT"].sum()
+    if per_subj_dose.nunique() < 2:
+        return _random_split(subjects, max(1, min(len(subjects) - 1, len(subjects) // 5)), rng)
 
     # Bin into dose groups (quartiles)
     try:
@@ -258,6 +295,8 @@ def _regimen_level_split(
     # Hold out the largest dose group (index = max group)
     max_group = dose_groups.max()
     test_subjs = set(str(s) for s in dose_groups[dose_groups == max_group].index)
+    if not test_subjs or len(test_subjs) == len(subjects):
+        return _random_split(subjects, max(1, min(len(subjects) - 1, len(subjects) // 5)), rng)
 
     assignments: list[SubjectAssignment] = []
     for subj in subjects:

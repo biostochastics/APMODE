@@ -380,6 +380,16 @@ class TestInitialEstimateOverrides:
         assert "log(200.0)" in r_code
         assert "log(10.0)" in r_code  # Km from spec
 
+    def test_fixed_parameter_overrides_include_omega_and_sigma(self) -> None:
+        spec = _make_spec(observation=Combined(sigma_prop=0.1, sigma_add=0.5))
+        r_code = emit_nlmixr2(
+            spec,
+            initial_estimates={"eta.CL": 0.22, "prop.sd": 0.3, "add.sd": 0.7},
+        )
+        assert "eta.CL ~ 0.22" in r_code
+        assert "prop.sd <- 0.3" in r_code
+        assert "add.sd <- 0.7" in r_code
+
 
 class TestTMDDEmission:
     def test_tmdd_core(self) -> None:

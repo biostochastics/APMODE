@@ -91,6 +91,38 @@ async def _fake_execute_slow_then_cancel(
             await on_complete(run_id)
 
 
+async def _fake_execute_pending_forever(**kwargs) -> None:
+    """Stay PENDING so cancellation relies on the task done callback."""
+    del kwargs
+    await asyncio.Event().wait()
+
+
+async def _fake_execute_completion_wins_cancel(
+    *,
+    run_id: str,
+    store,
+    **kwargs,
+) -> None:
+    """Simulate work that commits completion as DELETE delivers cancellation."""
+    del kwargs
+    await store.transition_status(
+        run_id,
+        RunStatus.RUNNING,
+        from_statuses=frozenset({RunStatus.PENDING}),
+    )
+    try:
+        await asyncio.Event().wait()
+    except asyncio.CancelledError:
+        await store.transition_status(
+            run_id,
+            RunStatus.COMPLETED,
+            from_statuses=frozenset({RunStatus.RUNNING}),
+        )
+        # Completion won; consume cancellation just like a non-cancellable
+        # backend finishing at the cancellation boundary.
+        return
+
+
 @pytest.fixture
 def runs_dir(tmp_path: Path) -> Path:
     d = tmp_path / "runs"
@@ -222,6 +254,64 @@ async def test_create_run_rejects_extra_fields(
     assert resp.status_code == 422
 
 
+async def test_bayesian_backend_is_rejected_in_submission_lane(
+    runs_dir: Path,
+    db_path: Path,
+    fake_runner_factory,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("apmode.api.routes.execute_run", _fake_execute_success)
+    app = build_app(
+        runs_dir=runs_dir,
+        db_path=db_path,
+        allow_backends=("nlmixr2", "bayesian_stan"),
+        runner_factory=fake_runner_factory,
+        store=SQLiteRunStore(db_path),
+    )
+    async with (
+        app.router.lifespan_context(app),
+        AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client,
+    ):
+        csv = tmp_path / "ds.csv"
+        csv.write_text("NMID,TIME,DV,MDV,EVID,AMT,CMT\n1,0,0,1,1,100,1\n")
+        response = await client.post(
+            "/runs",
+            json={
+                "dataset_path": str(csv),
+                "lane": "submission",
+                "backend": "bayesian_stan",
+            },
+        )
+    assert response.status_code == 400
+    assert "not admissible" in response.json()["detail"]
+
+
+def test_default_runner_factory_dispatches_selected_backend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from apmode.api.app import _default_runner_factory
+    from apmode.backends import bayesian_runner, nlmixr2_runner
+
+    class _Runner:
+        def __init__(self, *, work_dir: Path) -> None:
+            self.work_dir = work_dir
+
+    class _Nlmixr(_Runner):
+        pass
+
+    class _Bayesian(_Runner):
+        pass
+
+    monkeypatch.setattr(nlmixr2_runner, "Nlmixr2Runner", _Nlmixr)
+    monkeypatch.setattr(bayesian_runner, "BayesianRunner", _Bayesian)
+
+    assert isinstance(_default_runner_factory(tmp_path / "n", "nlmixr2"), _Nlmixr)
+    assert isinstance(_default_runner_factory(tmp_path / "b", "bayesian_stan"), _Bayesian)
+    with pytest.raises(ValueError, match="no default runner factory"):
+        _default_runner_factory(tmp_path / "x", "unknown")
+
+
 # --- GET /runs --------------------------------------------------------------
 
 
@@ -267,7 +357,8 @@ async def test_status_endpoint_returns_completed_after_orchestrator_finishes(
         await asyncio.sleep(0.05)
     body = st_resp.json()
     assert body["status"] == "completed"
-    assert body["bundle_dir"]
+    assert body["bundle_dir"] == run_id
+    assert not Path(body["bundle_dir"]).is_absolute()
     assert body["lane"] == "submission"
     assert body["backend"] == "nlmixr2"
 
@@ -437,6 +528,82 @@ async def test_delete_completed_run_returns_409(
     assert resp.status_code == 409
 
 
+async def test_cancel_pending_task_is_reconciled_by_done_callback(
+    runs_dir: Path,
+    db_path: Path,
+    fake_runner_factory,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancellation before execute_run's status write cannot leak PENDING."""
+    monkeypatch.setattr("apmode.api.routes.execute_run", _fake_execute_pending_forever)
+    store = SQLiteRunStore(db_path)
+    app = build_app(
+        runs_dir=runs_dir,
+        db_path=db_path,
+        runner_factory=fake_runner_factory,
+        store=store,
+    )
+    async with (
+        app.router.lifespan_context(app),
+        AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client,
+    ):
+        csv = tmp_path / "ds.csv"
+        csv.write_text("NMID,TIME,DV,MDV,EVID,AMT,CMT\n1,0,0,1,1,100,1\n")
+        created = await client.post(
+            "/runs",
+            json={"dataset_path": str(csv), "lane": "submission"},
+        )
+        run_id = created.json()["run_id"]
+        cancelled = await client.delete(f"/runs/{run_id}")
+        assert cancelled.status_code in {200, 202}
+
+        for _ in range(20):
+            status_response = await client.get(f"/runs/{run_id}/status")
+            if status_response.json()["status"] == "cancelled":
+                break
+            await asyncio.sleep(0.01)
+        assert status_response.json()["status"] == "cancelled"
+
+
+async def test_completion_wins_delete_race_without_terminal_overwrite(
+    runs_dir: Path,
+    db_path: Path,
+    fake_runner_factory,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("apmode.api.routes.execute_run", _fake_execute_completion_wins_cancel)
+    store = SQLiteRunStore(db_path)
+    app = build_app(
+        runs_dir=runs_dir,
+        db_path=db_path,
+        runner_factory=fake_runner_factory,
+        store=store,
+    )
+    async with (
+        app.router.lifespan_context(app),
+        AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client,
+    ):
+        csv = tmp_path / "ds.csv"
+        csv.write_text("NMID,TIME,DV,MDV,EVID,AMT,CMT\n1,0,0,1,1,100,1\n")
+        created = await client.post(
+            "/runs",
+            json={"dataset_path": str(csv), "lane": "submission"},
+        )
+        run_id = created.json()["run_id"]
+        for _ in range(20):
+            live = await client.get(f"/runs/{run_id}/status")
+            if live.json()["status"] == "running":
+                break
+            await asyncio.sleep(0.01)
+
+        cancelled = await client.delete(f"/runs/{run_id}")
+        assert cancelled.status_code == 409
+        final = await client.get(f"/runs/{run_id}/status")
+        assert final.json()["status"] == "completed"
+
+
 # --- Lifespan startup sweep (plan Task 34) ---------------------------------
 
 
@@ -485,6 +652,30 @@ async def test_lifespan_sweeps_running_rows_into_interrupted(
         body = resp.json()
         assert body["status"] == "interrupted"
         assert "process exited" in body["error"]
+
+
+async def test_lifespan_rejects_two_process_owners_of_same_store(
+    runs_dir: Path,
+    db_path: Path,
+    fake_runner_factory,
+) -> None:
+    """The SQLite lifecycle model is explicitly single-worker/process."""
+    app1 = build_app(
+        runs_dir=runs_dir,
+        db_path=db_path,
+        runner_factory=fake_runner_factory,
+        store=SQLiteRunStore(db_path),
+    )
+    app2 = build_app(
+        runs_dir=runs_dir,
+        db_path=db_path,
+        runner_factory=fake_runner_factory,
+        store=SQLiteRunStore(db_path),
+    )
+    async with app1.router.lifespan_context(app1):
+        with pytest.raises(RuntimeError, match="exactly one uvicorn worker"):
+            async with app2.router.lifespan_context(app2):
+                pytest.fail("second app unexpectedly acquired the service lock")
 
 
 async def test_requeue_on_interrupt_persists_through_post_get(

@@ -62,6 +62,15 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
+def _eta_shrinkage_percent(value: float) -> float:
+    """Normalize backend shrinkage to the percent scale used by traces.
+
+    The R harness emits fractions (0..1), while historical replay bundles and
+    trajectory thresholds use percentage points (0..100).
+    """
+    return value * 100.0 if -1.0 <= value <= 1.0 else value
+
+
 def _transform_rationale(transform: object) -> str | None:
     """Pull the provenance rationale off a FormularTransform, if any.
 
@@ -146,11 +155,17 @@ class AgenticRunner:
         self._llm = llm_client
         self._config = config
         self._trace_dir = trace_dir
+        self._last_best_spec: DSLSpec | None = None
 
     @property
     def trace_dir(self) -> Path:
         """Current directory where iteration traces are written."""
         return self._trace_dir
+
+    @property
+    def last_best_spec(self) -> DSLSpec | None:
+        """Exact transformed spec corresponding to the last returned result."""
+        return self._last_best_spec
 
     @staticmethod
     def _bound_raw_output(raw_text: str, max_chars: int = 32_000) -> str:
@@ -269,7 +284,7 @@ class AgenticRunner:
             # construction — iterative LLM refinement would re-fit and
             # violate the LORO-CV no-refit contract. Delegate once to
             # the inner runner instead of entering the iteration loop.
-            return await self._inner.run(
+            posthoc_result = await self._inner.run(
                 spec=spec,
                 data_manifest=data_manifest,
                 initial_estimates=initial_estimates,
@@ -282,6 +297,8 @@ class AgenticRunner:
                 fixed_parameter=True,
                 test_data_path=test_data_path,
             )
+            self._last_best_spec = spec
+            return posthoc_result
         pooled_only = directive is not None and directive.llm_pooled_only
         stability_by_candidate: dict[str, Any] = (
             {e.candidate_id: e for e in stability_manifest.entries}
@@ -315,7 +332,9 @@ class AgenticRunner:
         )
 
         current_spec = spec
+        self._last_best_spec = None
         best_result: BackendResult | None = None
+        best_spec: DSLSpec | None = None
         history: list[dict[str, Any]] = []
         iteration_records: list[IterationRecord] = []
         lineage_entries: list[dict[str, str | list[str] | None]] = []
@@ -548,18 +567,29 @@ class AgenticRunner:
                 # trajectory_evaluator.py), captured for every successful
                 # inner-runner call regardless of convergence status.
                 if result.eta_shrinkage:
-                    record.eta_shrinkage_max = max(result.eta_shrinkage.values())
+                    record.eta_shrinkage_max = max(
+                        _eta_shrinkage_percent(float(v)) for v in result.eta_shrinkage.values()
+                    )
                 record.auc_cmax_be_score = result.diagnostics.auc_cmax_be_score
 
                 # Track best result
+                # The initial classical evaluation is context for the LLM, not
+                # an agentic candidate.  Only a transformed spec may be
+                # returned/stamped as backend="agentic_llm"; otherwise a
+                # provider failure or immediate stop would duplicate and
+                # mislabel the starting classical result.
                 if result.converged:
                     record.converged = True
                     record.bic = result.bic
-                    if best_result is None or (
-                        result.bic is not None
-                        and (best_result.bic is None or result.bic < best_result.bic)
+                    if current_spec.model_id != spec.model_id and (
+                        best_result is None
+                        or (
+                            result.bic is not None
+                            and (best_result.bic is None or result.bic < best_result.bic)
+                        )
                     ):
                         best_result = result
+                        best_spec = current_spec
 
                 # Record for search history
                 history.append(
@@ -880,6 +910,11 @@ class AgenticRunner:
         if best_result is None:
             msg = "Agentic runner: no converged results across all iterations"
             raise AgenticExhaustionError(msg, iterations=len(iteration_records))
+
+        if best_spec is None or best_spec.model_id != best_result.model_id:
+            msg = "Agentic runner lost the transformed spec for its best result"
+            raise RuntimeError(msg)
+        self._last_best_spec = best_spec
 
         # Stamp the result as agentic_llm backend.
         # ``model_copy(update=...)`` preserves every field on the source

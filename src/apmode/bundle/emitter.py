@@ -20,6 +20,7 @@ import json
 import os
 import re
 import threading
+from datetime import UTC, datetime
 from pathlib import Path  # noqa: TC003 — used at runtime in __init__
 from typing import Any, Literal
 
@@ -62,6 +63,7 @@ from apmode.bundle.models import (
     SeedRegistry,
     SimulationProtocol,
     SplitManifest,
+    _attestation_payload_sha256,
 )
 from apmode.dsl.ast_models import DSLSpec  # noqa: TC001 — used at runtime
 from apmode.dsl.canonical import (
@@ -157,7 +159,7 @@ _DIGEST_LOCK = threading.RLock()
 # this version do not carry the field; they can be migrated at read time by
 # injecting the nlmixr2-default contract (``re_treatment="integrated"``,
 # ``nlpd_integrator="nlmixr2_focei"``, ``float_precision="float64"``).
-_COMPLETE_SCHEMA_VERSION = 2
+_COMPLETE_SCHEMA_VERSION = 3
 
 
 class BundleAlreadySealedError(RuntimeError):
@@ -348,6 +350,8 @@ def _compute_bundle_digest(run_dir: Path) -> str:
     with _DIGEST_LOCK:
         digest = hashlib.sha256()
         for p in sorted(run_dir.rglob("*"), key=lambda q: q.relative_to(run_dir).as_posix()):
+            if p.is_symlink():
+                raise ValueError(f"bundle contains a symlink, which is not sealable: {p}")
             if not p.is_file():
                 continue
             rel = p.relative_to(run_dir).as_posix()
@@ -366,6 +370,63 @@ def _compute_bundle_digest(run_dir: Path) -> str:
         return digest.hexdigest()
 
 
+def _compute_seal_sha256(
+    *, schema_version: int, run_id: str, sealed_at: str, bundle_sha256: str
+) -> str:
+    """Bind mutable sentinel identity fields to the content digest."""
+    payload = {
+        "bundle_sha256": bundle_sha256,
+        "run_id": run_id,
+        "schema_version": schema_version,
+        "sealed_at": sealed_at,
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def verify_bundle_seal(run_dir: Path) -> dict[str, Any]:
+    """Validate bundle content and schema-3 sentinel identity binding."""
+    sentinel_path = run_dir / _COMPLETE_SENTINEL
+    if not sentinel_path.is_file() or sentinel_path.is_symlink():
+        raise ValueError(f"bundle has no regular {_COMPLETE_SENTINEL} sentinel: {run_dir}")
+    try:
+        sentinel = json.loads(sentinel_path.read_text())
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"unparseable bundle sentinel: {exc}") from exc
+    if not isinstance(sentinel, dict):
+        raise ValueError("bundle sentinel must be a JSON object")
+    expected = sentinel.get("sha256")
+    if not isinstance(expected, str) or not expected:
+        raise ValueError("bundle sentinel is missing sha256")
+    actual = _compute_bundle_digest(run_dir)
+    if actual != expected:
+        raise ValueError(f"bundle digest mismatch: expected {expected}, observed {actual}")
+
+    schema_version = sentinel.get("schema_version")
+    if isinstance(schema_version, int) and schema_version >= 3:
+        run_id = sentinel.get("run_id")
+        sealed_at = sentinel.get("sealed_at")
+        seal_sha256 = sentinel.get("seal_sha256")
+        if not (
+            isinstance(run_id, str)
+            and run_id
+            and isinstance(sealed_at, str)
+            and sealed_at
+            and isinstance(seal_sha256, str)
+            and seal_sha256
+        ):
+            raise ValueError("schema-3 sentinel is missing identity binding fields")
+        bound = _compute_seal_sha256(
+            schema_version=schema_version,
+            run_id=run_id,
+            sealed_at=sealed_at,
+            bundle_sha256=expected,
+        )
+        if seal_sha256 != bound:
+            raise ValueError("bundle sentinel identity digest mismatch")
+    return sentinel
+
+
 class BundleEmitter:
     """Writes reproducibility bundle artifacts to disk.
 
@@ -381,6 +442,7 @@ class BundleEmitter:
 
     def __init__(self, base_dir: Path, run_id: str | None = None) -> None:
         self.run_id = run_id or generate_run_id()
+        _validate_path_component(self.run_id, "run_id")
         self.run_dir = base_dir / self.run_id
         self._compiled_specs_dir = self.run_dir / "compiled_specs"
         self._gate_decisions_dir = self.run_dir / "gate_decisions"
@@ -425,10 +487,19 @@ class BundleEmitter:
         with _DIGEST_LOCK:
             if sentinel_path.exists():  # pragma: no cover - racy double-call
                 return self.run_dir
+            sealed_at = datetime.now(tz=UTC).isoformat()
+            bundle_sha256 = _compute_bundle_digest(self.run_dir)
             sentinel = {
                 "schema_version": _COMPLETE_SCHEMA_VERSION,
                 "run_id": self.run_id,
-                "sha256": _compute_bundle_digest(self.run_dir),
+                "sealed_at": sealed_at,
+                "sha256": bundle_sha256,
+                "seal_sha256": _compute_seal_sha256(
+                    schema_version=_COMPLETE_SCHEMA_VERSION,
+                    run_id=self.run_id,
+                    sealed_at=sealed_at,
+                    bundle_sha256=bundle_sha256,
+                ),
             }
             # #32 / #34: write the sentinel through a tmp + os.replace
             # dance so a mid-write crash (SIGKILL, OOM) cannot leave a
@@ -968,7 +1039,54 @@ class BundleEmitter:
         if path.exists() and not force:
             msg = f"{path} already exists; pass force=True to overwrite"
             raise FileExistsError(msg)
-        return self._write_text(path, attestation.model_dump_json(indent=2), allow_sealed=True)
+
+        sentinel = verify_bundle_seal(self.run_dir)
+        gate_results: dict[str, GateResult] = {}
+        for gate_path in sorted(self._gate_decisions_dir.glob("gate*.json")):
+            parsed_gate = GateResult.model_validate_json(gate_path.read_text())
+            if parsed_gate.gate_id in gate_results:
+                raise ValueError(f"duplicate gate_id in bundle: {parsed_gate.gate_id}")
+            gate_results[parsed_gate.gate_id] = parsed_gate
+        for override in attestation.gate_overrides:
+            gate = gate_results.get(override.gate_id)
+            if gate is None:
+                raise ValueError(f"override references unknown gate_id {override.gate_id!r}")
+            check = next(
+                (item for item in gate.checks if item.check_id == override.check_id),
+                None,
+            )
+            if check is None:
+                raise ValueError(
+                    f"override references unknown check_id {override.check_id!r} "
+                    f"for gate {override.gate_id!r}"
+                )
+            if check.passed is not override.original_passed:
+                raise ValueError(
+                    f"override original_passed={override.original_passed} does not match "
+                    f"sealed gate value {check.passed}"
+                )
+
+        previous_sha: str | None = None
+        if path.exists():
+            previous = ReviewerAttestation.model_validate_json(path.read_text())
+            previous_sha = (
+                previous.attestation_sha256 or hashlib.sha256(path.read_bytes()).hexdigest()
+            )
+
+        payload = attestation.model_dump(mode="json")
+        payload.update(
+            {
+                "attestation_schema_version": "2.0",
+                "run_id": sentinel["run_id"],
+                "bundle_sha256": sentinel["sha256"],
+                "seal_sha256": sentinel.get("seal_sha256") or sentinel["sha256"],
+                "previous_attestation_sha256": previous_sha,
+                "attestation_sha256": None,
+            }
+        )
+        payload["attestation_sha256"] = _attestation_payload_sha256(payload)
+        bound = ReviewerAttestation.model_validate(payload)
+        return self._write_text(path, bound.model_dump_json(indent=2), allow_sealed=True)
 
     def write_loo_summary(self, summary: LOOSummary) -> Path:
         """Write bayesian/{candidate_id}_loo_summary.json (plan Task 18).

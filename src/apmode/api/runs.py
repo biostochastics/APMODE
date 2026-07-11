@@ -53,7 +53,10 @@ class RunnerFactory(Protocol):
     ``Nlmixr2Runner``-specific imports.
     """
 
-    def __call__(self, work_dir: Path) -> BackendRunner: ...
+    def __call__(self, work_dir: Path, backend: str) -> BackendRunner: ...
+
+
+_ACTIVE_STATUSES = frozenset({RunStatus.PENDING, RunStatus.RUNNING})
 
 
 async def execute_run(
@@ -89,7 +92,16 @@ async def execute_run(
     the run from ``app.state.active_tasks``.
     """
     try:
-        await store.update_status(run_id, RunStatus.RUNNING)
+        started = await store.transition_status(
+            run_id,
+            RunStatus.RUNNING,
+            from_statuses=frozenset({RunStatus.PENDING}),
+        )
+        if not started:
+            # A cancellation can win before this coroutine receives its first
+            # event-loop turn.  Do not start backend work after the row is
+            # already terminal.
+            return
 
         # Resolve and (when an allow-list is configured) confine the
         # caller-supplied dataset path to a known root. The
@@ -122,7 +134,7 @@ async def execute_run(
         # work dir where the next run would clobber them).
         runner_work_dir = bundle_dir / "_runner_work"
         runner_work_dir.mkdir(parents=True, exist_ok=True)
-        runner = runner_factory(runner_work_dir)
+        runner = runner_factory(runner_work_dir, request.backend)
 
         config = RunConfig(
             lane=request.lane,
@@ -142,7 +154,17 @@ async def execute_run(
         )
 
         await orchestrator.run(manifest, df, dataset_path, run_id=run_id)
-        await store.update_status(run_id, RunStatus.COMPLETED)
+        completed = await store.transition_status(
+            run_id,
+            RunStatus.COMPLETED,
+            from_statuses=frozenset({RunStatus.RUNNING}),
+        )
+        if not completed:
+            logger.warning(
+                "api_run_completion_lost_status_race",
+                extra={"run_id": run_id},
+            )
+            return
         logger.info("api_run_completed", extra={"run_id": run_id})
 
     except asyncio.CancelledError:
@@ -160,9 +182,10 @@ async def execute_run(
         # sweep reconciles it.
         try:
             await asyncio.shield(
-                store.update_status(
+                store.transition_status(
                     run_id,
                     RunStatus.CANCELLED,
+                    from_statuses=_ACTIVE_STATUSES,
                     error="run cancelled via DELETE /runs/{id}",
                 )
             )
@@ -186,7 +209,14 @@ async def execute_run(
         # RUNNING until the next startup sweep reconciles it.
         tb = traceback.format_exc()
         try:
-            await asyncio.shield(store.update_status(run_id, RunStatus.FAILED, error=tb))
+            await asyncio.shield(
+                store.transition_status(
+                    run_id,
+                    RunStatus.FAILED,
+                    from_statuses=_ACTIVE_STATUSES,
+                    error=tb,
+                )
+            )
         except asyncio.CancelledError:
             logger.warning(
                 "api_run_failed_status_write_interrupted",

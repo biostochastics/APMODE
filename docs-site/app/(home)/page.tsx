@@ -97,7 +97,7 @@ export default function HomePage() {
           </div>
 
           <p className="mt-8 font-mono text-xs tracking-wide text-white/40">
-            v0.6.1 · GPL-2.0-or-later · nlmixr2 · Stan/Torsten · JAX/Diffrax
+            v0.6.1-rc2 · GPL-2.0-or-later · nlmixr2 · Stan/Torsten · JAX/Diffrax
           </p>
         </div>
       </section>

@@ -537,15 +537,7 @@ def _test_attestation() -> ReviewerAttestation:
         timestamp="2026-07-10T00:00:00+00:00",
         decision="approved",
         rationale="Reviewed gate decisions and diagnostics; no concerns.",
-        gate_overrides=[
-            GateOverride(
-                gate_id="gate2",
-                check_id="shrinkage_max",
-                original_passed=False,
-                override_justification="Sparse design; expected shrinkage.",
-                authorized_by="senior_pharmacometrician",
-            )
-        ],
+        gate_overrides=[],
     )
 
 
@@ -576,7 +568,10 @@ class TestAttestationSidecar:
         data = json.loads(path.read_text())
         assert data["reviewer_id"] == "jdoe"
         assert data["decision"] == "approved"
-        assert len(data["gate_overrides"]) == 1
+        assert data["gate_overrides"] == []
+        assert data["attestation_schema_version"] == "2.0"
+        assert data["run_id"] == "run_attest_sealed"
+        assert data["attestation_sha256"]
 
     def test_attestation_does_not_change_digest(self, tmp_path: Path) -> None:
         emitter = _seal_minimal_bundle(tmp_path, "run_attest_digest")
@@ -606,6 +601,25 @@ class TestAttestationSidecar:
         path = emitter.write_attestation(updated, force=True)
         data = json.loads(path.read_text())
         assert data["decision"] == "rejected"
+        assert data["previous_attestation_sha256"]
+
+    def test_override_must_reference_sealed_gate(self, tmp_path: Path) -> None:
+        emitter = _seal_minimal_bundle(tmp_path, "run_attest_bad_override")
+        invalid = _test_attestation().model_copy(
+            update={
+                "gate_overrides": [
+                    GateOverride(
+                        gate_id="missing-gate",
+                        check_id="missing-check",
+                        original_passed=False,
+                        override_justification="invalid reference",
+                        authorized_by="reviewer",
+                    )
+                ]
+            }
+        )
+        with pytest.raises(ValueError, match="unknown gate_id"):
+            emitter.write_attestation(invalid)
 
 
 class TestBundleEmitterFull:

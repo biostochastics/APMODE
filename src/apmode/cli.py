@@ -734,7 +734,6 @@ def run(
 
     # --- Imports (outside try so ImportError is not masked) ---
     from apmode.backends.nlmixr2_runner import Nlmixr2Runner
-    from apmode.data.adapters import to_nlmixr2_format
     from apmode.data.ingest import ingest_nonmem_csv
     from apmode.orchestrator import Orchestrator, RunConfig
 
@@ -832,12 +831,15 @@ def run(
         console.print("  [dim]To execute:[/] [bold]apmode run[/] [dim](remove --dry-run)[/]")
         return
 
-    # --- Write nlmixr2-ready CSV ---
-    nlmixr2_df = to_nlmixr2_format(df)
+    # --- Write canonical CSV ---
+    # Backend adaptation is intentionally deferred until a concrete DSL spec
+    # is bound in Nlmixr2Runner. In particular, categorical reference levels
+    # are model declarations; encoding strings here would choose a polarity
+    # before the candidate's `categorical(reference=...)` is known.
     # Unique name prevents concurrent runs from clobbering each other's temp file.
     data_csv = (output / f"_tmp_data_{int(time.time_ns())}.csv").resolve()
     data_csv.parent.mkdir(parents=True, exist_ok=True)
-    nlmixr2_df.to_csv(data_csv, index=False)
+    df.to_csv(data_csv, index=False)
 
     config = RunConfig(
         lane=lane.value,

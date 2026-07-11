@@ -15,6 +15,7 @@ Surfaces ALL violations (not fail-fast), matching the Pandera lazy=True philosop
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict
@@ -60,6 +61,7 @@ from apmode.dsl.capabilities import report as capability_report
 from apmode.dsl.errors import FrmCode
 from apmode.dsl.lane import Lane
 from apmode.dsl.normalize import normalize_param_name
+from apmode.dsl.priors import prior_target_kinds, validate_priors
 from apmode.dsl.spans import SourceSpan
 from apmode.dsl.units import check_units_consistency
 
@@ -160,6 +162,7 @@ def validate_dsl(spec: DSLSpec, *, lane: Lane) -> list[ValidationError]:
     _validate_observations_multi(spec, errors)
     _validate_variability(spec, errors)
     _validate_covariates(spec, errors)
+    _validate_priors(spec, errors)
     _validate_module_compatibility(spec, errors)
     _validate_node_experimental_gate(spec, errors)
     _validate_node_constraints(spec, lane, errors)
@@ -340,7 +343,7 @@ def _positive(
     errors: list[ValidationError],
     source_span: SourceSpan | None = None,
 ) -> None:
-    if value <= 0:
+    if not math.isfinite(value) or value <= 0:
         errors.append(
             ValidationError(
                 module=module,
@@ -361,7 +364,7 @@ def _non_negative(
     errors: list[ValidationError],
     source_span: SourceSpan | None = None,
 ) -> None:
-    if value < 0:
+    if not math.isfinite(value) or value < 0:
         errors.append(
             ValidationError(
                 module=module,
@@ -383,7 +386,7 @@ def _unit_interval(
     source_span: SourceSpan | None = None,
 ) -> None:
     """Strictly in (0, 1) — exclusive bounds."""
-    if value <= 0 or value >= 1:
+    if not math.isfinite(value) or value <= 0 or value >= 1:
         errors.append(
             ValidationError(
                 module=module,
@@ -550,13 +553,13 @@ def _validate_sumig(
 
     if mt_1 is not None:
         _positive(mod, "MT_1", mt_1, errors, span)
-    if mt_2 is not None:
+    if m.k >= 2 and mt_2 is not None:
         _positive(mod, "MT_2", mt_2, errors, span)
     if rd2_1 is not None:
         _positive(mod, "RD2_1", rd2_1, errors, span)
-    if rd2_2 is not None:
+    if m.k >= 2 and rd2_2 is not None:
         _positive(mod, "RD2_2", rd2_2, errors, span)
-    if weight_1 is not None:
+    if m.k >= 2 and weight_1 is not None:
         _unit_interval(mod, "weight_1", weight_1, errors, span)
 
     # Label-switching guard: MT_1 < MT_2 enforces a canonical ordering.
@@ -806,6 +809,27 @@ def _validate_observations_multi(spec: DSLSpec, errors: list[ValidationError]) -
                 )
             )
 
+    declared = set(seen_dvid)
+    expected = set(range(1, len(spec.observations) + 1))
+    if declared != expected:
+        errors.append(
+            ValidationError(
+                module=mod,
+                param=f"{mod}.dvid",
+                constraint="observations_dvid_sequence",
+                message=(
+                    "observations: DVID values must form the contiguous sequence "
+                    f"1..{len(spec.observations)} for backend endpoint routing; "
+                    f"got {sorted(declared)}"
+                ),
+                source_span=_span_for(spec, "observations"),
+                code=FrmCode.AST_OBSERVATIONS_DVID_COLLISION.value,
+                remediation=(
+                    "Assign DVID values 1, 2, ... in the desired endpoint routing order."
+                ),
+            )
+        )
+
 
 _NO_VARIABILITY_PARAMS: frozenset[str] = frozenset({"n"})
 """Structural parameters that cannot have IIV/IOV.
@@ -1037,7 +1061,7 @@ def _validate_covariates(spec: DSLSpec, errors: list[ValidationError]) -> None:
             numeric_checks.append(("tm50", item.tm50))
             numeric_checks.append(("hill", item.hill))
         for field_name, value in numeric_checks:
-            if value is not None and value <= 0:
+            if value is not None and (not math.isfinite(value) or value <= 0):
                 errors.append(
                     ValidationError(
                         module=mod,
@@ -1049,6 +1073,32 @@ def _validate_covariates(spec: DSLSpec, errors: list[ValidationError]) -> None:
                         remediation=f"Set covariates[{i}].{field_name} to a value > 0.",
                     )
                 )
+
+
+def _validate_priors(spec: DSLSpec, errors: list[ValidationError]) -> None:
+    """Validate programmatically constructed priors against the full spec.
+
+    Grammar-authored priors pass through the same checks while lowering, but
+    ``DSLSpec`` remains a public programmatic API. Running the canonical prior
+    validator here closes that second construction path and also verifies the
+    exact IIV/IOV/covariate/residual target namespace.
+    """
+    for message in validate_priors(
+        spec.priors,
+        set(spec.structural_param_names()),
+        target_kinds=prior_target_kinds(spec),
+    ):
+        errors.append(
+            ValidationError(
+                module="priors",
+                param="priors",
+                constraint="prior_invalid_declaration",
+                message=message,
+                source_span=_span_for(spec, "priors"),
+                code=FrmCode.PRIOR_INVALID_DECLARATION.value,
+                remediation="Remove or correct the invalid prior declaration.",
+            )
+        )
 
 
 def _validate_module_compatibility(spec: DSLSpec, errors: list[ValidationError]) -> None:
@@ -1251,9 +1301,24 @@ def validate_data_bound(spec: DSLSpec, data: pd.DataFrame) -> list[ValidationErr
                 )
             else:
                 dose_rows = data[(data["EVID"].isin([1, 4])) & (data["AMT"] > 0)]
-                dose_counts = dose_rows.groupby(subject_col).size()
+                subjects = data[subject_col].dropna().unique().tolist()
+                dose_counts = dose_rows.groupby(subject_col).size().reindex(subjects, fill_value=0)
                 bad_subjects = dose_counts[dose_counts != 1]
-                if dose_rows.empty or not bad_subjects.empty:
+                has_implicit_doses = bool(
+                    "ADDL" in columns and (dose_rows["ADDL"].fillna(0) > 0).any()
+                )
+                if dose_rows.empty or not bad_subjects.empty or has_implicit_doses:
+                    details: list[str] = []
+                    if not bad_subjects.empty:
+                        details.append(
+                            "subjects with dose-count != 1: "
+                            + ", ".join(
+                                f"{subject}={int(count)}"
+                                for subject, count in bad_subjects.items()
+                            )
+                        )
+                    if has_implicit_doses:
+                        details.append("ADDL>0 creates implicit repeat doses")
                     errors.append(
                         ValidationError(
                             module="data",
@@ -1261,7 +1326,9 @@ def validate_data_bound(spec: DSLSpec, data: pd.DataFrame) -> list[ValidationErr
                             constraint="data_sumig_single_dose",
                             message=(
                                 "SumIG is single-dose only in this Formular version; "
-                                "each dosed subject must have exactly one positive dose event"
+                                "every subject must have exactly one positive explicit dose "
+                                "event and ADDL must be zero"
+                                + (f" ({'; '.join(details)})" if details else "")
                             ),
                             code=FrmCode.SEM_SUMIG_DISPOSITION_FIXED.value,
                             remediation=(

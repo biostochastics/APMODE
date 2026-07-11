@@ -20,7 +20,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from apmode.governance.approximate_posterior import laplace_draws
+from apmode.governance.approximate_posterior import laplace_draws, laplace_draws_with_method
 
 # --- Happy path ----------------------------------------------------------
 
@@ -85,6 +85,17 @@ def test_ill_conditioned_cond_number_triggers_fallback() -> None:
     cov = np.array([[1e-13, 0.0], [0.0, 1.0]])
     draws = laplace_draws(theta, cov, n_draws=100, seed=7)
     assert draws.shape == (100, 2)
+
+
+def test_negative_variance_never_uses_laplace_mvn() -> None:
+    result = laplace_draws_with_method(
+        np.array([0.0]),
+        np.array([[-4.0]]),
+        n_draws=1000,
+        seed=7,
+    )
+    assert result.method == "laplace_bootstrap_diagonal"
+    assert float(np.var(result.draws)) < 1e-3
 
 
 def test_nonfinite_cov_triggers_fallback() -> None:

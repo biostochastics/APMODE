@@ -382,6 +382,15 @@ response_path <- args[2]
     )
   })
 
+  # Direct trajectory contract for Gate 1: fitted population predictions
+  # must be finite and non-negative. NULL means the backend could not obtain
+  # a prediction stream, which Gate 1 treats as unavailable evidence.
+  state_trajectory_valid <- tryCatch({
+    pred <- fit$PRED
+    if (is.null(pred) || length(pred) == 0) NULL
+    else isTRUE(all(is.finite(pred)) && all(pred >= 0))
+  }, error = function(e) NULL)
+
   # Split GOF metrics — partition residuals by train/test if split manifest provided
   split_gof <- NULL
   if (!is.null(req$split_manifest) && length(req$split_manifest$assignments) > 0) {
@@ -403,8 +412,10 @@ response_path <- args[2]
       if (sum(train_mask) > 0 && sum(test_mask) > 0) {
         split_gof <- list(
           train_cwres_mean = mean(cwres[train_mask], na.rm = TRUE),
+          train_cwres_sd = stats::sd(cwres[train_mask], na.rm = TRUE),
           train_outlier_fraction = mean(abs(cwres[train_mask]) > 4, na.rm = TRUE),
           test_cwres_mean = mean(cwres[test_mask], na.rm = TRUE),
+          test_cwres_sd = stats::sd(cwres[test_mask], na.rm = TRUE),
           test_outlier_fraction = mean(abs(cwres[test_mask]) > 4, na.rm = TRUE),
           n_train = as.integer(sum(train_mask)),
           n_test  = as.integer(sum(test_mask))
@@ -468,6 +479,7 @@ response_path <- args[2]
     # drifting apart across backends (see DiagnosticBundle docstring).
     diagnostics = list(
       gof = gof,
+      state_trajectory_valid = state_trajectory_valid,
       split_gof = split_gof,
       vpc = NULL,
       identifiability = list(

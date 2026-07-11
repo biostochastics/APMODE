@@ -64,6 +64,25 @@ class TestProfileData:
         em = profile_data(df, manifest)
         assert em.blq_burden == 0.0
 
+    def test_mdv_missing_rows_do_not_contribute_to_blq_burden(self) -> None:
+        df = pd.DataFrame(
+            {
+                "EVID": [0, 0],
+                "MDV": [0, 1],
+                "DV": [1.0, 999.0],
+                "BLQ_FLAG": [0, 1],
+            }
+        )
+        assert _compute_blq_burden(df) == 0.0
+
+    def test_reset_and_dose_evid4_is_included_in_dose_history(self) -> None:
+        manifest, df = ingest_nonmem_csv(FIXTURE_CSV)
+        subject = df["NMID"].iloc[0]
+        candidate_idx = df[(df["NMID"] == subject) & (df["EVID"] == 0)].index[-1]
+        df.loc[candidate_idx, ["EVID", "MDV", "AMT"]] = [4, 1, 50.0]
+        em = profile_data(df, manifest)
+        assert em.multi_dose_detected is True
+
     def test_protocol_heterogeneity_single_study(self) -> None:
         manifest, df = ingest_nonmem_csv(FIXTURE_CSV)
         em = profile_data(df, manifest)

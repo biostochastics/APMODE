@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -109,9 +110,10 @@ class _RImputerBase:
             raise ValueError(msg)
         self.work_dir.mkdir(parents=True, exist_ok=True)
 
-        request_path = self.work_dir / "impute_request.json"
-        response_path = self.work_dir / "impute_response.json"
-        output_dir = self.work_dir / "imputed"
+        run_token = uuid.uuid4().hex
+        request_path = self.work_dir / f"impute_request_{run_token}.json"
+        response_path = self.work_dir / f"impute_response_{run_token}.json"
+        output_dir = self.work_dir / f"imputed_{run_token}"
 
         request_payload = {
             "source_csv": str(source_csv),
@@ -132,6 +134,12 @@ class _RImputerBase:
             self.timeout_seconds,
         )
 
+        if exit_code != 0:
+            raise CrashError(
+                f"Imputation Rscript exited with nonzero code {exit_code}",
+                exit_code=exit_code,
+            )
+
         if not response_path.exists():
             raise CrashError(
                 f"Imputation Rscript exited with code {exit_code} and no response.json",
@@ -149,7 +157,30 @@ class _RImputerBase:
                 f"Imputer returned {len(response.imputed_csvs)} datasets, expected {m}",
                 exit_code=exit_code,
             )
-        return [Path(p) for p in response.imputed_csvs]
+        if response.m != m or response.method != self.method:
+            raise CrashError(
+                "Imputation response does not match the current request "
+                f"(m={response.m}, method={response.method!r}; expected "
+                f"m={m}, method={self.method!r})",
+                exit_code=exit_code,
+            )
+
+        expected_root = output_dir.resolve()
+        paths = [Path(p).resolve() for p in response.imputed_csvs]
+        if len(set(paths)) != len(paths):
+            raise CrashError("Imputer returned duplicate output paths", exit_code=exit_code)
+        for path in paths:
+            if not path.is_relative_to(expected_root):
+                raise CrashError(
+                    f"Imputer output path escapes the run output directory: {path}",
+                    exit_code=exit_code,
+                )
+            if not path.is_file():
+                raise CrashError(
+                    f"Imputer reported a missing output file: {path}",
+                    exit_code=exit_code,
+                )
+        return paths
 
 
 def _parse_response(path: Path) -> _ImputeResponse:

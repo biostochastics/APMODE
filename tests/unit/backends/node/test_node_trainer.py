@@ -109,6 +109,28 @@ class TestTrainNode:
         result = train_node(model, subjects, config)
         assert result.trained_sigma > 0
 
+    def test_multidose_subject_trains_without_tracer_concretization(self) -> None:
+        """The eager event timeline must remain differentiable during training."""
+        model = _make_model()
+        subject = {
+            "times": jnp.array([1.0, 6.0, 13.0, 18.0]),
+            "observation_times": [1.0, 6.0, 13.0, 18.0],
+            "observations": jnp.array([1.5, 1.0, 2.0, 1.2]),
+            "y0": jnp.array([0.0, 0.0]),
+            "obs_cmt": jnp.array(1),
+            "dose_events": [
+                (0.0, 100.0, 1, 1, 0.0, -1),
+                (12.0, 100.0, 1, 1, 0.0, -1),
+            ],
+        }
+        result = train_node(
+            model,
+            [subject],
+            TrainingConfig(epochs=1, early_stop_patience=2),
+        )
+        assert result.n_epochs == 1
+        assert math.isfinite(result.final_loss)
+
 
 class TestEarlyStopping:
     """Early stopping behavior."""

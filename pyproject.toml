@@ -37,6 +37,9 @@ dependencies = [
     "rocrate>=0.13",
     "pyyaml>=6.0",
     "sympy>=1.12",
+    # Imported directly by ``apmode._version_drift``.  Do not rely on an
+    # incidental transitive dependency to make the console entry point work.
+    "packaging>=24.0",
 ]
 
 [project.optional-dependencies]
@@ -46,6 +49,7 @@ node = [
     "equinox>=0.11",
     "optax>=0.2",
     "jaxtyping>=0.2",
+    "scikit-learn>=1.4",
 ]
 test = [
     "pytest>=8.0",
@@ -53,12 +57,15 @@ test = [
     "hypothesis>=6.100",
     "syrupy>=4.0",
     "pytest-asyncio>=0.23",
+    # FastAPI/Starlette TestClient imports httpx directly.
+    "httpx>=0.27",
     "pandas>=2.0",
     "jax[cpu]>=0.4.30",
     "diffrax>=0.6",
     "equinox>=0.11",
     "optax>=0.2",
     "jaxtyping>=0.2",
+    "scikit-learn>=1.4",
 ]
 llm = [
     "anthropic>=0.39",
@@ -75,6 +82,10 @@ llm = [
 bayesian = [
     "cmdstanpy>=1.2",
     "arviz>=0.17",
+    # arviz-plots 1.0 imports matplotlib.style.core, which was removed in
+    # Matplotlib 3.11. Keep Bayesian imports functional until that adapter is
+    # released with the public style-library API.
+    "matplotlib>=3.8,<3.11",
     "pyarrow>=15.0",
 ]
 api = [
@@ -95,13 +106,35 @@ apmode = "apmode.__main__:main"
 
 [tool.hatch.version]
 source = "vcs"
-fallback-version = "0.6.0-rc1"
+fallback-version = "0.7.0-rc1"
 
 [tool.hatch.build.hooks.vcs]
 version-file = "src/apmode/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/apmode"]
+
+# Gate/profiler policies are runtime inputs, not repository-only fixtures.
+# Install them below the package so ``importlib.resources.files('apmode')``
+# works for ordinary wheel installs as well as editable checkouts.
+[tool.hatch.build.targets.wheel.force-include]
+"policies" = "apmode/policies"
+
+# Keep source releases hermetic.  Hatch's broad default selection can pick up
+# ignored local clones, build caches, and operator tooling from a dirty release
+# checkout; none of those belong in a published sdist.
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/policies",
+    "/docs",
+    "/scripts",
+    "/README.md",
+    "/CHANGELOG.md",
+    "/CITATION.cff",
+    "/LICENSE",
+    "/pyproject.toml",
+]
 
 [tool.ruff]
 src = ["src"]
@@ -219,7 +252,7 @@ warn_unused_configs = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["sparkid.*", "pandera.*", "lark.*", "jax.*", "jaxlib.*", "diffrax.*", "equinox.*", "optax.*", "jaxtyping.*", "pandas.*", "cmdstanpy.*", "arviz.*", "pyarrow.*", "scipy.*", "aiosqlite.*", "yaml.*", "shellingham.*", "sympy.*"]
+module = ["sparkid.*", "pandera.*", "lark.*", "jax.*", "jaxlib.*", "diffrax.*", "equinox.*", "optax.*", "jaxtyping.*", "pandas.*", "cmdstanpy.*", "arviz.*", "pyarrow.*", "scipy.*", "aiosqlite.*", "yaml.*", "shellingham.*", "sympy.*", "sklearn.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

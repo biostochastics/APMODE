@@ -158,11 +158,25 @@ async def evaluate_loro_cv(
                     data_path=train_csv,
                     fixed_parameter=False,
                 )
-                fold_warm_estimates = {
-                    name: pe.estimate
-                    for name, pe in fold_refit.parameter_estimates.items()
-                    if pe.category == "structural"
-                }
+                if not fold_refit.converged:
+                    raise RuntimeError("train-fold refit did not converge")
+                structural_names = set(candidate_spec.structural_param_names())
+                fold_warm_estimates: dict[str, float] = {}
+                for name, pe in fold_refit.parameter_estimates.items():
+                    if not np.isfinite(pe.estimate):
+                        continue
+                    # nlmixr2 reports log-domain structural fixed effects as
+                    # lCL/lV/etc.; the emitter accepts natural-domain CL/V
+                    # overrides. Preserve already-natural names and every
+                    # reported IIV/residual parameter for category-aware ini.
+                    if (
+                        pe.category == "structural"
+                        and name.startswith("l")
+                        and name[1:] in structural_names
+                    ):
+                        fold_warm_estimates[name[1:]] = float(np.exp(pe.estimate))
+                    else:
+                        fold_warm_estimates[name] = float(pe.estimate)
                 if not fold_warm_estimates:
                     fold_warm_estimates = initial_estimates
 
@@ -238,20 +252,19 @@ def _extract_fold_metrics(
     proxy for NPDE. True NPDE requires Monte Carlo simulation of the
     predictive distribution; this is a planned future enhancement.
     """
-    # Prefer split-aware test-set CWRES mean when available;
-    # always use overall CWRES SD² for variance (split_gof lacks test_cwres_sd).
-    # ``None`` for either propagates as ``None`` into the LORO fold result —
-    # the downstream aggregator at ``test_npde_mean / variance`` already
-    # treats None as "fold diagnostic unavailable" (and uses 0.0/1.0 only
-    # for the cross-fold mean/variance aggregation).
+    # Held-out mean and variance must both come from the test fold.  Reusing
+    # full/train-dominated residual SD makes an extrapolation failure look
+    # calibrated and violates the LORO evidence contract.
     sgof = result.diagnostics.split_gof
     if sgof is not None:
         test_cwres_mean: float | None = sgof.test_cwres_mean
+        test_cwres_sd = sgof.test_cwres_sd
     else:
-        test_cwres_mean = result.diagnostics.gof.cwres_mean
-    # Variance: always from overall GOF cwres_sd (the only SD available).
-    cwres_sd = result.diagnostics.gof.cwres_sd
-    test_cwres_var: float | None = cwres_sd**2 if cwres_sd is not None else None
+        test_cwres_mean = None
+        test_cwres_sd = None
+    test_cwres_var: float | None = (
+        test_cwres_sd**2 if test_cwres_sd is not None and np.isfinite(test_cwres_sd) else None
+    )
 
     # Extract VPC coverage for this fold (min across bands)
     vpc = result.diagnostics.vpc
@@ -290,13 +303,13 @@ def _aggregate_loro_metrics(fold_results: list[LOROFoldResult]) -> LOROMetrics:
         return LOROMetrics(
             n_folds=len(fold_results),
             n_total_test_subjects=sum(f.n_test_subjects for f in fold_results),
-            pooled_npde_mean=float("nan"),
-            pooled_npde_variance=float("nan"),
+            pooled_npde_mean=None,
+            pooled_npde_variance=None,
             vpc_coverage_concordance=0.0,
             overall_pass=False,
         )
 
-    total_test = sum(f.n_test_subjects for f in converged_folds)
+    total_test = sum(f.n_test_subjects for f in fold_results)
 
     # Collect per-fold metrics
     means: list[float] = []
@@ -306,11 +319,21 @@ def _aggregate_loro_metrics(fold_results: list[LOROFoldResult]) -> LOROMetrics:
     vpc_coverages: list[float] = []
     vpc_weights: list[float] = []
 
-    for f in converged_folds:
+    complete_folds = [
+        f
+        for f in converged_folds
+        if f.test_npde_mean is not None
+        and np.isfinite(f.test_npde_mean)
+        and f.test_npde_variance is not None
+        and np.isfinite(f.test_npde_variance)
+    ]
+    for f in complete_folds:
+        assert f.test_npde_mean is not None
+        assert f.test_npde_variance is not None
         w = float(f.n_test_subjects)
         weights.append(w)
-        means.append(f.test_npde_mean if f.test_npde_mean is not None else 0.0)
-        variances.append(f.test_npde_variance if f.test_npde_variance is not None else 1.0)
+        means.append(float(f.test_npde_mean))
+        variances.append(float(f.test_npde_variance))
         if f.test_bic is not None:
             per_fold_bic.append(f.test_bic)
         if f.fold_vpc_min_coverage is not None:
@@ -323,17 +346,18 @@ def _aggregate_loro_metrics(fold_results: list[LOROFoldResult]) -> LOROMetrics:
     w_sum = float(w_arr.sum())
 
     # Pooled mean: weighted average of fold means
-    pooled_mean = float(np.average(m_arr, weights=w_arr)) if w_sum > 0 else 0.0
+    pooled_mean = float(np.average(m_arr, weights=w_arr)) if w_sum > 0 else None
 
     # Pooled variance: law of total variance
     # Var_total = E[Var_i] + Var[E_i]
     # = weighted_mean(var_i) + weighted_mean(mean_i^2) - pooled_mean^2
     if w_sum > 0:
+        assert pooled_mean is not None
         e_var = float(np.average(v_arr, weights=w_arr))
         e_mean_sq = float(np.average(m_arr**2, weights=w_arr))
         pooled_var = e_var + e_mean_sq - pooled_mean**2
     else:
-        pooled_var = 1.0
+        pooled_var = None
 
     # VPC concordance: weighted average of per-fold min VPC coverage.
     # Missing VPC evidence → 0.0 (fail-closed: missing evidence must fail
@@ -345,11 +369,16 @@ def _aggregate_loro_metrics(fold_results: list[LOROFoldResult]) -> LOROMetrics:
         vpc_concordance = 0.0
 
     # Worst fold tracking
-    worst_mean_idx = int(np.argmax(np.abs(m_arr)))
-    worst_var_idx = int(np.argmax(np.abs(v_arr - 1.0)))
+    worst_mean_idx = int(np.argmax(np.abs(m_arr))) if len(m_arr) else None
+    worst_var_idx = int(np.argmax(np.abs(v_arr - 1.0))) if len(v_arr) else None
 
     # Conservative: all folds must converge for overall_pass
-    overall_pass = n_converged == len(fold_results)
+    overall_pass = (
+        bool(fold_results)
+        and n_converged == len(fold_results)
+        and len(complete_folds) == len(fold_results)
+        and len(vpc_coverages) == len(fold_results)
+    )
 
     return LOROMetrics(
         n_folds=len(fold_results),
@@ -358,8 +387,12 @@ def _aggregate_loro_metrics(fold_results: list[LOROFoldResult]) -> LOROMetrics:
         pooled_npde_variance=pooled_var,
         vpc_coverage_concordance=vpc_concordance,
         per_fold_bic=per_fold_bic,
-        worst_fold_npde_mean=float(m_arr[worst_mean_idx]) if len(m_arr) > 0 else None,
-        worst_fold_npde_variance=float(v_arr[worst_var_idx]) if len(v_arr) > 0 else None,
+        worst_fold_npde_mean=(
+            float(m_arr[worst_mean_idx]) if worst_mean_idx is not None else None
+        ),
+        worst_fold_npde_variance=(
+            float(v_arr[worst_var_idx]) if worst_var_idx is not None else None
+        ),
         overall_pass=overall_pass,
         evaluation_mode="fixed_parameter",
     )

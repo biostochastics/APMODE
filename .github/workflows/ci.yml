@@ -34,7 +34,7 @@ jobs:
           version: "latest"
       - run: uv python install ${{ matrix.python-version }}
       - run: uv sync --all-extras --python ${{ matrix.python-version }}
-      - run: uv run pytest tests/ -v --tb=short -n auto -m "not live and not slow"
+      - run: uv run pytest tests/ -v --tb=short -n auto -m "not live and not slow and not requires_r and not requires_llm"
 
   benchmarks:
     runs-on: ubuntu-latest
@@ -45,9 +45,44 @@ jobs:
           version: "latest"
       - run: uv sync --all-extras
       - name: Suite A scenario validation
-        run: uv run pytest tests/unit/test_benchmark_suite_a.py -v --tb=short
+        run: uv run pytest tests/unit/benchmarks/test_benchmark_suite_a.py -v --tb=short
       - name: Suite A structure recovery assertions
-        run: uv run pytest tests/unit/test_benchmark_simulation.py -v --tb=short
+        run: uv run pytest tests/unit/benchmarks/test_benchmark_simulation.py -v --tb=short
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+      - run: uv build --wheel
+      - run: uv venv .wheel-smoke
+      - run: uv pip install --python .wheel-smoke/bin/python dist/*.whl
+      - name: Smoke-test the installed wheel away from the checkout
+        run: |
+          cd "$(mktemp -d)"
+          "$GITHUB_WORKSPACE/.wheel-smoke/bin/python" -c \
+            "from apmode.data.profiler import profile_data; from apmode.paths import policies_dir; assert policies_dir() is not None"
+          "$GITHUB_WORKSPACE/.wheel-smoke/bin/apmode" policies --validate
+
+  docs-site:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: docs-site
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: docs-site/package-lock.json
+      - run: npm ci
+      - run: npm run types:check
+      - run: npm run build
 
   policy-validation:
     runs-on: ubuntu-latest

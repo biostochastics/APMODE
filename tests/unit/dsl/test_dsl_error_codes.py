@@ -89,10 +89,10 @@ class TestFrmSemCodes:
         assert _code_for(spec, Lane.SUBMISSION, "non_negative") == FrmCode.SEM_NON_NEGATIVE
 
     def test_unit_interval_violation_carries_sem_003(self) -> None:
-        # SumIG.weight_1 is unit-interval constrained; k=1 sidesteps the
-        # disposition-fixed / mt-ordering checks so only unit_interval fires.
+        # SumIG.weight_1 exists only for k=2; fixed disposition priors keep
+        # this fixture focused on the unit-interval error.
         spec = _make_spec(
-            absorption=SumIG(k=1),
+            absorption=SumIG(k=2),
             initial={
                 "MT_1": 2.0,
                 "MT_2": 6.0,
@@ -102,6 +102,10 @@ class TestFrmSemCodes:
                 "V": 70.0,
                 "CL": 5.0,
             },
+            priors=[
+                PriorSpec(target="CL", family=default_structural_prior(), source="fixed_external"),
+                PriorSpec(target="V", family=default_structural_prior(), source="fixed_external"),
+            ],
         )
         assert _code_for(spec, Lane.DISCOVERY, "unit_interval") == FrmCode.SEM_UNIT_INTERVAL
 

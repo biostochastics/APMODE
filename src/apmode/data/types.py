@@ -71,6 +71,9 @@ def positive_unblqd_mask(obs: pd.DataFrame) -> np.ndarray:
     """
     dv = obs["DV"].to_numpy(dtype=float)
     mask: np.ndarray = dv > 0
+    if "MDV" in obs.columns:
+        mdv: np.ndarray = obs["MDV"].to_numpy(dtype=float)
+        mask = mask & (mdv == 0)
     if "BLQ_FLAG" in obs.columns:
         blq: np.ndarray = obs["BLQ_FLAG"].to_numpy(dtype=float)
         mask = mask & (blq != 1)
@@ -588,9 +591,11 @@ def is_steady_state(
     dose_tolerance: float = 0.20,
     min_doses: int = 3,
 ) -> tuple[bool, str]:
-    """Pragmatic steady-state check:
-    ``(elapsed >= n_half_lives_required * t½ AND n_doses >= min_doses)
-    OR n_doses >= n_doses_alt``.
+    """Pragmatic steady-state check based on elapsed half-lives.
+
+    Dose count is a minimum-evidence guard, never a substitute for elapsed
+    pharmacokinetic time: ``elapsed >= n_half_lives_required * t½`` and at
+    least ``min_doses`` are both required.
 
     Adapted from ``nlmixr2autoinit:is_ss`` (Huang Z et al. 2025) with
     APMODE-specific aggregation. nlmixr2's "combined" semantics use the
@@ -641,7 +646,7 @@ def is_steady_state(
                 "SS not declared without half-life evidence"
             ),
         )
-    ss_by_count = n_doses_n >= n_doses_alt
+    ss_by_count = n_doses_n >= n_doses_alt and elapsed >= n_half_lives_required * half_life
     return (
         ss_by_t12 or ss_by_count,
         (

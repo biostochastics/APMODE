@@ -16,7 +16,12 @@ from lark import Lark, Tree
 from apmode.dsl.ast_models import DSLSpec
 from apmode.dsl.errors import FormularCompileError, FrmCode
 from apmode.dsl.macros import expand_macros
-from apmode.dsl.priors import PriorSpec, build_prior_spec
+from apmode.dsl.priors import (
+    PriorSpec,
+    build_prior_spec,
+    prior_target_kinds,
+    validate_priors,
+)
 from apmode.dsl.transformer import DSLTransformer, RawPriorEntry
 
 _GRAMMAR_PATH = Path(__file__).parent / "pk_grammar.lark"
@@ -81,6 +86,7 @@ _ROLE_TO_RULE = {
     "initial_block": "initial",
     "metadata_block": "metadata",
     "units_block": "units",
+    "experimental_block": "experimental",
     "priors_block": "priors",
     "covariates_block": "covariates",
 }
@@ -100,6 +106,7 @@ _OPTIONAL_SINGLE_BLOCKS = (
     "metadata_block",
     "initial_block",
     "units_block",
+    "experimental_block",
     "priors_block",
     "covariates_block",
 )
@@ -147,6 +154,7 @@ def _validate_block_cardinality(tree: Tree) -> None:  # type: ignore[type-arg]
         "metadata_block": "metadata",
         "initial_block": "initial",
         "units_block": "units",
+        "experimental_block": "experimental",
         "priors_block": "priors",
         "covariates_block": "covariates",
     }
@@ -256,7 +264,12 @@ def _collect_source_meta(tree: Tree) -> dict[str, tuple[int, int]]:  # type: ign
     return out
 
 
-def _lower_priors(spec: DSLSpec, raw_priors: list[RawPriorEntry]) -> DSLSpec:
+def _lower_priors(
+    spec: DSLSpec,
+    raw_priors: list[RawPriorEntry],
+    *,
+    strict_targets: bool = True,
+) -> DSLSpec:
     """Lower parsed ``priors:`` entries to ``PriorSpec`` via the canonical factory.
 
     Every entry MUST route through :func:`apmode.dsl.priors.build_prior_spec`
@@ -276,7 +289,8 @@ def _lower_priors(spec: DSLSpec, raw_priors: list[RawPriorEntry]) -> DSLSpec:
     an informative source missing justification/``historical_refs``).
     """
     structural = set(spec.structural_param_names())
-    priors: list[PriorSpec] = []
+    target_kinds = prior_target_kinds(spec) if strict_targets else None
+    priors: list[PriorSpec] = list(spec.priors)
     for entry in raw_priors:
         try:
             priors.append(
@@ -288,6 +302,7 @@ def _lower_priors(spec: DSLSpec, raw_priors: list[RawPriorEntry]) -> DSLSpec:
                     doi=entry.doi,
                     historical_refs=entry.historical_refs,
                     structural_params=structural,
+                    target_kinds=target_kinds,
                 )
             )
         except ValueError as exc:
@@ -318,12 +333,16 @@ def compile_dsl(text: str) -> DSLSpec:
     transformer = DSLTransformer()
     result = transformer.transform(tree)
     assert isinstance(result, DSLSpec)  # guaranteed by grammar's start rule
-    if transformer.raw_priors:
-        result = _lower_priors(result, transformer.raw_priors)
     if transformer.raw_covariates:
         result = result.model_copy(update={"covariates": transformer.raw_covariates})
     if transformer.raw_observations:
         result = result.model_copy(update={"observations": transformer.raw_observations})
+    if transformer.raw_priors:
+        # Construct before macro expansion so standard-prior macros see manual
+        # declarations and do not duplicate them. Exact target existence is
+        # checked after macros, which may themselves instantiate IIV/covariate
+        # targets referenced by the manual prior.
+        result = _lower_priors(result, transformer.raw_priors, strict_targets=False)
     if transformer.raw_macro_uses:
         # P2.1: expand `use <macro>` statements into plain AST nodes. Must
         # run after every other raw_*-folding step above so macros like
@@ -331,6 +350,16 @@ def compile_dsl(text: str) -> DSLSpec:
         # modules, any hand-authored variability/priors/covariates) when
         # deciding what is already covered.
         result = expand_macros(result, transformer.raw_macro_uses)
+    prior_errors = validate_priors(
+        result.priors,
+        set(result.structural_param_names()),
+        target_kinds=prior_target_kinds(result),
+    )
+    if prior_errors:
+        raise FormularCompileError(
+            FrmCode.PRIOR_INVALID_DECLARATION,
+            f"priors: invalid declaration: {'; '.join(prior_errors)}",
+        )
     meta = _collect_source_meta(tree)
     if meta:
         # DSLSpec is frozen — rebuild with the sidecar populated. Fields

@@ -7,6 +7,7 @@ Uses JAX/Diffrax/Equinox for neural ODE integration and training.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 import time
@@ -23,7 +24,12 @@ import jax.numpy as jnp
 import numpy as np
 
 from apmode.backends.node_ode import HybridPKODE, ODEConfig
-from apmode.backends.node_trainer import TrainingConfig, predict_subject_conc, train_node
+from apmode.backends.node_trainer import (
+    TrainingConfig,
+    predict_subject_conc,
+    train_node,
+    train_node_vi,
+)
 from apmode.bundle.models import ParameterEstimate
 from apmode.errors import InvalidSpecError
 
@@ -68,6 +74,7 @@ class SubjectRecord(_SubjectRequired, total=False):
     """
 
     dose_events: list[tuple[float, float, int, int, float, int]]
+    observation_times: list[float]
 
 
 def configure_jax_platform(platform: Literal["cpu", "gpu"]) -> None:
@@ -103,14 +110,17 @@ def _node_pooled_contract(spec: DSLSpec) -> ScoringContract:
     on TPU/GPU and APMODE does not enable x64 on NODE runs.
     """
     from apmode.bundle.models import ScoringContract
-    from apmode.bundle.scoring_contract import _obs_from_spec
 
     return ScoringContract(
         nlpd_kind="conditional",
         re_treatment="pooled",
         nlpd_integrator="none",
         blq_method="none",
-        observation_model=_obs_from_spec(spec),
+        # The current pooled trainer optimizes one constant residual sigma
+        # (node_trainer._population_nll), irrespective of the DSL observation
+        # module.  Report the likelihood actually fitted instead of claiming a
+        # proportional/combined contract copied from the unevaluated spec.
+        observation_model="additive",
         float_precision="float32",
     )
 
@@ -119,13 +129,14 @@ def _pooled_cwres(
     model: HybridPKODE,
     subjects: list[SubjectRecord],
     sigma: float,
-) -> tuple[float, float]:
+) -> tuple[float, float, float, bool]:
     """Pooled/population standardized-residual mean and SD.
 
     Concatenates the standardized residuals ``(obs - PRED) / sigma`` across
     every subject (pooled — the NODE run has no per-subject random effects,
     so ``ScoringContract.re_treatment`` stays ``"pooled"``) and returns
-    ``(mean, sd)``. This replaces the placeholder ``cwres_mean=0.0 /
+    ``(mean, sd, outlier_fraction, state_trajectory_valid)``. This replaces
+    the placeholder ``cwres_mean=0.0 /
     cwres_sd=1.0`` with the real population residual moments. PRED comes from
     :func:`apmode.backends.node_trainer.predict_subject_conc`, the same path
     the training likelihood minimises against.
@@ -134,16 +145,29 @@ def _pooled_cwres(
     pool (no subjects / no observations); callers guard non-finite results.
     """
     residuals: list[jax.Array] = []
+    trajectory_valid = bool(subjects)
     for subj in subjects:
         pred = predict_subject_conc(model, subj)
         obs = subj["observations"]
+        pred_array = np.asarray(pred, dtype=float)
+        trajectory_valid = trajectory_valid and (
+            pred_array.shape == np.asarray(obs).shape
+            and pred_array.size > 0
+            and bool(np.all(np.isfinite(pred_array)))
+            and bool(np.all(pred_array >= 0.0))
+        )
         residuals.append((obs - pred) / sigma)
     if not residuals:
-        return 0.0, 1.0
+        return 0.0, 1.0, 0.0, False
     pooled = jnp.concatenate(residuals)
     if pooled.shape[0] == 0:
-        return 0.0, 1.0
-    return float(jnp.mean(pooled)), float(jnp.std(pooled))
+        return 0.0, 1.0, 0.0, False
+    return (
+        float(jnp.mean(pooled)),
+        float(jnp.std(pooled)),
+        float(jnp.mean(jnp.abs(pooled) > 4.0)),
+        trajectory_valid,
+    )
 
 
 class NodeBackendRunner:
@@ -157,10 +181,19 @@ class NodeBackendRunner:
         *,
         distill: bool = True,
         fidelity_min_r_squared: float = 0.8,
+        random_effects: bool = False,
     ) -> None:
         self.work_dir = work_dir
         self.execution_mode = execution_mode
         self.training_config = training_config or TrainingConfig()
+        # Opt-in mixed-effects (between-subject variability) fit. When True,
+        # run() warm-starts a pooled ``train_node`` fit and then runs
+        # ``train_node_vi`` (native reparameterized VI, Bräm 2024 /
+        # Janssen 2024). The RE fit unlocks BSV-carrying posterior-predictive
+        # draws, which make VPC / NPDE / PIT valid (Comets 2008). When False
+        # the runner stays on the pooled path and leaves VPC / NPDE / PIT
+        # unset (consensus Decision 3).
+        self.random_effects = random_effects
         # Functional distillation: produce a DistillationReport per NODE fit.
         # The report is observability + the input to orchestrator-side promotion;
         # ``fidelity_min_r_squared`` is the promotion gate (kept a runner param,
@@ -222,6 +255,42 @@ class NodeBackendRunner:
         return None
 
     async def run(
+        self,
+        spec: DSLSpec,
+        data_manifest: DataManifest,
+        initial_estimates: dict[str, float],
+        seed: int,
+        timeout_seconds: int | None = None,
+        *,
+        data_path: Path | None = None,
+        split_manifest: dict[str, object] | None = None,
+        gate3_policy: Gate3Config | None = None,
+        nca_diagnostics: list[NCASubjectDiagnostic] | None = None,
+        fixed_parameter: bool = False,
+        test_data_path: Path | None = None,
+    ) -> BackendResult:
+        """Run CPU/JAX work off the asyncio event-loop thread.
+
+        JAX execution is not cooperatively cancellable, so hard timeouts remain
+        unsupported and are rejected by ``_run_sync``.  Offloading nevertheless
+        keeps API health/status/cancellation endpoints responsive during a fit.
+        """
+        return await asyncio.to_thread(
+            self._run_sync,
+            spec,
+            data_manifest,
+            initial_estimates,
+            seed,
+            timeout_seconds,
+            data_path=data_path,
+            split_manifest=split_manifest,
+            gate3_policy=gate3_policy,
+            nca_diagnostics=nca_diagnostics,
+            fixed_parameter=fixed_parameter,
+            test_data_path=test_data_path,
+        )
+
+    def _run_sync(
         self,
         spec: DSLSpec,
         data_manifest: DataManifest,
@@ -335,10 +404,27 @@ class NodeBackendRunner:
             n_cmt=ode_config.n_cmt,
         )
 
-        # Train
+        # Train. Pooled fit always runs; when random effects are enabled it
+        # additionally warm-starts a native reparameterized VI fit (Bräm 2024
+        # two-stage: pooled -> mixed-effects), which retains Ω and per-subject
+        # variational means so the predictive band can carry BSV.
         result = train_node(hybrid_model, subjects, self.training_config)
+        if self.random_effects:
+            result = train_node_vi(
+                hybrid_model,
+                subjects,
+                self.training_config,
+                init_result=result,
+                seed=seed,
+            )
 
         wall_time = time.monotonic() - start_time
+
+        # Per-dim eta shrinkage (1 - mean_i(s_ij^2)/omega_j^2), keyed by hidden
+        # dim. Empty on the pooled path (result.eta_shrinkage is None).
+        eta_shrinkage_map: dict[str, float] = {}
+        if result.eta_shrinkage is not None:
+            eta_shrinkage_map = {f"eta_{j}": float(v) for j, v in enumerate(result.eta_shrinkage)}
 
         # Build BackendResult
         param_estimates = self._extract_parameters(
@@ -355,7 +441,11 @@ class NodeBackendRunner:
         # Pooled/population standardized residuals replace the hard-coded
         # 0.0/1.0 placeholder. re_treatment stays "pooled" (no random
         # effects) — see ``_pooled_cwres`` and ``_node_pooled_contract``.
-        cwres_mean, cwres_sd = _pooled_cwres(result.trained_model, subjects, result.trained_sigma)
+        cwres_mean, cwres_sd, outlier_fraction, state_trajectory_valid = _pooled_cwres(
+            result.trained_model,
+            subjects,
+            result.trained_sigma,
+        )
         gof_cwres_mean = cwres_mean if math.isfinite(cwres_mean) else None
         gof_cwres_sd = cwres_sd if math.isfinite(cwres_sd) else None
 
@@ -367,7 +457,7 @@ class NodeBackendRunner:
             aic=result.final_loss * 2 + 2 * n_trainable,
             bic=result.final_loss * 2 + np.log(n_obs_total) * n_trainable,
             parameter_estimates=param_estimates,
-            eta_shrinkage={},
+            eta_shrinkage=eta_shrinkage_map,
             convergence_metadata=ConvergenceMetadata(
                 method="adam",
                 converged=result.converged,
@@ -391,10 +481,13 @@ class NodeBackendRunner:
             # back to the CWRES NPE proxy (see
             # ``apmode.governance.ranking._resolve_npe``).
             diagnostics=DiagnosticBundle(
+                state_trajectory_valid=state_trajectory_valid,
                 gof=GOFMetrics(
                     cwres_mean=gof_cwres_mean,
                     cwres_sd=gof_cwres_sd,
-                    outlier_fraction=0.0,
+                    outlier_fraction=(
+                        outlier_fraction if math.isfinite(outlier_fraction) else None
+                    ),
                 ),
                 identifiability=IdentifiabilityFlags(
                     condition_number=None,
@@ -419,18 +512,37 @@ class NodeBackendRunner:
             initial_estimate_source=init_source,
         )
 
-        # Pooled posterior-predictive diagnostics (NPE + AUC/Cmax-BE only).
+        # Posterior-predictive diagnostics. Two mutually exclusive paths:
+        #   * random effects fitted (result.random_effects and omega present):
+        #     BSV-carrying draws unlock the FULL set — vpc / npde /
+        #     pit_calibration in addition to npe_score / auc_cmax (Comets 2008
+        #     requires the full predictive distribution incl. BSV).
+        #   * pooled fit: NPE + AUC/Cmax-BE only; vpc / npde / pit_calibration
+        #     stay unset because a pooled band under-covers (Decision 3).
         if gate3_policy is not None:
-            backend_result = self._attach_predictive_diagnostics(
-                backend_result,
-                model=result.trained_model,
-                subjects=subjects,
-                sigma=result.trained_sigma,
-                spec=spec,
-                gate3_policy=gate3_policy,
-                nca_diagnostics=nca_diagnostics,
-                seed=seed,
-            )
+            if result.random_effects and result.omega is not None:
+                backend_result = self._attach_predictive_diagnostics_bsv(
+                    backend_result,
+                    model=result.trained_model,
+                    subjects=subjects,
+                    sigma=result.trained_sigma,
+                    omega=result.omega,
+                    spec=spec,
+                    gate3_policy=gate3_policy,
+                    nca_diagnostics=nca_diagnostics,
+                    seed=seed,
+                )
+            else:
+                backend_result = self._attach_predictive_diagnostics(
+                    backend_result,
+                    model=result.trained_model,
+                    subjects=subjects,
+                    sigma=result.trained_sigma,
+                    spec=spec,
+                    gate3_policy=gate3_policy,
+                    nca_diagnostics=nca_diagnostics,
+                    seed=seed,
+                )
 
         # Functional distillation (PRD §4.2.4): approximate the learned NODE
         # sub-function with a classical surrogate and attach the sealed report.
@@ -525,7 +637,10 @@ class NodeBackendRunner:
             )
             if not subject_sims:
                 return backend_result
-            predictive = build_predictive_diagnostics(subject_sims, policy=gate3_policy, spec=spec)
+            # The current NODE likelihood is additive regardless of the
+            # source DSL observation block; ``spec=None`` selects additive
+            # NPE scaling and keeps diagnostics aligned with the fitted model.
+            predictive = build_predictive_diagnostics(subject_sims, policy=gate3_policy, spec=None)
         except Exception:  # predictive path is best-effort — never fatal
             logger.warning(
                 "NODE posterior-predictive path failed for model %s; Gate 3 "
@@ -537,6 +652,129 @@ class NodeBackendRunner:
 
         updated_diagnostics = backend_result.diagnostics.model_copy(
             update={
+                "npe_score": predictive.npe_score,
+                "auc_cmax_be_score": predictive.auc_cmax_be_score,
+                "auc_cmax_source": predictive.auc_cmax_source,
+            }
+        )
+        return backend_result.model_copy(update={"diagnostics": updated_diagnostics})
+
+    def _build_subject_sims_bsv(
+        self,
+        model: HybridPKODE,
+        subjects: list[SubjectRecord],
+        sigma: float,
+        omega: list[float],
+        *,
+        n_sims: int,
+        seed: int,
+        nca_diagnostics: list[NCASubjectDiagnostic] | None,
+    ) -> list[SubjectSimulation]:
+        """Build per-subject BSV-carrying posterior-predictive matrices.
+
+        Mirrors :meth:`_build_subject_sims`, but each of the ``n_sims``
+        replicates draws a fresh random effect ``eta ~ N(0, diag(omega^2))``
+        and applies it multiplicatively to the NODE input-layer weights
+        (Bräm et al. 2024: ``W_i = W_pop * exp(eta)``) via
+        :meth:`HybridPKODE.apply_subject_re` *before* solving. The predictive
+        band therefore carries between-subject variability — the necessary
+        condition for valid VPC / NPDE (Comets 2008 requires the full
+        predictive distribution including BSV, not just residual error).
+
+        Additive residual noise ``N(0, sigma)`` is layered on top of each
+        RE-perturbed structural PRED. ``omega`` is the trained population RE
+        scale (``TrainingResult.omega``, one entry per hidden dim); a single
+        ``numpy`` generator seeded from ``seed`` threads both the ETA and the
+        residual draws so the band is deterministic given the seed.
+        """
+        from apmode.backends.predictive_summary import SubjectSimulation
+
+        rng = np.random.default_rng(seed)
+        omega_arr = np.asarray(omega, dtype=float)
+        re_dim = int(omega_arr.shape[0])
+        diag_by_id = {d.subject_id: d for d in (nca_diagnostics or [])}
+        sims: list[SubjectSimulation] = []
+        for subj in subjects:
+            obs = np.asarray(subj["observations"], dtype=float)
+            t_obs = np.asarray(subj["times"], dtype=float)
+            n_obs = int(obs.shape[0])
+            sims_matrix = np.empty((n_sims, n_obs), dtype=float)
+            for r in range(n_sims):
+                eta_np = rng.normal(0.0, 1.0, size=re_dim) * omega_arr
+                eta = jnp.asarray(eta_np, dtype=jnp.float32)
+                model_r = model.apply_subject_re(eta)
+                pred = np.asarray(predict_subject_conc(model_r, subj), dtype=float)
+                noise = rng.normal(0.0, sigma, size=n_obs)
+                sims_matrix[r, :] = pred + noise
+            sid = subj["subject_id"]
+            sims.append(
+                SubjectSimulation(
+                    subject_id=sid,
+                    t_observed=t_obs,
+                    observed_dv=obs,
+                    sims_at_observed=sims_matrix,
+                    nca_diagnostic=diag_by_id.get(sid),
+                )
+            )
+        return sims
+
+    def _attach_predictive_diagnostics_bsv(
+        self,
+        backend_result: BackendResult,
+        *,
+        model: HybridPKODE,
+        subjects: list[SubjectRecord],
+        sigma: float,
+        omega: list[float],
+        spec: DSLSpec,
+        gate3_policy: Gate3Config,
+        nca_diagnostics: list[NCASubjectDiagnostic] | None,
+        seed: int,
+    ) -> BackendResult:
+        """Copy the FULL predictive-diagnostic set onto the diagnostics — RE path.
+
+        This is the mixed-effects payoff (item A): because the draws carry
+        between-subject variability (:meth:`_build_subject_sims_bsv`), the
+        VPC / NPDE / PIT calibration produced by
+        :func:`build_predictive_diagnostics` are valid (Comets 2008), so all
+        six fields — ``vpc`` / ``npde`` / ``pit_calibration`` in addition to
+        ``npe_score`` / ``auc_cmax_be_score`` / ``auc_cmax_source`` — are
+        copied. The pooled path (:meth:`_attach_predictive_diagnostics`)
+        deliberately copies only the latter three.
+
+        Best-effort like the pooled path: any failure in the simulation /
+        scoring path is swallowed, leaving the predictive fields unset and
+        Gate 3 on the CWRES NPE proxy.
+        """
+        from apmode.backends.predictive_summary import build_predictive_diagnostics
+
+        try:
+            subject_sims = self._build_subject_sims_bsv(
+                model,
+                subjects,
+                sigma,
+                omega,
+                n_sims=gate3_policy.n_posterior_predictive_sims,
+                seed=seed,
+                nca_diagnostics=nca_diagnostics,
+            )
+            if not subject_sims:
+                return backend_result
+            predictive = build_predictive_diagnostics(subject_sims, policy=gate3_policy, spec=None)
+        except Exception:  # predictive path is best-effort — never fatal
+            logger.warning(
+                "NODE BSV posterior-predictive path failed for model %s; Gate 3 "
+                "falls back to the CWRES NPE proxy.",
+                spec.model_id,
+                exc_info=True,
+            )
+            return backend_result
+
+        updated_diagnostics = backend_result.diagnostics.model_copy(
+            update={
+                "vpc": predictive.vpc,
+                "npde": predictive.npde,
+                "pit_calibration": predictive.pit_calibration,
                 "npe_score": predictive.npe_score,
                 "auc_cmax_be_score": predictive.auc_cmax_be_score,
                 "auc_cmax_source": predictive.auc_cmax_source,
@@ -604,10 +842,14 @@ class NodeBackendRunner:
         If no data_path, creates synthetic subjects from initial estimates
         (for testing / mock mode).
         """
-        if data_path is not None and data_path.exists():
+        if data_path is not None:
+            if not data_path.is_file():
+                raise FileNotFoundError(
+                    f"NODE data_path does not exist or is not a file: {data_path}"
+                )
             return self._load_subjects_from_csv(data_path, data_manifest, n_cmt=n_cmt)
 
-        # Mock mode: create synthetic subjects from initial estimates
+        # Mock mode is explicit: only ``data_path=None`` may synthesize data.
         return self._make_mock_subjects(data_manifest, initial_estimates, n_cmt=n_cmt)
 
     def _reject_unsupported_rows(self, event_df: pd.DataFrame, cm: ColumnMapping) -> None:
@@ -616,7 +858,8 @@ class NodeBackendRunner:
         Phase C1 supports bolus multi-dose and zero-order infusions. Steady-state
         (SS), other-event (EVID=2) rows, and observations outside the central
         compartment (CMT != 1) are not implemented; rejecting them explicitly
-        prevents a silent, wrong fit.
+        prevents a silent, wrong fit. EVID=2 can encode a state reset or another
+        protocol event, so treating it as a harmless no-op would be unsafe.
 
         CMT convention (see also ``_load_subjects_from_csv`` /
         ``node_trainer._solve_multidose_eager``). The hybrid ODE state vector is
@@ -820,6 +1063,7 @@ class NodeBackendRunner:
                         "y0": y0,
                         "obs_cmt": jnp.array(1),
                         "dose_events": all_events,
+                        "observation_times": [float(t) for t in obs_rows[cm.time].values],
                     }
                 )
 

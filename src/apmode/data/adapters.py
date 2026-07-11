@@ -15,7 +15,7 @@ import structlog
 from apmode.data.categorical_encoding import auto_remap_binary_columns
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Mapping
 
 _logger = structlog.get_logger(__name__)
 
@@ -61,6 +61,7 @@ _RESERVED_COLUMNS: frozenset[str] = frozenset(
         "DUR",
         "LLOQ",
         "SUMIG_DOSE",
+        "SUMIG_T0",
         "STUDY_ID",
     }
 )
@@ -133,6 +134,7 @@ def to_nlmixr2_format(
     df: pd.DataFrame,
     *,
     dvid_allowlist: Iterable[object] | None = None,
+    categorical_references: Mapping[str, str] | None = None,
 ) -> pd.DataFrame:
     """Convert canonical PK DataFrame to nlmixr2-ready form.
 
@@ -195,7 +197,12 @@ def to_nlmixr2_format(
                 allowlist=sorted(active_dvid_allowlist),
             )
             out = out.loc[keep_mask].reset_index(drop=True)
-        remaining = out.loc[obs_mask.reindex(out.index, fill_value=False), "DVID"]
+        # Filtering/reset_index changes positional labels; recompute from the
+        # retained frame instead of reindexing the pre-filter mask.
+        remaining_obs_mask = (
+            out["EVID"].eq(0) if "EVID" in out.columns else pd.Series(True, index=out.index)
+        )
+        remaining = out.loc[remaining_obs_mask, "DVID"]
         unique_remaining = {str(v).strip().lower() for v in remaining.dropna().unique()}
         if len(unique_remaining) <= 1:
             out = out.drop(columns=["DVID"])
@@ -208,9 +215,15 @@ def to_nlmixr2_format(
     # one positive dose.
     if "SUMIG_DOSE" not in out.columns and {"ID", "EVID", "AMT"}.issubset(out.columns):
         dose_rows = out[(out["EVID"].isin([1, 4])) & (out["AMT"] > 0)]
-        if not dose_rows.empty and dose_rows.groupby("ID").size().eq(1).all():
+        if (
+            not dose_rows.empty
+            and dose_rows.groupby("ID").size().eq(1).all()
+            and "TIME" in dose_rows.columns
+        ):
             out = out.merge(
-                dose_rows[["ID", "AMT"]].rename(columns={"AMT": "SUMIG_DOSE"}),
+                dose_rows[["ID", "AMT", "TIME"]].rename(
+                    columns={"AMT": "SUMIG_DOSE", "TIME": "SUMIG_T0"}
+                ),
                 on="ID",
                 how="left",
             )
@@ -221,6 +234,31 @@ def to_nlmixr2_format(
         c for c in out.columns if c not in _RESERVED_COLUMNS and not is_numeric_dtype(out[c])
     )
     if to_remap:
-        out, _hints = auto_remap_binary_columns(out, to_remap)
+        overrides: dict[str, dict[object, int]] = {}
+        for requested_col, reference in (categorical_references or {}).items():
+            actual_col = next(
+                (col for col in out.columns if col.upper() == requested_col.upper()), None
+            )
+            if actual_col is None or actual_col not in to_remap:
+                continue
+            observed = out[actual_col].dropna().unique().tolist()
+            if len(observed) != 2:
+                raise ValueError(
+                    f"Categorical reference for {actual_col!r} requires exactly two "
+                    f"observed levels; got {sorted(observed, key=str)}"
+                )
+            matches = [
+                value
+                for value in observed
+                if str(value).strip().casefold() == reference.strip().casefold()
+            ]
+            if len(matches) != 1:
+                raise ValueError(
+                    f"Categorical reference {reference!r} for {actual_col!r} does not "
+                    f"match exactly one observed level {sorted(observed, key=str)}"
+                )
+            baseline = matches[0]
+            overrides[actual_col] = {value: 0 if value == baseline else 1 for value in observed}
+        out, _hints = auto_remap_binary_columns(out, to_remap, overrides=overrides)
 
     return out

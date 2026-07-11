@@ -31,10 +31,11 @@ from apmode.bundle.rocrate.entities._common import (
 # gate{n}_<candidate_id>.json  where n ∈ {1, 2, 2.5, 3}
 # Regex permits the ``2.5`` fractional identifier while still matching
 # integer gates cleanly.
-_GATE_FILENAME_RE = re.compile(r"^gate(?P<n>2\.5|\d+)_(?P<candidate_id>.+)\.json$")
+_GATE_FILENAME_RE = re.compile(r"^gate(?P<n>2_5|2\.5|1b|\d+)_(?P<candidate_id>.+)\.json$")
 
 _GATE_LABELS: dict[str, str] = {
     "1": "Gate 1: Technical Validity",
+    "1b": "Gate 1 Bayesian: Posterior Reliability",
     "2": "Gate 2: Lane Admissibility",
     "2.5": "Gate 2.5: Credibility",
     "3": "Gate 3: Lane Ranking",
@@ -57,7 +58,8 @@ def parse_gate_filename(filename: str) -> tuple[str, str] | None:
     m = _GATE_FILENAME_RE.match(filename)
     if not m:
         return None
-    return m.group("n"), m.group("candidate_id")
+    gate_n = "2.5" if m.group("n") == "2_5" else m.group("n")
+    return gate_n, m.group("candidate_id")
 
 
 def add_gate_howto_step(

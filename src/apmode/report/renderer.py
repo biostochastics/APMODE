@@ -342,7 +342,7 @@ def _candidate_detail(
         lines.append("|-----------|------|--------:|--------------:|")
         for name, pe in iiv.items():
             shrink = result.eta_shrinkage.get(name)
-            s_str = f"{shrink:.1f}" if shrink is not None else "--"
+            s_str = f"{shrink * 100.0:.1f}" if shrink is not None else "--"
             lines.append(f"| {name} | {pe.category.upper()} | {pe.estimate:.4g} | {s_str} |")
 
     # Parameters — residual

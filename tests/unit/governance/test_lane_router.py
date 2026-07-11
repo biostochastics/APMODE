@@ -88,6 +88,8 @@ class TestLaneRouter:
         """
         manifest = _make_manifest(protocol_heterogeneity="pooled-heterogeneous")
         decision = route("discovery", manifest)
+        assert "jax_node" not in decision.backends
+        assert any("pooled NODE trainer" in c for c in decision.constraints)
 
         stan = next(e for e in registered_emitters() if e.name == "stan")
         stan_should_be_excluded = CapabilityTag.VARIABILITY_IOV in stan.explicitly_unsupported
@@ -126,6 +128,19 @@ class TestLaneRouter:
         manifest = _make_manifest(blq_burden=0.21)
         decision = route("submission", manifest, _DEFAULT_BLQ_POLICY)
         assert any("BLQ method M3" in c for c in decision.constraints)
+
+    def test_blq_directive_removes_node_without_censoring_likelihood(self) -> None:
+        for burden, expected_method in ((0.05, "M7+"), (0.25, "M3")):
+            decision = route(
+                "discovery",
+                _make_manifest(blq_burden=burden),
+                _DEFAULT_BLQ_POLICY,
+            )
+            assert "jax_node" not in decision.backends
+            assert any(
+                f"BLQ method {expected_method}" in constraint and "not BLQ-aware" in constraint
+                for constraint in decision.constraints
+            )
 
     def test_compound_blq_and_heterogeneous(self) -> None:
         """High BLQ + pooled-heterogeneous: both constraints noted."""

@@ -398,12 +398,9 @@ class TestRankingRequiresSimulationMetrics:
         r1 = _make_result(model_id="m1", backend="nlmixr2", blq_method="m3", bic=170.0)
         r2 = _make_result(model_id="m2", backend="nlmixr2", blq_method="m4", bic=165.0)
         gate_result, _ranked = evaluate_gate3([r1, r2], _load_policy("submission"))
-        assert gate_result.gate_name == "cross_paradigm_ranking"
-        # The qualification reason must mention BLQ to document *why* BIC was refused.
-        quals = [c for c in gate_result.checks if c.check_id == "qualified_comparison"]
-        assert quals
-        evidence = quals[0].evidence_ref or ""
-        assert "BLQ" in evidence or "blq" in evidence.lower()
+        assert gate_result.gate_name == "contract_grouped_ranking"
+        method = next(c for c in gate_result.checks if c.check_id == "ranking_method")
+        assert method.observed == "contract_grouped_no_cross_contract_composite"
 
 
 class TestVPCConcordance:
@@ -519,10 +516,10 @@ class TestGate3CrossParadigm:
         policy = _load_policy("discovery")
         g3, ranked = evaluate_gate3([r1, r2], policy)
 
-        assert g3.gate_name == "cross_paradigm_ranking"
+        assert g3.gate_name == "contract_grouped_ranking"
         assert len(ranked) == 2
         method = next(c for c in g3.checks if c.check_id == "ranking_method")
-        assert method.observed == "cross_paradigm_simulation_based"
+        assert method.observed == "contract_grouped_no_cross_contract_composite"
 
     def test_qualified_comparison_flag(self) -> None:
         r1 = _make_result(model_id="m1", backend="nlmixr2")
@@ -530,9 +527,9 @@ class TestGate3CrossParadigm:
         policy = _load_policy("discovery")
         g3, _ranked = evaluate_gate3([r1, r2], policy)
 
-        qc = next(c for c in g3.checks if c.check_id == "qualified_comparison")
-        assert qc.passed is True
-        assert qc.observed is True
+        method = next(c for c in g3.checks if c.check_id == "ranking_method")
+        assert method.passed is True
+        assert method.observed == "contract_grouped_no_cross_contract_composite"
 
     def test_nlpd_not_used_cross_paradigm(self) -> None:
         """NLPD/BIC is not the primary metric for cross-paradigm."""
@@ -550,9 +547,9 @@ class TestGate3CrossParadigm:
 
         # m2 has lower BIC but much worse VPC/NPE
         # Cross-paradigm should not simply pick lowest BIC
-        assert g3.gate_name == "cross_paradigm_ranking"
-        # The classical model should rank better due to better VPC/NPE
-        assert ranked[0].candidate_id == "m1"
+        assert g3.gate_name == "contract_grouped_ranking"
+        assert {candidate.candidate_id for candidate in ranked} == {"m1", "m2"}
+        assert g3.candidate_id == "multiple_contract_groups"
 
 
 class TestGate3ConfigValidation:

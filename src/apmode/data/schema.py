@@ -8,7 +8,7 @@ this canonical schema. Validation uses lazy=True to surface all violations.
 from __future__ import annotations
 
 import pandas as pd
-import pandera as pa
+import pandera.pandas as pa
 from pandera.typing import Series  # noqa: TC002 — runtime use in field annotations
 
 
@@ -42,7 +42,13 @@ class CanonicalPKSchema(pa.DataFrameModel):
     # Optional columns — validated only when present
     RATE: Series[float] | None = pa.Field(ge=0.0, nullable=True)
     DUR: Series[float] | None = pa.Field(ge=0.0, nullable=True)
-    ADDL: Series[int] | None = pa.Field(ge=0, description="Number of additional doses")
+    # Nullable integer-like NONMEM fields are represented as floats at the
+    # pandas boundary because numpy int64 cannot hold NaN. Cross-column logic
+    # treats missing as zero and ``optional_integer_fields_are_integral``
+    # preserves integer semantics for non-missing values.
+    ADDL: Series[float] | None = pa.Field(
+        ge=0, nullable=True, description="Number of additional doses"
+    )
     II: Series[float] | None = pa.Field(ge=0.0, nullable=True, description="Inter-dose interval")
     # NONMEM steady-state flag. Standard values: 0=none, 1=SS,
     # 2=SS+superposition. 99 is an ACOP-style "not applicable" sentinel
@@ -52,8 +58,9 @@ class CanonicalPKSchema(pa.DataFrameModel):
     # canonical-PK validator rejects every row of Oral_1CPT /
     # Bolus_1CPT / Infusion_1CPT (and the MM variants), which makes
     # those fixtures unusable in Phase-1.
-    SS: Series[int] | None = pa.Field(
+    SS: Series[float] | None = pa.Field(
         isin=[0, 1, 2, 99],
+        nullable=True,
         description=(
             "Steady-state flag (0=none, 1=SS, 2=SS+superposition, "
             "99=not applicable / ACOP-style sentinel — treated as 0)"
@@ -69,9 +76,9 @@ class CanonicalPKSchema(pa.DataFrameModel):
 
     # Cross-column checks (dataframe-level)
     @pa.dataframe_check
-    def dose_amt_positive_when_evid_1(cls, df: pd.DataFrame) -> Series[bool]:  # type: ignore[misc]
-        """When EVID=1 (dose), AMT must be > 0."""
-        return ~((df["EVID"] == 1) & (df["AMT"] <= 0))  # type: ignore[no-any-return]
+    def dose_amt_positive_when_evid_is_dose(cls, df: pd.DataFrame) -> Series[bool]:  # type: ignore[misc]
+        """Dose and reset+dose events must carry a positive amount."""
+        return ~(df["EVID"].isin([1, 4]) & (df["AMT"] <= 0))  # type: ignore[no-any-return]
 
     @pa.dataframe_check
     def obs_amt_zero_when_evid_0(cls, df: pd.DataFrame) -> Series[bool]:  # type: ignore[misc]
@@ -114,6 +121,27 @@ class CanonicalPKSchema(pa.DataFrameModel):
             return pd.Series(True, index=df.index)  # type: ignore[no-any-return]
         addl = df["ADDL"].fillna(0)
         return ~((addl > 0) & (~df["EVID"].isin([1, 4])))  # type: ignore[no-any-return]
+
+    @pa.dataframe_check
+    def infusion_rate_duration_match_amount(cls, df: pd.DataFrame) -> Series[bool]:  # type: ignore[misc]
+        """When RATE and DUR are both supplied, their product must equal AMT."""
+        if "RATE" not in df.columns or "DUR" not in df.columns:
+            return pd.Series(True, index=df.index)  # type: ignore[no-any-return]
+        rate = df["RATE"].fillna(0.0)
+        dur = df["DUR"].fillna(0.0)
+        both = df["EVID"].isin([1, 4]) & (rate > 0) & (dur > 0)
+        expected = rate * dur
+        tolerance = 1e-8 * df["AMT"].abs().clip(lower=1.0)
+        return ~(both & ((expected - df["AMT"]).abs() > tolerance))  # type: ignore[no-any-return]
+
+    @pa.dataframe_check
+    def optional_integer_fields_are_integral(cls, df: pd.DataFrame) -> Series[bool]:  # type: ignore[misc]
+        valid = pd.Series(True, index=df.index)
+        for column in ("ADDL", "SS"):
+            if column in df.columns:
+                values = df[column]
+                valid &= values.isna() | (values % 1 == 0)
+        return valid  # type: ignore[no-any-return]
 
     class Config:
         strict = False  # allow extra covariate columns

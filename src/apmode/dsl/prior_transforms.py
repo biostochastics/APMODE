@@ -24,7 +24,7 @@ from apmode.dsl.priors import (
     PriorSource,
     PriorSpec,
     build_prior_spec,
-    classify_target,
+    prior_target_kinds,
 )
 from apmode.ids import generate_candidate_id
 
@@ -68,7 +68,8 @@ def validate_set_prior(spec: DSLSpec, transform: SetPrior) -> list[str]:
     """
     errors: list[str] = []
     structural = set(spec.structural_param_names())
-    kind = classify_target(transform.target, structural)
+    target_kinds = prior_target_kinds(spec)
+    kind = target_kinds.get(transform.target)
     if kind is None:
         errors.append(
             f"SetPrior target {transform.target!r} does not resolve to any parameter "
@@ -84,6 +85,7 @@ def validate_set_prior(spec: DSLSpec, transform: SetPrior) -> list[str]:
             justification=transform.justification,
             historical_refs=transform.historical_refs,
             structural_params=structural,
+            target_kinds=target_kinds,
         )
     except ValueError as exc:
         errors.append(str(exc))
@@ -108,6 +110,7 @@ def apply_set_prior(spec: DSLSpec, transform: SetPrior) -> DSLSpec:
         justification=transform.justification,
         historical_refs=transform.historical_refs,
         structural_params=set(spec.structural_param_names()),
+        target_kinds=prior_target_kinds(spec),
     )
 
     # Idempotent replace-or-append semantics

@@ -28,6 +28,7 @@ Safety:
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import sys
 import time
@@ -58,12 +59,7 @@ try:  # pragma: no cover - import-time guard
     _CMDSTAN_AVAILABLE = True
 except ImportError:
     pass
-try:  # pragma: no cover
-    import arviz  # noqa: F401 — imported at runtime inside _compute_diagnostics
-
-    _ARVIZ_AVAILABLE = True
-except ImportError:
-    pass
+_ARVIZ_AVAILABLE = importlib.util.find_spec("arviz") is not None
 
 
 # ---------------------------------------------------------------------------
@@ -205,13 +201,11 @@ def _run(request_path: Path) -> dict[str, Any]:
 
     # 7. Write draws to parquet.
     draws_path = Path(request["output_draws_path"])
-    try:
-        _write_draws_parquet(fit, draws_path)
-    except Exception as exc:
-        sys.stderr.write(f"WARN: failed to write draws parquet: {exc}\n")
+    _write_draws_parquet(fit, draws_path)
 
     # 8. Aggregate ParameterEstimate summaries.
     structural_names = _extract_structural_names(request["spec"])
+    iiv_names = _extract_iiv_names(request["spec"])
     param_estimates = _aggregate_estimates(fit, structural_names)
 
     # 9. Build BackendResult-shaped dict.
@@ -226,21 +220,40 @@ def _run(request_path: Path) -> dict[str, Any]:
         "backend": "bayesian_stan",
         "converged": converged_flag,
         "parameter_estimates": param_estimates,
-        "eta_shrinkage": _compute_eta_shrinkage(fit, structural_names),
+        "eta_shrinkage": _compute_eta_shrinkage(fit, iiv_names),
         "convergence_metadata": {
             "method": "nuts",
             "converged": converged_flag,
             "iterations": cfg["warmup"] + cfg["sampling"],
-            "minimization_status": "successful" if converged_flag else "marginal",
+            "minimization_status": "successful" if converged_flag else "terminated",
             "wall_time_seconds": wall_time_seconds,
         },
         "diagnostics": {
-            "gof": {"cwres_mean": 0.0, "cwres_sd": 1.0, "outlier_fraction": 0.0},
+            # Posterior-predictive residual diagnostics are not yet emitted by
+            # Stan.  Persist unavailability; never synthesize an ideal N(0,1).
+            "gof": {"cwres_mean": None, "cwres_sd": None, "outlier_fraction": None},
             "identifiability": {
+                "condition_number": None,
                 "profile_likelihood_ci": {},
                 "ill_conditioned": False,
             },
-            "blq": {"method": "none", "n_blq": 0, "blq_fraction": 0.0},
+            "blq": {
+                "method": (
+                    "m3"
+                    if stan_data.get("cens") is not None
+                    and request["spec"].get("observation", {}).get("type") == "BLQ_M3"
+                    else "m4"
+                    if stan_data.get("cens") is not None
+                    and request["spec"].get("observation", {}).get("type") == "BLQ_M4"
+                    else "none"
+                ),
+                "n_blq": int(sum(stan_data.get("cens", []))),
+                "blq_fraction": (
+                    float(sum(stan_data.get("cens", [])) / stan_data["N"])
+                    if stan_data.get("cens") is not None and stan_data["N"] > 0
+                    else 0.0
+                ),
+            },
         },
         "wall_time_seconds": wall_time_seconds,
         "backend_versions": {
@@ -309,6 +322,7 @@ def _build_stan_data(request: dict[str, Any]) -> dict[str, Any]:
     JSON. It does not attempt a chroot-style jail; callers are
     responsible for constraining the trust domain.
     """
+    import numpy as np
     import pandas as pd
 
     raw_path = request.get("data_path")
@@ -320,7 +334,8 @@ def _build_stan_data(request: dict[str, Any]) -> dict[str, Any]:
     df = pd.read_csv(data_path)
     df = df.rename(columns={c: c.upper() for c in df.columns})
 
-    # Filter observations (DV rows): EVID=0 and MDV=0 (or no MDV)
+    # Filter observations.  BLQ datasets commonly mark censored EVID=0 rows
+    # MDV=1,CENS=1; those rows still contribute a censored likelihood term.
     if "EVID" not in df.columns or "TIME" not in df.columns:
         raise ValueError("Input CSV must have EVID and TIME columns")
     _ID_CANDIDATES = ("ID", "NMID", "USUBJID", "SUBJECT_ID", "PATIENT_ID")
@@ -330,43 +345,70 @@ def _build_stan_data(request: dict[str, Any]) -> dict[str, Any]:
             "Input CSV must have an ID-like column (ID/NMID/USUBJID/SUBJECT_ID/PATIENT_ID)"
         )
 
-    mdv_mask = df["MDV"].fillna(0).astype(int) == 0 if "MDV" in df.columns else True
-    obs_mask = (df["EVID"].astype(int) == 0) & mdv_mask
+    spec_payload = request["spec"] if isinstance(request.get("spec"), dict) else {}
+    obs = spec_payload.get("observation", {})
+    obs_type = obs.get("type", "Proportional") if isinstance(obs, dict) else "Proportional"
+    is_blq = obs_type in ("BLQ_M3", "BLQ_M4")
+    mdv_mask = (
+        df["MDV"].fillna(0).astype(int) == 0
+        if "MDV" in df.columns
+        else pd.Series(True, index=df.index)
+    )
+    cens_mask = (
+        df["CENS"].fillna(0).astype(int) == 1
+        if "CENS" in df.columns
+        else pd.Series(False, index=df.index)
+    )
+    obs_mask = (df["EVID"].astype(int) == 0) & (mdv_mask | (is_blq & cens_mask))
     evt_mask = df["EVID"].astype(int).isin([1, 3, 4])
     obs_df = df[obs_mask].reset_index(drop=True)
     evt_df = df[evt_mask].reset_index(drop=True)
-
-    # DV must be strictly positive for lognormal/proportional likelihood.
-    # NONMEM convention often encodes pre-dose baseline as DV=0 MDV=0; these
-    # are incompatible with a continuous lognormal observation model.
-    # Silently dropping them would mutate the user's dataset underneath the
-    # posterior likelihood, biasing estimates without any audit trail, so
-    # we escalate to ``invalid_spec`` and point the user at the BLQM3/M4
-    # modules for principled censoring. Callers that legitimately need to
-    # exclude pre-dose baselines should set ``MDV=1`` on those rows.
-    if "DV" in obs_df.columns:
-        n_nonpos = int((obs_df["DV"].astype(float) <= 0.0).sum())
-        if n_nonpos:
-            raise ValueError(
-                f"{n_nonpos} non-positive DV observations (MDV=0) incompatible "
-                f"with the lognormal/proportional likelihood. Mark pre-dose "
-                f"baselines with MDV=1 to exclude them from the likelihood, "
-                f"or use the BLQ_M3 / BLQ_M4 observation module with "
-                f"loq_value set so censoring is handled explicitly."
-            )
 
     # Stable subject index: 1..N_subjects, preserving first-appearance order.
     subjects = df[id_col].drop_duplicates().tolist()
     subject_to_idx = {s: i + 1 for i, s in enumerate(subjects)}
     n_subjects = len(subjects)
 
-    # Observations
+    # Observations must be contiguous by subject and monotone in time because
+    # the generated Stan program iterates obs_start[i]:obs_end[i].
+    obs_df = obs_df.assign(_subj=obs_df[id_col].map(subject_to_idx))
+    obs_df = obs_df.sort_values(["_subj", "TIME"], kind="stable").reset_index(drop=True)
     dv_col = "DV" if "DV" in obs_df.columns else None
     if dv_col is None:
         raise ValueError("Input CSV must have a DV column")
-    subject_arr = obs_df[id_col].map(subject_to_idx).astype(int).tolist()
+    dv_series = pd.to_numeric(obs_df[dv_col], errors="coerce")
+    row_cens = (
+        obs_df["CENS"].fillna(0).astype(int)
+        if is_blq and "CENS" in obs_df.columns
+        else pd.Series(0, index=obs_df.index, dtype=int)
+    )
+    if is_blq:
+        loq = float(obs.get("loq_value", 0.0))
+        inferred = (dv_series <= loq).astype(int)
+        if "CENS" not in obs_df.columns:
+            row_cens = inferred
+        # DV is not referenced by the censored likelihood branch.  Replace a
+        # missing censored placeholder with LOQ so Stan receives finite data.
+        dv_series = dv_series.mask((row_cens == 1) & ~np.isfinite(dv_series), loq)
+    if not np.all(np.isfinite(dv_series)):
+        raise ValueError("DV observations contain missing or non-finite values")
+
+    error_model = obs.get("error_model") if isinstance(obs, dict) else None
+    positive_support = obs_type == "Proportional" or (
+        is_blq and error_model in (None, "proportional")
+    )
+    nonpositive_uncensored = (dv_series <= 0.0) & (row_cens == 0)
+    if positive_support and bool(nonpositive_uncensored.any()):
+        n_nonpos = int(nonpositive_uncensored.sum())
+        raise ValueError(
+            f"{n_nonpos} non-positive DV observations (uncensored) incompatible "
+            "with the proportional likelihood; mark BLQ rows CENS=1, use an "
+            "additive/combined error model, or set MDV=1 to exclude baselines"
+        )
+
+    subject_arr = obs_df["_subj"].astype(int).tolist()
     time_arr = obs_df["TIME"].astype(float).tolist()
-    dv_arr = obs_df[dv_col].astype(float).tolist()
+    dv_arr = dv_series.astype(float).tolist()
 
     # Event arrays — sort by subject then time to satisfy per-subject ranges
     evt_df = evt_df.assign(_subj=evt_df[id_col].map(subject_to_idx))
@@ -418,11 +460,11 @@ def _build_stan_data(request: dict[str, Any]) -> dict[str, Any]:
 
     # BLQ: if the observation module is BLQM3/BLQM4 the Stan data block
     # expects cens[N] and loq. Honor the observation.loq_value from spec.
-    obs = request["spec"].get("observation", {}) if isinstance(request["spec"], dict) else {}
-    if obs.get("type") in ("BLQ_M3", "BLQ_M4"):
+    if is_blq:
         loq = float(obs.get("loq_value", 0.0))
-        cens = [1 if v <= loq else 0 for v in dv_arr]
-        stan_data["cens"] = cens
+        if not row_cens.isin([0, 1]).all():
+            raise ValueError("CENS must contain only 0/1 values")
+        stan_data["cens"] = row_cens.astype(int).tolist()
         stan_data["loq"] = loq
 
     # Covariates are referenced via the top-level ``covariates`` list.
@@ -446,7 +488,32 @@ def _build_stan_data(request: dict[str, Any]) -> dict[str, Any]:
                 f"preprocess to a subject-level summary."
             )
         first_per_subject = df.drop_duplicates(subset=[id_col], keep="first")
-        stan_data[cov] = first_per_subject[cov].astype(float).tolist()
+        links = [item for item in covariates if item.get("covariate") == cov]
+        categorical = [item for item in links if item.get("form") == "categorical"]
+        if categorical:
+            references = {str(item.get("reference")) for item in categorical}
+            if len(references) != 1:
+                raise ValueError(
+                    f"Categorical covariate {cov!r} has inconsistent reference levels"
+                )
+            reference = next(iter(references))
+            values = first_per_subject[cov]
+            if values.isna().any():
+                raise ValueError(f"Categorical covariate {cov!r} contains missing values")
+            observed_levels = {str(value) for value in values.unique().tolist()}
+            if reference not in observed_levels:
+                raise ValueError(
+                    f"Categorical covariate {cov!r} reference {reference!r} "
+                    f"is absent from observed levels {sorted(observed_levels)}"
+                )
+            if len(observed_levels) > 2:
+                raise ValueError(
+                    f"Categorical covariate {cov!r} has {len(observed_levels)} levels; "
+                    "the current single-coefficient Stan encoding supports binary data only"
+                )
+            stan_data[cov] = [0.0 if str(value) == reference else 1.0 for value in values]
+        else:
+            stan_data[cov] = first_per_subject[cov].astype(float).tolist()
 
     # ADDL/II (repeat dose) and SS (steady state) NMTRAN semantics are not yet
     # expanded by the harness — reject at data-build time rather than fit with
@@ -530,7 +597,7 @@ def _compute_diagnostics(fit: Any) -> dict[str, Any]:
         ebfmi = az.bfmi(idata)
         ebfmi_min = float(min(ebfmi))
     except Exception as exc:
-        ebfmi_min = float("nan")
+        ebfmi_min = None
         warning = f"ebfmi_failed: {type(exc).__name__}: {exc}"
         diagnostics_warnings.append(warning)
         sys.stderr.write(f"harness: {warning}\n")
@@ -944,7 +1011,7 @@ def _aggregate_estimates(fit: Any, structural_names: list[str]) -> dict[str, dic
     return out
 
 
-def _compute_eta_shrinkage(fit: Any, structural_names: list[str]) -> dict[str, float]:
+def _compute_eta_shrinkage(fit: Any, iiv_names: list[str]) -> dict[str, float]:
     """Individual eta shrinkage on the natural (omega·eta_raw) scale.
 
     The per-subject eta is ``omega·eta_raw``, not ``eta_raw``. An earlier
@@ -966,12 +1033,13 @@ def _compute_eta_shrinkage(fit: Any, structural_names: list[str]) -> dict[str, f
 
     # Stan emitter declares `matrix[N_subjects, nIIV] eta_raw` →
     # cmdstanpy returns shape (n_draws, N_subjects, N_iiv).
-    # eta_raw's third axis is indexed by IIV-declaration order, which may not
-    # match structural_names order. We read the names from the spec variability
-    # items instead.
+    # eta_raw's third axis is indexed by IIV declaration order, not structural
+    # parameter order. ``iiv_names`` is extracted from that declaration.
     n_iiv = eta_raw_draws.shape[2]
+    if len(iiv_names) != n_iiv:
+        return out
 
-    for i, name in enumerate(structural_names[:n_iiv]):
+    for i, name in enumerate(iiv_names):
         omega_name = f"omega_{name}"
         if omega_name not in var_names:
             continue
@@ -993,7 +1061,7 @@ def _compute_eta_shrinkage(fit: Any, structural_names: list[str]) -> dict[str, f
 
 
 def _write_draws_parquet(fit: Any, path: Path) -> None:
-    """Write draws as long-form Parquet (chain, iter, param, value)."""
+    """Write every scalar/vector/matrix draw as long-form Parquet."""
     import numpy as np
     import pandas as pd
     import pyarrow as pa
@@ -1002,28 +1070,36 @@ def _write_draws_parquet(fit: Any, path: Path) -> None:
     frames: list[pd.DataFrame] = []
     for var_name in fit.stan_variables():
         arr = np.asarray(fit.stan_variable(var_name))  # (n_draws,) or (n_draws, ...)
-        if arr.ndim == 1:
-            n_draws = arr.shape[0]
-            n_chains = fit.chains
-            draws_per_chain = n_draws // n_chains
-            chain = np.repeat(np.arange(n_chains), draws_per_chain)
-            it = np.tile(np.arange(draws_per_chain), n_chains)
+        if arr.ndim < 1:
+            continue
+        n_draws = arr.shape[0]
+        n_chains = int(fit.chains)
+        if n_draws % n_chains != 0:
+            raise ValueError(f"{var_name} has {n_draws} draws, not divisible by {n_chains} chains")
+        draws_per_chain = n_draws // n_chains
+        chain = np.repeat(np.arange(n_chains), draws_per_chain)
+        it = np.tile(np.arange(draws_per_chain), n_chains)
+        flat = arr.reshape(n_draws, -1)
+        trailing_shape = arr.shape[1:]
+        for column in range(flat.shape[1]):
+            if trailing_shape:
+                index = np.unravel_index(column, trailing_shape)
+                suffix = "[" + ",".join(str(i + 1) for i in index) + "]"
+            else:
+                suffix = ""
             frames.append(
                 pd.DataFrame(
                     {
                         "chain": chain,
                         "iter": it,
-                        "param": var_name,
-                        "value": arr,
+                        "param": f"{var_name}{suffix}",
+                        "value": flat[:, column],
                     }
                 )
             )
-        # Higher-rank parameters (matrices) are skipped in the draws parquet
-        # for v1 — keep the file small. The raw CmdStan CSVs remain on disk
-        # if the user needs them.
 
     if not frames:
-        return
+        raise ValueError("Stan fit exposed no variables to persist")
     combined = pd.concat(frames, ignore_index=True)
     path.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(pa.Table.from_pandas(combined), path)
@@ -1058,15 +1134,7 @@ def _build_inits(request: dict[str, Any]) -> dict[str, Any] | None:
 
     # eta_raw starts at zero (no subject-level shifts); cmdstanpy needs the
     # shape, which we derive from N_subjects + number of IIV params.
-    variability = (
-        request["spec"].get("variability", []) if isinstance(request["spec"], dict) else []
-    )
-    iiv_params: list[str] = []
-    for v in variability:
-        if v.get("type") == "IIV":
-            for p in v.get("params", []):
-                if p not in iiv_params:
-                    iiv_params.append(p)
+    iiv_params = _extract_iiv_names(request["spec"])
     if iiv_params:
         # Small non-zero inits for omega to avoid boundary.
         for p in iiv_params:
@@ -1077,6 +1145,21 @@ def _build_inits(request: dict[str, Any]) -> dict[str, Any] | None:
     inits.setdefault("sigma_add", 0.1)
 
     return inits
+
+
+def _extract_iiv_names(spec: dict[str, Any] | str) -> list[str]:
+    """Return unique IIV parameter names in declaration/eta-axis order."""
+    if not isinstance(spec, dict):
+        return []
+    out: list[str] = []
+    variability = spec.get("variability", [])
+    for item in variability if isinstance(variability, list) else []:
+        if isinstance(item, dict) and item.get("type") == "IIV":
+            params = item.get("params", [])
+            for name in params if isinstance(params, list) else []:
+                if isinstance(name, str) and name not in out:
+                    out.append(name)
+    return out
 
 
 def _extract_structural_names(spec: dict[str, Any] | str) -> list[str]:

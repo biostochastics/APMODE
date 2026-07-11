@@ -38,12 +38,18 @@ from pathlib import Path
 
 import pytest
 
+from apmode.data import policy as policy_module
 from apmode.data import profiler as profiler_module
 from apmode.data.policy import ProfilerPolicy, _load_from_path, reload_policy
+from apmode.paths import policy_path_for_lane
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _POLICY_PATH = _REPO_ROOT / "policies" / "profiler.json"
 _PROFILER_PATH = _REPO_ROOT / "src" / "apmode" / "data" / "profiler.py"
+
+
+def test_profiler_policy_uses_shared_packaged_path_resolver() -> None:
+    assert policy_path_for_lane("profiler") == policy_module._POLICY_PATH
 
 
 # ---------------------------------------------------------------------------

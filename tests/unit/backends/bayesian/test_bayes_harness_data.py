@@ -15,7 +15,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from apmode.bayes.harness import _build_stan_data
+from apmode.bayes.harness import _build_stan_data, _compute_eta_shrinkage, _extract_iiv_names
 
 
 def _base_request(data_path: Path) -> dict[str, object]:
@@ -95,3 +95,88 @@ def test_valid_data_round_trip(tmp_path: Path) -> None:
     assert stan_data["N"] == 2
     assert stan_data["N_subjects"] == 2
     assert stan_data["N_events"] == 2
+
+
+def test_observations_are_grouped_by_subject_and_sorted_by_time(tmp_path: Path) -> None:
+    csv = tmp_path / "interleaved.csv"
+    pd.DataFrame(
+        [
+            {"ID": 1, "EVID": 0, "TIME": 2.0, "DV": -1.0},
+            {"ID": 2, "EVID": 0, "TIME": 2.0, "DV": 2.0},
+            {"ID": 1, "EVID": 0, "TIME": 1.0, "DV": 1.0},
+            {"ID": 2, "EVID": 0, "TIME": 1.0, "DV": -2.0},
+        ]
+    ).to_csv(csv, index=False)
+    request = _base_request(csv)
+    request["spec"] = {
+        "observation": {"type": "Additive", "sigma_add": 1.0},
+        "covariates": [],
+    }
+    data = _build_stan_data(request)
+    assert data["subject"] == [1, 1, 2, 2]
+    assert data["time"] == [1.0, 2.0, 1.0, 2.0]
+    assert data["dv"] == [1.0, -1.0, -2.0, 2.0]
+
+
+def test_blq_cens_row_is_retained_even_when_mdv_is_one(tmp_path: Path) -> None:
+    csv = tmp_path / "blq.csv"
+    pd.DataFrame(
+        [
+            {"ID": 1, "EVID": 0, "MDV": 1, "CENS": 1, "TIME": 1.0, "DV": 0.0},
+            {"ID": 1, "EVID": 0, "MDV": 0, "CENS": 0, "TIME": 2.0, "DV": 2.0},
+        ]
+    ).to_csv(csv, index=False)
+    request = _base_request(csv)
+    request["spec"] = {
+        "observation": {
+            "type": "BLQ_M3",
+            "loq_value": 0.5,
+            "error_model": "proportional",
+        },
+        "covariates": [],
+    }
+    data = _build_stan_data(request)
+    assert data["N"] == 2
+    assert data["cens"] == [1, 0]
+
+
+def test_categorical_covariate_uses_declared_reference(tmp_path: Path) -> None:
+    csv = tmp_path / "categorical.csv"
+    pd.DataFrame(
+        [
+            {"ID": 1, "EVID": 0, "TIME": 1.0, "DV": 1.0, "SEX": "F"},
+            {"ID": 2, "EVID": 0, "TIME": 1.0, "DV": 2.0, "SEX": "M"},
+        ]
+    ).to_csv(csv, index=False)
+    request = _base_request(csv)
+    request["spec"] = {
+        "observation": {"type": "Proportional", "sigma_prop": 0.1},
+        "covariates": [
+            {
+                "type": "CovariateLink",
+                "param": "CL",
+                "covariate": "SEX",
+                "form": "categorical",
+                "reference": "F",
+            }
+        ],
+    }
+    data = _build_stan_data(request)
+    assert data["SEX"] == [0.0, 1.0]
+
+
+def test_eta_shrinkage_uses_iiv_declaration_order() -> None:
+    import numpy as np
+
+    class _Fit:
+        def stan_variables(self) -> dict[str, object]:
+            return {"eta_raw": object(), "omega_CL": object()}
+
+        def stan_variable(self, name: str) -> object:
+            if name == "eta_raw":
+                return np.array([[[0.0], [1.0]], [[0.0], [1.0]]])
+            return np.array([0.5, 0.5])
+
+    spec = {"variability": [{"type": "IIV", "params": ["CL"], "structure": "diagonal"}]}
+    assert _extract_iiv_names(spec) == ["CL"]
+    assert set(_compute_eta_shrinkage(_Fit(), ["CL"])) == {"CL"}

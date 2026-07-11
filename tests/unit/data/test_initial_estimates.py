@@ -4,9 +4,15 @@
 from __future__ import annotations
 
 import numpy as np
+import pandas as pd
 import pytest
 
-from apmode.bundle.models import InitialEstimateEntry, InitialEstimates
+from apmode.bundle.models import (
+    ColumnMapping,
+    DataManifest,
+    InitialEstimateEntry,
+    InitialEstimates,
+)
 from apmode.data.ingest import ingest_nonmem_csv
 from apmode.data.initial_estimates import (
     NCAEstimator,
@@ -15,9 +21,23 @@ from apmode.data.initial_estimates import (
     build_initial_estimates_bundle,
     warm_start_estimates,
 )
+from apmode.data.types import is_steady_state
 from tests._helpers.fixtures_data import FIXTURES_DIR
 
 FIXTURE_CSV = FIXTURES_DIR / "pk_data" / "simple_1cmt.csv"
+
+
+def _manifest_for(df: pd.DataFrame) -> DataManifest:
+    return DataManifest(
+        data_sha256="a" * 64,
+        ingestion_format="nonmem_csv",
+        column_mapping=ColumnMapping(
+            subject_id="NMID", time="TIME", dv="DV", evid="EVID", amt="AMT", mdv="MDV"
+        ),
+        n_subjects=int(df["NMID"].nunique()),
+        n_observations=int(((df["EVID"] == 0) & (df["MDV"] == 0)).sum()),
+        n_doses=int(df["EVID"].isin([1, 4]).sum()),
+    )
 
 
 class TestNCAEstimator:
@@ -65,6 +85,99 @@ class TestNCAEstimator:
         assert entry.candidate_id == "candidate_001"
         assert entry.source == "nca"
         assert len(entry.estimates) > 0
+
+    def test_constructor_excludes_mdv_rows_and_includes_evid4_doses(self) -> None:
+        df = pd.DataFrame(
+            {
+                "NMID": [1, 1, 1],
+                "TIME": [0.0, 1.0, 2.0],
+                "DV": [0.0, 5.0, 9999.0],
+                "MDV": [1, 0, 1],
+                "EVID": [4, 0, 0],
+                "AMT": [100.0, 0.0, 0.0],
+                "CMT": [1, 1, 1],
+            }
+        )
+        estimator = NCAEstimator(df, _manifest_for(df))
+        assert estimator._doses["EVID"].tolist() == [4]
+        assert estimator._obs["DV"].tolist() == [5.0]
+
+    def test_multiple_doses_without_ss_are_not_treated_as_steady_state(self) -> None:
+        rows = [
+            {
+                "NMID": 1,
+                "TIME": 0.0,
+                "DV": 0.0,
+                "MDV": 1,
+                "EVID": 1,
+                "AMT": 100.0,
+                "CMT": 1,
+            },
+            {
+                "NMID": 1,
+                "TIME": 12.0,
+                "DV": 0.0,
+                "MDV": 1,
+                "EVID": 1,
+                "AMT": 100.0,
+                "CMT": 1,
+            },
+        ]
+        for time, dv in [(12.5, 2.0), (13.0, 5.0), (14.0, 3.0), (16.0, 1.0), (20.0, 0.3)]:
+            rows.append(
+                {
+                    "NMID": 1,
+                    "TIME": time,
+                    "DV": dv,
+                    "MDV": 0,
+                    "EVID": 0,
+                    "AMT": 0.0,
+                    "CMT": 1,
+                }
+            )
+        df = pd.DataFrame(rows)
+        result = NCAEstimator(df, _manifest_for(df))._nca_for_subject(1)
+        assert result.excluded is True
+        assert result.excluded_reason is not None
+        assert "without an explicit steady-state SS flag" in result.excluded_reason
+
+    def test_tmax_is_measured_from_nonzero_dose_time(self) -> None:
+        rows = [
+            {
+                "NMID": 1,
+                "TIME": 8.0,
+                "DV": 0.0,
+                "MDV": 1,
+                "EVID": 4,
+                "AMT": 100.0,
+                "CMT": 1,
+            }
+        ]
+        for time, dv in [(8.5, 2.0), (9.0, 5.0), (10.0, 3.0), (12.0, 1.0), (16.0, 0.3)]:
+            rows.append(
+                {
+                    "NMID": 1,
+                    "TIME": time,
+                    "DV": dv,
+                    "MDV": 0,
+                    "EVID": 0,
+                    "AMT": 0.0,
+                    "CMT": 1,
+                }
+            )
+        df = pd.DataFrame(rows)
+        result = NCAEstimator(df, _manifest_for(df))._nca_for_subject(1)
+        assert result.tmax == pytest.approx(1.0)
+
+
+def test_dose_count_alone_does_not_override_half_life_criterion() -> None:
+    steady, rationale = is_steady_state(
+        np.array([0.0, 24.0, 48.0, 72.0, 96.0]),
+        np.repeat(100.0, 5),
+        half_life=72.0,
+    )
+    assert steady is False
+    assert "ss_by_t12=False" in rationale
 
 
 class TestComputeNCASingleSubject:
@@ -213,7 +326,7 @@ class TestNCADVIDFilter:
     and force SAEM+FOCEI to traverse 4 OoMs before convergence.
     """
 
-    def _build_pk_pd_frame(self) -> pd.DataFrame:  # noqa: F821
+    def _build_pk_pd_frame(self) -> pd.DataFrame:
         """Build a synthetic 6-subject PK+PD dataframe.
 
         Each subject gets one dose row + 6 PK observations (oral 1-cmt
@@ -326,7 +439,7 @@ class TestDataDrivenFallback:
     per-fit timeout that motivated this work).
     """
 
-    def _force_qc_failure_frame(self) -> pd.DataFrame:  # noqa: F821
+    def _force_qc_failure_frame(self) -> pd.DataFrame:
         """Two-subject sparse frame: 2 obs each, no terminal slope.
 
         Per-subject NCA needs >=3 lambda_z points; this frame has 2 per

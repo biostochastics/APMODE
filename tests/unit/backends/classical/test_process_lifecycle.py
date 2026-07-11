@@ -9,6 +9,9 @@ We use ``sleep`` as a stand-in for an unresponsive R / cmdstan child.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import os
+import signal
 import sys
 
 import pytest
@@ -60,3 +63,40 @@ async def test_terminate_process_group_handles_self_completed() -> None:
     # Calling terminate now must be a no-op.
     await terminate_process_group(proc, grace_seconds=1.0)
     assert proc.returncode == 0
+
+
+@pytest.mark.asyncio
+async def test_terminate_group_after_leader_exits_kills_grandchild() -> None:
+    """A reaped session leader must not make its surviving child invisible."""
+    script = (
+        "import subprocess,sys; "
+        "p=subprocess.Popen(['sleep','60'], stdout=subprocess.DEVNULL, "
+        "stderr=subprocess.DEVNULL); print(p.pid, flush=True)"
+    )
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        script,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    assert proc.stdout is not None
+    grandchild_pid = int((await proc.stdout.readline()).decode().strip())
+    await proc.wait()
+    assert proc.returncode == 0
+    os.kill(grandchild_pid, 0)  # regression precondition: child survived leader
+
+    try:
+        await terminate_process_group(proc, grace_seconds=0.05)
+        for _ in range(50):
+            try:
+                os.kill(grandchild_pid, 0)
+            except ProcessLookupError:
+                break
+            await asyncio.sleep(0.01)
+        else:
+            pytest.fail("grandchild survived process-group termination")
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(grandchild_pid, signal.SIGKILL)

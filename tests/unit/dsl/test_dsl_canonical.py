@@ -71,7 +71,7 @@ class TestMacrosUsedExcludedFromFingerprints:
 
     def test_schema_version_unchanged_by_macros_used_field(self) -> None:
         """Adding `macros_used` to DSLSpec required no CANONICAL_SCHEMA_VERSION bump."""
-        assert CANONICAL_SCHEMA_VERSION == "2.2.0"
+        assert CANONICAL_SCHEMA_VERSION == "2.3.0"
 
 
 class TestFingerprintResultShape:
@@ -485,7 +485,7 @@ class TestMultiAnalyteObservationsFingerprint:
     """P1.7: DSLSpec.observations participates in both fingerprints (schema 2.2.0)."""
 
     def test_schema_version_bumped(self) -> None:
-        assert CANONICAL_SCHEMA_VERSION == "2.2.0"
+        assert CANONICAL_SCHEMA_VERSION == "2.3.0"
 
     def test_differing_observations_content_changes_both_fingerprints(self) -> None:
         base = _base_spec()

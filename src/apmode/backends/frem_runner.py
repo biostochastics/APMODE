@@ -105,7 +105,11 @@ async def run_frem_fit(
         transforms=transforms,
         binary_encode_overrides=binary_encode_overrides,
     )
-    augmented = prepare_frem_data(df, summaries)
+    augmented = prepare_frem_data(
+        df,
+        summaries,
+        binary_encode_overrides=binary_encode_overrides,
+    )
 
     aug_path = work_dir / "frem_augmented.csv"
     augmented.to_csv(aug_path, index=False)

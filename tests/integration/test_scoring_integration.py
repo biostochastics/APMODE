@@ -19,11 +19,27 @@ from apmode.bundle.models import (
     BLQHandling,
     ConvergenceMetadata,
     DiagnosticBundle,
+    GateCheckResult,
+    GateResult,
     GOFMetrics,
     IdentifiabilityFlags,
     ParameterEstimate,
     VPCSummary,
 )
+
+
+def _gate1(result: BackendResult, *, passed: bool | None = None) -> GateResult:
+    verdict = result.converged if passed is None else passed
+    return GateResult(
+        gate_id=f"gate-{result.model_id}",
+        gate_name="technical_validity",
+        candidate_id=result.model_id,
+        passed=verdict,
+        checks=[GateCheckResult(check_id="convergence", passed=verdict, observed=verdict)],
+        summary_reason="test",
+        policy_version="test",
+        timestamp="2026-07-11T00:00:00+00:00",
+    )
 
 
 def _mock_result(
@@ -124,7 +140,7 @@ class TestScoreCase:
             ),
         )
         result = _mock_result(bias=0.02)
-        score = score_case(case, result)
+        score = score_case(case, result, gate1_result=_gate1(result))
 
         assert score.overall_passed
         # structure_recovered is None when no DSLSpec is passed
@@ -144,7 +160,7 @@ class TestScoreCase:
             param_bias_tolerance=0.10,  # Tighter threshold
         )
         result = _mock_result(bias=0.15)  # 15% bias
-        score = score_case(case, result)
+        score = score_case(case, result, gate1_result=_gate1(result))
 
         assert not score.overall_passed
         assert max(score.param_bias.values()) > 0.10
@@ -159,10 +175,38 @@ class TestScoreCase:
             lane="discovery",
         )
         result = _mock_result()
-        score = score_case(case, result)
+        score = score_case(case, result, gate1_result=_gate1(result))
 
         assert score.param_bias == {}
         assert score.case_id == "test_no_ref"
+
+    def test_missing_gate_result_fails_closed(self) -> None:
+        case = BenchmarkCase(
+            case_id="missing_gate",
+            suite="B",
+            dataset_id="test",
+            description="Missing gate evidence",
+            lane="discovery",
+        )
+        score = score_case(case, _mock_result())
+        assert score.gate1_passed is False
+        assert score.overall_passed is False
+
+    def test_missing_required_confidence_interval_fails_coverage(self) -> None:
+        case = BenchmarkCase(
+            case_id="missing_ci",
+            suite="A",
+            dataset_id="test",
+            description="Missing CI evidence",
+            lane="submission",
+            reference_params={"CL": 5.0},
+        )
+        result = _mock_result()
+        result.parameter_estimates["CL"] = result.parameter_estimates["CL"].model_copy(
+            update={"ci95_lower": None, "ci95_upper": None}
+        )
+        score = score_case(case, result, gate1_result=_gate1(result))
+        assert score.overall_passed is False
 
 
 class TestConvergenceScoring:

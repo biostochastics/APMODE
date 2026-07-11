@@ -27,6 +27,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar
 
+from apmode.bundle.emitter import verify_bundle_seal
+from apmode.bundle.models import ReviewerAttestation
 from apmode.bundle.rocrate import context as ctx
 from apmode.bundle.rocrate import vocab
 from apmode.bundle.rocrate.entities import (
@@ -158,6 +160,10 @@ class BundleNotSealedError(RuntimeError):
     """Raised when exporting from a bundle that lacks ``_COMPLETE``."""
 
 
+class BundleIntegrityError(BundleNotSealedError):
+    """Raised when a sealed source fails digest, symlink, or binding checks."""
+
+
 class RoCrateEmitter:
     """Project a sealed APMODE bundle into an RO-Crate.
 
@@ -197,6 +203,12 @@ class RoCrateEmitter:
         """
         opts = options or RoCrateExportOptions()
         self._check_source(bundle_dir)
+        try:
+            out.resolve().relative_to(bundle_dir.resolve())
+        except ValueError:
+            pass
+        else:
+            raise ValueError("RO-Crate output must not be nested inside its source bundle")
         metadata = self.build_metadata_json(bundle_dir, opts)
 
         if out.suffix.lower() == ".zip":
@@ -791,6 +803,28 @@ class RoCrateEmitter:
                 f"(missing {_COMPLETE_SENTINEL!r}); refuse to export"
             )
             raise BundleNotSealedError(msg)
+        try:
+            sentinel = verify_bundle_seal(bundle_dir)
+        except ValueError as exc:
+            raise BundleIntegrityError(str(exc)) from exc
+
+        attestation_path = bundle_dir / "attestation.json"
+        if attestation_path.exists():
+            if attestation_path.is_symlink() or not attestation_path.is_file():
+                raise BundleIntegrityError("attestation.json must be a regular file")
+            try:
+                attestation = ReviewerAttestation.model_validate_json(attestation_path.read_text())
+            except (OSError, ValueError) as exc:
+                raise BundleIntegrityError(f"invalid attestation.json: {exc}") from exc
+            if attestation.attestation_schema_version != "2.0":
+                raise BundleIntegrityError("legacy unbound attestation cannot be exported")
+            expected_seal = sentinel.get("seal_sha256") or sentinel["sha256"]
+            if (
+                attestation.run_id != sentinel.get("run_id")
+                or attestation.bundle_sha256 != sentinel["sha256"]
+                or attestation.seal_sha256 != expected_seal
+            ):
+                raise BundleIntegrityError("attestation is bound to a different bundle seal")
 
     def _write_directory(
         self,
@@ -808,6 +842,8 @@ class RoCrateEmitter:
 
         # Copy bundle contents without touching the source
         for src in sorted(bundle_dir.rglob("*")):
+            if src.is_symlink():
+                raise BundleIntegrityError(f"bundle contains symlink: {src}")
             if not src.is_file():
                 continue
             rel = src.relative_to(bundle_dir)

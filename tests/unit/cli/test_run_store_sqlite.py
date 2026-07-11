@@ -186,6 +186,62 @@ async def test_update_status_unknown_run_raises(tmp_path: Path) -> None:
         await store.close()
 
 
+async def test_transition_status_prevents_terminal_overwrite(tmp_path: Path) -> None:
+    """A late DELETE/cancellation CAS cannot overwrite COMPLETED."""
+    store = SQLiteRunStore(tmp_path / "runs.db")
+    await store.initialize()
+    try:
+        await store.create(
+            RunRecord(
+                run_id="race",
+                status=RunStatus.PENDING,
+                bundle_dir=str(tmp_path / "race"),
+            )
+        )
+        assert await store.transition_status(
+            "race",
+            RunStatus.RUNNING,
+            from_statuses=frozenset({RunStatus.PENDING}),
+        )
+        assert await store.transition_status(
+            "race",
+            RunStatus.COMPLETED,
+            from_statuses=frozenset({RunStatus.RUNNING}),
+        )
+        assert not await store.transition_status(
+            "race",
+            RunStatus.CANCELLED,
+            from_statuses=frozenset({RunStatus.PENDING, RunStatus.RUNNING}),
+            error="late cancellation",
+        )
+        row = await store.get("race")
+        assert row is not None
+        assert row.status == RunStatus.COMPLETED
+        assert row.error is None
+    finally:
+        await store.close()
+
+
+async def test_transition_status_validates_preconditions(tmp_path: Path) -> None:
+    store = SQLiteRunStore(tmp_path / "runs.db")
+    await store.initialize()
+    try:
+        with pytest.raises(ValueError, match="from_statuses"):
+            await store.transition_status(
+                "missing",
+                RunStatus.RUNNING,
+                from_statuses=frozenset(),
+            )
+        with pytest.raises(KeyError, match="not found"):
+            await store.transition_status(
+                "missing",
+                RunStatus.RUNNING,
+                from_statuses=frozenset({RunStatus.PENDING}),
+            )
+    finally:
+        await store.close()
+
+
 # ---------------------------------------------------------------------------
 # create — duplicate keys raise
 # ---------------------------------------------------------------------------
@@ -243,6 +299,32 @@ async def test_sweep_runs_during_initialize(tmp_path: Path) -> None:
         assert "process exited" in got.error
     finally:
         await store2.close()
+
+
+async def test_sweep_interrupts_pending_rows_too(tmp_path: Path) -> None:
+    """A crash before coroutine start must not leave an immortal PENDING row."""
+    db_path = tmp_path / "runs.db"
+    store = SQLiteRunStore(db_path)
+    await store.initialize()
+    try:
+        await store.create(
+            RunRecord(
+                run_id="pending-orphan",
+                status=RunStatus.PENDING,
+                bundle_dir=str(tmp_path / "pending-orphan"),
+            )
+        )
+    finally:
+        await store.close()
+
+    reopened = SQLiteRunStore(db_path)
+    await reopened.initialize()
+    try:
+        row = await reopened.get("pending-orphan")
+        assert row is not None
+        assert row.status == RunStatus.INTERRUPTED
+    finally:
+        await reopened.close()
 
 
 async def test_sweep_returns_count(tmp_path: Path) -> None:

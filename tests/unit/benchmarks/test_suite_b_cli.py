@@ -85,14 +85,13 @@ class TestScore:
         assert scorecard["passes_gate"] is False
         assert scorecard["n_eligible"] == 0
 
-    def test_cross_seed_cv_none_is_treated_as_pass(self) -> None:
-        # When fewer than 2 seeds converged, cv_max is None — the gate
-        # should not penalise that (no signal yet).
+    def test_cross_seed_cv_none_fails_missing_stability_evidence(self) -> None:
+        # Fewer than two contributing seeds cannot satisfy a stability gate.
         results = {
             "a": _payload(case_id="a", convergence_rate=1.0, cross_seed_cv_max=None),
         }
         scorecard = _score(results, min_convergence_rate=0.8, max_cross_seed_cv=0.5)
-        assert scorecard["passes_gate"] is True
+        assert scorecard["passes_gate"] is False
 
 
 class TestMarkdown:

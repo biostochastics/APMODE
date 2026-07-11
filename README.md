@@ -7,10 +7,10 @@
   **Adaptive Pharmacokinetic Model Discovery Engine**
 
   <!-- apmode:AUTO:badge_version -->
-  [![Version](https://img.shields.io/badge/version-v0.6.1--rc2-blue)]()
+  [![Version](https://img.shields.io/badge/version-v0.7.0--rc1-blue)]()
   <!-- apmode:/AUTO:badge_version -->
   <!-- apmode:AUTO:badge_tests -->
-  [![Tests](https://img.shields.io/badge/tests-3509%20collected-success)]()
+  [![Tests](https://img.shields.io/badge/tests-3619%20collected-success)]()
   <!-- apmode:/AUTO:badge_tests -->
   [![License](https://img.shields.io/badge/license-GPL--2.0--or--later-green)](LICENSE)
   [![Python](https://img.shields.io/badge/python-3.12%E2%80%933.14-yellow)]()
@@ -35,11 +35,11 @@ APMODE is a **governed meta-system** that composes five population PK modeling p
 
 **Formular — a typed PK DSL — is the control surface.** Models are specified in [Formular](docs/FORMULAR.md), an order-insensitive grammar of top-level blocks (`absorption`, `distribution`, `elimination`, `variability`, `observation`/`observations`, `covariates`, `priors`, `units`, `metadata`, `initial`) — structural declarations name parameters, a separate `initial: {}` block supplies calibration values, and `priors: {}` lets an author write priors directly in Formular text (in addition to the programmatic `SetPrior` transform). Specs compile to a typed AST, are validated against pharmacometric constraints, and lower to backend-specific code (nlmixr2 R, Stan/Torsten, JAX/Diffrax). The agentic LLM backend (Phase 3) operates exclusively through the <!-- apmode:AUTO:transforms -->10<!-- apmode:/AUTO:transforms --> typed Formular transforms — including `SetPrior` for Bayesian workflows — it cannot emit raw code.
 
-> **Status**: **<!-- apmode:AUTO:version_tag -->v0.6.1-rc2<!-- apmode:/AUTO:version_tag -->** (2026-04-25) — 0.6.1 release candidate. <!-- apmode:AUTO:tests_nonlive -->3492<!-- apmode:/AUTO:tests_nonlive --> tests passing (`-m "not live"`); `mypy --strict` clean; `ruff` clean. Supports Python 3.12–3.14. Gate policy schema <!-- apmode:AUTO:policy_gate -->0.7.1<!-- apmode:/AUTO:policy_gate -->; profiler policy <!-- apmode:AUTO:policy_profiler -->2.1.0<!-- apmode:/AUTO:policy_profiler --> (manifest_schema_version = <!-- apmode:AUTO:profiler_manifest -->2<!-- apmode:/AUTO:profiler_manifest -->). v0.6.1 ships the FastAPI HTTP API surface (`apmode serve`, `POST /runs`, cancellation lifecycle), Suite C Phase-1 MLE + Bayesian fixtures with on-demand NPE scoring (no scheduled CI job — see [Suite C README](benchmarks/suite_c/README.md)), SOTA absorption preview forms, and the RO-Crate projector hardening pass. Reproducibility bundles continue to carry a `_COMPLETE` sentinel with a SHA-256 digest; `apmode validate` refuses unsealed bundles. See [CHANGELOG.md](CHANGELOG.md) for the full release-candidate changes.
+> **Status**: **<!-- apmode:AUTO:version_tag -->v0.7.0-rc1<!-- apmode:/AUTO:version_tag -->** (2026-07-09) — 0.6.1 release candidate. <!-- apmode:AUTO:tests_nonlive -->3602<!-- apmode:/AUTO:tests_nonlive --> tests passing (`-m "not live"`); `mypy --strict` clean; `ruff` clean. Supports Python 3.12–3.14. Gate policy schema <!-- apmode:AUTO:policy_gate -->0.7.1<!-- apmode:/AUTO:policy_gate -->; profiler policy <!-- apmode:AUTO:policy_profiler -->2.1.0<!-- apmode:/AUTO:policy_profiler --> (manifest_schema_version = <!-- apmode:AUTO:profiler_manifest -->2<!-- apmode:/AUTO:profiler_manifest -->). v0.6.1 ships the FastAPI HTTP API surface (`apmode serve`, `POST /runs`, cancellation lifecycle), Suite C Phase-1 MLE + Bayesian fixtures with on-demand NPE scoring (no scheduled CI job — see [Suite C README](benchmarks/suite_c/README.md)), SOTA absorption preview forms, and the RO-Crate projector hardening pass. Reproducibility bundles continue to carry a `_COMPLETE` sentinel with a SHA-256 digest; `apmode validate` refuses unsealed bundles. See [CHANGELOG.md](CHANGELOG.md) for the full release-candidate changes.
 
 ### Capability status
 
-A reader-facing snapshot of what is runnable today vs. what is partial / planned. Project-internal phasing (Phase 1 / 2 / 3 from PRD §8) is preserved in [`docs/PRD_APMODE_v0.3.md`](docs/PRD_APMODE_v0.3.md); this table is the canonical *user*-facing version.
+A reader-facing snapshot of what is runnable today vs. what is partial / planned. The public system design and delivery boundaries are documented in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md); this table is the canonical *user*-facing version.
 
 | Component | Status | Notes |
 |---|---|---|
@@ -50,7 +50,7 @@ A reader-facing snapshot of what is runnable today vs. what is partial / planned
 | Hybrid mechanistic-NODE (JAX/Diffrax) | ⚠ Available | Oral + IV bolus/central-infusion (depot infusion, `SS != 0`, and `EVID=2` rejected); pooled-NLL training (no per-subject random effects yet); never submission-eligible (PRD §3 hard rule) |
 | Agentic LLM backend | ⚠ Available, opt-in | Off by default (`--agentic`); discovery / optimization lanes only; ≤ 25 typed-transform iterations per run |
 | Optimization lane (LORO-CV Gate 2) | ✅ Available | Gate 2 enforces LORO-CV folds, NPDE mean/variance bands, VPC concordance; `policies/optimization.json` is a versioned artefact; cross-paradigm scoring-contract ranker shipped in the 0.6 release-candidate line |
-| HTTP API + `apmode serve` | ✅ Available | Loopback by default; refuses non-loopback without `--allow-public`; full endpoint contract under [HTTP API](#http-api). Long-poll status (`?wait=N`) is a documented future enhancement, not in v0.6.1-rc1 |
+| HTTP API + `apmode serve` | ✅ Available | Loopback by default; refuses non-loopback without `--allow-public`; full endpoint contract under [HTTP API](#http-api). Long-poll status (`?wait=N`) is a documented future enhancement, not in v0.6.1-rc2 |
 
 All numeric badges + status counts are rewritten from the source tree by `scripts/sync_readme.py` — see [Keeping the README honest](#keeping-the-readme-honest).
 
@@ -226,8 +226,8 @@ continues to point the policy loader at an alternative directory.
 ### Test + typecheck + lint
 
 ```bash
-uv run pytest tests/ -q                         # <!-- apmode:AUTO:tests -->3509<!-- apmode:/AUTO:tests --> collected
-uv run pytest tests/ -q -m "not live"           # <!-- apmode:AUTO:tests_nonlive -->3492<!-- apmode:/AUTO:tests_nonlive --> skip live LLM tests
+uv run pytest tests/ -q                         # <!-- apmode:AUTO:tests -->3619<!-- apmode:/AUTO:tests --> collected
+uv run pytest tests/ -q -m "not live"           # <!-- apmode:AUTO:tests_nonlive -->3602<!-- apmode:/AUTO:tests_nonlive --> skip live LLM tests
 uv run mypy src/apmode/ --strict                # type checking
 uv run ruff check src/apmode/ tests/            # linting
 uv run python scripts/sync_readme.py --check    # README ↔ codebase drift guard
@@ -667,7 +667,7 @@ Full `apmode run` pipeline on all Suite A fixtures plus three real
 public datasets. Driver: `scripts/run_full_benchmark.sh`; bundles land
 in `benchmarks/runs/full-<timestamp>/`.
 
-**Provenance** — APMODE `<!-- apmode:AUTO:version_tag -->v0.6.1-rc2<!-- apmode:/AUTO:version_tag -->`, macOS 14 / Linux x86_64, Python 3.12, R 4.4.1 (`nlmixr2` 4.0.1, `rxode2` 4.0.0), CmdStan 2.36 where applicable. Reproduce with:
+**Provenance** — APMODE `<!-- apmode:AUTO:version_tag -->v0.7.0-rc1<!-- apmode:/AUTO:version_tag -->`, macOS 14 / Linux x86_64, Python 3.12, R 4.4.1 (`nlmixr2` 4.0.1, `rxode2` 4.0.0), CmdStan 2.36 where applicable. Reproduce with:
 
 ```bash
 bash scripts/run_full_benchmark.sh ./benchmarks/runs/full-$(date -u +%Y%m%dT%H%M%SZ)
@@ -706,7 +706,7 @@ reason, vote). `apmode inspect <bundle>` renders the per-signal table;
 
 ## Test Suite
 
-**<!-- apmode:AUTO:tests -->3509<!-- apmode:/AUTO:tests --> tests collected** (<!-- apmode:AUTO:tests_nonlive -->3492<!-- apmode:/AUTO:tests_nonlive --> non-live) across multiple strategies — all counts auto-synced by `scripts/sync_readme.py`:
+**<!-- apmode:AUTO:tests -->3619<!-- apmode:/AUTO:tests --> tests collected** (<!-- apmode:AUTO:tests_nonlive -->3602<!-- apmode:/AUTO:tests_nonlive --> non-live) across multiple strategies — all counts auto-synced by `scripts/sync_readme.py`:
 
 ```bash
 uv run pytest tests/unit/ -q               # unit tests
@@ -942,7 +942,6 @@ Please cite the individual papers listed under *Pharmacometric References* when 
 | Document | Purpose |
 |----------|---------|
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Technical architecture (v0.3) |
-| [`docs/PRD_APMODE_v0.3.md`](docs/PRD_APMODE_v0.3.md) | Current PRD (v0.3, source of truth) |
 | [`docs/FORMULAR.md`](docs/FORMULAR.md) | Formular DSL full reference |
 | [`docs/PROFILER_REFINEMENT_PLAN.md`](docs/PROFILER_REFINEMENT_PLAN.md) | Profiler policy derivation + citations |
 | [`policies/*.json`](policies/) | Gate threshold policy files per lane |
@@ -1144,7 +1143,7 @@ The canonical scientific workflow — `ssh -L 8765:127.0.0.1:8765 lab-gpu-box` t
 
 **Hardening guidance.** The `apmode serve` CLI is intended for single-user local + lab-network use. Loopback deployments may run without `APMODE_API_KEY`; any non-loopback bind requires `--allow-public`, `APMODE_API_KEY`, and `--dataset-root`, and all run-management endpoints require `X-API-Key`. Treat that static key as a floor, not a full deployment security model: front public deployments with a TLS-terminating reverse proxy that handles user authentication and per-bundle access control.
 
-**Future enhancement** *(not shipped in v0.6.1-rc1)*: a `?wait=N` long-poll on `GET /runs/{id}/status` would let interactive clients wait up to 60 s for a status transition without the 5 s polling round-trip. The implementation path is a per-`run_id` `asyncio.Event` registry on `app.state` (set by the `update_status` write path, awaited by the route handler) capped by uvicorn's `--limit-concurrency`. Deferred until usage telemetry shows polling pain — current scientific clients run minutes-to-hours per fit, so 5 s polling is well within the tolerable budget.
+**Future enhancement** *(not shipped in v0.6.1-rc2)*: a `?wait=N` long-poll on `GET /runs/{id}/status` would let interactive clients wait up to 60 s for a status transition without the 5 s polling round-trip. The implementation path is a per-`run_id` `asyncio.Event` registry on `app.state` (set by the `update_status` write path, awaited by the route handler) capped by uvicorn's `--limit-concurrency`. Deferred until usage telemetry shows polling pain — current scientific clients run minutes-to-hours per fit, so 5 s polling is well within the tolerable budget.
 
 ---
 
@@ -1195,7 +1194,7 @@ Every CI run and every tagged release ships a [CycloneDX](https://cyclonedx.org/
 This README's numeric claims (version, test count, transform count, CLI-command count, dataset count, policy versions, profiler manifest version) are rewritten from the codebase by [`scripts/sync_readme.py`](scripts/sync_readme.py). Each auto-synced value sits between HTML comment markers like:
 
 ```
-<!-- apmode:AUTO:tests -->3509<!-- apmode:/AUTO:tests -->
+<!-- apmode:AUTO:tests -->3619<!-- apmode:/AUTO:tests -->
 ```
 
 Running the script:
@@ -1224,7 +1223,7 @@ Wire `scripts/sync_readme.py --check` into pre-commit or CI to block PRs that le
 
 ## Known Limitations
 
-User-facing constraints in `<!-- apmode:AUTO:version_tag -->v0.6.1-rc2<!-- apmode:/AUTO:version_tag -->`. Status descriptors: **partial** = behaviour available with caveats; **planned** = scoped follow-on; **deferred** = explicit ADR-documented out-of-scope. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and the `docs/adr/` series for the full design rationale.
+User-facing constraints in `<!-- apmode:AUTO:version_tag -->v0.7.0-rc1<!-- apmode:/AUTO:version_tag -->`. Status descriptors: **partial** = behaviour available with caveats; **planned** = scoped follow-on; **deferred** = explicit ADR-documented out-of-scope. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and the `docs/adr/` series for the full design rationale.
 
 - **Multi-dose steady state** *(partial)* — `ADDL` / `II` dose expansion is supported across all backends; `SS != 0` is supported in the nlmixr2 lane only. Stan and NODE backends hard-reject `SS != 0` at Gate 1; see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and current validator/backend limitations.
 - **NODE infusions** *(partial)* — zero-order constant-rate infusion (`RATE > 0` or `DUR > 0`) into the central compartment is now supported via the eager piecewise solver; overlapping and staggered infusions sum correctly. Still rejected with `InvalidSpecError`: infusions labelled into the absorption depot (`CMT=1`), steady-state rows (`SS != 0`), and other-type events (`EVID=2`). See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for backend scope.
@@ -1251,7 +1250,7 @@ If you use APMODE in your research, please cite:
   year         = {2026},
   url          = {https://github.com/biostochastics/apmode},
   license      = {GPL-2.0-or-later},
-  version      = {0.6.1-rc2}
+  version      = {0.7.0-rc1}
 }
 ```
 

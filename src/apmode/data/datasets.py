@@ -514,7 +514,8 @@ def fetch_dataset(
 
     info = DATASET_REGISTRY[name]
     output_dir.mkdir(parents=True, exist_ok=True)
-    out_path = output_dir / f"{name}.csv"
+    suffix = ".csv" if normalize_columns else ".raw.csv"
+    out_path = output_dir / f"{name}{suffix}"
 
     # Cache check: skip fetch if file already exists
     if out_path.exists():
@@ -531,10 +532,18 @@ def fetch_dataset(
 
 def _fetch_from_nlmixr2data(name: str, out_path: Path, *, normalize: bool = True) -> None:
     """Extract a dataset from R's nlmixr2data package to CSV."""
-    # Column name normalization mapping
-    normalize_script = ""
-    if normalize:
-        normalize_script = """
+    # Keep every caller-controlled value out of the R source. Rscript reads
+    # dataset/path/normalization from trailing argv, so quotes, backslashes,
+    # and source-like path fragments remain inert data.
+    r_script = """
+    args <- commandArgs(trailingOnly = TRUE)
+    dataset_name <- args[[1]]
+    output_path <- args[[2]]
+    normalize <- identical(args[[3]], "TRUE")
+
+    library(nlmixr2data)
+    d <- get(dataset_name, envir = asNamespace("nlmixr2data"))
+    if (normalize) {
     # Normalize column names to uppercase NONMEM standard
     names(d) <- toupper(names(d))
     # APMODE canonical schema uses NMID (not ID)
@@ -557,18 +566,13 @@ def _fetch_from_nlmixr2data(name: str, out_path: Path, *, normalize: bool = True
     if ("CMT" %in% names(d)) {
       d$CMT[d$EVID == 0] <- 1L
     }
-"""
-
-    r_script = f"""
-    library(nlmixr2data)
-    d <- {name}
-    {normalize_script}
-    write.csv(d, "{out_path}", row.names = FALSE)
+    }
+    write.csv(d, output_path, row.names = FALSE)
     cat(nrow(d))
     """
 
     result = subprocess.run(
-        ["Rscript", "-e", r_script],
+        ["Rscript", "-e", r_script, "--args", name, str(out_path), str(normalize).upper()],
         capture_output=True,
         text=True,
         timeout=30,

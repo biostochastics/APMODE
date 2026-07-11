@@ -21,6 +21,7 @@ from apmode.dsl.ast_models import (
     SumIG,
     Transit,
 )
+from apmode.errors import AgenticExhaustionError
 from tests._helpers.builders import base_spec as _base_spec
 from tests._helpers.builders import mock_backend_result as _mock_backend_result
 from tests._helpers.builders import mock_data_manifest as _mock_data_manifest
@@ -55,6 +56,20 @@ def _swap_response() -> LLMResponse:
     )
 
 
+def _matching_inner_runner(result: BackendResult | None = None) -> AsyncMock:
+    """Return a runner whose result identity follows the evaluated DSL spec."""
+    inner = AsyncMock()
+    template = result or _mock_backend_result()
+
+    async def _run(**kwargs: object) -> BackendResult:
+        fitted_spec = kwargs["spec"]
+        assert isinstance(fitted_spec, DSLSpec)
+        return template.model_copy(update={"model_id": fitted_spec.model_id})
+
+    inner.run = AsyncMock(side_effect=_run)
+    return inner
+
+
 def test_agentic_runner_satisfies_protocol() -> None:
     assert isinstance(AgenticRunner, type)
 
@@ -75,14 +90,14 @@ async def test_respects_iteration_budget(tmp_path: Path) -> None:
         trace_dir=tmp_path / "agentic_trace",
     )
 
-    result = await runner.run(
-        spec=_base_spec(),
-        data_manifest=_mock_data_manifest(),
-        initial_estimates={"CL": 2.0, "V": 30.0, "ka": 1.0},
-        seed=42,
-    )
+    with pytest.raises(AgenticExhaustionError):
+        await runner.run(
+            spec=_base_spec(),
+            data_manifest=_mock_data_manifest(),
+            initial_estimates={"CL": 2.0, "V": 30.0, "ka": 1.0},
+            seed=42,
+        )
 
-    assert result is not None
     assert mock_llm.complete.call_count <= 3
 
 
@@ -102,14 +117,14 @@ async def test_stops_on_stop_signal(tmp_path: Path) -> None:
         trace_dir=tmp_path / "agentic_trace",
     )
 
-    result = await runner.run(
-        spec=_base_spec(),
-        data_manifest=_mock_data_manifest(),
-        initial_estimates={"CL": 2.0, "V": 30.0, "ka": 1.0},
-        seed=42,
-    )
+    with pytest.raises(AgenticExhaustionError):
+        await runner.run(
+            spec=_base_spec(),
+            data_manifest=_mock_data_manifest(),
+            initial_estimates={"CL": 2.0, "V": 30.0, "ka": 1.0},
+            seed=42,
+        )
 
-    assert result is not None
     assert mock_llm.complete.call_count == 1
 
 
@@ -168,12 +183,13 @@ async def test_writes_trace_files(tmp_path: Path) -> None:
         trace_dir=trace_dir,
     )
 
-    await runner.run(
-        spec=_base_spec(),
-        data_manifest=_mock_data_manifest(),
-        initial_estimates={"CL": 2.0, "V": 30.0, "ka": 1.0},
-        seed=42,
-    )
+    with pytest.raises(AgenticExhaustionError):
+        await runner.run(
+            spec=_base_spec(),
+            data_manifest=_mock_data_manifest(),
+            initial_estimates={"CL": 2.0, "V": 30.0, "ka": 1.0},
+            seed=42,
+        )
 
     assert trace_dir.exists()
     trace_files = list(trace_dir.glob("*.json"))
@@ -191,7 +207,9 @@ async def test_returns_best_result(tmp_path: Path) -> None:
     async def mock_run(**kwargs: object) -> BackendResult:
         r = results[min(call_count[0], len(results) - 1)]
         call_count[0] += 1
-        return r
+        fitted_spec = kwargs["spec"]
+        assert isinstance(fitted_spec, DSLSpec)
+        return r.model_copy(update={"model_id": fitted_spec.model_id})
 
     inner_runner = AsyncMock()
     inner_runner.run = mock_run
@@ -209,7 +227,7 @@ async def test_returns_best_result(tmp_path: Path) -> None:
     )
 
     result = await runner.run(
-        spec=_base_spec(),
+        spec=_base_spec_with_initial(),
         data_manifest=_mock_data_manifest(),
         initial_estimates={"CL": 2.0, "V": 30.0, "ka": 1.0},
         seed=42,
@@ -221,11 +239,10 @@ async def test_returns_best_result(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_result_backend_is_agentic_llm(tmp_path: Path) -> None:
-    inner_runner = AsyncMock()
-    inner_runner.run = AsyncMock(return_value=_mock_backend_result())
+    inner_runner = _matching_inner_runner()
 
     mock_llm = AsyncMock()
-    mock_llm.complete = AsyncMock(return_value=_stop_response())
+    mock_llm.complete = AsyncMock(side_effect=[_swap_response(), _stop_response()])
 
     config = AgenticConfig(max_iterations=25, lane="discovery")
     runner = AgenticRunner(
@@ -236,13 +253,15 @@ async def test_result_backend_is_agentic_llm(tmp_path: Path) -> None:
     )
 
     result = await runner.run(
-        spec=_base_spec(),
+        spec=_base_spec_with_initial(),
         data_manifest=_mock_data_manifest(),
         initial_estimates={"CL": 2.0, "V": 30.0, "ka": 1.0},
         seed=42,
     )
 
     assert result.backend == "agentic_llm"
+    assert runner.last_best_spec is not None
+    assert runner.last_best_spec.model_id == result.model_id
 
 
 @pytest.mark.asyncio
@@ -263,12 +282,13 @@ async def test_writes_cached_response_for_replay(tmp_path: Path) -> None:
         trace_dir=trace_dir,
     )
 
-    await runner.run(
-        spec=_base_spec(),
-        data_manifest=_mock_data_manifest(),
-        initial_estimates={"CL": 2.0, "V": 30.0, "ka": 1.0},
-        seed=42,
-    )
+    with pytest.raises(AgenticExhaustionError):
+        await runner.run(
+            spec=_base_spec(),
+            data_manifest=_mock_data_manifest(),
+            initial_estimates={"CL": 2.0, "V": 30.0, "ka": 1.0},
+            seed=42,
+        )
 
     cached = list(trace_dir.glob("*_cached_response.json"))
     assert len(cached) >= 1
@@ -299,12 +319,13 @@ async def test_writes_run_lineage(tmp_path: Path) -> None:
         trace_dir=trace_dir,
     )
 
-    await runner.run(
-        spec=_base_spec(),
-        data_manifest=_mock_data_manifest(),
-        initial_estimates={"CL": 2.0, "V": 30.0, "ka": 1.0},
-        seed=42,
-    )
+    with pytest.raises(AgenticExhaustionError):
+        await runner.run(
+            spec=_base_spec(),
+            data_manifest=_mock_data_manifest(),
+            initial_estimates={"CL": 2.0, "V": 30.0, "ka": 1.0},
+            seed=42,
+        )
 
     lineage_path = trace_dir / "run_lineage.json"
     assert lineage_path.exists()
@@ -331,12 +352,13 @@ async def test_writes_iteration_records(tmp_path: Path) -> None:
         trace_dir=trace_dir,
     )
 
-    await runner.run(
-        spec=_base_spec(),
-        data_manifest=_mock_data_manifest(),
-        initial_estimates={"CL": 2.0, "V": 30.0, "ka": 1.0},
-        seed=42,
-    )
+    with pytest.raises(AgenticExhaustionError):
+        await runner.run(
+            spec=_base_spec(),
+            data_manifest=_mock_data_manifest(),
+            initial_estimates={"CL": 2.0, "V": 30.0, "ka": 1.0},
+            seed=42,
+        )
 
     iterations_path = trace_dir / "agentic_iterations.jsonl"
     assert iterations_path.exists()
@@ -351,34 +373,23 @@ async def test_writes_iteration_records(tmp_path: Path) -> None:
 async def test_relays_runner_failure_to_llm(tmp_path: Path) -> None:
     """Finding 6: inner runner failure is sent to LLM for corrective action."""
     inner_runner = AsyncMock()
-    # First call fails, second succeeds
-    inner_runner.run = AsyncMock(
-        side_effect=[
-            RuntimeError("ODE solver diverged"),
-            _mock_backend_result(),
-        ]
-    )
+    call_count = 0
 
-    # On failure iteration: LLM says "no transforms, keep trying" (not stop)
-    # On success iteration: LLM says stop
-    no_change_resp = LLMResponse(
-        raw_text=json.dumps(
-            {
-                "transforms": [],
-                "reasoning": "Cannot fix; retry with current spec.",
-                "stop": False,
-            }
-        ),
-        model_id="test",
-        model_version="v1",
-        input_tokens=100,
-        output_tokens=50,
-        cost_usd=0.001,
-        wall_time_seconds=1.0,
-        request_payload_hash="g" * 64,
-    )
+    async def _fail_then_fit(**kwargs: object) -> BackendResult:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise RuntimeError("ODE solver diverged")
+        fitted_spec = kwargs["spec"]
+        assert isinstance(fitted_spec, DSLSpec)
+        return _mock_backend_result(model_id=fitted_spec.model_id)
+
+    inner_runner.run = AsyncMock(side_effect=_fail_then_fit)
+
+    # The failure response proposes a valid correction; the next iteration fits
+    # that transformed spec and then stops.
     mock_llm = AsyncMock()
-    mock_llm.complete = AsyncMock(side_effect=[no_change_resp, _stop_response()])
+    mock_llm.complete = AsyncMock(side_effect=[_swap_response(), _stop_response()])
 
     trace_dir = tmp_path / "agentic_trace"
     config = AgenticConfig(max_iterations=3, lane="discovery")
@@ -390,7 +401,7 @@ async def test_relays_runner_failure_to_llm(tmp_path: Path) -> None:
     )
 
     result = await runner.run(
-        spec=_base_spec(),
+        spec=_base_spec_with_initial(),
         data_manifest=_mock_data_manifest(),
         initial_estimates={"CL": 2.0, "V": 30.0, "ka": 1.0},
         seed=42,
@@ -431,12 +442,13 @@ async def test_model_version_escrow_best_effort(tmp_path: Path) -> None:
         trace_dir=trace_dir,
     )
 
-    await runner.run(
-        spec=_base_spec(),
-        data_manifest=_mock_data_manifest(),
-        initial_estimates={"CL": 2.0, "V": 30.0, "ka": 1.0},
-        seed=42,
-    )
+    with pytest.raises(AgenticExhaustionError):
+        await runner.run(
+            spec=_base_spec(),
+            data_manifest=_mock_data_manifest(),
+            initial_estimates={"CL": 2.0, "V": 30.0, "ka": 1.0},
+            seed=42,
+        )
 
     meta_files = list(trace_dir.glob("*_meta.json"))
     assert len(meta_files) >= 1
@@ -502,8 +514,7 @@ async def test_agentic_lineage_records_rationale_and_applied_at(tmp_path: Path) 
 
     from the FormularTransform object the LLM supplied, not re-invented.
     """
-    inner_runner = AsyncMock()
-    inner_runner.run = AsyncMock(return_value=_mock_backend_result())
+    inner_runner = _matching_inner_runner()
 
     responses = [_swap_response_with_rationale(), _stop_response()]
     mock_llm = AsyncMock()
@@ -543,8 +554,7 @@ async def test_agentic_lineage_records_rationale_and_applied_at(tmp_path: Path) 
 @pytest.mark.asyncio
 async def test_agentic_lineage_defaults_when_no_rationale_supplied(tmp_path: Path) -> None:
     """Backward compat: omitting rationale/effect still produces a valid entry."""
-    inner_runner = AsyncMock()
-    inner_runner.run = AsyncMock(return_value=_mock_backend_result())
+    inner_runner = _matching_inner_runner()
 
     responses = [_swap_response(), _stop_response()]
     mock_llm = AsyncMock()
@@ -655,8 +665,7 @@ def _transform_response(transforms: list[dict[str, object]], *, reasoning: str) 
 @pytest.mark.asyncio
 async def test_convert_transit_to_erlang_applies_end_to_end(tmp_path: Path) -> None:
     """convert_transit_to_erlang flows through the agent loop to a fit candidate."""
-    inner_runner = AsyncMock()
-    inner_runner.run = AsyncMock(return_value=_mock_backend_result())
+    inner_runner = _matching_inner_runner()
 
     responses = [
         _transform_response(
@@ -698,8 +707,7 @@ async def test_convert_transit_to_erlang_applies_end_to_end(tmp_path: Path) -> N
 @pytest.mark.asyncio
 async def test_add_parallel_route_applies_end_to_end(tmp_path: Path) -> None:
     """add_parallel_route flows through the agent loop to a fit candidate."""
-    inner_runner = AsyncMock()
-    inner_runner.run = AsyncMock(return_value=_mock_backend_result())
+    inner_runner = _matching_inner_runner()
 
     responses = [
         _transform_response(
@@ -739,8 +747,7 @@ async def test_add_parallel_route_applies_end_to_end(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_set_sumig_components_applies_end_to_end(tmp_path: Path) -> None:
     """set_sumig_components flows through the agent loop to a fit candidate."""
-    inner_runner = AsyncMock()
-    inner_runner.run = AsyncMock(return_value=_mock_backend_result())
+    inner_runner = _matching_inner_runner()
 
     responses = [
         _transform_response(
@@ -788,8 +795,7 @@ async def test_set_sumig_components_applies_end_to_end(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_set_prior_applies_end_to_end(tmp_path: Path) -> None:
     """set_prior flows through the agent loop to a fit candidate."""
-    inner_runner = AsyncMock()
-    inner_runner.run = AsyncMock(return_value=_mock_backend_result())
+    inner_runner = _matching_inner_runner()
 
     responses = [
         _transform_response(
@@ -842,8 +848,7 @@ async def test_compound_multi_transform_proposal_applies_atomically(tmp_path: Pa
     should land in the same iteration's lineage and the fitted spec
     should reflect both changes together.
     """
-    inner_runner = AsyncMock()
-    inner_runner.run = AsyncMock(return_value=_mock_backend_result())
+    inner_runner = _matching_inner_runner()
 
     responses = [
         _transform_response(
@@ -899,7 +904,9 @@ async def test_iteration_record_captures_shrinkage_and_auc_cmax(tmp_path: Path) 
     auc_cmax_be_score, not just bic — these must be persisted to
     agentic_iterations.jsonl."""
     inner_runner = AsyncMock()
-    result = _mock_backend_result(bic=200.0)
+    result = _mock_backend_result(bic=200.0).model_copy(
+        update={"eta_shrinkage": {"CL": 0.15, "V": 0.20}}
+    )
     result.diagnostics.auc_cmax_be_score = 0.75
     inner_runner.run = AsyncMock(return_value=result)
     llm = AsyncMock()
@@ -911,16 +918,17 @@ async def test_iteration_record_captures_shrinkage_and_auc_cmax(tmp_path: Path) 
         config=AgenticConfig(max_iterations=1, run_id="test-run"),
         trace_dir=tmp_path,
     )
-    await runner.run(
-        spec=_base_spec(),
-        data_manifest=_mock_data_manifest(),
-        initial_estimates={"CL": 2.0, "V": 30.0},
-        seed=1,
-    )
+    with pytest.raises(AgenticExhaustionError):
+        await runner.run(
+            spec=_base_spec(),
+            data_manifest=_mock_data_manifest(),
+            initial_estimates={"CL": 2.0, "V": 30.0},
+            seed=1,
+        )
 
     lines = (tmp_path / "agentic_iterations.jsonl").read_text().strip().split("\n")
     entry = json.loads(lines[0])
-    assert entry["eta_shrinkage_max"] == max(result.eta_shrinkage.values())
+    assert entry["eta_shrinkage_max"] == pytest.approx(max(result.eta_shrinkage.values()) * 100.0)
     assert entry["auc_cmax_be_score"] == 0.75
 
 
@@ -940,12 +948,13 @@ async def test_trajectory_compliance_json_written_on_every_run(tmp_path: Path) -
         config=AgenticConfig(max_iterations=1, run_id="test-run-compliance"),
         trace_dir=tmp_path,
     )
-    await runner.run(
-        spec=_base_spec(),
-        data_manifest=_mock_data_manifest(),
-        initial_estimates={"CL": 2.0, "V": 30.0},
-        seed=1,
-    )
+    with pytest.raises(AgenticExhaustionError):
+        await runner.run(
+            spec=_base_spec(),
+            data_manifest=_mock_data_manifest(),
+            initial_estimates={"CL": 2.0, "V": 30.0},
+            seed=1,
+        )
 
     path = tmp_path / "trajectory_compliance.json"
     assert path.exists()

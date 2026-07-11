@@ -7,9 +7,15 @@ mechanistic params. Uses Optax for optimization with early stopping.
 Training objective: population negative log-likelihood (pooled).
   theta = MLP weights + mechanistic params (ka, V) + sigma
 
-Current limitation: performs pooled population fitting. Per-subject random
-effects via Laplace approximation are not implemented; the
-``model.apply_random_effects()`` API is available for that integration.
+Two training entry points share the same eager multidose solver:
+
+* :func:`train_node` — pooled population fit (no per-subject random effects).
+* :func:`train_node_vi` — mixed-effects fit via native reparameterized
+  variational inference. Random effects act multiplicatively on the NODE
+  input-layer weights (Bräm et al. 2024, doi:10.1007/s10928-023-09886-4:
+  ``W_i = W_pop * exp(eta_i)``); the ELBO uses the path-derivative /
+  reparameterization estimator with an analytic diagonal-Gaussian KL
+  (Janssen et al. 2024, doi:10.1007/s10928-024-09931-w).
 """
 
 from __future__ import annotations
@@ -23,7 +29,7 @@ import jax
 import jax.numpy as jnp
 import optax
 
-from apmode.backends.node_ode import HybridPKODE  # noqa: TC001 — used at runtime
+from apmode.backends.node_ode import HybridPKODE
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -57,6 +63,15 @@ class TrainingResult:
     wall_time_seconds: float = 0.0
     method: str = "adam"
     minimization_status: str = "max_evaluations"
+    # Mixed-effects (VI) outputs. Populated only by ``train_node_vi``; the
+    # pooled ``train_node`` path leaves them at the no-IIV defaults.
+    random_effects: bool = False
+    omega: list[float] | None = None
+    """Population RE scale — sqrt of the diagonal RE variance (per hidden dim)."""
+    subject_re_means: dict[str, list[float]] | None = None
+    """Per-subject posterior mean eta (variational ``mu_i``), keyed by subject id."""
+    eta_shrinkage: list[float] | None = None
+    """Per-dim eta shrinkage ``1 - mean_i(s_ij^2) / omega_j^2``."""
 
 
 # Event sort priority within one timestamp (lower = earlier). Mirrors
@@ -66,12 +81,28 @@ class TrainingResult:
 _DOSE_EVID_PRIORITY: dict[int, int] = {3: 0, 4: 1, 1: 2, 9: 3}
 _OBS_PRIORITY = 5
 
+# --- Variational-inference (mixed-effects) constants ------------------------
+# Positive variational scales are parameterized as softplus(raw) + floor so the
+# optimizer sees an unconstrained real; the floor keeps s, omega strictly > 0.
+_SCALE_FLOOR = 1e-4
+# Inverse-softplus initial values so the initial scales land at the targets
+# below: s_i ~ 0.07 (weak per-subject spread), omega ~ 0.10 (weak population RE).
+_S_INIT_TARGET = 0.07
+_OMEGA_INIT_TARGET = 0.10
+# Clamp the reparameterized eta before it enters exp() on the NODE weights, so
+# an early large draw cannot blow up W_i = W_pop * exp(eta). exp(+/-4) ~= [0.018, 55].
+_ETA_CLAMP = 4.0
+
+# One VI parameter pytree: (model, log_sigma, mu, raw_s, raw_omega).
+_VIParams = tuple[HybridPKODE, jax.Array, jax.Array, jax.Array, jax.Array]
+
 
 def _solve_multidose_eager(
     model: HybridPKODE,
     y0: jax.Array,
     obs_times: jax.Array,
     dose_events: list[tuple[float, float, int, int, float, int]],
+    observation_times: list[float] | None = None,
 ) -> jax.Array:
     """Piecewise ODE integration with merged dose+observation timeline.
 
@@ -117,8 +148,16 @@ def _solve_multidose_eager(
     timeline: list[tuple[float, int, str, int]] = []
     for i, (t, _amt, _cmt, evid, _rate, _id) in enumerate(dose_events):
         timeline.append((t, _DOSE_EVID_PRIORITY.get(int(evid), _OBS_PRIORITY), "dose", i))
-    for i in range(n_obs):
-        timeline.append((float(obs_times[i]), _OBS_PRIORITY, "obs", i))
+    concrete_obs_times = observation_times
+    if concrete_obs_times is None:
+        # Direct/eager callers can safely materialize the array.  Training
+        # supplies a pre-materialized Python list so autodiff never attempts
+        # float() on a traced JAX value.
+        concrete_obs_times = [float(obs_times[i]) for i in range(n_obs)]
+    if len(concrete_obs_times) != n_obs:
+        raise ValueError("observation_times length must match obs_times")
+    for i, obs_time in enumerate(concrete_obs_times):
+        timeline.append((obs_time, _OBS_PRIORITY, "obs", i))
 
     # Deterministic order: by time, then event priority (dose-start before
     # dose-stop before observation). Stable sort keeps input order as tiebreak.
@@ -197,7 +236,13 @@ def predict_subject_conc(model: HybridPKODE, subject: SubjectRecord) -> jax.Arra
     # Multi-dose path (eager, non-JIT): dose_events is a Python list.
     dose_events = subject.get("dose_events")
     if dose_events is not None and len(dose_events) > 0:
-        sol = _solve_multidose_eager(model, y0, times, dose_events)
+        sol = _solve_multidose_eager(
+            model,
+            y0,
+            times,
+            dose_events,
+            observation_times=subject.get("observation_times"),
+        )
     else:
         # Legacy single-dose path: dose is in y0[0], JIT-compatible.
         sol = model.solve(y0, times)
@@ -205,6 +250,30 @@ def predict_subject_conc(model: HybridPKODE, subject: SubjectRecord) -> jax.Arra
     # Use the appropriate volume for the observed compartment.
     v_scale = model.V if cmt_idx <= 1 else model.V2
     return sol[:, cmt_idx] / v_scale
+
+
+def _subject_nll(
+    model: HybridPKODE,
+    sigma: jax.Array,
+    subject: SubjectRecord,
+) -> jax.Array:
+    """Per-subject normal negative log-likelihood at a fixed ``sigma``.
+
+    Solves the (possibly RE-perturbed) ODE at the subject's observation times
+    via :func:`predict_subject_conc` and returns the full normal NLL (including
+    the ``log sigma`` and ``2*pi`` constants, for cross-backend comparability).
+    Shared by :func:`_population_nll` and the VI ELBO so the pooled and
+    mixed-effects likelihoods are computed by one code path.
+    """
+    obs = subject["observations"]
+    pred = predict_subject_conc(model, subject)
+    residuals = obs - pred
+    n = len(obs)
+    return (
+        0.5 * jnp.sum((residuals / sigma) ** 2)
+        + n * jnp.log(sigma)
+        + 0.5 * n * jnp.log(2 * jnp.pi)
+    )
 
 
 def _population_nll(
@@ -224,18 +293,7 @@ def _population_nll(
     total_nll = jnp.array(0.0)
 
     for subj in subjects:
-        obs = subj["observations"]
-        pred = predict_subject_conc(model, subj)
-
-        # Normal negative log-likelihood (full, for cross-backend comparability)
-        residuals = obs - pred
-        n = len(obs)
-        nll = (
-            0.5 * jnp.sum((residuals / sigma) ** 2)
-            + n * jnp.log(sigma)
-            + 0.5 * n * jnp.log(2 * jnp.pi)
-        )
-        total_nll = total_nll + nll
+        total_nll = total_nll + _subject_nll(model, sigma, subj)
 
     return total_nll
 
@@ -274,8 +332,7 @@ def train_node(
     params = (model, log_sigma)
     opt_state = optimizer.init(eqx.filter(params, eqx.is_array))
 
-    @eqx.filter_jit
-    def step(
+    def _step(
         params: tuple[HybridPKODE, jax.Array],
         opt_state: optax.OptState,
     ) -> tuple[tuple[HybridPKODE, jax.Array], optax.OptState, jax.Array]:
@@ -293,6 +350,13 @@ def train_node(
         )
         new_params = eqx.apply_updates(params, updates)
         return new_params, new_opt_state, loss
+
+    # The event-driven multi-dose solver intentionally uses concrete Python
+    # control flow and is not JIT-compatible.  Single-dose subjects retain the
+    # compiled fast path; multi-dose/infusion fits use the differentiable eager
+    # step instead of tracing float(obs_time) and raising ConcretizationTypeError.
+    has_event_driven_subject = any(bool(s.get("dose_events")) for s in subjects)
+    step = _step if has_event_driven_subject else eqx.filter_jit(_step)
 
     # Training loop with early stopping
     loss_history: list[float] = []
@@ -341,4 +405,188 @@ def train_node(
         loss_history=loss_history,
         wall_time_seconds=wall_time,
         minimization_status=minimization_status,
+    )
+
+
+def train_node_vi(
+    model: HybridPKODE,
+    subjects: Sequence[SubjectRecord],
+    config: TrainingConfig | None = None,
+    *,
+    init_result: TrainingResult | None = None,
+    n_samples: int = 1,
+    re_dim: int | None = None,
+    seed: int = 0,
+) -> TrainingResult:
+    """Fit a mixed-effects NODE via native reparameterized variational inference.
+
+    Random effects act multiplicatively on the NODE input-layer weights
+    (Bräm et al. 2024, doi:10.1007/s10928-023-09886-4: ``W_i = W_pop*exp(eta_i)``,
+    one ``eta`` per hidden unit). The variational family is a per-subject diagonal
+    Gaussian ``q_i(eta_i) = N(mu_i, diag(s_i^2))`` under the population prior
+    ``eta_i ~ N(0, diag(omega^2))``. The loss is the negative ELBO summed over
+    subjects (consistent with :func:`_population_nll`, which *sums* the
+    likelihood — averaging the NLL while adding a raw KL would overweight the KL):
+
+        L = sum_i [ (1/K) sum_k NLL(y_i | theta, eta_ik) + KL(q_i || N(0, omega^2)) ]
+        eta_ik = mu_i + s_i * eps_ik,   eps_ik ~ N(0, I)     (reparameterization)
+
+    with the analytic diagonal-Gaussian KL (lower variance than a Monte-Carlo
+    ``log q - log p`` estimator; Janssen et al. 2024, doi:10.1007/s10928-024-09931-w
+    call the reparameterized/path-derivative ELBO simple to implement):
+
+        KL_i = 0.5 * sum_j [ log(omega_j^2/s_ij^2) + (s_ij^2 + mu_ij^2)/omega_j^2 - 1 ]
+
+    Positive scales use ``softplus(raw) + eps`` and the sampled ``eta`` is clamped
+    before ``exp`` to prevent early weight blow-up. The epsilon draws are threaded
+    from a JAX PRNG key split per epoch, so training is deterministic given
+    ``seed``.
+
+    Args:
+        model: Initial (or warm-start) HybridPKODE model.
+        subjects: Per-subject records (see :func:`train_node`).
+        config: Training configuration (shared with :func:`train_node`).
+        init_result: Optional two-stage (Bräm) warm start. When given, the fit
+            starts from ``init_result.trained_model`` and its sigma; otherwise a
+            pooled no-IIV :func:`train_node` fit is run internally for the warm
+            start.
+        n_samples: Monte-Carlo samples ``K`` per subject per step (default 1).
+        re_dim: RE vector length; defaults to and must equal the NODE hidden dim.
+        seed: PRNG seed for the reparameterization draws.
+
+    Returns:
+        TrainingResult with ``random_effects=True`` plus ``omega``,
+        ``subject_re_means``, and ``eta_shrinkage`` populated.
+    """
+    config = config or TrainingConfig()
+    start_time = time.monotonic()
+
+    hidden_dim = model.node.hidden_dim
+    if re_dim is None:
+        re_dim = hidden_dim
+    if re_dim != hidden_dim:
+        msg = f"re_dim={re_dim} must equal the NODE hidden_dim={hidden_dim}"
+        raise ValueError(msg)
+
+    # Two-stage warm start (Bräm): pooled no-IIV fit unless one was supplied.
+    if init_result is None:
+        init_result = train_node(model, subjects, config)
+    warm_model = init_result.trained_model
+    log_sigma = jnp.log(jnp.array(init_result.trained_sigma))
+
+    n_subj = len(subjects)
+    # Variational parameters. mu init 0; raw_s / raw_omega inverse-softplus so the
+    # initial scales land at the small targets above.
+    mu = jnp.zeros((n_subj, re_dim))
+    raw_s = jnp.full((n_subj, re_dim), float(jnp.log(jnp.expm1(_S_INIT_TARGET))))
+    raw_omega = jnp.full((re_dim,), float(jnp.log(jnp.expm1(_OMEGA_INIT_TARGET))))
+
+    optimizer = optax.chain(
+        optax.clip_by_global_norm(config.grad_clip),
+        optax.adam(config.learning_rate),
+    )
+    params: _VIParams = (warm_model, log_sigma, mu, raw_s, raw_omega)
+    opt_state = optimizer.init(eqx.filter(params, eqx.is_array))
+
+    def _elbo(p: _VIParams, eps: jax.Array) -> jax.Array:
+        m, ls, mu_v, raw_s_v, raw_omega_v = p
+        sigma = jnp.exp(ls)
+        s = jax.nn.softplus(raw_s_v) + _SCALE_FLOOR
+        omega = jax.nn.softplus(raw_omega_v) + _SCALE_FLOOR
+        omega_sq = omega**2
+
+        total = jnp.array(0.0)
+        for i, subj in enumerate(subjects):
+            mu_i = mu_v[i]
+            s_i = s[i]
+            nll_i = jnp.array(0.0)
+            for k in range(n_samples):
+                eta = jnp.clip(mu_i + s_i * eps[i, k], -_ETA_CLAMP, _ETA_CLAMP)
+                model_i = m.apply_subject_re(eta)
+                nll_i = nll_i + _subject_nll(model_i, sigma, subj)
+            nll_i = nll_i / n_samples
+
+            s_i_sq = s_i**2
+            kl_i = 0.5 * jnp.sum(jnp.log(omega_sq / s_i_sq) + (s_i_sq + mu_i**2) / omega_sq - 1.0)
+            total = total + nll_i + kl_i
+        return total
+
+    def _step(
+        p: _VIParams,
+        opt_state: optax.OptState,
+        eps: jax.Array,
+    ) -> tuple[_VIParams, optax.OptState, jax.Array]:
+        loss, grads = eqx.filter_value_and_grad(_elbo)(p, eps)
+        updates, new_opt_state = optimizer.update(
+            eqx.filter(grads, eqx.is_array),
+            opt_state,
+            eqx.filter(p, eqx.is_array),
+        )
+        new_params: _VIParams = eqx.apply_updates(p, updates)
+        return new_params, new_opt_state, loss
+
+    # The eager multidose solver is not JIT-compatible; single-dose subjects
+    # keep the compiled fast path (mirrors ``train_node``).
+    has_event_driven_subject = any(bool(s.get("dose_events")) for s in subjects)
+    step = _step if has_event_driven_subject else eqx.filter_jit(_step)
+
+    key = jax.random.PRNGKey(seed)
+    loss_history: list[float] = []
+    best_loss = float("inf")
+    patience_counter = 0
+    converged = False
+    minimization_status = "max_evaluations"
+
+    for _epoch in range(config.epochs):
+        key, subkey = jax.random.split(key)
+        eps = jax.random.normal(subkey, (n_subj, n_samples, re_dim))
+        params, opt_state, loss_val = step(params, opt_state, eps)
+        loss_float = float(loss_val)
+        loss_history.append(loss_float)
+
+        if not jnp.isfinite(loss_val):
+            minimization_status = "nan_detected"
+            break
+
+        if loss_float < best_loss - config.early_stop_min_delta:
+            best_loss = loss_float
+            patience_counter = 0
+        else:
+            patience_counter += 1
+
+        if patience_counter >= config.early_stop_patience:
+            converged = len(loss_history) > 1 and best_loss < loss_history[0] * 0.99
+            minimization_status = "plateau" if not converged else "successful"
+            break
+    else:
+        if len(loss_history) > 1 and best_loss < loss_history[0] * 0.99:
+            converged = True
+            minimization_status = "successful"
+
+    wall_time = time.monotonic() - start_time
+    final_model, final_log_sigma, final_mu, final_raw_s, final_raw_omega = params
+
+    final_s = jax.nn.softplus(final_raw_s) + _SCALE_FLOOR
+    final_omega = jax.nn.softplus(final_raw_omega) + _SCALE_FLOOR
+    final_omega_sq = final_omega**2
+    # Per-dim shrinkage: 1 - mean_i(s_ij^2) / omega_j^2.
+    shrinkage = 1.0 - jnp.mean(final_s**2, axis=0) / final_omega_sq
+
+    subject_re_means = {
+        subj["subject_id"]: [float(v) for v in final_mu[i]] for i, subj in enumerate(subjects)
+    }
+
+    return TrainingResult(
+        trained_model=final_model,
+        trained_sigma=float(jnp.exp(final_log_sigma)),
+        final_loss=loss_history[-1] if loss_history else float("inf"),
+        n_epochs=len(loss_history),
+        converged=converged,
+        loss_history=loss_history,
+        wall_time_seconds=wall_time,
+        minimization_status=minimization_status,
+        random_effects=True,
+        omega=[float(v) for v in final_omega],
+        subject_re_means=subject_re_means,
+        eta_shrinkage=[float(v) for v in shrinkage],
     )

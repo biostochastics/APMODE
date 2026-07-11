@@ -105,10 +105,12 @@ def _rank_candidates(
     ranking (they cannot be in the top set). Ties are broken by AIC, then
     by candidate_id for determinism.
     """
+    import math
+
     scored = [
         f
         for f in fits_for_imputation
-        if f.converged and f.bic is not None and f.bic != float("inf")
+        if f.converged and f.bic is not None and math.isfinite(f.bic)
     ]
     scored.sort(
         key=lambda f: (
@@ -222,8 +224,10 @@ def aggregate_stability(
 
 
 def _pool_scalar(values: list[float | None]) -> float | None:
-    """Arithmetic mean over non-None values; None if nothing to pool."""
-    finite = [v for v in values if v is not None]
+    """Arithmetic mean over finite values; None if nothing valid to pool."""
+    import math
+
+    finite = [v for v in values if v is not None and math.isfinite(v)]
     if not finite:
         return None
     return float(sum(finite) / len(finite))
@@ -234,7 +238,7 @@ def rubin_pool(
     ses: Sequence[float | None],
     *,
     m_total: int | None = None,
-) -> tuple[float, float, float, float, float]:
+) -> tuple[float, float | None, float, float | None, float | None]:
     """Pool one parameter across imputations via Rubin's rules.
 
     Implements the classical Rubin (1987) pooling for a scalar parameter:
@@ -245,10 +249,10 @@ def rubin_pool(
       - T   (total var)          = Ubar + (1 + 1/m) * B
       - nu  (Barnard-Rubin dof)  = (m - 1) * (1 + Ubar / ((1 + 1/m) * B))**2
 
-    When fewer than 2 imputations contribute, returns ``(Qbar, 0, 0, Ubar or 0,
-    inf)``. When no SE was reported, ``Ubar`` is zero and the interval
-    degenerates to the between-imputation-only spread — correct behavior
-    for the "SE unavailable from backend" case.
+    Missing SE is missing uncertainty evidence: ``Ubar``, total variance,
+    and degrees of freedom are returned as ``None`` rather than treating an
+    unknown variance as zero certainty. Infinite degrees of freedom are also
+    represented as ``None`` so the result is strict-JSON round-trippable.
 
     Args:
         estimates: per-imputation point estimates (skip non-converged at
@@ -256,9 +260,8 @@ def rubin_pool(
         ses: per-imputation standard errors aligned 1:1 with
             ``estimates``. ``None`` entries are treated as 0 variance
             (i.e., SE unknown → no within contribution for that draw).
-        m_total: optional total number of imputations (for the standard
-            ``(1 + 1/m)`` Rubin factor). When omitted, defaults to the
-            number of converged estimates in ``estimates``.
+        m_total: retained for API compatibility. Rubin's ``m`` is the number
+            of imputations that actually contributed this parameter.
 
     Returns:
         ``(pooled_estimate, within_var, between_var, total_var, dof)``.
@@ -267,26 +270,30 @@ def rubin_pool(
         msg = f"estimates ({len(estimates)}) and ses ({len(ses)}) must align"
         raise ValueError(msg)
     if not estimates:
-        return (0.0, 0.0, 0.0, 0.0, float("inf"))
+        raise ValueError("at least one estimate is required for Rubin pooling")
 
-    m = m_total if m_total is not None else len(estimates)
+    import math
+
+    if not all(math.isfinite(value) for value in estimates):
+        raise ValueError("Rubin estimates must all be finite")
+    _ = m_total
+    m = len(estimates)
     qbar = float(sum(estimates) / len(estimates))
 
-    # Within-imputation variance: mean of SE². SEs reported as None count
-    # as zero so the between-imputation term can still be reported.
-    variances = [(se * se) if se is not None else 0.0 for se in ses]
-    ubar = float(sum(variances) / len(variances))
+    se_complete = all(se is not None and math.isfinite(se) and se >= 0 for se in ses)
+    known_ses = [float(se) for se in ses if se is not None]
+    ubar = float(sum(se**2 for se in known_ses) / len(ses)) if se_complete else None
 
     if len(estimates) < 2:
-        return (qbar, ubar, 0.0, ubar, float("inf"))
+        return (qbar, ubar, 0.0, ubar, None)
 
     between = float(sum((q - qbar) ** 2 for q in estimates) / (len(estimates) - 1))
-    total = ubar + (1.0 + 1.0 / m) * between
+    total = ubar + (1.0 + 1.0 / m) * between if ubar is not None else None
 
     # Barnard-Rubin degrees of freedom; infinite when between variance is
     # negligible relative to within variance.
-    if between <= 0:
-        dof = float("inf")
+    if between <= 0 or ubar is None:
+        dof = None
     else:
         ratio = ubar / ((1.0 + 1.0 / m) * between)
         dof = float((len(estimates) - 1) * (1.0 + ratio) ** 2)
@@ -297,7 +304,7 @@ def _rubin_pool_candidate(
     fits: list[PerImputationFit],
     *,
     m_total: int,
-) -> dict[str, tuple[float, float, float, float, float]]:
+) -> dict[str, tuple[float, float | None, float, float | None, float | None]]:
     """Apply ``rubin_pool`` to every parameter reported across ``fits``.
 
     Input fits should be pre-filtered to converged draws for this
@@ -316,7 +323,7 @@ def _rubin_pool_candidate(
         for name, (est, se) in f.parameter_estimates.items():
             by_name[name].append((est, se))
 
-    pooled: dict[str, tuple[float, float, float, float, float]] = {}
+    pooled: dict[str, tuple[float, float | None, float, float | None, float | None]] = {}
     for name, pairs in by_name.items():
         ests = [p[0] for p in pairs]
         ses = [p[1] for p in pairs]

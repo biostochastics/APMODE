@@ -186,8 +186,11 @@ def profile_data(
         EvidenceManifest with typed fields constraining downstream dispatch.
     """
     df, n_non_pk_dropped = _filter_pk_observations_with_count(df)
-    obs = cast("pd.DataFrame", df[df["EVID"] == 0].copy())
-    doses = cast("pd.DataFrame", df[df["EVID"] == 1].copy())
+    usable_obs = df["EVID"] == 0
+    if "MDV" in df.columns:
+        usable_obs &= df["MDV"] == 0
+    obs = cast("pd.DataFrame", df[usable_obs].copy())
+    doses = cast("pd.DataFrame", df[df["EVID"].isin([1, 4])].copy())
     n_subjects = int(cast("int", df["NMID"].nunique()))
 
     blq_burden = _compute_blq_burden(df)
@@ -539,7 +542,7 @@ def _filter_pk_observations(df: pd.DataFrame) -> pd.DataFrame:
     """
     if "DVID" not in df.columns:
         return df
-    dvid_str = df["DVID"].astype(str).str.lower()
+    dvid_str = df["DVID"].astype(str).str.strip().str.lower()
     obs_mask = df["EVID"] == 0
     obs_dvids = dvid_str[obs_mask]
     n_pk_matches = int(obs_dvids.isin(_PK_DVIDS).sum())
@@ -572,7 +575,7 @@ def _filter_pk_observations(df: pd.DataFrame) -> pd.DataFrame:
     dropped = int((~keep_mask).sum())
     if dropped == 0:
         return df
-    unique_dropped = sorted(set(df.loc[~keep_mask, "DVID"].astype(str).str.lower()))
+    unique_dropped = sorted(set(df.loc[~keep_mask, "DVID"].astype(str).str.strip().str.lower()))
     _log.info(
         "Profiler: dropping %d non-PK observation rows (DVID values=%s); "
         "kept DVID values matching %s",
@@ -1806,7 +1809,10 @@ def _assess_covariate_missingness(
 
 def _compute_blq_burden(df: pd.DataFrame) -> float:
     """Compute fraction of BLQ observations."""
-    obs = df[df["EVID"] == 0]
+    obs_mask = df["EVID"] == 0
+    if "MDV" in df.columns:
+        obs_mask &= df["MDV"] == 0
+    obs = df[obs_mask]
     if obs.empty:
         return 0.0
 
@@ -1824,7 +1830,10 @@ def _extract_lloq_value(df: pd.DataFrame) -> float | None:
       2. DV value of BLQ rows (for M3-style where DV=LLOQ on censored rows)
       3. None when no BLQ observations
     """
-    obs = df[df["EVID"] == 0]
+    obs_mask = df["EVID"] == 0
+    if "MDV" in df.columns:
+        obs_mask &= df["MDV"] == 0
+    obs = df[obs_mask]
     if obs.empty or "BLQ_FLAG" not in df.columns:
         return None
 
@@ -1863,7 +1872,10 @@ def _assess_protocol_heterogeneity(
         return "single-study"
 
     # Check design similarity: compare sampling schedules across studies
-    per_study_n_obs = df[df["EVID"] == 0].groupby("STUDY_ID").size()
+    obs_mask = df["EVID"] == 0
+    if "MDV" in df.columns:
+        obs_mask &= df["MDV"] == 0
+    per_study_n_obs = df[obs_mask].groupby("STUDY_ID").size()
     per_study_n_subj = df.groupby("STUDY_ID")["NMID"].nunique()
 
     if len(per_study_n_obs) < 2:

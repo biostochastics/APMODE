@@ -10,7 +10,7 @@ text), so that reordering top-level blocks — or declaring the same
 never shows up as a spurious diff.
 
 Canonical block order (also the order :func:`serialize_spec` emits blocks
-in): ``metadata, units, absorption, distribution, elimination, variability,
+in): ``metadata, units, experimental, absorption, distribution, elimination, variability,
 covariates, priors, observation-or-observations, initial``. This is a
 *display* order only — per ``pk_grammar.lark``, top-level blocks may appear
 in any order in source text, and ``DSLSpec.source_meta`` (not this module)
@@ -28,14 +28,9 @@ Because of this, serialization is driven entirely by ``type(module)``
 dispatch, never by reading calibration values off the module itself
 (P1.4 already moved every calibration field into ``DSLSpec.initial``).
 
-Known gap: ``DSLSpec.experimental`` (the NODE opt-in gate) has no
-grammar syntax at all — there is no ``experimental:`` block in
-``pk_grammar.lark`` — so a spec with ``experimental.node=True`` cannot be
-round-tripped through :func:`serialize_spec` followed by
-:func:`apmode.dsl.grammar.compile_dsl`: the reparsed spec always gets
-``experimental.node=False`` and fails ``FrmCode.LANE_NODE_EXPERIMENTAL_GATE``
-on the next ``validate_dsl`` call. This is a grammar limitation, not
-something this module can paper over.
+The ``experimental:`` block is emitted only when at least one opt-in is
+enabled, keeping ordinary canonical text unchanged while allowing NODE specs
+to round-trip without losing their explicit authorization.
 """
 
 from __future__ import annotations
@@ -108,6 +103,7 @@ if TYPE_CHECKING:
 CANONICAL_BLOCK_ORDER: tuple[str, ...] = (
     "metadata",
     "units",
+    "experimental",
     "absorption",
     "distribution",
     "elimination",
@@ -157,6 +153,8 @@ def serialize_absorption_module(mod: AbsorptionModule) -> str:
     if isinstance(mod, ParallelFirstOrder):
         return "ParallelFirstOrder(ka1, ka2, frac)"
     if isinstance(mod, SumIG):
+        if mod.k == 1:
+            return "SumIG(k=1, MT_1, RD2_1)"
         return f"SumIG(k={mod.k}, MT_1, MT_2, RD2_1, RD2_2, weight_1)"
     if isinstance(mod, NODEAbsorption):
         return f"NODE_Absorption(dim={mod.dim}, constraint_template={mod.constraint_template})"
@@ -370,6 +368,8 @@ def serialize_spec(spec: DSLSpec) -> str:
         lines.append(f"    {_serialize_metadata(spec.metadata)}")
     if spec.units is not None:
         lines.append(f"    {_serialize_units(spec.units)}")
+    if spec.experimental.node:
+        lines.append("    experimental: { node=true }")
 
     lines.append(f"    absorption: {serialize_absorption_module(spec.absorption)}")
     lines.append(f"    distribution: {serialize_distribution_module(spec.distribution)}")
@@ -480,6 +480,7 @@ def spec_blocks(spec: DSLSpec) -> dict[str, JSONValue]:
             if spec.units is not None
             else None
         ),
+        "experimental": cast("JSONValue", spec.experimental.model_dump(mode="json")),
         "absorption": cast("JSONValue", spec.absorption.model_dump(mode="json")),
         "distribution": cast("JSONValue", spec.distribution.model_dump(mode="json")),
         "elimination": cast("JSONValue", spec.elimination.model_dump(mode="json")),

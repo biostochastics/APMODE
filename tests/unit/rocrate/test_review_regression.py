@@ -18,12 +18,20 @@ from typing import Any
 import pytest
 
 from apmode.bundle.rocrate import (
+    BundleIntegrityError,
     BundleNotSealedError,
     RoCrateEmitter,
     RoCrateExportOptions,
 )
 
 from ._fixtures import build_submission_bundle
+
+
+def test_export_rejects_post_seal_tampering(tmp_path: Path) -> None:
+    bundle = build_submission_bundle(tmp_path, candidate_ids=("c001",))
+    (bundle / "results" / "c001_result.json").write_text('{"tampered": true}')
+    with pytest.raises(BundleIntegrityError, match="digest mismatch"):
+        RoCrateEmitter().export_from_sealed_bundle(bundle, tmp_path / "crate")
 
 
 class TestH3_AIModelInvocation:
@@ -80,8 +88,8 @@ class TestH4_DatePublishedStability:
 
 
 class TestH5_CaseInsensitiveExclusion:
-    def test_uppercase_sidecar_round_trips(self, tmp_path: Path) -> None:
-        from apmode.bundle.rocrate.importer import import_crate
+    def test_uppercase_sidecar_is_not_silently_excluded(self, tmp_path: Path) -> None:
+        from apmode.bundle.rocrate.importer import RoCrateImportError, import_crate
 
         bundle = build_submission_bundle(tmp_path, candidate_ids=("c001",))
         out = tmp_path / "crate"
@@ -94,10 +102,10 @@ class TestH5_CaseInsensitiveExclusion:
         # an upper-case variant of the SBOM filename inside the crate.
         (out / "BOM.CDX.JSON").write_text("{}")
         target = tmp_path / "imported"
-        # If the excluded set were case-sensitive, this file would be
-        # hashed into the digest and the sentinel check would fail.
-        import_crate(out, target)
-        assert (target / "BOM.CDX.JSON").is_file()
+        # Producer exclusions are exact/case-sensitive. Import must share
+        # those semantics rather than exempting an artifact the seal covered.
+        with pytest.raises(RoCrateImportError, match="digest mismatch"):
+            import_crate(out, target)
 
 
 class TestM1_CredibilityOrphanGuard:

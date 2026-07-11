@@ -79,9 +79,18 @@ def _score(
         cv_value: float | None = (
             float(cast("float", raw_cv)) if isinstance(raw_cv, (int, float)) else None
         )
-        cv_pass = cv_value is None or cv_value <= max_cross_seed_cv
+        seed_payloads = payload.get("seed_results")
+        is_kfold = isinstance(seed_payloads, list) and any(
+            isinstance(item, dict) and item.get("fold") is not None for item in seed_payloads
+        )
+        cv_pass = is_kfold or (cv_value is not None and cv_value <= max_cross_seed_cv)
+        heldout_npe = payload.get("heldout_npe_mean")
+        heldout_vpc = payload.get("heldout_vpc_min_coverage_mean")
+        heldout_evidence_pass = not is_kfold or (
+            isinstance(heldout_npe, (int, float)) and isinstance(heldout_vpc, (int, float))
+        )
         conv_pass = conv >= min_convergence_rate
-        passed = conv_pass and cv_pass
+        passed = conv_pass and cv_pass and heldout_evidence_pass
         if passed:
             pass_count += 1
         raw_seeds = payload.get("n_seeds") or 0
@@ -93,6 +102,9 @@ def _score(
                 "convergence_pass": conv_pass,
                 "cross_seed_cv_max": cv_value,
                 "cross_seed_pass": cv_pass,
+                "heldout_evidence_pass": heldout_evidence_pass,
+                "heldout_npe_mean": heldout_npe,
+                "heldout_vpc_min_coverage_mean": heldout_vpc,
                 "n_seeds": int(cast("int", raw_seeds)),
             }
         )

@@ -20,11 +20,12 @@ from hypothesis import given, settings
 
 from apmode.dsl.ast_models import (
     IIV,
+    Combined,
+    CovariateLink,
     DSLSpec,
     FirstOrder,
     LinearElim,
     OneCmt,
-    Proportional,
 )
 from apmode.dsl.prior_transforms import SetPrior
 from apmode.dsl.priors import (
@@ -43,8 +44,9 @@ def _base_spec() -> DSLSpec:
         absorption=FirstOrder(),
         distribution=OneCmt(),
         elimination=LinearElim(),
-        variability=[IIV(params=["CL", "V"], structure="diagonal")],
-        observation=Proportional(sigma_prop=0.1),
+        variability=[IIV(params=["CL", "V"], structure="block")],
+        covariates=[CovariateLink(param="CL", covariate="WT", form="power", theta=0.75, ref=70.0)],
+        observation=Combined(sigma_prop=0.1, sigma_add=0.2),
     )
 
 

@@ -9,8 +9,7 @@ cannot drift on parent-count heuristics. Resolution strategy, in order:
    ``pyproject.toml`` is found; use ``<root>/policies``. Handles the
    editable-install / repo-root workflow that APMODE currently targets.
 3. Fall back to ``importlib.resources.files("apmode").joinpath("policies")``
-   for site-packages installs once ``policies/`` is shipped as package data
-   (see hatch ``include_package_data`` / TODO in ``pyproject.toml``).
+   for site-packages installs, where the wheel ships policies as package data.
 
 The helper returns ``None`` if nothing resolves; callers decide whether
 that's fatal (orchestrator treats as "no policy" → default).

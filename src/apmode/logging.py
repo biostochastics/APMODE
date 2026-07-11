@@ -25,6 +25,7 @@ def configure_logging(*, json_output: bool = True, level: int = logging.INFO) ->
         structlog.stdlib.add_log_level,
         structlog.processors.TimeStamper(fmt="iso"),
         structlog.processors.StackInfoRenderer(),
+        structlog.processors.format_exc_info,
     ]
 
     if json_output:
@@ -43,6 +44,15 @@ def configure_logging(*, json_output: bool = True, level: int = logging.INFO) ->
     )
 
     formatter = structlog.stdlib.ProcessorFormatter(
+        foreign_pre_chain=[
+            structlog.contextvars.merge_contextvars,
+            structlog.stdlib.add_logger_name,
+            structlog.stdlib.add_log_level,
+            structlog.stdlib.ExtraAdder(),
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.StackInfoRenderer(),
+            structlog.processors.format_exc_info,
+        ],
         processors=[
             structlog.stdlib.ProcessorFormatter.remove_processors_meta,
             renderer,

@@ -84,6 +84,17 @@ async def test_drain_pipe_returns_full_body_when_callback_is_none() -> None:
 
 
 @pytest.mark.asyncio
+async def test_drain_pipe_bounds_in_memory_capture_but_keeps_draining() -> None:
+    payload = b"prefix\n" + (b"x" * 20_000) + b"suffix\n"
+    proc = await _spawn_python("import sys; sys.stderr.buffer.write(" + repr(payload) + ")")
+    assert proc.stderr is not None
+    body = await _drain_pipe(proc.stderr, None, None, max_capture_bytes=1024)
+    await proc.wait()
+    assert len(body) == 1024
+    assert body == payload[-1024:]
+
+
+@pytest.mark.asyncio
 async def test_drain_pipe_returns_empty_for_empty_stream() -> None:
     """Process that closes stderr immediately → empty body, no crash."""
     proc = await _spawn_python("import sys; sys.stderr.close()")

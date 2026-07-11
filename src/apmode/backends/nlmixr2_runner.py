@@ -54,6 +54,8 @@ async def _drain_pipe(
     stream: asyncio.StreamReader,
     log_handle: IO[bytes] | None,
     on_line: Callable[[bytes], None] | None,
+    *,
+    max_capture_bytes: int | None = None,
 ) -> bytes:
     """Read ``stream`` line-by-line until EOF; tee to log + callback.
 
@@ -101,7 +103,13 @@ async def _drain_pipe(
             line = b"".join(chunks)
         if not line:
             break
-        buffer.extend(line)
+        if max_capture_bytes is None:
+            buffer.extend(line)
+        elif max_capture_bytes > 0:
+            buffer.extend(line)
+            overflow = len(buffer) - max_capture_bytes
+            if overflow > 0:
+                del buffer[:overflow]
         if log_handle is not None:
             try:
                 if not last_byte_is_newline and not line.startswith(b"\n"):
@@ -268,16 +276,25 @@ class Nlmixr2Runner:
         # field on RSubprocessRequest still points at the (adapted)
         # path the harness reads.
         dvid_allowlist = _dvid_allowlist_for_spec(spec)
+        categorical_references = {
+            cov.covariate: cov.reference
+            for cov in spec.covariates
+            if cov.form == "categorical" and cov.reference is not None
+        }
         adapted_data_path = run_dir / "data_nlmixr2.csv"
-        to_nlmixr2_format(pd.read_csv(data_path), dvid_allowlist=dvid_allowlist).to_csv(
-            adapted_data_path, index=False
-        )
+        to_nlmixr2_format(
+            pd.read_csv(data_path),
+            dvid_allowlist=dvid_allowlist,
+            categorical_references=categorical_references,
+        ).to_csv(adapted_data_path, index=False)
         adapted_test_data_path: Path | None = None
         if test_data_path is not None:
             adapted_test_data_path = run_dir / "test_data_nlmixr2.csv"
-            to_nlmixr2_format(pd.read_csv(test_data_path), dvid_allowlist=dvid_allowlist).to_csv(
-                adapted_test_data_path, index=False
-            )
+            to_nlmixr2_format(
+                pd.read_csv(test_data_path),
+                dvid_allowlist=dvid_allowlist,
+                categorical_references=categorical_references,
+            ).to_csv(adapted_test_data_path, index=False)
 
         # Compile R code from DSL spec (unless the caller pre-compiled, e.g.
         # the FREM path).
@@ -377,7 +394,7 @@ class Nlmixr2Runner:
             str(response_path),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            preexec_fn=os.setsid,
+            start_new_session=True,
             # asyncio's default StreamReader buffer is 64 KiB; a long
             # nlmixr2 stack trace without internal newlines triggers
             # ``LimitOverrunError`` and then loses the buffered bytes.
@@ -403,11 +420,21 @@ class Nlmixr2Runner:
                 assert stream_stdout is not None  # PIPE was set above
                 assert stream_stderr is not None
                 drain_stdout = asyncio.create_task(
-                    _drain_pipe(stream_stdout, log_handle, None),
+                    _drain_pipe(
+                        stream_stdout,
+                        log_handle,
+                        None,
+                        max_capture_bytes=262_144,
+                    ),
                     name=f"drain-stdout-{proc.pid}",
                 )
                 drain_stderr = asyncio.create_task(
-                    _drain_pipe(stream_stderr, log_handle, on_stderr_line),
+                    _drain_pipe(
+                        stream_stderr,
+                        log_handle,
+                        on_stderr_line,
+                        max_capture_bytes=262_144,
+                    ),
                     name=f"drain-stderr-{proc.pid}",
                 )
 

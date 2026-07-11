@@ -138,6 +138,42 @@ _CALIBRATION_PARAM_NAMES = frozenset(
 _STRUCTURAL_CALL_RE = re.compile(r"\b(" + "|".join(_STRUCTURAL_KEYWORDS) + r")\s*\(([^()]*)\)")
 
 
+def _mask_comments_and_strings(line: str) -> str:
+    """Replace non-code text with spaces while preserving character offsets.
+
+    The migration regexes operate on one line at a time. Matching a model-like
+    phrase inside a ``//`` comment or quoted metadata string can silently
+    synthesize calibration/covariate declarations, so regex discovery runs on
+    this same-length mask and replacements are then applied to the original.
+    """
+    chars = list(line)
+    in_string = False
+    escaped = False
+    i = 0
+    while i < len(chars):
+        char = chars[i]
+        if in_string:
+            chars[i] = " "
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            i += 1
+            continue
+        if char == '"':
+            in_string = True
+            chars[i] = " "
+            i += 1
+            continue
+        if char == "/" and i + 1 < len(chars) and chars[i + 1] == "/":
+            chars[i:] = [" "] * (len(chars) - i)
+            break
+        i += 1
+    return "".join(chars)
+
+
 def _rewrite_structural_call(match: re.Match[str]) -> tuple[str, list[tuple[str, str]]]:
     """Strip calibration values from one matched structural call.
 
@@ -176,13 +212,22 @@ def _rewrite_structural_call(match: re.Match[str]) -> tuple[str, list[tuple[str,
 def _rewrite_structural_calls(line: str) -> tuple[str, list[tuple[str, str]]]:
     """Apply :func:`_rewrite_structural_call` to every match on one line."""
     calibration: list[tuple[str, str]] = []
-
-    def _sub(match: re.Match[str]) -> str:
-        rewritten, cal = _rewrite_structural_call(match)
+    replacements: list[tuple[int, int, str]] = []
+    masked = _mask_comments_and_strings(line)
+    for masked_match in _STRUCTURAL_CALL_RE.finditer(masked):
+        original_match = _STRUCTURAL_CALL_RE.fullmatch(
+            line[masked_match.start() : masked_match.end()]
+        )
+        if original_match is None:  # pragma: no cover - same-length mask invariant
+            continue
+        rewritten, cal = _rewrite_structural_call(original_match)
         calibration.extend(cal)
-        return rewritten
+        replacements.append((masked_match.start(), masked_match.end(), rewritten))
 
-    return _STRUCTURAL_CALL_RE.sub(_sub, line), calibration
+    new_line = line
+    for start, end, replacement in reversed(replacements):
+        new_line = new_line[:start] + replacement + new_line[end:]
+    return new_line, calibration
 
 
 # ---------------------------------------------------------------------------
@@ -232,7 +277,8 @@ def _rewrite_covariate_links(
     warnings: list[MigrationWarning] = []
     spans_to_blank: list[tuple[int, int]] = []
 
-    for match in _COVARIATE_LINK_RE.finditer(line):
+    masked = _mask_comments_and_strings(line)
+    for match in _COVARIATE_LINK_RE.finditer(masked):
         param, covariate, form = match.group(1), match.group(2), match.group(3)
         defaults = _COVARIATE_FORM_DEFAULTS.get(form)
         if defaults is None:

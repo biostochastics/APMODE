@@ -162,7 +162,10 @@ class NCAEstimator:
         """
         self._df = df
         self._manifest = manifest
-        obs: pd.DataFrame = cast("pd.DataFrame", df[df["EVID"] == 0].copy())
+        obs_mask = df["EVID"] == 0
+        if "MDV" in df.columns:
+            obs_mask &= df["MDV"] == 0
+        obs: pd.DataFrame = cast("pd.DataFrame", df[obs_mask].copy())
         # Filter mixed-endpoint datasets to PK rows only. Warfarin's
         # canonical NONMEM-style CSV interleaves DVID="cp" PK rows with
         # DVID="pca" prothrombin-complex-activity PD rows; before this
@@ -205,7 +208,7 @@ class NCAEstimator:
                     },
                 )
         self._obs: pd.DataFrame = obs
-        self._doses: pd.DataFrame = cast("pd.DataFrame", df[df["EVID"] == 1].copy())
+        self._doses: pd.DataFrame = cast("pd.DataFrame", df[df["EVID"].isin([1, 4])].copy())
         self._fallback_estimates = fallback_estimates
         self.diagnostics: list[NCASubjectDiagnostic] = []
         self.fallback_source: str = "nca"  # nca | dataset_card | defaults | data_driven
@@ -322,10 +325,10 @@ class NCAEstimator:
         Returns the number of plots written.
         """
         try:
-            import matplotlib  # type: ignore[import-not-found]
+            import matplotlib
 
             matplotlib.use("Agg")  # non-interactive
-            import matplotlib.pyplot as plt  # type: ignore[import-not-found]
+            import matplotlib.pyplot as plt
         except ImportError:
             return 0
 
@@ -400,19 +403,42 @@ class NCAEstimator:
             return _excluded_result(str(subj), "fewer than 3 positive concentrations")
 
         is_multi, tau = _detect_multi_dose(subj_dose)
-        amt_series = subj_dose["AMT"]
-        dose = float(amt_series.iloc[-1]) if is_multi else float(amt_series.sum())
+        has_ss = bool("SS" in subj_dose.columns and subj_dose["SS"].fillna(0).isin([1, 2]).any())
+        if is_multi and not has_ss:
+            return _excluded_result(
+                str(subj), "multiple doses without an explicit steady-state SS flag"
+            )
+
+        ordered_doses = subj_dose.sort_values("TIME", kind="stable")
+        last_dose = ordered_doses.iloc[-1]
+        dose = float(last_dose["AMT"])
         if dose <= 0:
             return _excluded_result(str(subj), "non-positive dose")
 
-        last_dose_time = float(subj_dose["TIME"].max()) if not subj_dose.empty else None
+        last_dose_time = float(last_dose["TIME"])
+        if has_ss and (tau is None or tau <= 0) and "II" in ordered_doses.columns:
+            ii = ordered_doses["II"].dropna()
+            positive_ii = ii[ii > 0]
+            if not positive_ii.empty:
+                tau = float(positive_ii.iloc[-1])
+        if has_ss and (tau is None or tau <= 0):
+            return _excluded_result(str(subj), "steady-state dose has no positive II/tau")
+
+        # Work in time-after-dose coordinates so Tmax/ka and AUC windows are
+        # invariant to a nonzero clock time for the dosing event.
+        post_dose = times >= last_dose_time
+        times = times[post_dose] - last_dose_time
+        concs = concs[post_dose]
+        pos_mask = concs > 0
+        if pos_mask.sum() < _NCA_MIN_LAMBDA_POINTS:
+            return _excluded_result(str(subj), "fewer than 3 post-dose concentrations")
         result = _compute_nca_single_subject(
             times[pos_mask],
             concs[pos_mask],
             dose,
-            is_steady_state=is_multi,
+            is_steady_state=has_ss,
             tau=tau,
-            last_dose_time=last_dose_time,
+            last_dose_time=0.0,
         )
         if result is None:
             return _excluded_result(str(subj), "no viable terminal-phase fit or zero AUC")
@@ -876,6 +902,13 @@ def _auc_lin_up_log_down(times: np.ndarray, concs: np.ndarray) -> float:
 
 def _detect_multi_dose(dose_df: pd.DataFrame) -> tuple[bool, float | None]:
     """Detect multiple doses and estimate the inter-dose interval (tau)."""
+    if "ADDL" in dose_df.columns and (dose_df["ADDL"].fillna(0) > 0).any():
+        if "II" in dose_df.columns:
+            positive_ii = dose_df.loc[dose_df["II"].fillna(0) > 0, "II"]
+            tau = float(positive_ii.median()) if not positive_ii.empty else None
+        else:
+            tau = None
+        return True, tau
     if len(dose_df) < 2:
         return False, None
     dose_times = np.sort(dose_df["TIME"].to_numpy(dtype=float))

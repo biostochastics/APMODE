@@ -207,21 +207,14 @@ class TestGate1:
         seed_check = next(c for c in g1.checks if c.check_id == "seed_stability")
         assert seed_check.passed is False
 
-    def test_seed_stability_not_probed_passes(self) -> None:
-        """Missing seed results → "not probed" pass.
-
-        The orchestrator only runs seed replicates for the top-K
-        candidates by BIC; absence of evidence for the rest is an
-        orchestrator choice, not a candidate defect. Seed stability is a
-        positive confirmation when probed, not a disqualifier when
-        skipped.
-        """
+    def test_seed_stability_not_probed_fails_required_evidence(self) -> None:
+        """A three-seed policy cannot pass with only the primary fit."""
         result = _make_backend_result()
         policy = _load_policy("submission")
         g1 = evaluate_gate1(result, policy, seed_results=None)
         seed_check = next(c for c in g1.checks if c.check_id == "seed_stability")
-        assert seed_check.passed is True
-        assert "not_probed" in str(seed_check.observed)
+        assert seed_check.passed is False
+        assert "insufficient_seeds" in str(seed_check.observed)
 
     def test_pit_missing_fails_when_required(self) -> None:
         """Missing PIT calibration should fail when policy requires it."""
@@ -369,6 +362,21 @@ class TestGate1:
         g1 = evaluate_gate1(result, policy)
         traj = next(c for c in g1.checks if c.check_id == "state_trajectory_validity")
         assert traj.passed is True
+
+    def test_state_trajectory_missing_direct_evidence_fails(self) -> None:
+        result = _make_backend_result()
+        result.diagnostics.state_trajectory_valid = None
+        g1 = evaluate_gate1(result, _load_policy("submission"), seed_results=[])
+        traj = next(c for c in g1.checks if c.check_id == "state_trajectory_validity")
+        assert traj.passed is False
+        assert "evidence=unavailable" in str(traj.observed)
+
+    def test_state_trajectory_negative_or_nonfinite_evidence_fails(self) -> None:
+        result = _make_backend_result()
+        result.diagnostics.state_trajectory_valid = False
+        g1 = evaluate_gate1(result, _load_policy("submission"), seed_results=[])
+        traj = next(c for c in g1.checks if c.check_id == "state_trajectory_validity")
+        assert traj.passed is False
 
     def test_state_trajectory_r2_below_threshold(self) -> None:
         """R² below obs_vs_pred_r2_min (0.30) should fail."""

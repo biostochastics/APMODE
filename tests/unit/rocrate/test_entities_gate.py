@@ -18,6 +18,10 @@ class TestParseGateFilename:
     def test_gate_half(self) -> None:
         assert ent_gate.parse_gate_filename("gate2.5_cand001.json") == ("2.5", "cand001")
 
+    def test_production_gate_tokens(self) -> None:
+        assert ent_gate.parse_gate_filename("gate2_5_cand001.json") == ("2.5", "cand001")
+        assert ent_gate.parse_gate_filename("gate1b_cand001.json") == ("1b", "cand001")
+
     def test_invalid(self) -> None:
         assert ent_gate.parse_gate_filename("gateZ_x.json") is None
 

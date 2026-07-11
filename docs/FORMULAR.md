@@ -7,7 +7,7 @@
 - `plans/2026-07-08-formular-sharpening-and-adoption-design.md` *(internal-only, gitignored)* — resolves the "Formular sharpening plan §4" citations used seven times throughout this document for grammar decisions (order-insensitive blocks, `initial:` split, `covariates:` block, `priors:` block).
 - [FORMULAR_ERROR_CODES.md](FORMULAR_ERROR_CODES.md) — full FRM-AST-0xx error code registry, already referenced mid-document but promoted here into the formal reference list.
 
-**Version:** 0.7 (tracks APMODE 0.6.1-rc1; sharpening plan Phase 1–2)
+**Version:** 0.7 (tracks APMODE 0.6.1-rc2; sharpening plan Phase 1–2)
 **Status:** Phase 2 documentation available; see [`docs/FORMULAR_SEMANTICS.md`](FORMULAR_SEMANTICS.md) for the Phase 2 spec (macros, transform provenance, equations view, signatures). This document is retained for historical reference and provides an overview; the formal reference is now in FORMULAR_SEMANTICS.md.
 **Canonical source:** `src/apmode/dsl/` — grammar (`pk_grammar.lark`), AST (`ast_models.py`),
 validator (`validator.py`), transforms (`transforms.py` + `prior_transforms.py`), priors

@@ -6,8 +6,11 @@ replacing either absorption or elimination. Diffrax integrates the system.
 
 Example (1-cmt + NODE elimination):
   dA_depot/dt   = -ka * A_depot
-  dA_central/dt = ka * A_depot - NODE(C, t) * A_central / V
+  dA_central/dt = ka * A_depot - NODE(C, t) * A_central
   C = A_central / V
+
+Consequently the NODE output is a first-order rate coefficient (1/time), not
+an amount/time elimination rate. Distillation mappings must preserve that unit.
 """
 
 from __future__ import annotations

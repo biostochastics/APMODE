@@ -165,7 +165,7 @@ class TestRankByScoringContract:
 
 
 class TestSubmissionDominanceRule:
-    def test_submission_picks_lowest_composite_eligible_group(self) -> None:
+    def test_submission_refuses_cross_contract_tiebreak(self) -> None:
         """When both nlmixr2 (FOCEI) and Stan (HMC) satisfy the
         integrated+marginal dominance rule, the tiebreak is per-group
         top-candidate composite_score (ascending — lower wins). The
@@ -188,14 +188,12 @@ class TestSubmissionDominanceRule:
             vpc_concordance_target=0.90,
             lane="submission",
         )
-        # The winning id must be one of the two integrated+marginal
-        # survivors (nlmixr2 or Stan) — NODE is ineligible.
-        assert result.recommended_candidate_id in {"nlmx_top", "stan_top"}
-        # A multi-eligible warning must fire (both nlmixr2-FOCEI and
-        # Stan-HMC qualify), so reviewers know the choice spans contracts.
+        # Per-group composites have no common scale. Multiple eligible
+        # contracts therefore produce no cross-contract recommendation.
+        assert result.recommended_candidate_id is None
         assert result.recommended_warning is not None
         assert "Multiple integrated+marginal" in result.recommended_warning
-        assert result.recommended_contract_index is not None
+        assert result.recommended_contract_index is None
 
     def test_submission_single_eligible_group_no_warning(self) -> None:
         """When only one integrated+marginal group exists, no
@@ -237,8 +235,8 @@ class TestSubmissionDominanceRule:
             vpc_concordance_target=0.90,
             lane="submission",
         )
-        # Same survivors, same contracts — recommended id must be stable.
-        assert forward.recommended_candidate_id == reverse.recommended_candidate_id
+        assert forward.recommended_candidate_id is None
+        assert reverse.recommended_candidate_id is None
 
     def test_submission_no_integrated_marginal_emits_warning(self) -> None:
         """A Submission run that produces only pooled-NODE candidates

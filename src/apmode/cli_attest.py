@@ -210,7 +210,7 @@ def attest(
     except BundleNotSealedError as exc:
         _fail(str(exc), output_json=output_json, bundle_dir=bundle_dir)
         return  # pragma: no cover - _fail always raises typer.Exit
-    except FileExistsError as exc:
+    except (FileExistsError, ValueError) as exc:
         _fail(str(exc), output_json=output_json, bundle_dir=bundle_dir)
         return  # pragma: no cover - _fail always raises typer.Exit
 

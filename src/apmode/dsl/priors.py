@@ -22,9 +22,12 @@ References:
 from __future__ import annotations
 
 import re
-from typing import Annotated, Literal
+from typing import TYPE_CHECKING, Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+if TYPE_CHECKING:
+    from apmode.dsl.ast_models import DSLSpec
 
 # ---------------------------------------------------------------------------
 # Prior source taxonomy — aligns with FDA 2026 prior-justification framing
@@ -352,17 +355,64 @@ def classify_target(target: str, structural_params: set[str]) -> TargetKind | No
     """
     if target in structural_params:
         return "structural"
-    if target.startswith("omega_iov_"):
+    if target.startswith("omega_iov_") and target.removeprefix("omega_iov_") in structural_params:
         return "iov_sd"
-    if target.startswith("omega_"):
+    if target.startswith("omega_") and target.removeprefix("omega_") in structural_params:
         return "iiv_sd"
     if target in ("sigma_prop", "sigma_add"):
         return "residual_sd"
     if target == "corr_iiv":
         return "corr_iiv"
-    if target.startswith("beta_"):
+    if any(target.startswith(f"beta_{param}_") for param in structural_params):
         return "covariate"
     return None
+
+
+def prior_target_kinds(spec: DSLSpec) -> dict[str, TargetKind]:
+    """Return the exact prior-target namespace instantiated by ``spec``.
+
+    Prefix-only classification is useful when constructing a prior without a
+    full model, but spec validation must be stricter: an ``omega`` exists only
+    when the corresponding variability block exists, a ``beta`` only when its
+    covariate link exists, and a residual SD only when its error model uses it.
+    This helper intentionally uses the AST's public fields rather than importing
+    its classes at runtime, avoiding the ``ast_models -> priors`` import cycle.
+    """
+    kinds: dict[str, TargetKind] = {name: "structural" for name in spec.structural_param_names()}
+
+    has_block_iiv = False
+    for item in spec.variability:
+        item_type = getattr(item, "type", "")
+        if item_type == "IIV":
+            for name in item.params:
+                kinds[f"omega_{name}"] = "iiv_sd"
+            has_block_iiv = has_block_iiv or getattr(item, "structure", None) == "block"
+        elif item_type == "IOV":
+            for name in item.params:
+                kinds[f"omega_iov_{name}"] = "iov_sd"
+    if has_block_iiv:
+        kinds["corr_iiv"] = "corr_iiv"
+
+    for cov in spec.covariates:
+        kinds[f"beta_{cov.param}_{cov.covariate}"] = "covariate"
+        if cov.form == "maturation":
+            # TM50 is an estimated positive population parameter in both
+            # emitters. It follows structural-prior support rules.
+            kinds[f"TM50_{cov.param}_{cov.covariate}"] = "structural"
+
+    for endpoint in spec.observation_endpoints():
+        obs = endpoint.error
+        if hasattr(obs, "active_sigmas"):
+            names = obs.active_sigmas()
+        elif getattr(obs, "type", "") == "Proportional":
+            names = ["sigma_prop"]
+        elif getattr(obs, "type", "") == "Additive":
+            names = ["sigma_add"]
+        else:
+            names = ["sigma_prop", "sigma_add"]
+        for name in names:
+            kinds[name] = "residual_sd"
+    return kinds
 
 
 def validate_prior_family(target_kind: TargetKind, family: PriorFamily) -> str | None:
@@ -394,6 +444,7 @@ def build_prior_spec(
     historical_refs: list[str] | None = None,
     *,
     structural_params: set[str] | None = None,
+    target_kinds: dict[str, TargetKind] | None = None,
 ) -> PriorSpec:
     """Single canonical factory for :class:`PriorSpec` (Formular DSL P0.4).
 
@@ -427,12 +478,16 @@ def build_prior_spec(
             `PriorSpec` validator output so existing callers' error handling
             (string matching on caught exceptions) is unaffected.
     """
-    if structural_params is not None:
-        kind = classify_target(target, structural_params)
+    if target_kinds is not None or structural_params is not None:
+        kind = (
+            target_kinds.get(target)
+            if target_kinds is not None
+            else classify_target(target, structural_params or set())
+        )
         if kind is None:
             raise ValueError(
                 f"Prior target {target!r} does not match any known pattern "
-                f"(structural params: {sorted(structural_params)})"
+                f"(structural params: {sorted(structural_params or set())})"
             )
         family_err = validate_prior_family(kind, family)
         if family_err:
@@ -454,6 +509,8 @@ def build_prior_spec(
 def validate_priors(
     priors: list[PriorSpec],
     structural_params: set[str],
+    *,
+    target_kinds: dict[str, TargetKind] | None = None,
 ) -> list[str]:
     """Validate a list of priors against a spec's parameter universe. Returns errors."""
     errors: list[str] = []
@@ -465,7 +522,11 @@ def validate_priors(
             continue
         seen_targets.add(prior.target)
 
-        kind = classify_target(prior.target, structural_params)
+        kind = (
+            target_kinds.get(prior.target)
+            if target_kinds is not None
+            else classify_target(prior.target, structural_params)
+        )
         if kind is None:
             errors.append(
                 f"Prior target {prior.target!r} does not match any known pattern "
@@ -480,6 +541,12 @@ def validate_priors(
         target_err = _validate_target_specific_prior(prior.target, kind, prior.family)
         if target_err:
             errors.append(target_err)
+
+        if prior.source == "fixed_external" and kind != "structural":
+            errors.append(
+                f"source='fixed_external' is only supported for structural targets; "
+                f"got {prior.target!r} ({kind})"
+            )
 
     return errors
 

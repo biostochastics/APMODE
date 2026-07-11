@@ -224,9 +224,26 @@ class FREMCovariate:
                 f"subjects) should be dropped before calling the FREM emitter."
             )
             raise ValueError(msg)
-        if self.epsilon_sd <= 0:
+        if not isinstance(self.dvid, int) or isinstance(self.dvid, bool) or self.dvid < 1:
+            msg = f"FREMCovariate {self.name!r}: dvid must be a positive integer"
+            raise ValueError(msg)
+        if not np.isfinite(self.epsilon_sd) or self.epsilon_sd <= 0:
             msg = f"FREMCovariate {self.name!r}: epsilon_sd must be > 0"
             raise ValueError(msg)
+
+
+def _validate_covariate_routing(covariates: Sequence[FREMCovariate]) -> None:
+    """Validate the positional DVID contract used by nlmixr endpoints."""
+    names = [cov.name for cov in covariates]
+    if len(names) != len(set(names)):
+        raise ValueError("FREM covariate names must be unique")
+    actual = [cov.dvid for cov in covariates]
+    expected = list(range(_FREM_DVID_OFFSET, _FREM_DVID_OFFSET + len(covariates)))
+    if actual != expected:
+        raise ValueError(
+            "FREM covariate DVIDs are positional and must match declaration "
+            f"order {expected}; got {actual}"
+        )
 
 
 def summarize_covariates(
@@ -437,6 +454,7 @@ def _build_aug_row(
         ("BLQ_FLAG", 0),
         ("RATE", 0.0),
         ("DUR", 0.0),
+        ("ADDL", 0),  # additional doses never belong on an observation row
         ("SS", 0),  # steady state marker — covariate obs is not in SS
         ("II", 0.0),  # inter-dose interval — N/A for covariate obs
     ):
@@ -456,6 +474,7 @@ def prepare_frem_data(
     *,
     id_col: str = "NMID",
     time_col: str = "TIME",
+    binary_encode_overrides: dict[str, dict[object, int]] | None = None,
 ) -> pd.DataFrame:
     """Augment a DataFrame with per-covariate observation rows for FREM.
 
@@ -481,6 +500,8 @@ def prepare_frem_data(
     """
     import pandas as pd  # local runtime import (pd is only a TYPE_CHECKING name at module level)
 
+    _validate_covariate_routing(covariates)
+
     # Auto-remap any covariate marked as ``transform="binary"`` whose
     # source values are not yet canonical {0, 1}. summarize_covariates
     # already does this for the *summary* statistics it computes, but
@@ -494,7 +515,12 @@ def prepare_frem_data(
     if binary_targets:
         from apmode.data.categorical_encoding import auto_remap_binary_columns
 
-        df, _hints = auto_remap_binary_columns(df, binary_targets, apply=True)
+        df, _hints = auto_remap_binary_columns(
+            df,
+            binary_targets,
+            overrides=binary_encode_overrides,
+            apply=True,
+        )
 
     out = df.copy()
     if "DVID" not in out.columns:
@@ -848,6 +874,7 @@ def emit_nlmixr2_frem(
             "Callers with no covariate missingness should use the standard emitter."
         )
         raise ValueError(msg)
+    _validate_covariate_routing(covariates)
 
     ini_lines = _emit_frem_ini(spec, covariates, initial_estimates=initial_estimates)
     model_lines = _emit_frem_model(spec, covariates)

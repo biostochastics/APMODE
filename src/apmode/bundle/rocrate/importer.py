@@ -21,12 +21,13 @@ silently overwrite user data.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import shutil
 import tempfile
 import zipfile
 from pathlib import Path
+
+from apmode.bundle.emitter import verify_bundle_seal
 
 # The names are repeated here (rather than imported from
 # ``apmode.bundle.emitter``) so the importer stays light-weight and
@@ -90,6 +91,14 @@ def import_crate(source: Path, target: Path) -> Path:
     if not source.exists():
         msg = f"crate source not found: {source}"
         raise FileNotFoundError(msg)
+
+    if source.is_dir():
+        try:
+            target.resolve().relative_to(source.resolve())
+        except ValueError:
+            pass
+        else:
+            raise RoCrateImportError("import target must not be nested inside source crate")
 
     if target.exists():
         if not target.is_dir():
@@ -165,6 +174,10 @@ def _read_synthetic_workflow_path(crate_root: Path) -> str | None:
         or "\x00" in main_id
         or ":" in main_id
     ):
+        return None
+    if not main_id.startswith("workflows/") or not main_id.endswith("-lane.apmode"):
+        # Only the exporter's virtual workflow is crate-owned.  Never let
+        # arbitrary metadata suppress a real bundle file such as attestation.
         return None
     return main_id
 
@@ -264,47 +277,8 @@ def _copy_bundle_files(
 
 
 def _verify_sentinel(bundle: Path) -> None:
-    """Re-compute the SHA-256 digest and match it against ``_COMPLETE``.
-
-    Mirrors :func:`apmode.bundle.emitter._compute_bundle_digest` but
-    avoids the import to keep the importer dependency-free.
-    """
-    sentinel_path = bundle / _COMPLETE_SENTINEL
-    if not sentinel_path.is_file():
-        msg = f"imported bundle has no _COMPLETE sentinel: {bundle}"
-        raise RoCrateImportError(msg)
+    """Use the producer's exact exclusion and identity-binding implementation."""
     try:
-        sentinel = json.loads(sentinel_path.read_text())
-    except (OSError, json.JSONDecodeError) as exc:
-        msg = f"_COMPLETE sentinel at {sentinel_path} is unreadable: {exc}"
-        raise RoCrateImportError(msg) from exc
-
-    expected = sentinel.get("sha256")
-    if not isinstance(expected, str):
-        msg = f"_COMPLETE sentinel at {sentinel_path} missing sha256 digest"
-        raise RoCrateImportError(msg)
-
-    digest = hashlib.sha256()
-    for p in sorted(bundle.rglob("*"), key=lambda q: q.relative_to(bundle).as_posix()):
-        if not p.is_file():
-            continue
-        rel = p.relative_to(bundle).as_posix()
-        # The exclusion set mirrors ``apmode.bundle.emitter._DIGEST_EXCLUDED_RELATIVE_PATHS``:
-        # the sentinel itself, the CycloneDX SBOM sidecar, and the SBC
-        # manifest stub. Compared against the bundle-relative POSIX path
-        # (case-insensitively, to survive APFS/NTFS round-trips) so a
-        # same-named artefact in a nested subdir is not silently
-        # exempted from the digest.
-        if rel.lower() in _DIGEST_EXCLUDED_RELPATHS_LOWER:
-            continue
-        digest.update(rel.encode("utf-8"))
-        digest.update(b"\0")
-        with p.open("rb") as f:
-            for chunk in iter(lambda: f.read(_HASH_CHUNK_SIZE), b""):
-                digest.update(chunk)
-    observed = digest.hexdigest()
-    if observed != expected:
-        msg = (
-            f"bundle digest mismatch after import: sentinel claims {expected}, observed {observed}"
-        )
-        raise RoCrateImportError(msg)
+        verify_bundle_seal(bundle)
+    except ValueError as exc:
+        raise RoCrateImportError(str(exc)) from exc

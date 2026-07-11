@@ -20,7 +20,15 @@ from apmode.bundle.models import (
     IdentifiabilityFlags,
     ParameterEstimate,
 )
-from apmode.dsl.ast_models import IIV, DSLSpec, FirstOrder, LinearElim, OneCmt, Proportional
+from apmode.dsl.ast_models import (
+    IIV,
+    DSLSpec,
+    FirstOrder,
+    LinearElim,
+    NODEElimination,
+    OneCmt,
+    Proportional,
+)
 from apmode.search.engine import SearchEngine
 
 
@@ -276,3 +284,21 @@ class TestSearchEngineParallel:
         )
         results = await engine._gather_evaluations([])
         assert results == []
+
+    @pytest.mark.asyncio
+    async def test_node_dispatch_does_not_forward_unsupported_timeout(self) -> None:
+        classical = AsyncMock()
+        node = AsyncMock()
+        node.run = AsyncMock(return_value=_make_result("node"))
+        engine = SearchEngine(
+            runner=classical,
+            runners={"nlmixr2": classical, "jax_node": node},
+            data_manifest=_make_manifest(),
+            data_path=Path("/tmp/test.csv"),
+            seed=42,
+            timeout_seconds=123,
+            allowed_backends=["nlmixr2", "jax_node"],
+        )
+        node_spec = _make_spec("node").model_copy(update={"elimination": NODEElimination(dim=3)})
+        await engine._evaluate_candidate(node_spec, {"CL": 2.0, "V": 30.0})
+        assert node.run.await_args.kwargs["timeout_seconds"] is None

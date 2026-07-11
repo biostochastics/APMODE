@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+import numpy as np
 import structlog
 
 from apmode.bundle.models import SearchTrajectoryEntry
@@ -170,7 +171,14 @@ class SearchEngine:
         converged = [r for r in all_results if r.converged and r.result is not None]
         if converged:
             # Top 3 by BIC for warm-starting
-            top_k = sorted(converged, key=lambda r: r.bic or float("inf"))[:3]
+            top_k = sorted(
+                converged,
+                key=lambda result: (
+                    result.bic
+                    if result.bic is not None and np.isfinite(result.bic)
+                    else float("inf")
+                ),
+            )[:3]
 
             # Collect all child tasks upfront so they can run concurrently
             child_tasks: list[tuple[DSLSpec, dict[str, float], str, str]] = []
@@ -225,6 +233,8 @@ class SearchEngine:
                     all_results.append(child_sr)
                     if child_sr.converged and child_sr.bic is not None:
                         dag.update_score(child_spec.model_id, child_sr.bic, True)
+                    else:
+                        dag.update_score(child_spec.model_id, float("inf"), False)
                     if emitter:
                         self._write_trajectory_entry(emitter, child_sr, parent_id=parent_id)
 
@@ -234,7 +244,16 @@ class SearchEngine:
         # Best BIC
         converged_final = [r for r in all_results if r.converged and r.bic is not None]
         best = (
-            min(converged_final, key=lambda r: r.bic or float("inf")) if converged_final else None
+            min(
+                converged_final,
+                key=lambda result: (
+                    result.bic
+                    if result.bic is not None and np.isfinite(result.bic)
+                    else float("inf")
+                ),
+            )
+            if converged_final
+            else None
         )
 
         return SearchOutcome(
@@ -327,7 +346,11 @@ class SearchEngine:
                 data_manifest=self._data_manifest,
                 initial_estimates=clean_estimates,
                 seed=self._seed,
-                timeout_seconds=self._timeout,
+                # The current NODE implementation executes JAX in a worker
+                # thread and explicitly rejects hard timeouts because Python
+                # cannot kill an in-flight JAX computation.  Other subprocess
+                # backends retain the configured wall-clock deadline.
+                timeout_seconds=None if backend_name == "jax_node" else self._timeout,
                 data_path=self._data_path,
                 split_manifest=self._split_manifest,
                 gate3_policy=self._gate3_policy,
@@ -399,7 +422,11 @@ def _pareto_frontier(results: list[SearchResult]) -> list[SearchResult]:
     A candidate is Pareto-optimal if no other candidate dominates it on both
     dimensions (fewer parameters AND lower BIC).
     """
-    converged = [r for r in results if r.converged and r.bic is not None]
+    converged = [
+        result
+        for result in results
+        if result.converged and result.bic is not None and np.isfinite(result.bic)
+    ]
     if not converged:
         return []
 

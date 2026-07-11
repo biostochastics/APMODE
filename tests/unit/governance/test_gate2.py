@@ -163,13 +163,13 @@ class TestGate3:
         assert bic_spread.observed == 0.0
 
     def test_none_bic_sorted_last(self) -> None:
-        """Candidates with None BIC should be ranked last."""
+        """Candidates with missing BIC are excluded from BIC ranking."""
         r1 = _make_backend_result(bic=170.0)
         r2 = _make_backend_result(bic=None)  # type: ignore[arg-type]
         policy = _load_policy("submission")
         _g3, ranked = evaluate_gate3([r1, r2], policy)
         assert ranked[0].bic == 170.0
-        assert ranked[1].bic == float("inf")
+        assert len(ranked) == 1
 
 
 # ---------------------------------------------------------------------------

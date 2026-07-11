@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 from apmode.bundle.models import (
@@ -159,6 +160,21 @@ class TestCredibilityReportEmitter:
         assert data["candidate_id"] == "test_model"
         assert "submission" in data["context_of_use"]
         assert data["data_adequacy"] == "adequate"
+
+    def test_source_hash_matches_emitted_result_bytes(self, tmp_path: Path) -> None:
+        from apmode.bundle.emitter import BundleEmitter
+
+        emitter = BundleEmitter(tmp_path)
+        emitter.initialize()
+        result = _make_result("nlmixr2")
+        result_path = emitter.write_backend_result(result)
+        report = generate_credibility_report(
+            result,
+            "submission",
+            n_observations=100,
+            source_result_path="results/test_model_result.json",
+        )
+        assert report.source_result_sha256 == hashlib.sha256(result_path.read_bytes()).hexdigest()
 
     def test_write_multiple_reports(self, tmp_path: Path) -> None:
 

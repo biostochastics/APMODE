@@ -151,6 +151,36 @@ class TestRandomEffects:
 
         assert jnp.allclose(y_pop, y_re), "Zero RE should preserve output"
 
+    def test_zero_re_weights_bit_identical(self) -> None:
+        """Bräm 2024 multiplicative RE: W_i = W_pop * exp(0) == W_pop exactly."""
+        model = NODESubModel(
+            input_dim=2,
+            hidden_dim=4,
+            constraint_template="bounded_positive",
+            key=jax.random.PRNGKey(3),
+        )
+        re = jnp.zeros(model.hidden_dim)
+        model_re = model.apply_random_effects(re)
+
+        # Identity RE (eta == 0) must leave the input-layer weights bit-identical.
+        assert jnp.array_equal(model.linear1.weight, model_re.linear1.weight)
+
+    def test_re_is_multiplicative_log_scale(self) -> None:
+        """W_i row j == W_pop row j * exp(eta_j) (Bräm 2024)."""
+        model = NODESubModel(
+            input_dim=2,
+            hidden_dim=3,
+            constraint_template="bounded_positive",
+            key=jax.random.PRNGKey(5),
+        )
+        re = jnp.array([0.2, -0.3, 0.5])
+        model_re = model.apply_random_effects(re)
+
+        expected = model.linear1.weight * jnp.exp(re)[:, None]
+        assert jnp.allclose(model_re.linear1.weight, expected)
+        # Multiplicative RE preserves the sign of every population weight.
+        assert jnp.all(jnp.sign(model_re.linear1.weight) == jnp.sign(model.linear1.weight))
+
     def test_re_returns_new_model(self) -> None:
         model = NODESubModel(
             input_dim=2,

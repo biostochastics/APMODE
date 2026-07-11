@@ -24,6 +24,7 @@ block: absorption
      | metadata_block
      | initial_block
      | units_block
+     | experimental_block
      | priors_block
      | covariates_block
      | use_block
@@ -64,7 +65,8 @@ parallel_first_order: "ParallelFirstOrder" "(" "ka1" "," "ka2" "," "frac" ")"
 // (Csajka, Drover, Verotta 2005; Weiss & Wegner 2022). v0.7 ships k=2
 // (structural); MT_1 < MT_2 enforced at validator (positive-difference
 // parameterisation). weight_2 = 1 - weight_1 is implicit, not stored.
-sum_ig: "SumIG" "(" "k" "=" INT "," "MT_1" "," "MT_2" "," "RD2_1" "," "RD2_2" "," "weight_1" ")"
+sum_ig: "SumIG" "(" "k" "=" INT "," "MT_1" "," "RD2_1" ")"
+      | "SumIG" "(" "k" "=" INT "," "MT_1" "," "MT_2" "," "RD2_1" "," "RD2_2" "," "weight_1" ")"
 
 node_absorption: "NODE_Absorption" "(" "dim" "=" INT "," "constraint_template" "=" CONSTRAINT_TEMPLATE ")"
 
@@ -176,6 +178,9 @@ initial_item: NAME "=" NUMBER
 // base units (time, amount, concentration) plus the declared derived
 // unit (volume) to verify internal self-consistency.
 units_block: "units:" "{" "time" "=" unit_expr "," "amount" "=" unit_expr "," "concentration" "=" unit_expr "," "volume" "=" unit_expr "}"
+
+// --- Experimental feature opt-ins (optional, at most one) ---
+experimental_block: "experimental:" "{" "node" "=" BOOL "}"
 
 // A unit token is either a bare word (e.g. "h", "L") or a compound
 // mass/volume ratio (e.g. "ng/mL"). Expressed as a parser rule (not a
@@ -297,6 +302,7 @@ CONSTRAINT_TEMPLATE: "monotone_increasing" | "monotone_decreasing" | "bounded_po
 DECAY_FN: "exponential" | "half_life" | "linear"
 ERROR_MODEL: "proportional" | "additive" | "combined"
 PRIOR_SOURCE: "uninformative" | "weakly_informative" | "historical_data" | "expert_elicitation" | "meta_analysis" | "fixed_external"
+BOOL: "true" | "false"
 INT: /[0-9]+/
 NUMBER: /[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?/
 // A dot-joined identifier chain, e.g. "pkstd.standard_iiv" (used only by

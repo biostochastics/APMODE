@@ -25,9 +25,14 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from pathlib import Path
+from typing import TYPE_CHECKING
 
-_POLICY_PATH = Path(__file__).resolve().parents[3] / "policies" / "profiler.json"
+from apmode.paths import policy_path_for_lane
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+_POLICY_PATH = policy_path_for_lane("profiler")
 
 
 @dataclass(frozen=True)
@@ -222,6 +227,8 @@ def get_policy() -> ProfilerPolicy:
     """Return the cached profiler policy, loading it on first call."""
     global _POLICY
     if _POLICY is None:
+        if _POLICY_PATH is None:
+            raise FileNotFoundError("Unable to locate packaged profiler.json policy")
         _POLICY = _load_from_path(_POLICY_PATH)
     return _POLICY
 
@@ -229,5 +236,7 @@ def get_policy() -> ProfilerPolicy:
 def reload_policy() -> ProfilerPolicy:
     """Force a re-read of ``policies/profiler.json`` (tests only)."""
     global _POLICY
+    if _POLICY_PATH is None:
+        raise FileNotFoundError("Unable to locate packaged profiler.json policy")
     _POLICY = _load_from_path(_POLICY_PATH)
     return _POLICY

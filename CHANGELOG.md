@@ -7,6 +7,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0-rc1] — 2026-07-11
+
+### Added — Mixed-effects NODE via native reparameterized variational inference
+
+- Per-subject random effects on the NODE input-layer weights are now estimated by
+  **native reparameterized variational inference** implemented directly in the
+  existing Optax/Equinox loop (`node_trainer.train_node_vi`) — no new probabilistic-
+  programming dependency. The variational family is per-subject
+  `q_i(η_i) = N(μ_i, diag(s_i²))` with population prior `η_i ~ N(0, diag(ω²))`; the
+  ELBO uses the reparameterization (path-derivative) estimator with an **analytic
+  diagonal-Gaussian KL**, summed over subjects so the per-subject KL sits on the
+  same scale as the summed likelihood. Variational inference is preferred over
+  first-order/Laplace approximations for deep compartment / neural-ODE mixed effects
+  (Janssen et al. 2024, *J Pharmacokinet Pharmacodyn* 51:797–808,
+  doi:10.1007/s10928-024-09931-w — VI outperforms FO/FOCE).
+- Random effects act **log-multiplicatively** on the NODE input-layer weights,
+  `W_i = W_pop · exp(η_i)` (`node_model.NODESubModel.apply_random_effects`), matching
+  the pmxNODE inter-individual-variability parameterization (Bräm et al. 2024,
+  *CPT:PSP*, doi:10.1002/psp4.13265) and preserving weight sign + the `η=0` identity.
+  Training follows the two-stage Bräm schedule (fit without IIV → warm-start → fit
+  with IIV). Scale floors + an η-clamp guard against `exp(η)` overflow. `TrainingResult`
+  now carries `omega`, `subject_re_means`, and `eta_shrinkage`.
+- **Formal VPC / NPDE are unlocked** for mixed-effects NODE runs: when random-effects
+  training succeeds, `node_runner` draws `η ~ N(0, diag(ω²))` per replicate
+  (`_build_subject_sims_bsv`) so the predictive band carries between-subject
+  variability, and copies `vpc` / `npde` / `pit_calibration` onto the diagnostics.
+  The pooled (no-RE) path still leaves those unset — a pooled predictive distribution
+  under-covers and would mislead (NPDE requires the full predictive distribution
+  including BSV; Comets, Brendel & Mentré 2008, *Comput Methods Programs Biomed*
+  90:154–166). Opt in via `NodeBackendRunner(random_effects=True)`.
+- Acceptance-gated by a synthetic parameter-recovery test (ω non-collapse, VI ELBO
+  beats the pooled baseline) plus no-IIV parity, identity-RE, positivity, and
+  JIT/gradient smoke tests (`tests/unit/backends/node/test_node_mixed_effects.py`).
+
+### Added — NODE-LASSO automated structural selection
+
+- NODE distillation can now select structure via **LASSO regression in derivative
+  space** (Bräm et al. 2025, *CPT:PSP*, doi:10.1002/psp4.70285): the trained NODE's
+  neural RHS is evaluated over its input support and a penalized regression selects
+  which pharmacometric candidate shapes reconstruct the learned rate law — replacing
+  the ad-hoc `curve_fit` of two forms. New modules `node_candidate_library.py`
+  (constant / linear / exponential `exp(u·I)`, `u∈[-2,2]` / Emax-Hill `h∈[0,4]`
+  families on pre-enumerated grids, penalized by family parameter count) and
+  `node_lasso_select.py` (`LassoLarsIC(bic)` + **stability selection** over
+  bootstrapped rows, near-duplicate column grouping, standardized design with
+  de-standardized export, and an **unpenalized OLS refit** on the selected support
+  so the exported coefficient is unbiased by L1 shrinkage).
+- The mapping to the Formular DSL is **dimensionally honest**: the NODE elimination
+  output is a first-order *rate coefficient* (1/time), so only a constant coefficient
+  maps to `LinearElim` (`CL = coef·V`). Concentration-dependent shapes (linear, exp,
+  Emax) are not dimensionally equivalent to any current DSL elimination module and are
+  recorded in `rejected_nonmappable` rather than silently mismapped — preserving the
+  DSL-moat invariant. `LassoSelectionResult` is a sealed Pydantic bundle model.
+  New dependency: `scikit-learn` (in the `node` + `test` extras). Tests:
+  `tests/unit/backends/node/test_node_lasso.py`.
+
+### Added — NODE EVID=2 support
+
+- Other-type events (`EVID=2`) no longer raise: they carry no dose and no
+  observation for the eager solver, so they are dropped by the event/observation
+  filters (they fall outside both `EVID==0` and `EVID in {1,3,4,9}`) rather than
+  rejected. A subject whose only non-observation rows are `EVID=2` loads with a
+  zero initial state exactly as a dose-free subject would. Steady-state (`SS != 0`)
+  and non-central observations remain fail-loud. Tests updated in
+  `tests/unit/backends/node/test_node_runner.py`.
+
 ### Added — NODE zero-order infusion support
 
 - Zero-order constant-rate IV infusion (`RATE>0` or `DUR>0`) into the
@@ -38,11 +104,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `[A_depot, A_central, ...]`, dose rows route by `cmt_idx = CMT-1`
   (`CMT=1` → depot, `CMT=2` → central), and observations read central
   and must carry the data label `CMT=1`.
-- Still not shipped (unchanged caveats): per-subject IIV/random effects
-  (pooled-NLL only, Laplace post-hoc planned); posterior-predictive
-  simulation remains a stub (`sample_posterior_predictive()` returns
-  `None`, so NODE candidates emit no CWRES/NPE); `vmap` batching of the
-  eager solver is deferred.
+- Per-subject IIV/random effects and `EVID=2` handling, previously listed here
+  as not-yet-shipped, are delivered in this release (see the mixed-effects VI and
+  EVID=2 sections above). Remaining caveats: `vmap` batching of the eager solver is
+  deferred, and multi-compartment observation readout (obs `CMT != 1`) and
+  steady-state dosing remain fail-loud.
 - Regression tests cover infusion summation/staggering, `EVID=9` stop
   handling, an infusion that never stops in-window, a bolus and infusion
   at the same timestamp, reset-terminated infusions, the identity-pairing

@@ -173,7 +173,7 @@ class TestCheckLoroRequirement:
         metrics = _good_metrics().model_copy(update={"pooled_npde_mean": float("nan")})
         check = _check_loro_requirement(_mock_result(), g2, "optimization", loro_metrics=metrics)
         assert check.passed is False
-        assert "NaN" in str(check.observed)
+        assert "unavailable" in str(check.observed)
 
     def test_fails_nan_npde_variance(self) -> None:
         g2 = _default_g2()
@@ -187,3 +187,14 @@ class TestCheckLoroRequirement:
         metrics = _good_metrics().model_copy(update={"vpc_coverage_concordance": 0.0})
         check = _check_loro_requirement(_mock_result(), g2, "optimization", loro_metrics=metrics)
         assert check.passed is False
+
+    def test_failed_fold_cannot_pass_on_good_pooled_metrics(self) -> None:
+        metrics = _good_metrics().model_copy(update={"overall_pass": False})
+        check = _check_loro_requirement(
+            _mock_result(),
+            _default_g2(),
+            "optimization",
+            loro_metrics=metrics,
+        )
+        assert check.passed is False
+        assert "failed_folds" in str(check.observed)

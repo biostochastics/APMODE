@@ -186,6 +186,55 @@ class TestToNlmixr2Format:
         )
         result = to_nlmixr2_format(df)
         assert list(result["SUMIG_DOSE"]) == [100.0, 100.0, 250.0, 250.0]
+        assert list(result["SUMIG_T0"]) == [0.0, 0.0, 0.0, 0.0]
+
+    def test_sumig_helper_records_nonzero_dose_time(self) -> None:
+        df = pd.DataFrame(
+            {
+                "NMID": [1, 1],
+                "TIME": [8.0, 9.0],
+                "DV": [0.0, 5.0],
+                "MDV": [1, 0],
+                "EVID": [1, 0],
+                "AMT": [100.0, 0.0],
+                "CMT": [1, 1],
+            }
+        )
+        result = to_nlmixr2_format(df)
+        assert result["SUMIG_T0"].tolist() == [8.0, 8.0]
+
+    def test_dvid_count_is_recomputed_after_filtering_rows(self) -> None:
+        df = pd.DataFrame(
+            {
+                "NMID": [1, 1, 1, 1],
+                "TIME": [0.0, 0.0, 1.0, 1.0],
+                "DV": [999.0, 0.0, 5.0, 10.0],
+                "MDV": [0, 1, 0, 0],
+                "EVID": [0, 1, 0, 0],
+                "AMT": [0.0, 100.0, 0.0, 0.0],
+                "CMT": [1, 1, 1, 1],
+                "DVID": ["junk", "cp", "cp", "pd"],
+            }
+        )
+        result = to_nlmixr2_format(df, dvid_allowlist={"cp", "pd"})
+        assert "DVID" in result.columns
+        assert result.loc[result["EVID"] == 0, "DVID"].tolist() == ["cp", "pd"]
+
+    def test_declared_categorical_reference_controls_zero_level(self) -> None:
+        df = pd.DataFrame(
+            {
+                "NMID": [1, 2],
+                "TIME": [0.0, 0.0],
+                "DV": [0.0, 0.0],
+                "MDV": [1, 1],
+                "EVID": [1, 1],
+                "AMT": [100.0, 100.0],
+                "CMT": [1, 1],
+                "SEX": ["male", "female"],
+            }
+        )
+        result = to_nlmixr2_format(df, categorical_references={"SEX": "male"})
+        assert result["SEX"].tolist() == [0, 1]
 
     def test_sumig_helper_not_added_for_multi_dose_subject(self) -> None:
         df = pd.DataFrame(
