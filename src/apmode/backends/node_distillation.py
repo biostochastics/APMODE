@@ -12,7 +12,6 @@ Three components — NOT SHAP:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Literal
 
 import jax.numpy as jnp
@@ -20,43 +19,34 @@ import numpy as np
 
 from apmode.backends.node_ode import HybridPKODE  # noqa: TC001 — used at runtime
 
+# The distillation result types are sealed bundle artifacts, defined once in
+# apmode.bundle.models and re-exported here so existing import sites keep working
+# (same constructor kwargs / attribute access as the former dataclasses).
+from apmode.bundle.models import DistillationReport, FidelityResult, SurrogateResult
+from apmode.dsl.ast_models import (
+    AbsorptionModule,
+    DSLSpec,
+    EliminationModule,
+    FirstOrder,
+    IVBolus,
+    LinearElim,
+    Metadata,
+    MichaelisMenten,
+    OneCmt,
+    Proportional,
+)
 
-@dataclass(frozen=True)
-class SurrogateResult:
-    """Result of fitting a parametric surrogate to NODE output."""
-
-    surrogate_type: str  # e.g. "michaelis_menten", "linear", "power"
-    params: dict[str, float]
-    residual_ss: float  # sum of squared residuals
-    r_squared: float
-
-
-@dataclass(frozen=True)
-class FidelityResult:
-    """Bioequivalence fidelity between NODE and surrogate.
-
-    GMR convention: surrogate (test) / NODE (reference).
-    Values in [0.80, 1.25] indicate the surrogate faithfully
-    reproduces the NODE-learned sub-function.
-    """
-
-    auc_gmr: float  # geometric mean ratio: surrogate/NODE
-    cmax_gmr: float  # geometric mean ratio: surrogate/NODE
-    auc_pass: bool  # within 80-125%
-    cmax_pass: bool  # within 80-125%
-    overall_pass: bool  # both pass
-
-
-@dataclass
-class DistillationReport:
-    """Full distillation result for a NODE candidate."""
-
-    candidate_id: str
-    node_position: Literal["absorption", "elimination"]
-    sub_function_x: list[float] = field(default_factory=list)
-    sub_function_y: list[float] = field(default_factory=list)
-    surrogate: SurrogateResult | None = None
-    fidelity: FidelityResult | None = None
+__all__ = [
+    "DistillationReport",
+    "FidelityResult",
+    "SurrogateResult",
+    "distill",
+    "distillation_passes_fidelity",
+    "fit_parametric_surrogate",
+    "quantify_fidelity",
+    "surrogate_to_formular",
+    "visualize_sub_function",
+]
 
 
 def visualize_sub_function(
@@ -215,4 +205,99 @@ def distill(
         sub_function_y=y_vals,
         surrogate=surrogate,
         fidelity=fidelity,
+    )
+
+
+def distillation_passes_fidelity(
+    report: DistillationReport,
+    *,
+    min_r_squared: float = 0.8,
+) -> bool:
+    """Whether a distilled surrogate is faithful enough to promote into Gate 3.
+
+    Requires both an AUC/Cmax bioequivalence pass (``fidelity.overall_pass``)
+    and a surrogate goodness-of-fit ``r_squared >= min_r_squared``. A report
+    lacking either a surrogate or a fidelity result never passes.
+    """
+    if report.surrogate is None or report.fidelity is None:
+        return False
+    return report.fidelity.overall_pass and report.surrogate.r_squared >= min_r_squared
+
+
+def surrogate_to_formular(
+    surrogate: SurrogateResult,
+    node_position: Literal["absorption", "elimination"],
+    *,
+    model_id: str,
+    mechanistic_params: dict[str, float],
+    reference_conc: float = 1.0,
+    fidelity: FidelityResult | None = None,
+    source_candidate_id: str | None = None,
+) -> DSLSpec:
+    """Promote a fitted NODE elimination surrogate to a classical ``DSLSpec``.
+
+    The keystone of functional distillation's loop closure: a NODE-discovered
+    elimination sub-function, once approximated by a parametric surrogate, is
+    emitted as an ordinary classical spec so it can be re-fit through the
+    nlmixr2 backend and ranked in Gate 3 as a genuine (BIC/NLPD-comparable)
+    classical candidate. The returned spec carries no NODE modules.
+
+    Mapping (elimination position only): ``linear`` -> :class:`LinearElim` with
+    ``CL = ke_ref * V`` where ``ke_ref = slope * reference_conc + intercept``
+    (the surrogate is a per-unit rate on the central amount; ``reference_conc``
+    selects the concentration at which the effective first-order rate is read —
+    ``1.0`` by default, or pass the fitted subjects' median concentration);
+    ``michaelis_menten`` -> :class:`MichaelisMenten` carrying the fitted
+    ``Vmax``/``Km``. Absorption-position surrogates are a separate follow-up and
+    raise :class:`NotImplementedError`.
+
+    Provenance (source candidate, surrogate family, fidelity GMRs) is recorded
+    in ``metadata`` (fingerprint-excluded), so two distilled specs differing
+    only in provenance still fingerprint identically.
+    """
+    if node_position != "elimination":
+        msg = (
+            "surrogate_to_formular maps only elimination-position surrogates "
+            "(the two existing surrogate forms are elimination rate-laws); "
+            "absorption-position distillation is a separate follow-up."
+        )
+        raise NotImplementedError(msg)
+
+    volume = mechanistic_params["V"]
+    ka = mechanistic_params.get("ka")
+    absorption: AbsorptionModule = FirstOrder() if ka is not None else IVBolus()
+    initial: dict[str, float] = {"V": volume}
+    if ka is not None:
+        initial["ka"] = ka
+
+    elimination: EliminationModule
+    if surrogate.surrogate_type == "linear":
+        elimination = LinearElim()
+        ke_ref = surrogate.params["slope"] * reference_conc + surrogate.params["intercept"]
+        initial["CL"] = max(ke_ref, 1e-6) * volume
+    else:  # "michaelis_menten" (Literal exhausts the two surrogate families)
+        elimination = MichaelisMenten()
+        initial["Vmax"] = surrogate.params["Vmax"]
+        initial["Km"] = surrogate.params["Km"]
+
+    context = (
+        f"Distilled from NODE candidate {source_candidate_id}; "
+        f"surrogate={surrogate.surrogate_type}, R^2={surrogate.r_squared:.3f}"
+    )
+    if fidelity is not None:
+        context += f"; AUC GMR={fidelity.auc_gmr}, Cmax GMR={fidelity.cmax_gmr}"
+
+    return DSLSpec(
+        model_id=model_id,
+        absorption=absorption,
+        distribution=OneCmt(),
+        elimination=elimination,
+        variability=[],
+        observation=Proportional(sigma_prop=0.1),
+        initial=initial,
+        metadata=Metadata(
+            intent="functional_distillation",
+            context_of_use=context,
+            version="distilled",
+        ),
     )

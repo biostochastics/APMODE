@@ -580,6 +580,9 @@ class BackendResult(BaseModel):
     # demands a recorded skip vs an actual computation.
     prior_data_conflict: PriorDataConflict | None = None
     prior_sensitivity: PriorSensitivity | None = None
+    # Functional-distillation report for NODE candidates (None for other
+    # backends). Forward ref resolved at module load, like prior_sensitivity.
+    distillation: DistillationReport | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -1533,6 +1536,64 @@ class CredibilityReport(BaseModel):
     # an auditor can re-derive every field from the original bundle
     # entry. Both fields are optional for legacy bundles emitted before
     # the field existed; new code MUST populate them.
+    source_result_path: str | None = None
+    source_result_sha256: str | None = None
+
+
+# --- Functional Distillation Models (NODE interpretability, PRD §4.2.4) ---
+
+
+class SurrogateResult(BaseModel):
+    """Parametric surrogate fitted to a NODE-learned sub-function.
+
+    ``surrogate_type`` is the parametric family (``"linear"`` first-order, or
+    ``"michaelis_menten"`` saturable); ``params`` holds its fitted coefficients
+    (``slope``/``intercept`` or ``Vmax``/``Km``). ``r_squared`` is the fit of
+    the surrogate to the NODE sub-function over the evaluated support.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    surrogate_type: Literal["linear", "michaelis_menten"]
+    params: dict[str, float]
+    residual_ss: float
+    r_squared: float
+
+
+class FidelityResult(BaseModel):
+    """Bioequivalence fidelity between the NODE and its parametric surrogate.
+
+    GMR convention: surrogate (test) / NODE (reference). Both AUC and Cmax GMRs
+    within [0.80, 1.25] mean the surrogate faithfully reproduces the learned
+    sub-function; ``overall_pass`` is the conjunction.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    auc_gmr: float
+    cmax_gmr: float
+    auc_pass: bool
+    cmax_pass: bool
+    overall_pass: bool
+
+
+class DistillationReport(BaseModel):
+    """Sealed functional-distillation artifact for a NODE candidate.
+
+    Written to ``distillation/<candidate_id>.json`` and projected into RO-Crate.
+    ``promoted`` records whether the surrogate cleared fidelity and was emitted
+    as a classical DSLSpec (``promoted_model_id``) for a Gate 1/2/3 re-fit.
+    """
+
+    candidate_id: str
+    node_position: Literal["absorption", "elimination"]
+    sub_function_x: list[float] = Field(default_factory=list)
+    sub_function_y: list[float] = Field(default_factory=list)
+    surrogate: SurrogateResult | None = None
+    fidelity: FidelityResult | None = None
+    promoted: bool = False
+    promoted_model_id: str | None = None
+    # Provenance pointer back to the NODE BackendResult this was distilled from.
     source_result_path: str | None = None
     source_result_sha256: str | None = None
 

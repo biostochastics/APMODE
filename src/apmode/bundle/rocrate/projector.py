@@ -48,6 +48,9 @@ from apmode.bundle.rocrate.entities import (
     data as ent_data,
 )
 from apmode.bundle.rocrate.entities import (
+    distillation as ent_distillation,
+)
+from apmode.bundle.rocrate.entities import (
     gate as ent_gate,
 )
 from apmode.bundle.rocrate.entities import (
@@ -320,6 +323,7 @@ class RoCrateEmitter:
 
         # 7. Credibility / Bayesian / Agentic
         ent_credibility.add_credibility_reports(graph, bundle_dir)
+        ent_distillation.add_distillation_reports(graph, bundle_dir)
         ent_risk_grading.add_risk_grading_reports(graph, bundle_dir)
         ent_credibility.add_report_provenance(graph, bundle_dir, root_id)
         ent_bayesian.add_bayesian_artifacts(graph, bundle_dir)

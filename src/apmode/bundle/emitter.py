@@ -34,6 +34,7 @@ from apmode.bundle.models import (
     CredibilityReport,
     DataManifest,
     DataProvenance,
+    DistillationReport,
     EvidenceManifest,
     FailedCandidate,
     GateResult,
@@ -778,6 +779,19 @@ class BundleEmitter:
         """Write credibility/{candidate_id}.json."""
         _validate_path_component(report.candidate_id, "candidate_id")
         path = self._credibility_dir() / f"{report.candidate_id}.json"
+        return self._write_text(path, report.model_dump_json(indent=2))
+
+    # --- Functional distillation reports (per NODE candidate) ---
+
+    def _distillation_dir(self) -> Path:
+        """Ensure and return the distillation/ subdirectory."""
+        dist_dir = self.run_dir / "distillation"
+        return self._ensure_artifact_dir(dist_dir)
+
+    def write_distillation_report(self, report: DistillationReport) -> Path:
+        """Write distillation/{candidate_id}.json (a normal sealed artifact)."""
+        _validate_path_component(report.candidate_id, "candidate_id")
+        path = self._distillation_dir() / f"{report.candidate_id}.json"
         return self._write_text(path, report.model_dump_json(indent=2))
 
     # --- Risk grading reports (per-candidate, V&V40-style) ---

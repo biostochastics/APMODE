@@ -117,10 +117,19 @@ class NodeBackendRunner:
         work_dir: Path,
         execution_mode: Literal["cpu_deterministic", "gpu_fast"] = "cpu_deterministic",
         training_config: TrainingConfig | None = None,
+        *,
+        distill: bool = True,
+        fidelity_min_r_squared: float = 0.8,
     ) -> None:
         self.work_dir = work_dir
         self.execution_mode = execution_mode
         self.training_config = training_config or TrainingConfig()
+        # Functional distillation: produce a DistillationReport per NODE fit.
+        # The report is observability + the input to orchestrator-side promotion;
+        # ``fidelity_min_r_squared`` is the promotion gate (kept a runner param,
+        # not a Gate3Config field, to avoid a gate policy_version bump).
+        self.distill = distill
+        self.fidelity_min_r_squared = fidelity_min_r_squared
 
         # Force CPU mode for determinism if requested
         if execution_mode == "cpu_deterministic":
@@ -353,6 +362,18 @@ class NodeBackendRunner:
             },
             initial_estimate_source=init_source,
         )
+
+        # Functional distillation (PRD §4.2.4): approximate the learned NODE
+        # sub-function with a classical surrogate and attach the sealed report.
+        # Promotion (fidelity-gated re-fit into Gate 3) is an orchestrator
+        # concern; the runner only produces the report. distill() is a CPU-only
+        # forward evaluation of the trained MLP — no ODE solve, no timeout risk.
+        if self.distill:
+            from apmode.backends.node_distillation import distill as run_distill
+
+            report = run_distill(result.trained_model, spec.model_id)
+            backend_result = backend_result.model_copy(update={"distillation": report})
+
         return backend_result
 
     def _build_ode_config(

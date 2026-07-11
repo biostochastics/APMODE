@@ -5,17 +5,21 @@ from __future__ import annotations
 
 import jax
 import pytest
+from pydantic import BaseModel
 
 from apmode.backends.node_distillation import (
     DistillationReport,
     FidelityResult,
     SurrogateResult,
     distill,
+    distillation_passes_fidelity,
     fit_parametric_surrogate,
     quantify_fidelity,
+    surrogate_to_formular,
     visualize_sub_function,
 )
 from apmode.backends.node_ode import HybridPKODE, ODEConfig
+from apmode.dsl.ast_models import FirstOrder, LinearElim, MichaelisMenten, OneCmt
 
 
 def _make_model(seed: int = 0) -> HybridPKODE:
@@ -169,3 +173,129 @@ class TestDistillPipeline:
         )
         report = distill(model, "abs_candidate")
         assert report.node_position == "absorption"
+
+
+class TestDistillationReportPydantic:
+    """The distillation dataclasses are promoted to sealed Pydantic models."""
+
+    def test_models_are_pydantic(self) -> None:
+        assert issubclass(SurrogateResult, BaseModel)
+        assert issubclass(FidelityResult, BaseModel)
+        assert issubclass(DistillationReport, BaseModel)
+
+    def test_report_json_roundtrips(self) -> None:
+        report = DistillationReport(
+            candidate_id="c001",
+            node_position="elimination",
+            sub_function_x=[0.1, 1.0],
+            sub_function_y=[0.05, 0.05],
+            surrogate=SurrogateResult(
+                surrogate_type="linear",
+                params={"slope": 0.0, "intercept": 0.05},
+                residual_ss=0.0,
+                r_squared=0.99,
+            ),
+            fidelity=FidelityResult(
+                auc_gmr=1.0, cmax_gmr=1.0, auc_pass=True, cmax_pass=True, overall_pass=True
+            ),
+        )
+        restored = DistillationReport.model_validate_json(report.model_dump_json())
+        assert restored == report
+        assert restored.promoted is False
+        assert restored.promoted_model_id is None
+
+
+class TestSurrogateToFormular:
+    """Promote a fitted NODE surrogate to a classical, refit-able DSLSpec."""
+
+    def test_linear_surrogate_maps_to_linear_elimination(self) -> None:
+        surrogate = SurrogateResult(
+            surrogate_type="linear",
+            params={"slope": 0.0, "intercept": 0.05},
+            residual_ss=0.0,
+            r_squared=0.99,
+        )
+        spec = surrogate_to_formular(
+            surrogate,
+            "elimination",
+            model_id="m_distilled",
+            mechanistic_params={"ka": 1.0, "V": 30.0, "CL": 2.0},
+        )
+        assert isinstance(spec.absorption, FirstOrder)
+        assert isinstance(spec.distribution, OneCmt)
+        assert isinstance(spec.elimination, LinearElim)
+        # ke_ref = slope*ref + intercept = 0.05 at reference_conc=1.0; CL = ke_ref*V.
+        assert spec.initial["CL"] == pytest.approx(0.05 * 30.0)
+        assert spec.initial["V"] == pytest.approx(30.0)
+        assert spec.initial["ka"] == pytest.approx(1.0)
+        # A promoted surrogate is a plain classical candidate — never a NODE spec.
+        assert spec.has_node_modules() is False
+        assert spec.experimental.node is False
+        assert spec.metadata is not None
+        assert spec.metadata.intent is not None and "distill" in spec.metadata.intent
+
+    def test_michaelis_menten_surrogate_maps_to_mm_elimination(self) -> None:
+        surrogate = SurrogateResult(
+            surrogate_type="michaelis_menten",
+            params={"Vmax": 12.0, "Km": 3.0},
+            residual_ss=0.0,
+            r_squared=0.98,
+        )
+        spec = surrogate_to_formular(
+            surrogate,
+            "elimination",
+            model_id="m_mm",
+            mechanistic_params={"ka": 1.0, "V": 25.0},
+        )
+        assert isinstance(spec.elimination, MichaelisMenten)
+        assert spec.initial["Vmax"] == pytest.approx(12.0)
+        assert spec.initial["Km"] == pytest.approx(3.0)
+        assert spec.initial["V"] == pytest.approx(25.0)
+
+    def test_absorption_position_is_out_of_scope(self) -> None:
+        surrogate = SurrogateResult(
+            surrogate_type="linear",
+            params={"slope": 0.0, "intercept": 0.05},
+            residual_ss=0.0,
+            r_squared=0.9,
+        )
+        with pytest.raises(NotImplementedError):
+            surrogate_to_formular(
+                surrogate, "absorption", model_id="x", mechanistic_params={"ka": 1.0, "V": 30.0}
+            )
+
+
+class TestFidelityGate:
+    """Only distillations that clear fidelity may promote into Gate 3."""
+
+    def _report(self, *, overall_pass: bool, r2: float) -> DistillationReport:
+        return DistillationReport(
+            candidate_id="c",
+            node_position="elimination",
+            surrogate=SurrogateResult(
+                surrogate_type="linear",
+                params={"slope": 0.0, "intercept": 0.05},
+                residual_ss=0.0,
+                r_squared=r2,
+            ),
+            fidelity=FidelityResult(
+                auc_gmr=1.0,
+                cmax_gmr=1.0,
+                auc_pass=overall_pass,
+                cmax_pass=overall_pass,
+                overall_pass=overall_pass,
+            ),
+        )
+
+    def test_passes_when_bioequivalent_and_high_r2(self) -> None:
+        assert distillation_passes_fidelity(self._report(overall_pass=True, r2=0.95)) is True
+
+    def test_fails_on_low_r2(self) -> None:
+        assert distillation_passes_fidelity(self._report(overall_pass=True, r2=0.5)) is False
+
+    def test_fails_when_not_bioequivalent(self) -> None:
+        assert distillation_passes_fidelity(self._report(overall_pass=False, r2=0.95)) is False
+
+    def test_fails_when_surrogate_or_fidelity_missing(self) -> None:
+        empty = DistillationReport(candidate_id="c", node_position="elimination")
+        assert distillation_passes_fidelity(empty) is False
