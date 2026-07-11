@@ -26,6 +26,9 @@ from apmode.dsl.ast_models import (
 from apmode.dsl.grammar import compile_dsl, load_grammar
 from apmode.dsl.nlmixr2_emitter import emit_nlmixr2
 from apmode.dsl.validator import validate_dsl
+from tests.property._strategies import OBSERVATIONS
+from tests.property._strategies import pos_float as _pos_float
+from tests.property._strategies import pos_int as _pos_int
 
 # --- Strategies for generating valid DSL text ---
 
@@ -53,23 +56,11 @@ ELIMINATIONS: list[tuple[str, list[str]]] = [
     ("ParallelLinearMM(CL, Vmax, Km)", ["CL", "Vmax", "Km"]),
 ]
 
-OBSERVATIONS = [
-    "Proportional(sigma_prop={v})",
-    "Additive(sigma_add={v})",
-    "Combined(sigma_prop={v}, sigma_add={v2})",
-    "BLQ_M3(loq_value={v})",
-    "BLQ_M4(loq_value={v})",
-]
-
 STRUCTURES = ["diagonal", "block"]
 COV_FORMS = ["power", "exponential", "linear"]
 
 _FRAC_PARAMS = frozenset({"frac"})
 _NON_NEGATIVE_PARAMS = frozenset({"tlag"})
-
-
-def _pos_float() -> st.SearchStrategy[float]:
-    return st.floats(min_value=0.01, max_value=1000.0, allow_nan=False, allow_infinity=False)
 
 
 def _frac_float() -> st.SearchStrategy[float]:
@@ -78,10 +69,6 @@ def _frac_float() -> st.SearchStrategy[float]:
 
 def _non_negative_float() -> st.SearchStrategy[float]:
     return st.floats(min_value=0.0, max_value=100.0, allow_nan=False, allow_infinity=False)
-
-
-def _pos_int() -> st.SearchStrategy[int]:
-    return st.integers(min_value=1, max_value=20)
 
 
 def _draw_value_for_param(draw: st.DrawFn, name: str) -> float:

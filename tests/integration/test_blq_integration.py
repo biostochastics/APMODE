@@ -61,7 +61,6 @@ def _make_synthetic_pk_data(n_subjects: int = 50) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-@pytest.mark.integration
 class TestBLQPipelineIntegration:
     """End-to-end BLQ propagation test."""
 

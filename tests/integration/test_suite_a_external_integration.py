@@ -17,7 +17,6 @@ from apmode.benchmarks.suite_a_external import (
 )
 
 
-@pytest.mark.integration
 class TestSuiteAExternalCases:
     """Validate Suite A-External case definitions."""
 

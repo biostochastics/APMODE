@@ -82,7 +82,6 @@ def _make_synthetic_pk_data(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.integration
 class TestSuiteBExtendedCases:
     """Validate extended Suite B case definitions."""
 
@@ -154,7 +153,6 @@ class TestSuiteBExtendedCases:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.integration
 class TestPerturbationBLQ:
     """Test BLQ injection perturbation."""
 
@@ -195,7 +193,6 @@ class TestPerturbationBLQ:
         assert (result.loc[dose_mask, "BLQ_FLAG"] == 0).all()
 
 
-@pytest.mark.integration
 class TestPerturbationOutliers:
     """Test outlier injection perturbation."""
 
@@ -217,7 +214,6 @@ class TestPerturbationOutliers:
         assert len(result) == len(df)
 
 
-@pytest.mark.integration
 class TestPerturbationSparsify:
     """Test sparsification perturbation."""
 
@@ -254,7 +250,6 @@ class TestPerturbationSparsify:
         assert result_doses == original_doses
 
 
-@pytest.mark.integration
 class TestPerturbationNullCovariates:
     """Test null covariate injection."""
 
@@ -287,7 +282,6 @@ class TestPerturbationNullCovariates:
                 assert group[cov_name].nunique() == 1
 
 
-@pytest.mark.integration
 class TestPerturbationAbsorption:
     """Test absorption sample removal."""
 
@@ -306,7 +300,6 @@ class TestPerturbationAbsorption:
         assert (obs["TIME"] >= 2.0).all()
 
 
-@pytest.mark.integration
 class TestPerturbationChaining:
     """Test sequential application of multiple perturbations."""
 
@@ -333,7 +326,6 @@ class TestPerturbationChaining:
         assert len(result) < len(df)
 
 
-@pytest.mark.integration
 class TestPerturbationProtocolPooling:
     """Test protocol pooling perturbation."""
 
@@ -385,7 +377,6 @@ class TestPerturbationProtocolPooling:
         assert len(result) <= len(df)
 
 
-@pytest.mark.integration
 class TestPerturbationRecipeValidation:
     """Test PerturbationRecipe cross-field validators."""
 

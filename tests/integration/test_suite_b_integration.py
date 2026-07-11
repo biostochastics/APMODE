@@ -12,8 +12,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
 from apmode.benchmarks.suite_b import (
     B1_REFERENCE_PARAMS,
     make_b3_result,
@@ -59,7 +57,6 @@ def _load_policy(lane: str) -> GatePolicy:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.integration
 class TestSuiteBAbsorptionRecovery:
     """B1: NODE spec construction and mock fit for absorption recovery."""
 
@@ -113,7 +110,6 @@ class TestSuiteBAbsorptionRecovery:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.integration
 class TestSuiteBSparseData:
     """B2: Lane Router correctly blocks NODE under sparse data."""
 
@@ -177,7 +173,6 @@ class TestSuiteBSparseData:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.integration
 class TestSuiteBCrossParadigmRanking:
     """B3: Cross-paradigm ranking with mixed backends."""
 

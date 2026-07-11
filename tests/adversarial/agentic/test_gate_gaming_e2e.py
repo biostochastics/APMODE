@@ -11,12 +11,10 @@ import pytest
 
 from apmode.backends.agentic_runner import AgenticConfig, AgenticRunner
 from apmode.backends.llm_client import LLMResponse
-from tests.unit.test_agentic_runner import (  # reuse existing builders
-    _base_spec,
-    _mock_backend_result,
-    _mock_data_manifest,
-    _stop_response,
-)
+from tests._helpers.builders import base_spec as _base_spec
+from tests._helpers.builders import mock_backend_result as _mock_backend_result
+from tests._helpers.builders import mock_data_manifest as _mock_data_manifest
+from tests._helpers.builders import stop_response as _stop_response
 
 
 def _degrading_result(bic: float, shrinkage: float):

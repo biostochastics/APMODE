@@ -1,13 +1,16 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Property-based tests for DSL grammar using Hypothesis."""
 
+import lark.exceptions
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 from lark import Lark
-from lark.exceptions import UnexpectedInput
 
 from apmode.dsl.grammar import load_grammar
+from tests.property._strategies import OBSERVATIONS
+from tests.property._strategies import pos_float as _pos_float
+from tests.property._strategies import pos_int as _pos_int
 
 ABSORPTIONS = [
     "FirstOrder(ka)",
@@ -29,22 +32,6 @@ ELIMINATIONS = [
     "MichaelisMenten(Vmax, Km)",
     "ParallelLinearMM(CL, Vmax, Km)",
 ]
-
-OBSERVATIONS = [
-    "Proportional(sigma_prop={v})",
-    "Additive(sigma_add={v})",
-    "Combined(sigma_prop={v}, sigma_add={v2})",
-    "BLQ_M3(loq_value={v})",
-    "BLQ_M4(loq_value={v})",
-]
-
-
-def _pos_float() -> st.SearchStrategy[float]:
-    return st.floats(min_value=0.01, max_value=1000.0, allow_nan=False, allow_infinity=False)
-
-
-def _pos_int() -> st.SearchStrategy[int]:
-    return st.integers(min_value=1, max_value=20)
 
 
 @st.composite
@@ -109,11 +96,26 @@ class TestDSLPropertyBased:
     @given(garbage=st.text(min_size=1, max_size=100))
     @settings(max_examples=30)
     def test_random_text_never_parses_as_model(self, garbage: str, parser: Lark) -> None:
-        """Random text should not parse as a valid model (with high probability)."""
-        if "model" in garbage and "{" in garbage:
-            pytest.skip("Contains model-like structure")
+        """Random text must be *rejected* by the parser, and specifically via a
+        grammar error (``UnexpectedInput``) — never a stray ``AttributeError``/
+        ``RecursionError`` masquerading as "expected". Narrowing the ``except``
+        to ``lark.exceptions.UnexpectedInput`` means any other exception type
+        propagates and fails the test rather than being silently swallowed.
+        """
         try:
             parser.parse(garbage)
-            pytest.fail(f"Random text parsed as valid model: {garbage!r}")
-        except (UnexpectedInput, Exception):
-            pass  # expected
+        except lark.exceptions.UnexpectedInput:
+            return  # expected: grammar rejected the garbage
+        pytest.fail(f"Random text parsed as valid model: {garbage!r}")
+
+    def test_model_keyword_garbage_is_rejected(self, parser: Lark) -> None:
+        """Garbage that *contains* the ``model {`` opener (the case the old test
+        skipped) must still be rejected by the grammar — an unterminated /
+        empty model body is not a valid spec.
+        """
+        # NB: ``model {}`` (empty but well-formed body) parses at the grammar
+        # level — emptiness is a *semantic* error caught by validation, not a
+        # syntax error — so it is deliberately excluded here.
+        for garbage in ("model {", "model { absorption: }", "model { zzz }"):
+            with pytest.raises(lark.exceptions.UnexpectedInput):
+                parser.parse(garbage)

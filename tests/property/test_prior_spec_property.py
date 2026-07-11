@@ -17,7 +17,6 @@ Pins two guarantees for `apmode.dsl.priors.build_prior_spec`:
 from __future__ import annotations
 
 from hypothesis import given, settings
-from hypothesis import strategies as st
 
 from apmode.dsl.ast_models import (
     IIV,
@@ -29,16 +28,12 @@ from apmode.dsl.ast_models import (
 )
 from apmode.dsl.prior_transforms import SetPrior
 from apmode.dsl.priors import (
-    HalfCauchyPrior,
-    HalfNormalPrior,
-    LKJPrior,
-    LogNormalPrior,
-    NormalPrior,
     PriorFamily,
     TargetKind,
     build_prior_spec,
 )
 from apmode.dsl.transforms import apply_transform
+from tests.property._strategies import valid_target_and_family
 
 
 def _base_spec() -> DSLSpec:
@@ -51,53 +46,6 @@ def _base_spec() -> DSLSpec:
         variability=[IIV(params=["CL", "V"], structure="diagonal")],
         observation=Proportional(sigma_prop=0.1),
     )
-
-
-def _mu() -> st.SearchStrategy[float]:
-    return st.floats(min_value=-10.0, max_value=10.0, allow_nan=False, allow_infinity=False)
-
-
-def _pos_scale() -> st.SearchStrategy[float]:
-    return st.floats(min_value=0.01, max_value=100.0, allow_nan=False, allow_infinity=False)
-
-
-@st.composite
-def valid_target_and_family(draw: st.DrawFn) -> tuple[str, PriorFamily, TargetKind]:
-    """Draw a (target, family, target_kind) triple that satisfies the
-    parameterization schema in ``apmode.dsl.priors._VALID_FAMILIES``.
-    """
-    kind: TargetKind = draw(
-        st.sampled_from(["structural", "iiv_sd", "residual_sd", "corr_iiv", "covariate"])
-    )
-
-    family: PriorFamily
-    if kind == "structural":
-        target = draw(st.sampled_from(["CL", "V", "ka"]))
-        family = draw(
-            st.one_of(
-                st.builds(NormalPrior, mu=_mu(), sigma=_pos_scale()),
-                st.builds(LogNormalPrior, mu=_mu(), sigma=_pos_scale()),
-            )
-        )
-    elif kind == "iiv_sd":
-        target = "omega_CL"
-        family = draw(
-            st.one_of(
-                st.builds(HalfNormalPrior, sigma=_pos_scale()),
-                st.builds(HalfCauchyPrior, scale=_pos_scale()),
-            )
-        )
-    elif kind == "residual_sd":
-        target = draw(st.sampled_from(["sigma_prop", "sigma_add"]))
-        family = draw(st.builds(HalfNormalPrior, sigma=_pos_scale()))
-    elif kind == "corr_iiv":
-        target = "corr_iiv"
-        family = draw(st.builds(LKJPrior, eta=_pos_scale()))
-    else:  # covariate
-        target = "beta_CL_WT"
-        family = draw(st.builds(NormalPrior, mu=_mu(), sigma=_pos_scale()))
-
-    return target, family, kind
 
 
 class TestBuildPriorSpecRoundtrip:

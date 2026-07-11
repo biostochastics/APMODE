@@ -3,62 +3,12 @@
 
 from __future__ import annotations
 
-import numpy as np
 import pandas as pd
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from apmode.data.splitter import loro_cv_splits
-
-
-@st.composite
-def pk_data_with_regimens(
-    draw: st.DrawFn,
-    min_groups: int = 3,
-    max_groups: int = 6,
-) -> pd.DataFrame:
-    """Generate synthetic PK data with variable number of dose groups."""
-    n_groups = draw(st.integers(min_value=min_groups, max_value=max_groups))
-    n_per_group = draw(st.integers(min_value=2, max_value=8))
-    doses = sorted(
-        draw(
-            st.lists(
-                st.floats(min_value=1.0, max_value=1000.0, allow_nan=False, allow_infinity=False),
-                min_size=n_groups,
-                max_size=n_groups,
-                unique=True,
-            )
-        )
-    )
-
-    rows: list[dict[str, object]] = []
-    subject_id = 1
-    for dose in doses:
-        for _ in range(n_per_group):
-            rows.append(
-                {
-                    "NMID": subject_id,
-                    "TIME": 0.0,
-                    "DV": 0.0,
-                    "EVID": 1,
-                    "AMT": dose,
-                    "MDV": 1,
-                }
-            )
-            for t in [1.0, 4.0, 12.0]:
-                rows.append(
-                    {
-                        "NMID": subject_id,
-                        "TIME": t,
-                        "DV": float(np.random.default_rng(subject_id).lognormal(0, 1)),
-                        "EVID": 0,
-                        "AMT": 0.0,
-                        "MDV": 0,
-                    }
-                )
-            subject_id += 1
-
-    return pd.DataFrame(rows)
+from tests.property._strategies import pk_data_with_regimens
 
 
 class TestLoroFoldProperties:
@@ -118,6 +68,36 @@ class TestLoroFoldProperties:
             frozenset(a.subject_id for a in f.assignments if a.fold == "test") for f in folds_b
         }
         assert test_sets_a == test_sets_b
+
+    @given(data=pk_data_with_regimens())
+    @settings(max_examples=30, deadline=5000)
+    def test_fold_count_matches_regimen_count(self, data: pd.DataFrame) -> None:
+        """When min_folds ≤ n_regimens, ``loro_cv_splits`` emits exactly one fold
+        per unique regimen (modal dose) group — folded in from the former
+        ``test_loro_fold_properties.py``.
+        """
+        n_regimens = int(data.loc[data["EVID"] == 1, "AMT"].nunique())
+        folds = loro_cv_splits(data, seed=42, min_folds=3)
+        assert len(folds) == n_regimens
+
+    @given(data=pk_data_with_regimens())
+    @settings(max_examples=30, deadline=5000)
+    def test_regimen_signature_stable_under_row_permutation(self, data: pd.DataFrame) -> None:
+        """Shuffling the DataFrame rows must not change the per-fold held-out
+        subject set — folded in from the former ``test_loro_fold_properties.py``.
+        The regimen signature is order-invariant, so leakage cannot be induced
+        by re-ordering the input rows.
+        """
+        shuffled = data.sample(frac=1.0, random_state=1234).reset_index(drop=True)
+        folds_a = loro_cv_splits(data, seed=7, min_folds=3)
+        folds_b = loro_cv_splits(shuffled, seed=7, min_folds=3)
+
+        def _test_sets(folds: list) -> set:  # type: ignore[type-arg]
+            return {
+                frozenset(a.subject_id for a in f.assignments if a.fold == "test") for f in folds
+            }
+
+        assert _test_sets(folds_a) == _test_sets(folds_b)
 
     @given(
         n_groups=st.integers(min_value=1, max_value=2),

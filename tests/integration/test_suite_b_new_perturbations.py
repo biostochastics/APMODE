@@ -70,7 +70,6 @@ def _synthetic_pk_frame(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.integration
 class TestScaleBSVVariances:
     def test_preserves_geomean_in_expectation(self) -> None:
         """log-multiplier mean is 0, so DV geomean is preserved at large N."""
@@ -128,7 +127,6 @@ class TestScaleBSVVariances:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.integration
 class TestSaturateClearance:
     def test_high_dv_inflated_low_dv_largely_unchanged(self) -> None:
         df = _synthetic_pk_frame(n_subjects=10, seed=1)
@@ -173,7 +171,6 @@ class TestSaturateClearance:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.integration
 class TestTMDD:
     def test_low_dv_depressed_high_dv_largely_unchanged(self) -> None:
         df = _synthetic_pk_frame(n_subjects=10, seed=3)
@@ -206,7 +203,6 @@ class TestTMDD:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.integration
 class TestFlipFlop:
     def test_early_phase_unchanged_late_phase_stretched(self) -> None:
         df = _synthetic_pk_frame(n_subjects=5, seed=4)
@@ -245,7 +241,6 @@ class TestFlipFlop:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.integration
 class TestInjectCovariateMissingness:
     def test_drops_specified_fraction_at_subject_level(self) -> None:
         df = _synthetic_pk_frame(n_subjects=40, with_covariates=True, seed=5)
@@ -291,7 +286,6 @@ class TestInjectCovariateMissingness:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.integration
 class TestAddOccasionLabelsCorrectness:
     """The fix replaced the .name accident with a proper temp-column groupby."""
 
@@ -325,7 +319,6 @@ class TestAddOccasionLabelsCorrectness:
         assert "_DOSE_FLAG" not in result.columns
 
 
-@pytest.mark.integration
 class TestAddProtocolPoolingManifest:
     """The fix added a post-drop count alongside the assigned count."""
 

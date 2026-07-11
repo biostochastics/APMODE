@@ -19,7 +19,6 @@ from pathlib import Path
 from typing import Literal
 
 import pandas as pd
-import pytest
 
 from apmode.bundle.emitter import BundleEmitter
 from apmode.bundle.models import (
@@ -278,7 +277,6 @@ def test_loro_skipped_in_submission_lane(tmp_path: Path) -> None:
     assert runner.fixed_parameter_calls == 0
 
 
-@pytest.mark.integration
 def test_loro_lane_gating_is_lane_driven_not_data_driven(tmp_path: Path) -> None:
     """The data is identical in both lanes; only lane flips LORO dispatch."""
     df = _loro_eligible_df(n_per_group=3)

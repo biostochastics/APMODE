@@ -28,9 +28,9 @@ from apmode.bundle.rocrate import (
     RoCrateExportOptions,
 )
 
-# Reuse the unit-test bundle fixture so the integration test exercises
-# the same Pydantic-compatible artifacts the rest of the suite uses.
-from tests.unit.rocrate._fixtures import build_submission_bundle
+# Reuse the shared bundle builder so the integration test exercises the
+# same Pydantic-compatible artifacts the rest of the suite uses.
+from tests._helpers.bundles import build_submission_bundle
 
 
 def _validate_crate(crate_path: Path) -> tuple[bool, list[str]]:
@@ -94,6 +94,7 @@ _SCENARIOS = [
 ]
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("scenario", _SCENARIOS)
 def test_rocrate_directory_form_validates(
     scenario: dict[str, object],
@@ -120,6 +121,7 @@ def test_rocrate_directory_form_validates(
     assert ok, "REQUIRED-level issues:\n  " + "\n  ".join(messages)
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("scenario", _SCENARIOS)
 def test_rocrate_zip_form_validates(
     scenario: dict[str, object],

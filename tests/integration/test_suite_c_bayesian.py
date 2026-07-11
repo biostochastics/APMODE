@@ -22,9 +22,6 @@ test never crashes on a runner that lacks the bayesian extra.
 
 from __future__ import annotations
 
-import importlib.util
-from pathlib import Path
-
 import pytest
 
 from apmode.backends.protocol import Lane
@@ -46,7 +43,6 @@ PHASE1_BAYESIAN_FIXTURE_IDS: tuple[str, ...] = ("vancomycin_roberts_2011",)
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.integration
 def test_phase1_bayesian_roster_size() -> None:
     """Plan Task 43 ships exactly one Bayesian fixture in v0.6.
 
@@ -63,7 +59,6 @@ def test_phase1_bayesian_roster_size() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.integration
 @pytest.mark.parametrize("fixture_id", PHASE1_BAYESIAN_FIXTURE_IDS)
 def test_fixture_loads_with_bayesian_backend(fixture_id: str) -> None:
     """The fixture YAML is parseable and selects the bayesian_stan backend."""
@@ -74,7 +69,6 @@ def test_fixture_loads_with_bayesian_backend(fixture_id: str) -> None:
     )
 
 
-@pytest.mark.integration
 @pytest.mark.parametrize("fixture_id", PHASE1_BAYESIAN_FIXTURE_IDS)
 def test_dsl_spec_validates_under_discovery_lane(fixture_id: str) -> None:
     """Bayesian fixtures validate under Discovery (their default lane).
@@ -97,7 +91,6 @@ def test_dsl_spec_validates_under_discovery_lane(fixture_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.integration
 @pytest.mark.parametrize("fixture_id", PHASE1_BAYESIAN_FIXTURE_IDS)
 def test_dsl_spec_carries_prior_list(fixture_id: str) -> None:
     """Each Bayesian fixture must declare a non-empty PriorSpec list.
@@ -114,7 +107,6 @@ def test_dsl_spec_carries_prior_list(fixture_id: str) -> None:
     )
 
 
-@pytest.mark.integration
 @pytest.mark.parametrize("fixture_id", PHASE1_BAYESIAN_FIXTURE_IDS)
 def test_priors_validate_against_spec(fixture_id: str) -> None:
     """validate_priors() returns no errors for the fixture's prior list."""
@@ -125,7 +117,6 @@ def test_priors_validate_against_spec(fixture_id: str) -> None:
     assert errors == [], f"fixture {fixture_id} priors fail validation: " + "; ".join(errors)
 
 
-@pytest.mark.integration
 @pytest.mark.parametrize("fixture_id", PHASE1_BAYESIAN_FIXTURE_IDS)
 def test_priors_are_weakly_informative(fixture_id: str) -> None:
     """Per plan Task 43: half-Normal on omegas, Normal on log-structurals.
@@ -160,7 +151,6 @@ def test_priors_are_weakly_informative(fixture_id: str) -> None:
             )
 
 
-@pytest.mark.integration
 @pytest.mark.parametrize("fixture_id", PHASE1_BAYESIAN_FIXTURE_IDS)
 def test_log_structural_priors_centered_near_reference(fixture_id: str) -> None:
     """Each log-structural prior's mu must agree with its reference value.
@@ -197,7 +187,6 @@ def test_log_structural_priors_centered_near_reference(fixture_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.integration
 @pytest.mark.parametrize("fixture_id", PHASE1_BAYESIAN_FIXTURE_IDS)
 def test_dsl_spec_emits_stan_code(fixture_id: str) -> None:
     """The fixture's DSL spec must lower to Stan without raising.
@@ -226,45 +215,25 @@ def test_dsl_spec_emits_stan_code(fixture_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _cmdstanpy_available() -> bool:
-    """True iff the ``bayesian`` extra is installed and importable.
-
-    We deliberately do not also check for an installed cmdstan — that
-    would require running ``cmdstanpy.install_cmdstan()`` in CI which
-    downloads a 500 MB toolchain. The structural part of this test
-    (priors + Stan emit) doesn't need cmdstan; the actual fit does and
-    the weekly-CI workflow installs cmdstan separately.
-    """
-    return importlib.util.find_spec("cmdstanpy") is not None
-
-
-@pytest.mark.integration
 @pytest.mark.slow
-@pytest.mark.skipif(
-    not _cmdstanpy_available(),
-    reason="cmdstanpy not installed (install with `uv sync --extra bayesian`)",
+@pytest.mark.skip(
+    reason=(
+        "Phase-1 Bayesian short-fit is gated behind the BayesianRunner harness "
+        "landing the synthetic-data simulator (plan Task 43 follow-up). The "
+        "structural validation above already enforces the fixture is wired "
+        "correctly; the actual fit is exercised via an on-demand operator run "
+        "once the simulator lands. Enable by replacing this skip with the "
+        "warmup=200, sampling=200, chains=2 short-fit body once the simulator "
+        "and cmdstan toolchain (uv sync --extra bayesian) are available."
+    )
 )
-@pytest.mark.parametrize("fixture_id", PHASE1_BAYESIAN_FIXTURE_IDS)
-def test_short_fit_recovers_within_30pct(fixture_id: str, tmp_path: Path) -> None:
-    # fixture_id / tmp_path will be consumed once the simulator lands;
-    # see the skip below for the deferred-implementation rationale.
-    del fixture_id, tmp_path
+def test_short_fit_recovers_within_30pct() -> None:
     """Plan §Task 43: warmup=200, sampling=200, chains=2 short Stan fit.
 
-    Posterior mean must be within ``±30%`` of the literature value to
-    pass. Marked ``slow`` because the cmdstan compile step alone takes
-    30+ seconds; weekly CI runs this with the bayesian extra +
-    cmdstan installed, per-PR CI skips it via ``-m "not slow"``.
-
-    The shrink dataset is generated synthetically from the literature
-    typical values — 8 subjects, intermittent IV bolus dosing, 4
-    samples per subject — so the test is reproducible without
+    Posterior mean must be within ``±30%`` of the literature value to pass.
+    Deferred until the BayesianRunner synthetic-data simulator lands; see the
+    module-level ``skip`` reason above. The shrink dataset is generated
+    synthetically from the literature typical values — 8 subjects, intermittent
+    IV bolus dosing, 4 samples per subject — so the test is reproducible without
     credentialed data.
     """
-    pytest.skip(
-        "Phase-1 Bayesian short-fit is gated behind the BayesianRunner "
-        "harness landing the synthetic-data simulator (plan Task 43 "
-        "follow-up). The structural validation above already enforces "
-        "the fixture is wired correctly; the actual fit is exercised "
-        "via an on-demand operator run once the simulator lands."
-    )

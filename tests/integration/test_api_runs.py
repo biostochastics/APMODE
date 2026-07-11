@@ -140,7 +140,6 @@ async def client_with_fake_orchestrator(
 # --- Health ----------------------------------------------------------------
 
 
-@pytest.mark.integration
 async def test_healthz_returns_apmode_version(
     client_with_fake_orchestrator: AsyncClient,
 ) -> None:
@@ -154,7 +153,6 @@ async def test_healthz_returns_apmode_version(
 # --- POST /runs -------------------------------------------------------------
 
 
-@pytest.mark.integration
 async def test_create_run_returns_202_with_retry_after(
     client_with_fake_orchestrator: AsyncClient,
     tmp_path: Path,
@@ -173,7 +171,6 @@ async def test_create_run_returns_202_with_retry_after(
     assert body["status_url"] == f"/runs/{body['run_id']}/status"
 
 
-@pytest.mark.integration
 async def test_create_run_rejects_unknown_backend(
     client_with_fake_orchestrator: AsyncClient,
     tmp_path: Path,
@@ -192,7 +189,6 @@ async def test_create_run_rejects_unknown_backend(
     assert "totally_made_up" in resp.json()["detail"]
 
 
-@pytest.mark.integration
 async def test_create_run_rejects_unknown_lane(
     client_with_fake_orchestrator: AsyncClient,
     tmp_path: Path,
@@ -207,7 +203,6 @@ async def test_create_run_rejects_unknown_lane(
     assert resp.status_code == 422
 
 
-@pytest.mark.integration
 async def test_create_run_rejects_extra_fields(
     client_with_fake_orchestrator: AsyncClient,
     tmp_path: Path,
@@ -230,7 +225,6 @@ async def test_create_run_rejects_extra_fields(
 # --- GET /runs --------------------------------------------------------------
 
 
-@pytest.mark.integration
 async def test_runs_list_returns_created_runs(
     client_with_fake_orchestrator: AsyncClient,
     tmp_path: Path,
@@ -254,7 +248,6 @@ async def test_runs_list_returns_created_runs(
 # --- GET /runs/{id}/status --------------------------------------------------
 
 
-@pytest.mark.integration
 async def test_status_endpoint_returns_completed_after_orchestrator_finishes(
     client_with_fake_orchestrator: AsyncClient,
     tmp_path: Path,
@@ -279,7 +272,6 @@ async def test_status_endpoint_returns_completed_after_orchestrator_finishes(
     assert body["backend"] == "nlmixr2"
 
 
-@pytest.mark.integration
 async def test_status_unknown_run_returns_404(
     client_with_fake_orchestrator: AsyncClient,
 ) -> None:
@@ -290,7 +282,6 @@ async def test_status_unknown_run_returns_404(
 # --- GET /runs/{id}/bundle --------------------------------------------------
 
 
-@pytest.mark.integration
 async def test_bundle_endpoint_streams_zip_for_completed_run(
     client_with_fake_orchestrator: AsyncClient,
     tmp_path: Path,
@@ -321,7 +312,6 @@ async def test_bundle_endpoint_streams_zip_for_completed_run(
     assert any("_COMPLETE" in n for n in names)
 
 
-@pytest.mark.integration
 async def test_bundle_endpoint_returns_404_for_unknown_run(
     client_with_fake_orchestrator: AsyncClient,
 ) -> None:
@@ -329,7 +319,6 @@ async def test_bundle_endpoint_returns_404_for_unknown_run(
     assert resp.status_code == 404
 
 
-@pytest.mark.integration
 async def test_bundle_endpoint_returns_425_when_run_not_completed(
     runs_dir: Path,
     db_path: Path,
@@ -374,7 +363,6 @@ async def test_bundle_endpoint_returns_425_when_run_not_completed(
 # --- DELETE /runs/{id} (plan Task 33) --------------------------------------
 
 
-@pytest.mark.integration
 async def test_delete_running_run_cancels_and_returns_cancelled(
     runs_dir: Path,
     db_path: Path,
@@ -418,7 +406,6 @@ async def test_delete_running_run_cancels_and_returns_cancelled(
         assert body["error"]
 
 
-@pytest.mark.integration
 async def test_delete_unknown_run_returns_404(
     client_with_fake_orchestrator: AsyncClient,
 ) -> None:
@@ -426,7 +413,6 @@ async def test_delete_unknown_run_returns_404(
     assert resp.status_code == 404
 
 
-@pytest.mark.integration
 async def test_delete_completed_run_returns_409(
     client_with_fake_orchestrator: AsyncClient,
     tmp_path: Path,
@@ -454,7 +440,6 @@ async def test_delete_completed_run_returns_409(
 # --- Lifespan startup sweep (plan Task 34) ---------------------------------
 
 
-@pytest.mark.integration
 async def test_lifespan_sweeps_running_rows_into_interrupted(
     runs_dir: Path,
     db_path: Path,
@@ -502,7 +487,6 @@ async def test_lifespan_sweeps_running_rows_into_interrupted(
         assert "process exited" in body["error"]
 
 
-@pytest.mark.integration
 async def test_requeue_on_interrupt_persists_through_post_get(
     client_with_fake_orchestrator: AsyncClient,
     tmp_path: Path,
@@ -533,7 +517,6 @@ async def test_requeue_on_interrupt_persists_through_post_get(
 # --- POST /runs persistence ------------------------------------------------
 
 
-@pytest.mark.integration
 async def test_run_record_persists_lane_backend_and_seed(
     client_with_fake_orchestrator: AsyncClient,
     tmp_path: Path,
@@ -556,3 +539,184 @@ async def test_run_record_persists_lane_backend_and_seed(
     assert body["lane"] == "discovery"
     assert body["backend"] == "nlmixr2"
     assert body["seed"] == 42
+
+
+# --- Auth: X-API-Key HMAC verification (CLAUDE.md security surface) ---------
+
+_API_KEY = "test-secret-key-abc123"
+_WRONG_KEY = "test-secret-key-abc124"
+
+
+async def test_protected_endpoints_require_valid_api_key(
+    runs_dir: Path,
+    db_path: Path,
+    fake_runner_factory,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With ``APMODE_API_KEY`` set, protected routes reject missing/wrong keys.
+
+    ``/healthz`` stays open (liveness probe); every run-management endpoint
+    is gated by the ``require_api_key`` dependency which HMAC-compares the
+    ``X-API-Key`` header against the env var. Both a missing header and a
+    header that fails the constant-time compare must yield 401; the exact
+    key must be accepted.
+    """
+    monkeypatch.setenv("APMODE_API_KEY", _API_KEY)
+    monkeypatch.setattr("apmode.api.routes.execute_run", _fake_execute_success)
+    store = SQLiteRunStore(db_path)
+    dataset_root = tmp_path / "dataset_root"
+    dataset_root.mkdir()
+    csv = dataset_root / "ds.csv"
+    csv.write_text("NMID,TIME,DV,MDV,EVID,AMT,CMT\n1,0,0,1,1,100,1\n")
+    app = build_app(
+        runs_dir=runs_dir,
+        db_path=db_path,
+        runner_factory=fake_runner_factory,
+        store=store,
+        dataset_root=dataset_root,
+    )
+    transport = ASGITransport(app=app)
+    async with (
+        AsyncClient(transport=transport, base_url="http://testserver") as client,
+        app.router.lifespan_context(app),
+    ):
+        # /healthz is unauthenticated (liveness probe).
+        assert (await client.get("/healthz")).status_code == 200
+
+        # GET /runs is protected: 401 with no key and with a wrong key.
+        assert (await client.get("/runs")).status_code == 401
+        assert (await client.get("/runs", headers={"X-API-Key": _WRONG_KEY})).status_code == 401
+        # 200 with the HMAC-correct key.
+        ok = await client.get("/runs", headers={"X-API-Key": _API_KEY})
+        assert ok.status_code == 200
+
+        # POST /runs is protected too: 401 without a key.
+        no_key = await client.post(
+            "/runs",
+            json={"dataset_path": "ds.csv", "lane": "submission", "backend": "nlmixr2"},
+        )
+        assert no_key.status_code == 401
+
+        # POST /runs accepts the request (202) once the correct key is sent.
+        with_key = await client.post(
+            "/runs",
+            json={"dataset_path": "ds.csv", "lane": "submission", "backend": "nlmixr2"},
+            headers={"X-API-Key": _API_KEY},
+        )
+        assert with_key.status_code == 202, with_key.text
+        assert with_key.json()["status"] == "pending"
+
+
+# --- dataset_root confinement (arbitrary-file-read defence) -----------------
+
+
+async def _poll_status(
+    client: AsyncClient, run_id: str, *, headers: dict[str, str]
+) -> dict[str, object]:
+    """Poll the status endpoint until the row reaches a terminal state."""
+    body: dict[str, object] = {}
+    for _ in range(60):
+        st = await client.get(f"/runs/{run_id}/status", headers=headers)
+        body = st.json()
+        if body["status"] in {"completed", "failed", "cancelled", "interrupted"}:
+            return body
+        await asyncio.sleep(0.05)
+    return body
+
+
+async def test_dataset_path_traversal_escape_is_rejected(
+    runs_dir: Path,
+    db_path: Path,
+    fake_runner_factory,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ``../`` dataset_path that resolves outside dataset_root is refused.
+
+    Uses the *real* ``execute_run`` (no stub) so the confinement guard
+    — ``dataset_root.joinpath(user_input).resolve()`` + ``relative_to`` —
+    actually fires. A path escaping the root raises ``PermissionError``
+    before the runner is ever constructed, landing the row in FAILED with
+    an "resolves outside the allow-listed root" error.
+    """
+    monkeypatch.setenv("APMODE_API_KEY", _API_KEY)
+    headers = {"X-API-Key": _API_KEY}
+    store = SQLiteRunStore(db_path)
+    dataset_root = tmp_path / "dataset_root"
+    dataset_root.mkdir()
+    # A real secret sitting *outside* the allow-listed root.
+    secret = tmp_path / "secret.csv"
+    secret.write_text("NMID,TIME,DV,MDV,EVID,AMT,CMT\n1,0,0,1,1,100,1\n")
+    app = build_app(
+        runs_dir=runs_dir,
+        db_path=db_path,
+        runner_factory=fake_runner_factory,
+        store=store,
+        dataset_root=dataset_root,
+    )
+    transport = ASGITransport(app=app)
+    async with (
+        AsyncClient(transport=transport, base_url="http://testserver") as client,
+        app.router.lifespan_context(app),
+    ):
+        create = await client.post(
+            "/runs",
+            json={"dataset_path": "../secret.csv", "lane": "submission"},
+            headers=headers,
+        )
+        assert create.status_code == 202, create.text
+        run_id = create.json()["run_id"]
+        body = await _poll_status(client, run_id, headers=headers)
+        assert body["status"] == "failed", body
+        assert "resolves outside" in str(body["error"])
+
+
+async def test_dataset_path_symlink_escape_is_rejected(
+    runs_dir: Path,
+    db_path: Path,
+    fake_runner_factory,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A symlink *inside* dataset_root pointing outside it is refused.
+
+    ``resolve()`` canonicalises through the symlink before the
+    ``relative_to`` prefix check, so an in-root symlink whose target
+    escapes the allow-listed root is rejected exactly like a ``../``
+    traversal.
+    """
+    monkeypatch.setenv("APMODE_API_KEY", _API_KEY)
+    headers = {"X-API-Key": _API_KEY}
+    store = SQLiteRunStore(db_path)
+    dataset_root = tmp_path / "dataset_root"
+    dataset_root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    secret = outside / "secret.csv"
+    secret.write_text("NMID,TIME,DV,MDV,EVID,AMT,CMT\n1,0,0,1,1,100,1\n")
+    # An innocuous-looking entry inside the root that symlinks out of it.
+    link = dataset_root / "escape.csv"
+    link.symlink_to(secret)
+    app = build_app(
+        runs_dir=runs_dir,
+        db_path=db_path,
+        runner_factory=fake_runner_factory,
+        store=store,
+        dataset_root=dataset_root,
+    )
+    transport = ASGITransport(app=app)
+    async with (
+        AsyncClient(transport=transport, base_url="http://testserver") as client,
+        app.router.lifespan_context(app),
+    ):
+        create = await client.post(
+            "/runs",
+            json={"dataset_path": "escape.csv", "lane": "submission"},
+            headers=headers,
+        )
+        assert create.status_code == 202, create.text
+        run_id = create.json()["run_id"]
+        body = await _poll_status(client, run_id, headers=headers)
+        assert body["status"] == "failed", body
+        assert "resolves outside" in str(body["error"])

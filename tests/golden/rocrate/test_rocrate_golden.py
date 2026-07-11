@@ -17,7 +17,7 @@ import json
 from pathlib import Path
 
 from apmode.bundle.rocrate import RoCrateEmitter, RoCrateExportOptions
-from tests.unit.rocrate._fixtures import build_submission_bundle
+from tests._helpers.bundles import build_submission_bundle
 
 
 def test_canonical_submission_metadata(tmp_path: Path, snapshot: object) -> None:

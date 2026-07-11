@@ -105,7 +105,6 @@ def _mock_result(
     )
 
 
-@pytest.mark.integration
 class TestScoreCase:
     """Test score_case with Suite A-style assertions."""
 
@@ -166,7 +165,6 @@ class TestScoreCase:
         assert score.case_id == "test_no_ref"
 
 
-@pytest.mark.integration
 class TestConvergenceScoring:
     """Test convergence rate and failure taxonomy."""
 

@@ -34,7 +34,6 @@ from apmode.benchmarks.suite_c import (
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.integration
 class TestSuiteCCases:
     """Validate Suite C case definitions."""
 
@@ -99,7 +98,6 @@ class TestSuiteCCases:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.integration
 class TestNPEComputation:
     """Test nonparametric prediction error computation."""
 
@@ -124,7 +122,6 @@ class TestNPEComputation:
         assert compute_npe(observed, sims) >= 0.0
 
 
-@pytest.mark.integration
 class TestPICalibration:
     """Test prediction interval calibration."""
 
@@ -154,7 +151,6 @@ class TestPICalibration:
         assert cal["95"] < 0.50  # Massive undercoverage
 
 
-@pytest.mark.integration
 class TestExpertComparison:
     """Test expert comparison scoring."""
 
@@ -205,7 +201,6 @@ class TestExpertComparison:
         assert compute_fraction_beats_expert([], win_margin=0.02) == 0.0
 
 
-@pytest.mark.integration
 class TestSuiteAggregation:
     """Test suite-level report aggregation."""
 

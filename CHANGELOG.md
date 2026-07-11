@@ -51,6 +51,98 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rejected-construct `InvalidSpecError` path (`tests/unit/test_node_trainer.py`,
   `test_dosing.py`, `test_node_ode.py`, `test_node_runner.py`).
 
+### Added — NODE functional distillation loop + pooled posterior-predictive
+
+- Functional distillation is now a closed, sealed loop. `surrogate_to_formular()`
+  emits a classical `DSLSpec` (linear→`Linear` CL/V, michaelis_menten→
+  `MichaelisMenten`) from a fitted NODE elimination sub-function;
+  `Surrogate/Fidelity/DistillationReport` became sealed Pydantic bundle models;
+  `BundleEmitter.write_distillation_report` writes `distillation/<id>.json`
+  (digest-participating); a new RO-Crate `entities/distillation.py` projector
+  emits the File referenced from the candidate CreateAction (orphan-guarded,
+  validator-clean). Every NODE fit attaches a report; the orchestrator seals it.
+- Gate-3 promotion (loop closure): when a distillation clears AUC/Cmax fidelity,
+  the orchestrator re-fits the emitted spec through `Nlmixr2Runner` so it enters
+  the same Gate 1/2/3 pipeline (within-classical BIC/NLPD-comparable), records a
+  source-NODE → distilled lineage edge, and sets the report's `promoted` flag. A
+  re-fit that raises or does not converge is recorded fail-soft
+  (`gate_failed="distillation_refit"`) and never crashes the run. `reference_conc`
+  for the linear→CL mapping is the cohort median observed DV. Ranking is
+  in-sample this pass (ADR-0004 circularity caveat); a held-out-subject split is
+  the tracked leakage-mitigation follow-up.
+- NODE pooled posterior-predictive: NPE, AUC/Cmax bioequivalence, and real pooled
+  CWRES (replacing the `0.0`/`1.0` placeholder) now emit via the canonical
+  `build_predictive_diagnostics` when a Gate 3 policy is present. VPC/NPDE/PIT
+  stay unset — without between-subject variability a pooled predictive
+  distribution under-covers and would mislead, so they are gated behind
+  mixed-effects NODE (input-layer random effects, planned).
+
+### Added — Suite C provenance banner, profiler TMDD screen, Stan maturation
+
+- Suite C Phase-1: a `SuiteCPhase1Provenance` model + an unmissable
+  "STALE / NON-LIVE SNAPSHOT" banner in the Markdown summary; the CLI fails loud
+  when the inputs file carries no `_provenance` block; a `--stale-warn-days`
+  flag; and a `_provenance` block on the committed snapshot so the on-demand
+  command works.
+- Profiler: the previously-dead `_NONLINEAR_TMDD_CURVATURE_RATIO` is wired into a
+  `tmdd_screen` field on `EvidenceManifest` (additive-optional, no schema bump) —
+  a population early/late curvature ratio below `0.3` votes `"possible"`, the
+  concave-up log-profile signature of saturable/TMDD elimination (advisory only).
+- Stan emitter: the Emax/Hill maturation covariate now lowers at mathematical
+  parity with nlmixr2 (previously `NotImplementedError`).
+
+### Changed — Test-suite reorganization, shared fixtures, and coverage
+
+- **Shared helper package `tests/_helpers/`.** Factories that were
+  copy-pasted across ~40 sites — `make_backend_result`, `make_spec`, the
+  `DataManifest`/`EvidenceManifest` builders, `load_policy(lane)` +
+  `POLICY_DIR`, `build_submission_bundle`, the agentic result builders, and
+  a rootdir-anchored `FIXTURES_DIR`/`pk_fixture` — now live in one
+  importable, non-collected package. Six test modules that reached into
+  sibling test files (`from tests.unit.test_gates import _make_backend_result`,
+  `from tests.unit.rocrate._fixtures import build_submission_bundle`, etc.)
+  now import from `tests._helpers`. `build_submission_bundle` moved out of
+  `tests/unit/rocrate/_fixtures.py`; the bespoke `_digest_bundle` sentinel
+  helper stays there as the digest-exclusion lockstep pin (imported lazily
+  to avoid a cycle). `tests/unit/test_helpers_contract.py` freezes the
+  builder defaults so future edits cannot silently drift gate/ranking pins.
+- **`tests/unit/` subpackaged to mirror `src/apmode/`.** The 135-file flat
+  directory is now `dsl/`, `backends/{classical,bayesian,node}/`,
+  `governance/`, `bundle/`, `benchmarks/`, `cli/`, `data/` (plus the
+  existing `rocrate/`). Moves use `git mv` (history preserved); the
+  relocated `test_stan_emitter` syrupy snapshot moves with it, and
+  depth-coupled fixture paths (`Path(__file__).parent.parent / "fixtures"`)
+  were converted to the depth-independent `FIXTURES_DIR`.
+- **Mega-files split along test-class seams**, preserving every
+  invariant-pinning class verbatim: `test_cli.py` (1605 LOC) → `cli/`
+  run/inspect/misc files, `test_gates.py` → `governance/` gate1/gate2/gate2_5,
+  `test_deep_inspect.py` → `cli/test_cli_trace_lineage_graph.py`.
+  `test_bundle_emitter_full.py` merged into `test_bundle_emitter.py`; the
+  two LORO property files merged; duplicated Hypothesis strategies
+  consolidated into `tests/property/_strategies.py`.
+- **New markers + auto-`integration` hook.** `requires_r` and `requires_llm`
+  are registered so CI can select `-m "not requires_r and not live"` as a
+  deterministic no-R/no-key lane; a `conftest.py` collection hook
+  auto-applies `integration` to everything under `tests/integration/`,
+  retiring hand-maintained markers. NODE-training / validator-matrix /
+  subprocess tests gained `@pytest.mark.slow`. Two genuinely misplaced
+  live-R tests (`test_frem_features_live`, `test_imputers_live`) moved to
+  `tests/integration/`; the pure-in-memory `test_gate3_contract_enforcement`
+  moved to `tests/unit/`.
+- **Coverage gaps closed.** New tests for the previously-untested API auth
+  + `dataset_root` traversal/symlink confinement guard
+  (`tests/integration/test_api_runs.py`); `Nlmixr2Runner._parse_response`
+  JSON parsing (VPC/NPE/AUC/NPDE → `DiagnosticBundle`) now runs on R-less
+  CI via `tests/unit/backends/classical/test_nlmixr2_parse_response.py`
+  instead of being skipped by a file-level Rscript gate;
+  `BayesianRunner.run()` success + accept-and-ignore `test_data_path`; the
+  credibility RO-Crate projector (`tests/unit/rocrate/test_entities_credibility.py`).
+- **Vacuous/weak assertions hardened**: garbage-parse property test now
+  catches only `lark.exceptions.UnexpectedInput`; the Borda ranking test
+  asserts an exact winner ordering instead of an all-ties bound; NCA
+  negative paths, the FREM cross-block zero initialization, and the
+  LLM-provider return-type test now assert real behavior.
+
 ### Removed — Suite C weekly CI job
 
 - Deleted `.github/workflows/suite_c_phase1.yml`. The job only re-scored

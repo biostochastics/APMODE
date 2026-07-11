@@ -53,7 +53,6 @@ def _registry_dataset_ids() -> set[str]:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.integration
 def test_phase1_roster_has_seven_fixtures() -> None:
     """Phase-1 v0.6.1 grew from 5 to 7 fixtures.
 
@@ -82,7 +81,6 @@ def test_phase1_roster_has_seven_fixtures() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.integration
 @pytest.mark.parametrize("fixture_id", PHASE1_MLE_FIXTURE_IDS)
 def test_fixture_loads(fixture_id: str) -> None:
     """Each fixture's YAML parses and validates against LiteratureFixture."""
@@ -92,7 +90,6 @@ def test_fixture_loads(fixture_id: str) -> None:
     assert fix.reference_params  # validator already enforces min_length=1
 
 
-@pytest.mark.integration
 @pytest.mark.parametrize("fixture_id", PHASE1_MLE_FIXTURE_IDS)
 def test_fixture_dataset_id_in_registry(fixture_id: str) -> None:
     """Each fixture's dataset_id resolves to a card in the dataset registry.
@@ -108,7 +105,6 @@ def test_fixture_dataset_id_in_registry(fixture_id: str) -> None:
     )
 
 
-@pytest.mark.integration
 @pytest.mark.parametrize("fixture_id", PHASE1_MLE_FIXTURE_IDS)
 def test_dsl_spec_validates_under_submission_lane(fixture_id: str) -> None:
     """Each fixture's DSL spec passes the submission-lane validator.
@@ -125,7 +121,6 @@ def test_dsl_spec_validates_under_submission_lane(fixture_id: str) -> None:
     )
 
 
-@pytest.mark.integration
 @pytest.mark.parametrize("fixture_id", PHASE1_MLE_FIXTURE_IDS)
 def test_emit_nlmixr2_mentions_every_reference_param(fixture_id: str) -> None:
     """The emitted R code names every parameter the fixture says it has.
@@ -158,7 +153,6 @@ def test_emit_nlmixr2_mentions_every_reference_param(fixture_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.integration
 @pytest.mark.parametrize("fixture_id", PHASE1_MLE_FIXTURE_IDS)
 def test_mapping_values_are_dsl_names(fixture_id: str) -> None:
     """Every parameterization_mapping value resolves to a reference_param key.
@@ -179,7 +173,6 @@ def test_mapping_values_are_dsl_names(fixture_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.integration
 @pytest.mark.parametrize("fixture_id", PHASE1_MLE_FIXTURE_IDS)
 def test_reference_has_canonical_doi(fixture_id: str) -> None:
     """LiteratureReference enforces the DOI shape; assert it actually is set."""

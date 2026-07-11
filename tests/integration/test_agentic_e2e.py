@@ -96,7 +96,6 @@ def _mock_result(bic: float = 220.0) -> BackendResult:
 
 
 @pytest.mark.asyncio
-@pytest.mark.integration
 async def test_agentic_e2e_produces_valid_bundle(tmp_path: Path) -> None:
     """Full agentic run: base spec → 1 covariate add → stop → verify trace."""
     inner_runner = AsyncMock()

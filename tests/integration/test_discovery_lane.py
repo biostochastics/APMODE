@@ -293,7 +293,6 @@ def _load_policy(lane: str) -> GatePolicy:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.integration
 class TestSearchEngineMultiBackend:
     """SearchEngine dispatches specs to the correct backend runner."""
 
@@ -419,7 +418,6 @@ class TestSearchEngineMultiBackend:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.integration
 class TestDiscoveryLaneIntegration:
     """End-to-end discovery lane with mock backends."""
 

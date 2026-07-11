@@ -10,7 +10,7 @@
   [![Version](https://img.shields.io/badge/version-v0.6.1--rc2-blue)]()
   <!-- apmode:/AUTO:badge_version -->
   <!-- apmode:AUTO:badge_tests -->
-  [![Tests](https://img.shields.io/badge/tests-3453%20collected-success)]()
+  [![Tests](https://img.shields.io/badge/tests-3509%20collected-success)]()
   <!-- apmode:/AUTO:badge_tests -->
   [![License](https://img.shields.io/badge/license-GPL--2.0--or--later-green)](LICENSE)
   [![Python](https://img.shields.io/badge/python-3.12%E2%80%933.14-yellow)]()
@@ -35,7 +35,7 @@ APMODE is a **governed meta-system** that composes five population PK modeling p
 
 **Formular — a typed PK DSL — is the control surface.** Models are specified in [Formular](docs/FORMULAR.md), an order-insensitive grammar of top-level blocks (`absorption`, `distribution`, `elimination`, `variability`, `observation`/`observations`, `covariates`, `priors`, `units`, `metadata`, `initial`) — structural declarations name parameters, a separate `initial: {}` block supplies calibration values, and `priors: {}` lets an author write priors directly in Formular text (in addition to the programmatic `SetPrior` transform). Specs compile to a typed AST, are validated against pharmacometric constraints, and lower to backend-specific code (nlmixr2 R, Stan/Torsten, JAX/Diffrax). The agentic LLM backend (Phase 3) operates exclusively through the <!-- apmode:AUTO:transforms -->10<!-- apmode:/AUTO:transforms --> typed Formular transforms — including `SetPrior` for Bayesian workflows — it cannot emit raw code.
 
-> **Status**: **<!-- apmode:AUTO:version_tag -->v0.6.1-rc2<!-- apmode:/AUTO:version_tag -->** (2026-04-25) — 0.6.1 release candidate. <!-- apmode:AUTO:tests_nonlive -->3436<!-- apmode:/AUTO:tests_nonlive --> tests passing (`-m "not live"`); `mypy --strict` clean; `ruff` clean. Supports Python 3.12–3.14. Gate policy schema <!-- apmode:AUTO:policy_gate -->0.7.1<!-- apmode:/AUTO:policy_gate -->; profiler policy <!-- apmode:AUTO:policy_profiler -->2.1.0<!-- apmode:/AUTO:policy_profiler --> (manifest_schema_version = <!-- apmode:AUTO:profiler_manifest -->2<!-- apmode:/AUTO:profiler_manifest -->). v0.6.1 ships the FastAPI HTTP API surface (`apmode serve`, `POST /runs`, cancellation lifecycle), Suite C Phase-1 MLE + Bayesian fixtures with on-demand NPE scoring (no scheduled CI job — see [Suite C README](benchmarks/suite_c/README.md)), SOTA absorption preview forms, and the RO-Crate projector hardening pass. Reproducibility bundles continue to carry a `_COMPLETE` sentinel with a SHA-256 digest; `apmode validate` refuses unsealed bundles. See [CHANGELOG.md](CHANGELOG.md) for the full release-candidate changes.
+> **Status**: **<!-- apmode:AUTO:version_tag -->v0.6.1-rc2<!-- apmode:/AUTO:version_tag -->** (2026-04-25) — 0.6.1 release candidate. <!-- apmode:AUTO:tests_nonlive -->3492<!-- apmode:/AUTO:tests_nonlive --> tests passing (`-m "not live"`); `mypy --strict` clean; `ruff` clean. Supports Python 3.12–3.14. Gate policy schema <!-- apmode:AUTO:policy_gate -->0.7.1<!-- apmode:/AUTO:policy_gate -->; profiler policy <!-- apmode:AUTO:policy_profiler -->2.1.0<!-- apmode:/AUTO:policy_profiler --> (manifest_schema_version = <!-- apmode:AUTO:profiler_manifest -->2<!-- apmode:/AUTO:profiler_manifest -->). v0.6.1 ships the FastAPI HTTP API surface (`apmode serve`, `POST /runs`, cancellation lifecycle), Suite C Phase-1 MLE + Bayesian fixtures with on-demand NPE scoring (no scheduled CI job — see [Suite C README](benchmarks/suite_c/README.md)), SOTA absorption preview forms, and the RO-Crate projector hardening pass. Reproducibility bundles continue to carry a `_COMPLETE` sentinel with a SHA-256 digest; `apmode validate` refuses unsealed bundles. See [CHANGELOG.md](CHANGELOG.md) for the full release-candidate changes.
 
 ### Capability status
 
@@ -226,8 +226,8 @@ continues to point the policy loader at an alternative directory.
 ### Test + typecheck + lint
 
 ```bash
-uv run pytest tests/ -q                         # <!-- apmode:AUTO:tests -->3453<!-- apmode:/AUTO:tests --> collected
-uv run pytest tests/ -q -m "not live"           # <!-- apmode:AUTO:tests_nonlive -->3436<!-- apmode:/AUTO:tests_nonlive --> skip live LLM tests
+uv run pytest tests/ -q                         # <!-- apmode:AUTO:tests -->3509<!-- apmode:/AUTO:tests --> collected
+uv run pytest tests/ -q -m "not live"           # <!-- apmode:AUTO:tests_nonlive -->3492<!-- apmode:/AUTO:tests_nonlive --> skip live LLM tests
 uv run mypy src/apmode/ --strict                # type checking
 uv run ruff check src/apmode/ tests/            # linting
 uv run python scripts/sync_readme.py --check    # README ↔ codebase drift guard
@@ -388,7 +388,7 @@ Or call `auto_remap_binary_columns(df, ["SEX"], overrides={...})` directly befor
 
 **Provenance**: Every encoding decision (column, detected kind, applied remap, source = `auto`/`override`/`no_remap`, rationale) is captured in `categorical_encoding_provenance.json` in the run bundle so reviewers can trace exactly how each raw categorical value was mapped to 0/1.
 
-**R harness**. Imputation uses `src/apmode/r/impute.R`, which dispatches to `mice::mice(method="pmm")` or `missRanger::missRanger(num.trees=100, pmm.k=10)` — the ranger-backed fast alternative to missForest (Mayer CRAN 2.6.x). Python-side providers are `R_MiceImputer` and `R_MissRangerImputer` (`src/apmode/data/imputers.py`); both are covered by live tests in `tests/unit/test_imputers_live.py` that spawn real Rscript against installed `mice`/`missRanger` and verify (a) imputed CSVs appear, (b) no residual NaN in imputed columns, (c) between-imputation variance proves MI is functioning.
+**R harness**. Imputation uses `src/apmode/r/impute.R`, which dispatches to `mice::mice(method="pmm")` or `missRanger::missRanger(num.trees=100, pmm.k=10)` — the ranger-backed fast alternative to missForest (Mayer CRAN 2.6.x). Python-side providers are `R_MiceImputer` and `R_MissRangerImputer` (`src/apmode/data/imputers.py`); both are covered by live tests in `tests/integration/test_imputers_live.py` that spawn real Rscript against installed `mice`/`missRanger` and verify (a) imputed CSVs appear, (b) no residual NaN in imputed columns, (c) between-imputation variance proves MI is functioning.
 
 **FREM emitter**. The FREM path is implemented in `src/apmode/dsl/frem_emitter.py` and executed via `src/apmode/backends/frem_runner.py::run_frem_fit`. Public API:
 
@@ -398,7 +398,7 @@ Or call `auto_remap_binary_columns(df, ["SEX"], overrides={...})` directly befor
 - `emit_nlmixr2_frem(spec, covariates, initial_estimates=...)` — emits the augmented nlmixr2 model function with a joint Ω block (PK IIV etas + covariate etas), estimable covariate means, fixed covariate residuals (`fix(...)`) so the eta absorbs all BSV, and one observation endpoint per covariate. **Routing is data-driven via the `DVID` column**: nlmixr2 assigns endpoints DVID 1 (PK), 2, 3, … in declaration order, and `prepare_frem_data` writes matching DVIDs. No `| DVID==N` pipe is emitted — nlmixr2 5.0 rejects conditions on the endpoint RHS (verified live 2026-04-14).
 - `run_frem_fit(spec_template, df, covariate_names, runner, ...)` — composes the above with `Nlmixr2Runner` for a single-call FREM fit.
 
-Scope covers **static + time-varying** subject-level covariates and **continuous + log-transformed + binary-categorical** encodings. `summarize_covariates` auto-detects per-covariate time-varying status by checking within-subject variation and sets `time_varying=True` accordingly. Live end-to-end tests in `tests/unit/test_frem_emitter.py::TestFREMLiveIntegration` spawn real Rscript + nlmixr2 and verify (a) the emitted model compiles, (b) FOCE-I actually fits the joint Ω and learns a non-degenerate `eta.cov.WT` variance on tiny synthetic data.
+Scope covers **static + time-varying** subject-level covariates and **continuous + log-transformed + binary-categorical** encodings. `summarize_covariates` auto-detects per-covariate time-varying status by checking within-subject variation and sets `time_varying=True` accordingly. Live end-to-end tests in `tests/unit/backends/classical/test_frem_emitter.py::TestFREMLiveIntegration` spawn real Rscript + nlmixr2 and verify (a) the emitted model compiles, (b) FOCE-I actually fits the joint Ω and learns a non-degenerate `eta.cov.WT` variance on tiny synthetic data.
 
 **Estimator requirement**: FREM requires **FOCE-I**. nlmixr2 SAEM treats subject-level covariate observations as dynamic sampling targets and collapses the random-effect variance to zero. The FREM runner must be constructed with `Nlmixr2Runner(estimation=["focei"])`; `Orchestrator._run_frem_stage` does this by default when no `frem_runner` is injected.
 
@@ -706,7 +706,7 @@ reason, vote). `apmode inspect <bundle>` renders the per-signal table;
 
 ## Test Suite
 
-**<!-- apmode:AUTO:tests -->3453<!-- apmode:/AUTO:tests --> tests collected** (<!-- apmode:AUTO:tests_nonlive -->3436<!-- apmode:/AUTO:tests_nonlive --> non-live) across multiple strategies — all counts auto-synced by `scripts/sync_readme.py`:
+**<!-- apmode:AUTO:tests -->3509<!-- apmode:/AUTO:tests --> tests collected** (<!-- apmode:AUTO:tests_nonlive -->3492<!-- apmode:/AUTO:tests_nonlive --> non-live) across multiple strategies — all counts auto-synced by `scripts/sync_readme.py`:
 
 ```bash
 uv run pytest tests/unit/ -q               # unit tests
@@ -716,13 +716,23 @@ uv run pytest tests/golden/ -q             # syrupy golden master snapshots
 uv run pytest tests/ --snapshot-update     # update snapshots after emitter changes
 ```
 
+`tests/unit/` mirrors `src/apmode/` — files are grouped into subpackages by subsystem rather than flat, each importable as a package:
+
 | Directory | Coverage |
 |-----------|----------|
-| `tests/unit/` | All modules: DSL, data, backends (classical/Bayesian/NODE/agentic), search, governance, routing, bundle, report |
-| `tests/integration/` | Mock R pipeline, Discovery lane, LLM providers, Suite A/B/C E2E, BLQ flows |
-| `tests/property/` | Hypothesis: DSL round-trip, transforms, LORO split invariants |
+| `tests/unit/dsl/` | Formular grammar, compiler, canonicalization, validators, transforms |
+| `tests/unit/backends/{classical,bayesian,node}/` | nlmixr2/FREM, Stan/priors, NODE + agentic backends |
+| `tests/unit/governance/` | Gate 1/2/2.5/3, ranking, scoring, policy, LORO-CV |
+| `tests/unit/bundle/` + `tests/unit/rocrate/` | Reproducibility bundle + RO-Crate projection |
+| `tests/unit/data/` | Ingest, profiler, NCA/initial estimates, splitter, dosing, missingness |
+| `tests/unit/benchmarks/` + `tests/unit/cli/` | Suite A/B/C runners; Typer CLI, serve, run-store |
+| `tests/integration/` | Mock R pipeline, Discovery lane, LLM providers, Suite A/B/C E2E, BLQ, live R |
+| `tests/property/` | Hypothesis: DSL round-trip, transforms, LORO split invariants (shared strategies in `_strategies.py`) |
 | `tests/golden/` | Syrupy snapshots for emitter output |
 | `tests/fixtures/` | Benchmark Suite A CSVs + stored policies |
+| `tests/_helpers/` | Shared non-test factories: `make_backend_result`, `make_spec`, `load_policy`, `build_submission_bundle`, `FIXTURES_DIR` |
+
+Marker lanes (registered in `pyproject.toml`): `-m "not live"` skips live-LLM tests, `-m "not requires_r"` skips tests needing a real Rscript, `-m "not slow"` skips heavy NODE-training / validator runs. Tests under `tests/integration/` are auto-marked `integration` by a `conftest.py` collection hook.
 
 ---
 
@@ -757,7 +767,7 @@ policy artifact so runs are reproducible without touching Python source:
 - **Loader**: [`src/apmode/data/policy.py`](src/apmode/data/policy.py) — `get_policy()` returns a typed frozen `ProfilerPolicy` dataclass; `policy_sha256` is embedded in every `EvidenceManifest`.
 - **Current version**: `profiler/v<!-- apmode:AUTO:policy_profiler -->2.1.0<!-- apmode:/AUTO:policy_profiler -->` (`manifest_schema_version = <!-- apmode:AUTO:profiler_manifest -->2<!-- apmode:/AUTO:profiler_manifest -->`; structured `nonlinear_clearance_signals` replaces flat scalars/masks)
 - **Derivation & citations**: [`docs/PROFILER_REFINEMENT_PLAN.md`](docs/PROFILER_REFINEMENT_PLAN.md) — one paragraph per policy group tying each default to a primary source.
-- **Drift guard**: [`tests/unit/test_profiler_policy_consistency.py`](tests/unit/test_profiler_policy_consistency.py) — enforces JSON↔dataclass↔constants equality and AST-scans drift-prone heuristic functions for bare numeric literals.
+- **Drift guard**: [`tests/unit/data/test_profiler_policy_consistency.py`](tests/unit/data/test_profiler_policy_consistency.py) — enforces JSON↔dataclass↔constants equality and AST-scans drift-prone heuristic functions for bare numeric literals.
 
 | Group | Parameter | Default | Purpose |
 |-------|-----------|---------|---------|
@@ -1185,7 +1195,7 @@ Every CI run and every tagged release ships a [CycloneDX](https://cyclonedx.org/
 This README's numeric claims (version, test count, transform count, CLI-command count, dataset count, policy versions, profiler manifest version) are rewritten from the codebase by [`scripts/sync_readme.py`](scripts/sync_readme.py). Each auto-synced value sits between HTML comment markers like:
 
 ```
-<!-- apmode:AUTO:tests -->3453<!-- apmode:/AUTO:tests -->
+<!-- apmode:AUTO:tests -->3509<!-- apmode:/AUTO:tests -->
 ```
 
 Running the script:
@@ -1220,7 +1230,8 @@ User-facing constraints in `<!-- apmode:AUTO:version_tag -->v0.6.1-rc2<!-- apmod
 - **NODE infusions** *(partial)* — zero-order constant-rate infusion (`RATE > 0` or `DUR > 0`) into the central compartment is now supported via the eager piecewise solver; overlapping and staggered infusions sum correctly. Still rejected with `InvalidSpecError`: infusions labelled into the absorption depot (`CMT=1`), steady-state rows (`SS != 0`), and other-type events (`EVID=2`). See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for backend scope.
 - **NODE random effects** *(planned)* — current NODE training is pooled-population NLL (no per-subject random effects). Laplace approximation on a ≤16×16 block of latent/input-layer parameters (block-diagonal Hessian primary; L-BFGS + ridge fallback) is the next milestone; full-NN-weight RE remains research-branch.
 - **NODE scaling** *(planned)* — the Python-list subject loop scales to ~50 subjects. The next release replaces it with `jax.lax.map` per subject plus a `jax.vmap` fastpath for uniform time grids (target memory ceiling on A100-40G ≈ 2000 subjects for a 4-compartment NODE).
-- **NODE posterior-predictive simulation** *(planned)* — `sample_posterior_predictive` is currently an inert stub returning `None` with `UserWarning`. The Laplace-RE landing draws random effects from the posterior and routes per-subject simulations through the canonical `build_predictive_diagnostics`.
+- **NODE posterior-predictive** *(partial)* — pooled NPE, AUC/Cmax bioequivalence, and real pooled CWRES now emit via the canonical `build_predictive_diagnostics` when a Gate 3 policy is present. VPC / NPDE / PIT stay unset: a pooled predictive distribution (no between-subject variability) under-covers, so those population diagnostics are gated behind mixed-effects NODE; `sample_posterior_predictive` remains reserved for that BSV path.
+- **NODE functional distillation** *(shipped)* — a fitted NODE elimination sub-function is distilled to a classical surrogate (`Linear` / `MichaelisMenten`), sealed as `distillation/<id>.json` (+ RO-Crate projected), emitted as a classical `DSLSpec` via `surrogate_to_formular`, and — when it clears AUC/Cmax fidelity — re-fit through nlmixr2 into Gate 3 (fail-soft on unidentifiable re-fit). Promotion ranking is in-sample this pass; a held-out-subject split for the promoted candidate is the tracked leakage-mitigation follow-up.
 - **Stan maturation** *(supported)* — the Emax/Hill maturation covariate form now lowers to Stan with the same `log(cov^hill / (cov^hill + TM50^hill))` back-transform as nlmixr2; `capabilities.py` classifies `variability.covariate_maturation_form` as supported for both backends. BLQ M3/M4 left-censored likelihood lowering is present in the Stan emitter. (IOV is fully supported in Stan — non-centered occasion-indexed back-transform, `capabilities.py` classifies `variability.iov` as supported for both nlmixr2 and Stan.)
 - **TMDD QSS coverage** *(planned)* — Suite A5 now has benchmark coverage and the nlmixr2 emitter supports TMDD QSS, but automated enumeration/profiler support remains limited. Planned: late-slope-steepening (LSS) profiler signal, `tmdd_qss` enumerator wiring, default to pure-MM (3 params) with `parallel-linear + MM` only when the profiler detects a linear clearance component. `KSS = KD + kint / kon` canonicalisation remains research-branch.
 - **TimeVaryingElim decay forms**: the nlmixr2 emitter supports all three `decay_fn ∈ {exponential, half_life, linear}`. Stan-side lowering is exponential-only pending the same Stan-emitter follow-on.

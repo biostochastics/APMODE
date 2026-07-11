@@ -193,7 +193,6 @@ _FIXTURES_AVAILABLE = FIXTURE_DIR.is_dir() and all(
 )
 
 
-@pytest.mark.integration
 @pytest.mark.skipif(not _FIXTURES_AVAILABLE, reason="Suite A CSV fixtures not generated")
 class TestSuiteAIngestion:
     """Each Suite A CSV ingests and profiles correctly."""
@@ -220,7 +219,6 @@ class TestSuiteAIngestion:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.integration
 @pytest.mark.skipif(not _FIXTURES_AVAILABLE, reason="Suite A CSV fixtures not generated")
 class TestSuiteAStructureCoverage:
     """EvidenceManifest-driven search space includes the true model."""
@@ -323,7 +321,6 @@ class TestSuiteAStructureCoverage:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.integration
 class TestSuiteAParameterBias:
     """Mock-fit parameter estimates within 20% relative tolerance."""
 
@@ -354,7 +351,6 @@ class TestSuiteAParameterBias:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.integration
 class TestSuiteAGatePassage:
     """Correctly-fit models pass Gate 1 + Gate 2."""
 

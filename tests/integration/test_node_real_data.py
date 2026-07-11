@@ -11,7 +11,8 @@ Datasets:
 
 from __future__ import annotations
 
-import shutil
+import os
+import tempfile
 from pathlib import Path
 
 import jax
@@ -25,6 +26,7 @@ from apmode.backends.node_ode import HybridPKODE, ODEConfig
 from apmode.backends.node_runner import NodeBackendRunner
 from apmode.backends.node_trainer import TrainingConfig, train_node
 from apmode.bundle.models import ColumnMapping, DataManifest
+from apmode.data.datasets import fetch_dataset
 from apmode.dsl.ast_models import (
     DSLSpec,
     FirstOrder,
@@ -38,20 +40,12 @@ from apmode.dsl.ast_models import (
 # Helpers
 # ---------------------------------------------------------------------------
 
-_R_AVAILABLE = True
-try:
-    from apmode.data.datasets import fetch_dataset
-except ImportError:
-    _R_AVAILABLE = False
-
-# ``fetch_dataset`` imports cleanly without R, so the import check above
-# doesn't reflect actual runtime capability. Probe for the ``Rscript``
-# binary — CI runners without R fail deep inside ``subprocess.run``
-# otherwise.
-if _R_AVAILABLE and shutil.which("Rscript") is None:
-    _R_AVAILABLE = False
-
-DATA_DIR = Path("/tmp/apmode_node_integration_tests")
+# Dataset cache directory. Defaults to a unique per-run temp dir to avoid
+# cross-run pollution; override with ``APMODE_NODE_TEST_CACHE`` to reuse a
+# persistent cache across runs (e.g. to skip re-fetching from R).
+DATA_DIR = Path(
+    os.environ.get("APMODE_NODE_TEST_CACHE") or tempfile.mkdtemp(prefix="apmode_node_integration_")
+)
 
 
 def _theo_sd_path() -> Path:
@@ -117,18 +111,13 @@ def _make_node_spec(*, n_cmt: int = 1, model_id: str = "test_node") -> DSLSpec:
     )
 
 
-requires_r = pytest.mark.skipif(
-    not _R_AVAILABLE,
-    reason="R with nlmixr2data not available",
-)
-
-
 # ---------------------------------------------------------------------------
 # 1-cmt real data: theo_sd
 # ---------------------------------------------------------------------------
 
 
-@requires_r
+@pytest.mark.slow
+@pytest.mark.requires_r
 class TestTheoSDNodeFit:
     """NODE fit on theo_sd (12 subjects, 1-cmt, single dose, real data)."""
 
@@ -284,7 +273,8 @@ class TestTheoSDNodeFit:
 # ---------------------------------------------------------------------------
 
 
-@requires_r
+@pytest.mark.slow
+@pytest.mark.requires_r
 class TestOral2CPTMultiDose:
     """Oral_2CPT is multi-dose — NODE runner should load it with event support."""
 
@@ -386,7 +376,8 @@ class TestTwoCmtMockMode:
 # ---------------------------------------------------------------------------
 
 
-@requires_r
+@pytest.mark.slow
+@pytest.mark.requires_r
 class TestConstraintTemplatesRealData:
     """Test all constraint templates on real data shapes from theo_sd."""
 

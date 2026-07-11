@@ -137,7 +137,6 @@ def _make_mock_r_script(script_path: Path) -> None:
     )
 
 
-@pytest.mark.integration
 class TestEndToEndMockR:
     """Full pipeline integration test using a mock R subprocess."""
 
