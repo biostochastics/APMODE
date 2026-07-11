@@ -780,6 +780,14 @@ class Orchestrator:
 
                 emitter.write_backend_result(sr.result)
 
+                # Seal the NODE functional-distillation report (if the NODE
+                # runner produced one) so it lands in the bundle and is projected
+                # into RO-Crate by ``entities.distillation``. The fidelity result
+                # travels inside the report; fidelity-gated re-fit promotion of
+                # the distilled surrogate into Gate 3 is a tracked follow-up.
+                if sr.result.backend == "jax_node" and sr.result.distillation is not None:
+                    emitter.write_distillation_report(sr.result.distillation)
+
                 if sr.result.backend == "bayesian_stan":
                     self._emit_bayesian_sidecars(
                         sr=sr,

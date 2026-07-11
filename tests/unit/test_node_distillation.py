@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import jax
 import pytest
 from pydantic import BaseModel
@@ -299,3 +301,38 @@ class TestFidelityGate:
     def test_fails_when_surrogate_or_fidelity_missing(self) -> None:
         empty = DistillationReport(candidate_id="c", node_position="elimination")
         assert distillation_passes_fidelity(empty) is False
+
+
+class TestWriteDistillationReport:
+    """BundleEmitter seals a distillation report to distillation/<id>.json.
+
+    This is the method the orchestrator's NODE path calls (B1b seal), so the
+    projected RO-Crate File entity has a real artifact to point at.
+    """
+
+    def test_writes_report_to_bundle(self, tmp_path: Path) -> None:
+        import json
+
+        from apmode.bundle.emitter import BundleEmitter
+
+        emitter = BundleEmitter(tmp_path)
+        emitter.initialize()
+
+        report = DistillationReport(
+            candidate_id="node_1",
+            node_position="elimination",
+            surrogate=SurrogateResult(
+                surrogate_type="linear",
+                params={"slope": 0.0, "intercept": 0.05},
+                residual_ss=0.0,
+                r_squared=0.95,
+            ),
+        )
+        path = emitter.write_distillation_report(report)
+
+        assert path.exists()
+        assert path.parent.name == "distillation"
+        assert path.name == "node_1.json"
+        data = json.loads(path.read_text())
+        assert data["candidate_id"] == "node_1"
+        assert data["surrogate"]["surrogate_type"] == "linear"
