@@ -240,6 +240,32 @@ class TestCovariateEmission:
         )
         assert "beta_CL_SEX" in code
 
+    def test_maturation_covariate(self) -> None:
+        """Maturation (Hill/Emax) covariate lowers to Stan and mirrors the
+        nlmixr2 back-transform ``log(cov^hill / (cov^hill + TM50^hill))``
+        term with matching ``beta_``/``TM50_`` parameter naming."""
+        code = emit_stan(
+            _make_spec(
+                covariates=[
+                    CovariateLink(  # type: ignore[list-item]
+                        param="CL", covariate="AGE", form="maturation", tm50=45.0, hill=3.0
+                    )
+                ]
+            )
+        )
+        # Hill exponent coefficient + TM50 half-maturation parameter declared.
+        assert "real beta_CL_AGE;" in code
+        assert "real<lower=0> TM50_CL_AGE;" in code
+        # Back-transform term is mathematically identical to nlmixr2's
+        # log(AGE^beta / (AGE^beta + TM50^beta)) additive log-domain term.
+        assert (
+            " + log(AGE[i]^beta_CL_AGE / (AGE[i]^beta_CL_AGE + TM50_CL_AGE^beta_CL_AGE))"
+        ) in code
+        # Priors: beta centered on the Hill starting value, TM50 log-normal
+        # centered on the tm50 starting value.
+        assert "beta_CL_AGE ~ normal(3.0, 0.5);" in code
+        assert "TM50_CL_AGE ~ lognormal(3.8067, 0.5);" in code
+
 
 # ---------------------------------------------------------------------------
 # Initial estimates as informative priors
@@ -293,18 +319,6 @@ class TestStanEmitterErrors:
         )
         with pytest.raises(NotImplementedError, match="observations"):
             emit_stan(spec)
-
-    def test_rejects_maturation_covariate(self) -> None:
-        with pytest.raises(NotImplementedError, match=r"[Mm]aturation"):
-            emit_stan(
-                _make_spec(
-                    covariates=[
-                        CovariateLink(  # type: ignore[list-item]
-                            param="CL", covariate="AGE", form="maturation", tm50=45.0, hill=3.0
-                        )
-                    ]
-                )
-            )
 
 
 # ---------------------------------------------------------------------------

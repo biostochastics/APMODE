@@ -48,11 +48,17 @@ import argparse
 import json
 import os
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from pydantic import ValidationError
+
 from apmode.benchmarks.suite_c_phase1_scoring import (
+    DEFAULT_STALE_WARN_DAYS,
+    PROVENANCE_KEY,
     FixtureScore,
+    SuiteCPhase1Provenance,
     SuiteCPhase1Scorecard,
     aggregate_phase1_scorecard,
     score_fixture,
@@ -95,6 +101,11 @@ def _load_inputs(path: Path) -> dict[str, dict[str, object]]:
         raise TypeError(msg)
     out: dict[str, dict[str, object]] = {}
     for fid, payload in raw.items():
+        if fid == PROVENANCE_KEY:
+            # Reserved top-level provenance block — lifted out by
+            # _extract_provenance, not a fixture. Skip so it is never
+            # mis-parsed as a fixture entry.
+            continue
         if not isinstance(payload, dict):
             msg = f"inputs entry for fixture {fid!r} must be an object"
             raise TypeError(msg)
@@ -152,6 +163,40 @@ def _score_all(inputs: dict[str, dict[str, object]]) -> list[FixtureScore]:
 
 
 # ---------------------------------------------------------------------------
+# Provenance
+# ---------------------------------------------------------------------------
+
+
+def _extract_provenance(path: Path) -> SuiteCPhase1Provenance:
+    """Lift the reserved ``_provenance`` block out of the inputs file.
+
+    Fails loud (raises) when the block is absent: Suite C scoring runs over
+    a *static committed snapshot*, so a Markdown summary that omitted the
+    provenance signal could be mistaken for live validation. ``snapshot_source``
+    defaults to the inputs path when the block does not carry its own.
+    """
+    raw = json.loads(path.read_text())
+    if not isinstance(raw, dict):
+        msg = f"inputs JSON root must be an object, got {type(raw).__name__}"
+        raise TypeError(msg)
+    block = raw.get(PROVENANCE_KEY)
+    if block is None:
+        msg = (
+            f"inputs file {path} has no {PROVENANCE_KEY!r} block; refusing to render a "
+            "Markdown summary that could be mistaken for live validation. Add a "
+            f"{PROVENANCE_KEY!r} object with generated_at / snapshot_source / live_runner "
+            "(see benchmarks/suite_c/README.md)."
+        )
+        raise ValueError(msg)
+    if not isinstance(block, dict):
+        msg = f"{PROVENANCE_KEY!r} must be an object, got {type(block).__name__}"
+        raise TypeError(msg)
+    data: dict[str, object] = {str(k): v for k, v in block.items()}
+    data.setdefault("snapshot_source", str(path))
+    return SuiteCPhase1Provenance.model_validate(data)
+
+
+# ---------------------------------------------------------------------------
 # Markdown summary rendering
 # ---------------------------------------------------------------------------
 
@@ -166,13 +211,27 @@ def _format_pit_cell(calibration: object) -> str:
 def render_markdown_summary(
     card: SuiteCPhase1Scorecard,
     inputs: dict[str, dict[str, object]] | None = None,
+    *,
+    provenance: SuiteCPhase1Provenance | None = None,
+    stale_warn_days: float = DEFAULT_STALE_WARN_DAYS,
+    now: datetime | None = None,
 ) -> str:
     """Render the scorecard as a Markdown table + headline.
 
     Suitable for a PR description, an issue body, or a
-    ``$GITHUB_STEP_SUMMARY`` in an ad hoc CI invocation. Kept
-    deterministic (no timestamps) so the artifact diff is meaningful
-    run-to-run.
+    ``$GITHUB_STEP_SUMMARY`` in an ad hoc CI invocation. The table body
+    is kept deterministic (no wall-clock timestamps) so the artifact
+    diff is meaningful run-to-run; ``provenance`` timestamps come from
+    data, not :func:`datetime.now`.
+
+    ``provenance`` is **required** — passing ``None`` raises. Suite C
+    scoring runs over a static committed snapshot, so a summary rendered
+    without a provenance signal could be mistaken for live validation. A
+    prominent ``⚠ STALE / NON-LIVE SNAPSHOT`` banner is emitted whenever
+    the snapshot is non-live (``live_runner=False``) OR older than
+    ``stale_warn_days``; a fresh, live snapshot omits it. ``now`` is
+    injectable for deterministic tests (defaults to the current UTC time,
+    used only to decide whether to warn — never printed).
 
     ``inputs`` (the raw ``_load_inputs`` map) is optional and, when
     supplied, adds PIT/NPDE-lite calibration columns per fixture — this
@@ -181,7 +240,32 @@ def render_markdown_summary(
     Absent for inputs files written before this field existed, or when
     the caller doesn't have the raw inputs map on hand.
     """
+    if provenance is None:
+        msg = (
+            "render_markdown_summary requires provenance; refusing to render a Suite C "
+            "scorecard as if it were live validation. Pass a SuiteCPhase1Provenance "
+            "describing the snapshot (generated_at, snapshot_source, live_runner)."
+        )
+        raise ValueError(msg)
+
+    ref_now = now if now is not None else datetime.now(UTC)
+    stale_reason = provenance.staleness_reason(now=ref_now, stale_warn_days=stale_warn_days)
+
     lines: list[str] = ["# Suite C Phase-1 scorecard", ""]
+    if stale_reason is not None:
+        lines.extend(
+            [
+                "> ⚠ **STALE / NON-LIVE SNAPSHOT** — this scorecard was scored from a "
+                "static committed snapshot, not a live fit. Do NOT read it as live "
+                "validation.",
+                ">",
+                f"> Generated at `{provenance.generated_at}` · source "
+                f"`{provenance.snapshot_source}` · git `{provenance.git_sha or 'unknown'}` "
+                f"· live_runner `{provenance.live_runner}`.",
+                f"> Reason: {stale_reason}",
+                "",
+            ]
+        )
     if card.fraction_beats_literature_median is None:
         lines.append(
             f"**Fraction beating literature**: not computed "
@@ -260,6 +344,16 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--stale-warn-days",
+        type=float,
+        default=DEFAULT_STALE_WARN_DAYS,
+        help=(
+            "Age in days beyond which even a live snapshot is flagged as stale in "
+            f"the Markdown banner (default {DEFAULT_STALE_WARN_DAYS:g}). A non-live "
+            "snapshot (live_runner=false) always gets the banner regardless of age."
+        ),
+    )
+    parser.add_argument(
         "--fail-on-missed-gate",
         action="store_true",
         default=False,
@@ -297,8 +391,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     _atomic_write(args.out, card.model_dump_json(indent=2) + "\n")
 
     if args.markdown_summary is not None:
+        try:
+            provenance = _extract_provenance(args.inputs)
+        except (json.JSONDecodeError, TypeError, ValueError, ValidationError) as exc:
+            sys.stderr.write(f"error: cannot render Markdown summary: {exc}\n")
+            return 2
         args.markdown_summary.parent.mkdir(parents=True, exist_ok=True)
-        _atomic_write(args.markdown_summary, render_markdown_summary(card, inputs))
+        _atomic_write(
+            args.markdown_summary,
+            render_markdown_summary(
+                card,
+                inputs,
+                provenance=provenance,
+                stale_warn_days=args.stale_warn_days,
+            ),
+        )
 
     if args.fail_on_missed_gate and not card.passes_gate:
         sys.stderr.write("error: gate missed (passes_gate=false)\n")

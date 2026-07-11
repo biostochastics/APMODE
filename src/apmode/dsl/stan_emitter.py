@@ -14,11 +14,12 @@ IIV is modeled via log-normal random effects:
   theta_i = theta * exp(eta_i), eta_i ~ N(0, omega^2)
 
 NODE modules are not supported (Stan has no neural ODE support). BLQ M3/M4
-left-censored likelihoods and inter-occasion variability (IOV) are
-implemented. Maturation covariate links, multi-analyte observations, and
-selected nlmixr2-only absorption forms still raise ``NotImplementedError``.
-Correlated (block-structure) IIV — including an LKJ prior on ``corr_iiv`` —
-is not yet lowered; only diagonal IIV is supported.
+left-censored likelihoods, inter-occasion variability (IOV), and the
+maturation (Hill/Emax) covariate form are implemented — the last mirrors the
+nlmixr2 back-transform exactly. Multi-analyte observations and selected
+nlmixr2-only absorption forms still raise ``NotImplementedError``. Correlated
+(block-structure) IIV — including an LKJ prior on ``corr_iiv`` — is not yet
+lowered; only diagonal IIV is supported.
 """
 
 from __future__ import annotations
@@ -89,6 +90,7 @@ SUPPORTS: frozenset[CapabilityTag] = frozenset(
         CapabilityTag.VARIABILITY_IIV,
         CapabilityTag.VARIABILITY_IOV,
         CapabilityTag.VARIABILITY_COVARIATE_LINK,
+        CapabilityTag.VARIABILITY_COVARIATE_MATURATION_FORM,
         CapabilityTag.OBSERVATION_PROPORTIONAL,
         CapabilityTag.OBSERVATION_ADDITIVE,
         CapabilityTag.OBSERVATION_COMBINED,
@@ -113,7 +115,6 @@ EXPLICITLY_UNSUPPORTED: frozenset[CapabilityTag] = frozenset(
         # rejected explicitly below rather than silently emitting a
         # diagonal-only model.
         CapabilityTag.VARIABILITY_IIV_BLOCK_STRUCTURE,
-        CapabilityTag.VARIABILITY_COVARIATE_MATURATION_FORM,
         # Multi-analyte `observations:` requires per-endpoint data arrays,
         # likelihood terms, and log_lik accumulation.
         CapabilityTag.OBSERVATION_MULTI_ANALYTE,
@@ -136,9 +137,9 @@ def emit_stan(
         A Stan program string.
 
     Raises:
-        NotImplementedError: For NODE modules, maturation covariates,
-            multi-analyte observations, block (correlated) IIV structure, an
-            LKJ prior on ``corr_iiv``, or nlmixr2-only absorption forms.
+        NotImplementedError: For NODE modules, multi-analyte observations,
+            block (correlated) IIV structure, an LKJ prior on ``corr_iiv``,
+            or nlmixr2-only absorption forms.
     """
     if spec.has_node_modules():
         raise NotImplementedError(
@@ -574,6 +575,12 @@ def _emit_parameters_block(spec: DSLSpec) -> str:
         p = _sanitize_stan_name(cov.param, context="covariate-target parameter")
         c = _sanitize_stan_name(cov.covariate, context="covariate")
         lines.append(f"  real beta_{p}_{c};")
+        # Maturation carries a second estimated population parameter (TM50,
+        # the half-maturation point) alongside the Hill exponent (beta_*),
+        # matching the nlmixr2 ``TM50_{p}_{c}`` theta. Constrained positive
+        # since it is a covariate scale raised to a power.
+        if cov.form == "maturation":
+            lines.append(f"  real<lower=0> TM50_{p}_{c};")
 
     lines.append("}")
     return "\n".join(lines)
@@ -707,6 +714,17 @@ def _emit_model_block(
             lines.append(f"  {cov_target} ~ normal({cov.hill}, 0.5);")
         else:
             lines.append(f"  {cov_target} ~ normal(0, 1);")
+
+        # Maturation's second parameter (TM50) gets a positive-support
+        # log-normal prior centered on its declared starting value, unless
+        # the user overrode it via spec.priors.
+        if cov.form == "maturation":
+            tm50_target = f"TM50_{p}_{c}"
+            tm50_prior = _find_prior(spec.priors, tm50_target)
+            if tm50_prior is not None:
+                lines.extend(_emit_user_prior(tm50_target, tm50_prior.family, on_log_scale=False))
+            else:
+                lines.append(f"  {tm50_target} ~ lognormal({_log(cov.tm50 or 1.0):.4f}, 0.5);")
 
     # Sigma priors — user overrides handled inside _emit_sigma_priors.
     lines.extend(_emit_sigma_priors(spec))
@@ -923,10 +941,17 @@ def _covariate_expr(spec: DSLSpec, param: str, idx_var: str) -> str:
             elif v.form == "linear":
                 parts.append(f" + log(fmax(1e-6, 1 + {coeff} * {c}[{idx_var}]))")
             elif v.form == "maturation":
-                raise NotImplementedError(
-                    f"Maturation covariate form not yet supported in Stan codegen "
-                    f"(param={p}, covariate={c})."
-                )
+                # Hill/Emax maturation, mathematically identical to the
+                # nlmixr2 back-transform:
+                #   log(cov^hill / (cov^hill + TM50^hill))
+                # ``coeff`` (beta_{p}_{c}) is the Hill exponent and
+                # ``TM50_{p}_{c}`` the half-maturation point — same parameter
+                # naming the nlmixr2 emitter uses so the two backends stay in
+                # lockstep. The additive log-domain term composes with the
+                # exp() back-transform in _emit_transformed_parameters_block.
+                cov_ref = f"{c}[{idx_var}]"
+                tm50 = f"TM50_{p}_{c}"
+                parts.append(f" + log({cov_ref}^{coeff} / ({cov_ref}^{coeff} + {tm50}^{coeff}))")
     return "".join(parts)
 
 

@@ -1,4 +1,10 @@
 {
+  "_provenance": {
+    "generated_at": "2026-07-09T18:04:37-07:00",
+    "snapshot_source": "benchmarks/suite_c/phase1_npe_inputs.json",
+    "git_sha": "1af212409005bf170a7df5c5499050f6a65ef952",
+    "live_runner": false
+  },
   "mavoglurant_wendling_2015": {
     "n_folds": 5,
     "n_subjects": 120,

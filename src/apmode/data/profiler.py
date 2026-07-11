@@ -225,6 +225,7 @@ def profile_data(
     wn_ka = _wagner_nelson_ka_median(obs, doses, multi_dose=multi_dose)
     node_budget = _compute_node_dim_budget(obs, n_subjects, multi_dose=multi_dose)
     tad_flag = _assess_tad_consistency(obs, doses, multi_dose=multi_dose)
+    tmdd_screen = _screen_tmdd_saturable(obs, doses, multi_dose=multi_dose)
     per_subj_obs_counts = obs.groupby("NMID").size()
     subj_covs = _subject_covariate_first_values(df, manifest)
     richness = _classify_richness(obs, n_subjects, per_subj_counts=per_subj_obs_counts)
@@ -270,6 +271,7 @@ def profile_data(
         wagner_nelson_ka_median=wn_ka,
         node_dim_budget=node_budget,
         tad_consistency_flag=tad_flag,
+        tmdd_screen=tmdd_screen,
         n_non_pk_rows_dropped=n_non_pk_dropped,
     )
 
@@ -1459,6 +1461,42 @@ def _curvature_ratios_per_subject(
         if ls > 1e-6:
             ratios.append(es / ls)
     return ratios
+
+
+def _screen_tmdd_saturable(
+    obs: pd.DataFrame,
+    doses: pd.DataFrame,
+    *,
+    multi_dose: bool,
+) -> Literal["none", "possible", "unknown"]:
+    """Screen for saturable / TMDD elimination from concentration-time shape.
+
+    Target-mediated drug disposition (and other saturable-clearance profiles)
+    produce a concave-up log-concentration curve: the early post-Cmax decline
+    is *shallow* (target/enzyme saturated at high concentration → slow linear
+    elimination) while the terminal decline is *steep* (high-affinity
+    target-mediated clearance dominates once free drug drops below the binding
+    capacity). This is the inverse of the linear / two-compartment signature
+    (steep alpha, shallow beta → early/late slope ratio > 1).
+
+    Reuses the existing ``_curvature_ratios_per_subject`` statistic (median
+    early/late post-Cmax log-slope ratio) rather than inventing a new metric,
+    and votes ``possible`` when the population median falls BELOW
+    ``_NONLINEAR_TMDD_CURVATURE_RATIO`` (policies/profiler.json#/tmdd_curvature_ratio,
+    default 0.3). Requires ≥4 analyzable subjects to support a population
+    median — otherwise ``unknown``.
+
+    Decision is **advisory**: it surfaces a saturable-elimination candidate to
+    the structural search via the EvidenceManifest. Disqualification happens
+    downstream in the Lane Router / ranking layer, never here.
+    """
+    ratios = _curvature_ratios_per_subject(obs, doses, multi_dose=multi_dose)
+    if len(ratios) < 4:
+        return "unknown"
+    median_ratio = float(np.median(ratios))
+    if median_ratio < _NONLINEAR_TMDD_CURVATURE_RATIO:
+        return "possible"
+    return "none"
 
 
 def _assess_compartmentality(

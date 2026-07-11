@@ -44,6 +44,7 @@ can carry the fixture id + DOI + reference parameter set rather than
 from __future__ import annotations
 
 import math
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -81,6 +82,94 @@ floor for the same reason."""
 # ---------------------------------------------------------------------------
 # Schemas
 # ---------------------------------------------------------------------------
+
+
+PROVENANCE_KEY: str = "_provenance"
+"""Reserved top-level key in ``phase1_npe_inputs.json`` under which the
+:class:`SuiteCPhase1Provenance` block lives. Distinct from a ``fixture_id``
+so the inputs loader can lift it out before iterating fixtures. The scorer
+refuses to render a Markdown summary for an inputs file that omits it —
+otherwise a reader could mistake a stale committed snapshot for live
+validation (there is no scheduled CI job re-running Suite C; see
+``benchmarks/suite_c/README.md``)."""
+
+DEFAULT_STALE_WARN_DAYS: float = 30.0
+"""Age (in days) beyond which even a ``live_runner=True`` snapshot is
+flagged as stale in the Markdown banner. Overridable via the CLI
+``--stale-warn-days`` flag."""
+
+
+class SuiteCPhase1Provenance(BaseModel):
+    """Provenance for a Suite C Phase-1 NPE snapshot.
+
+    Suite C scoring is a manual/on-demand step over a **static committed
+    snapshot** (``benchmarks/suite_c/phase1_npe_inputs.json``); the earlier
+    weekly CI workflow was removed because it only re-scored the committed
+    JSON (pure arithmetic — no R, no ``nlmixr2``, no live fit), which created
+    a false impression of ongoing live validation. This block records the
+    trustworthiness signal a reader needs so a stale snapshot is never
+    mistaken for a fresh live run.
+
+    ``generated_at`` is an ISO-8601 timestamp **passed in as data** — the
+    scorer never calls :func:`datetime.now` at import or render time to
+    stamp it (that would defeat reproducible diffs). ``live_runner`` is
+    ``True`` only when the snapshot was produced by an actual live-fit run
+    of :mod:`apmode.benchmarks.suite_c_phase1_runner` (R + cmdstan), not by
+    re-scoring a committed file. ``git_sha`` optionally pins the commit the
+    snapshot was generated at. ``snapshot_source`` records the path the
+    values were read from.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    generated_at: str = Field(min_length=1)
+    snapshot_source: str = Field(min_length=1)
+    git_sha: str | None = None
+    live_runner: bool = False
+
+    @field_validator("generated_at")
+    @classmethod
+    def _check_iso8601(cls, v: str) -> str:
+        try:
+            datetime.fromisoformat(v)
+        except ValueError as exc:
+            msg = f"generated_at must be an ISO-8601 datetime string, got {v!r}"
+            raise ValueError(msg) from exc
+        return v
+
+    def _generated_at_utc(self) -> datetime:
+        dt = datetime.fromisoformat(self.generated_at)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        return dt
+
+    def age_days(self, *, now: datetime) -> float:
+        """Snapshot age in days relative to ``now``.
+
+        Both operands are coerced to UTC (a naive ``now`` or a naive
+        ``generated_at`` is treated as UTC) so the subtraction never raises
+        on mixed tz-awareness.
+        """
+        ref = now if now.tzinfo is not None else now.replace(tzinfo=UTC)
+        return (ref - self._generated_at_utc()).total_seconds() / 86400.0
+
+    def is_stale(self, *, now: datetime, stale_warn_days: float) -> bool:
+        """``True`` when the snapshot is non-live OR older than the threshold."""
+        return (not self.live_runner) or self.age_days(now=now) > stale_warn_days
+
+    def staleness_reason(self, *, now: datetime, stale_warn_days: float) -> str | None:
+        """Human-readable reason the banner should fire, or ``None`` if fresh+live.
+
+        Deterministic given the provenance data and ``stale_warn_days`` — the
+        ``now``-dependent age is used only to decide whether to warn, never
+        interpolated into the returned string, so Markdown output stays
+        stable run-to-run.
+        """
+        if not self.live_runner:
+            return "live_runner is false (scored from a static committed snapshot, not a live fit)"
+        if self.age_days(now=now) > stale_warn_days:
+            return f"snapshot age exceeds the {stale_warn_days:g}-day staleness threshold"
+        return None
 
 
 class FixtureScore(BaseModel):
@@ -286,9 +375,12 @@ def phase1_roster_dois() -> dict[str, str]:
 
 
 __all__ = [
+    "DEFAULT_STALE_WARN_DAYS",
     "PHASE1_FRACTION_BEATS_TARGET",
     "PHASE1_MIN_FIXTURES_FOR_AGGREGATE",
+    "PROVENANCE_KEY",
     "FixtureScore",
+    "SuiteCPhase1Provenance",
     "SuiteCPhase1Scorecard",
     "aggregate_phase1_scorecard",
     "phase1_roster_dois",

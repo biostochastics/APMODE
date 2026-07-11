@@ -965,6 +965,18 @@ class EvidenceManifest(BaseModel):
     # = multi-dose subjects exist but TIME is not aligned to dose events;
     # downstream shape-based heuristics should be down-weighted.
     tad_consistency_flag: Literal["clean", "contaminated", "unknown"] = "unknown"
+    # Saturable / TMDD-elimination screen (target-mediated drug disposition).
+    # ``possible`` when the population-median early/late post-Cmax log-slope
+    # ratio falls BELOW ``policies/profiler.json#/tmdd_curvature_ratio`` (0.3)
+    # — the concave-up log-profile signature of saturable clearance (shallow
+    # early decline while the target/enzyme is saturated, steep terminal
+    # decline once free drug drops and target-mediated clearance dominates).
+    # This inverts the linear/2-cmt signature (steep alpha, shallow beta →
+    # ratio > 1). ``unknown`` when fewer than 4 analyzable subjects. Advisory
+    # only — surfaces a saturable-elimination candidate to the structural
+    # search; disqualification lives downstream. Additive-optional (defaults
+    # to ``unknown``) so no manifest_schema_version bump is required.
+    tmdd_screen: Literal["none", "possible", "unknown"] = "unknown"
     # Filter audit (DVID non-PK row removal at profile_data entry).
     n_non_pk_rows_dropped: int = Field(default=0, ge=0)
 

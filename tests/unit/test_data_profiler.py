@@ -299,6 +299,102 @@ class TestNonlinearClearance:
         assert _detect_nonlinear_clearance(obs, doses) is False
 
 
+class TestTMDDScreen:
+    """Saturable / TMDD-elimination screening (curvature-ratio threshold).
+
+    TMDD (target-mediated drug disposition) and other saturable-clearance
+    profiles are concave-up in log-space: the early post-Cmax decline is
+    shallow (target/enzyme saturated at high concentration → slow linear
+    elimination) while the terminal decline is steep (high-affinity
+    target-mediated clearance dominates once free drug drops). This inverts
+    the linear/2-cmt signature (steep alpha, shallow beta). The screen flags
+    ``possible`` when the population-median early/late log-slope ratio falls
+    BELOW ``_NONLINEAR_TMDD_CURVATURE_RATIO`` (0.3).
+    """
+
+    @staticmethod
+    def _manifest(n_subjects: int) -> DataManifest:
+        return DataManifest(
+            data_sha256="0" * 64,
+            ingestion_format="nonmem_csv",
+            column_mapping=ColumnMapping(
+                subject_id="NMID",
+                time="TIME",
+                dv="DV",
+                evid="EVID",
+                amt="AMT",
+            ),
+            n_subjects=n_subjects,
+            n_observations=n_subjects,
+            n_doses=n_subjects,
+            covariates=[],
+        )
+
+    @staticmethod
+    def _build(
+        conc_of: object,
+        n_subj: int = 6,
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
+        import numpy as np
+
+        rng = np.random.default_rng(7)
+        times = [0.5, 1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 10.0]
+        obs_rows: list[dict[str, object]] = []
+        dose_rows: list[dict[str, object]] = []
+        for subj in range(1, n_subj + 1):
+            scale = float(rng.lognormal(0.0, 0.15))  # mild IIV
+            dose_rows.append(
+                {"NMID": subj, "TIME": 0.0, "DV": 0.0, "EVID": 1, "AMT": 100.0, "CMT": 1}
+            )
+            for t in times:
+                cp = scale * conc_of(t)  # type: ignore[operator]
+                obs_rows.append(
+                    {"NMID": subj, "TIME": t, "DV": float(cp), "EVID": 0, "AMT": 0.0, "CMT": 1}
+                )
+        return pd.DataFrame(obs_rows + dose_rows), pd.DataFrame([])
+
+    def test_saturable_profile_trips_screen(self) -> None:
+        import numpy as np
+
+        # Concave-up: shallow early decline, steep terminal decline.
+        def conc(t: float) -> float:
+            if t <= 4.0:
+                return float(10.0 * np.exp(-0.05 * t))  # shallow early
+            return float(10.0 * np.exp(-0.05 * 4.0) * np.exp(-0.6 * (t - 4.0)))  # steep late
+
+        df, _ = self._build(conc)
+        manifest = self._manifest(n_subjects=6)
+        em = profile_data(df, manifest)
+        assert em.tmdd_screen == "possible"
+
+    def test_linear_profile_does_not_trip_screen(self) -> None:
+        import numpy as np
+
+        # Monoexponential: early slope ≈ late slope → ratio ≈ 1 (> 0.3).
+        def conc(t: float) -> float:
+            return float(10.0 * np.exp(-0.2 * t))
+
+        df, _ = self._build(conc)
+        manifest = self._manifest(n_subjects=6)
+        em = profile_data(df, manifest)
+        assert em.tmdd_screen == "none"
+
+    def test_too_few_subjects_is_unknown(self) -> None:
+        import numpy as np
+
+        from apmode.data.profiler import _screen_tmdd_saturable
+
+        def conc(t: float) -> float:
+            if t <= 4.0:
+                return float(10.0 * np.exp(-0.05 * t))
+            return float(10.0 * np.exp(-0.05 * 4.0) * np.exp(-0.6 * (t - 4.0)))
+
+        df, _ = self._build(conc, n_subj=2)
+        obs = df[df["EVID"] == 0].copy()
+        doses = df[df["EVID"] == 1].copy()
+        assert _screen_tmdd_saturable(obs, doses, multi_dose=False) == "unknown"
+
+
 class TestSpearmanR:
     """Spearman rank correlation utility."""
 
