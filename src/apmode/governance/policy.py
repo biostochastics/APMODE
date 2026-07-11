@@ -552,6 +552,16 @@ class RiskGradingConfig(BaseModel):
 
     @model_validator(mode="after")
     def matrix_monotonic(self) -> Self:
+        if self.enabled:
+            expected = {"low", "medium", "high"}
+            if set(self.matrix) != expected or any(
+                set(row) != expected for row in self.matrix.values()
+            ):
+                msg = (
+                    "risk_grading.matrix must define a complete low/medium/high "
+                    "influence x consequence matrix when risk grading is enabled"
+                )
+                raise ValueError(msg)
         if not self.matrix:
             return self
         for influence in ("low", "medium", "high"):
@@ -626,6 +636,16 @@ class Gate25Config(BaseModel):
     ai_ml_transparency_required: bool = False
     risk_grading: RiskGradingConfig | None = None
     risk_grading_required: bool = False
+
+    @model_validator(mode="after")
+    def required_risk_grading_enabled(self) -> Self:
+        """A required risk-grading policy must provide an enabled config."""
+        if self.risk_grading_required and (
+            self.risk_grading is None or not self.risk_grading.enabled
+        ):
+            msg = "risk_grading_required=true requires gate2_5.risk_grading.enabled=true"
+            raise ValueError(msg)
+        return self
 
 
 class MissingDataPolicy(BaseModel):

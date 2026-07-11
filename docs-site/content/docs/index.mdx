@@ -1,0 +1,65 @@
+---
+title: What is APMODE?
+description: A governed meta-system that composes five population-PK modeling paradigms into a single, auditable model-discovery workflow.
+---
+
+APMODE — the **Adaptive Pharmacokinetic Model Discovery Engine** — is a governed
+meta-system that composes five population-PK modeling paradigms into a single
+discovery workflow. Pharmacometricians can evaluate classical, automated, neural,
+Bayesian, and hybrid approaches under one roof, held to consistent evidence
+standards.
+
+## Five paradigms, one pipeline
+
+| Paradigm | Backend | Role |
+| --- | --- | --- |
+| Classical NLME | nlmixr2 (R, SAEM/FOCEi) | Submission-lane primary |
+| Automated structural search | native | Evidence-driven, deterministic budget |
+| Bayesian PK | Stan / Torsten (cmdstanpy) | MCMC with prior-justification artifacts |
+| Hybrid mechanistic-NODE | JAX / Diffrax | Discovery only — never submission-eligible |
+| Agentic LLM construction | typed Formular transforms | Opt-in; discovery / optimization only |
+
+Each candidate is dispatched, evaluated, and ranked through **one unified
+governance funnel** — so results from different paradigms are comparable and
+auditable rather than apples-to-oranges.
+
+## What makes it different
+
+<Cards>
+  <Card title="Formular is the control surface" href="/docs/guide/formular-dsl">
+    Every model — classical, Bayesian, or neural — is written in Formular, a typed
+    PK DSL. Specs compile to a validated AST and lower to backend-specific code. The
+    agentic backend can only emit typed transforms, never raw code.
+  </Card>
+  <Card title="Governance is a gated funnel" href="/docs/guide/governance-reproducibility/gates">
+    Gate 1 (technical validity), Gate 2 (lane admissibility), Gate 2.5 (credibility),
+    and Gate 3 (cross-paradigm ranking) — disqualifying gates, not a weighted sum.
+    Thresholds are versioned policy artifacts.
+  </Card>
+  <Card title="Reproducibility is the unit of output" href="/docs/guide/governance-reproducibility/reproducibility-bundle">
+    Every run emits a sealed JSON bundle — data manifest, search trajectory, gate
+    decisions, candidate lineage DAG, compiled specs — so any result can be audited,
+    replayed, or exported as an RO-Crate.
+  </Card>
+  <Card title="Three lanes, not one loop" href="/docs/guide/concepts/lanes">
+    Submission, Discovery, and Translational Optimization are separate pipelines with
+    different admissible backends and evidence thresholds. NODE and agentic models are
+    never eligible for submission.
+  </Card>
+</Cards>
+
+## Start here
+
+<Cards>
+  <Card title="Installation" href="/docs/guide/getting-started/installation">
+    Install with uv, verify the toolchain, and check R / CmdStan / LLM keys.
+  </Card>
+  <Card title="Quickstart" href="/docs/guide/getting-started/quickstart">
+    A worked end-to-end run — from a public dataset to a readable regulatory report.
+  </Card>
+</Cards>
+
+<Callout type="info">
+  APMODE is free software under **GPL-2.0-or-later** (matching nlmixr2). The primary
+  engine is nlmixr2 (R); NONMEM and Pumas are optional adapters.
+</Callout>

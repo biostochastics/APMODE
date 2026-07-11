@@ -149,6 +149,15 @@ def _write_test_policy(tmp_path: Path) -> Path:
     return policy_path
 
 
+def _write_disabled_risk_grading_policy(tmp_path: Path) -> Path:
+    data = json.loads((POLICY_DIR / "discovery.json").read_text())
+    data["gate2_5"]["context_of_use_required"] = False
+    data["gate2_5"]["data_adequacy_required"] = False
+    policy_path = tmp_path / "discovery_risk_grading_disabled_test.json"
+    policy_path.write_text(json.dumps(data))
+    return policy_path
+
+
 def _build_manifest_and_data(tmp_path: Path) -> tuple[DataManifest, Path]:
     import pandas as pd
 
@@ -265,3 +274,26 @@ def test_orchestrator_risk_grading_absent_when_axes_unset(tmp_path: Path) -> Non
     assert rg_payload["risk_tier"] == "high"
     assert rg_payload["model_influence"] == "high"
     assert rg_payload["decision_consequence"] == "high"
+
+
+def test_orchestrator_does_not_emit_risk_report_when_policy_disabled(tmp_path: Path) -> None:
+    """A present but disabled risk_grading block is not an active report."""
+    from apmode.orchestrator import Orchestrator, RunConfig
+
+    nlmixr2 = MockNlmixr2Runner(bic=540.0)
+    config = RunConfig(
+        lane="discovery",
+        seed=42,
+        timeout_seconds=60,
+        policy_path=_write_disabled_risk_grading_policy(tmp_path),
+    )
+    orch = Orchestrator(runner=nlmixr2, bundle_base_dir=tmp_path, config=config)
+    manifest, data_path = _build_manifest_and_data(tmp_path)
+
+    import pandas as pd
+
+    df = pd.read_csv(data_path)
+    outcome = asyncio.run(orch.run(manifest, df, data_path))
+
+    assert outcome.recommended
+    assert not (outcome.bundle_dir / "risk_grading").exists()

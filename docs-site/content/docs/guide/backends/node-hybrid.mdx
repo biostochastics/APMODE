@@ -1,0 +1,263 @@
+---
+title: Hybrid Neural ODE Backend (NODE)
+description: Mechanistic-neural hybrid model discovery via JAX and Diffrax—flexible functional approximation with constrained interpretability.
+since: "0.6.0"
+---
+
+## Overview
+
+The NODE (neural ordinary differential equation) backend enables **hybrid mechanistic-neural** population PK modeling. It combines a pharmacologically interpretable mechanistic skeleton (compartments, absorption, elimination) with neural network sub-functions for complex relationships that classical parametric models cannot capture.
+
+- **Use case**: Data-driven absorption or elimination kinetics; flexible functional forms when classical compartmental assumptions underfit
+- **Technology**: JAX (autodiff) + Diffrax (ODE solvers) + Equinox (neural networks) + Optax (optimization)
+- **Training**: Pooled population NLL (no per-subject random effects yet; Laplace approximation planned)
+- **Lane eligibility**: Discovery and Optimization only (never Submission-eligible per PRD §3)
+- **Constraint templates**: 5 enumerated functional forms (monotone, saturable, bounded, etc.)
+
+<Callout type="warn">
+**Dosing support: oral + IV bolus/infusion (central compartment).** The NODE backend handles oral absorption, IV bolus, multi-dose regimens, and ADDL/II expansion. Zero-order constant-rate IV infusions (`RATE>0` or `DUR>0`) into the central compartment are integrated by the piecewise eager solver: overlapping and staggered infusions sum correctly, and a reset event terminates any ongoing infusion. Still rejected with a fail-loud error: infusions labelled into the absorption depot (`CMT=1`), steady-state rows (`SS != 0`), other-type events (`EVID=2`), and observations outside the central compartment. IV infusions must target central (`CMT=2`).
+
+**No posterior samples yet.** NODE posterior-predictive simulation is an inert stub returning `None`; Laplace-approximation random-effects draws are a Phase 3 completion item.
+</Callout>
+
+## How It Works
+
+```
+Formular spec (with NODE modules) → JAX HybridPKODE → Optax training → BackendResult
+```
+
+### Architecture
+
+A NODE model is a hybrid system:
+
+```
+        ┌─────────────────────────────┐
+        │  Mechanistic skeleton       │
+        │  (dose events, PK structure)│
+        └────────────┬────────────────┘
+                     │
+                ┌────▼────┐
+                │ Neural  │  ← NODE_Absorption
+                │networks │       NODE_Elimination
+                │ (JAX)   │
+                └────┬────┘
+                     │
+        ┌────────────▼────────────┐
+        │  Diffrax ODE solver     │
+        │  (Tsit5 adaptive)       │
+        └────────────┬────────────┘
+                     │
+         ┌───────────▼──────────────┐
+         │ Predicted concentrations │
+         │ + observation model      │
+         └───────────┬──────────────┘
+                     │
+        ┌────────────▼──────────────┐
+        │  Negative log-likelihood  │
+        │  (pooled population)      │
+        └──────────────────────────┘
+```
+
+The **mechanistic skeleton** defines compartments, absorption, and elimination routes. **Neural network modules** (`NODE_Absorption` or `NODE_Elimination`) learn nonlinear input-output mappings:
+
+- Input layer size = dim (e.g., dim=4 → 4-unit hidden layer)
+- Activation: tanh (smooth, bounded)
+- Output: single scalar (absorption rate, elimination rate, or saturable function)
+- Constraint template applied post-activation (monotone, bounded, etc.)
+
+### Training Loop (Optax + Adam)
+
+```python
+for epoch in range(max_epochs):
+    # Forward: solve ODE for all subjects with current weights
+    predicted_y = solve_ode(times, dose_events, current_weights)
+    
+    # Loss: negative log-likelihood (pooled population)
+    nll = -log_likelihood(predicted_y, observed_y)
+    
+    # Backprop: autodiff through ODE solver (implicit function theorem)
+    grads = jax.grad(nll)(current_weights)
+    
+    # Update: Adam step
+    current_weights, optimizer_state = optimizer.update(grads, current_weights, state)
+    
+    # Early stopping: if validation loss plateaus, stop
+    if not improving_for_patience_steps:
+        break
+```
+
+## Constraint Templates
+
+Neural network outputs are constrained by enumerated functional forms:
+
+| Template | Use | Formula | Example |
+|----------|-----|---------|---------|
+| **monotone_increasing** | Absorption with rising rate | tanh(z) for z ∈ [−5, 5] → f ∈ [−1, 1] | f = monotone_increasing(hidden) applies positive scaling |
+| **monotone_decreasing** | Elimination that decays over time | −tanh(z) | Useful for time-varying clearance |
+| **bounded_positive** | Always-positive function (e.g., volumes) | exp(tanh(z)) → f ∈ (0, ∞) | f = K · exp(network_output) |
+| **saturable** | Michaelis–Menten-like saturation | tanh(z) / (1 + tanh(z)²) → max output | Useful for dose-dependent nonlinearity |
+| **unconstrained_smooth** | Free smooth function | tanh (no additional constraints) | Maximum flexibility; discover complex forms |
+
+<Callout type="info">
+Constraints are post-hoc transformations applied to the raw neural network output. This preserves backpropagation while enforcing pharmacological structure. For example, a `bounded_positive` constraint passes the hidden unit through `exp(tanh(...))` to ensure positivity.
+</Callout>
+
+### Supported DSL Features
+
+| Feature | Support | Notes |
+|---------|---------|-------|
+| `NODE_Absorption(dim=4, constraint=monotone_increasing)` | ✅ Full | dim ∈ [1, 8] for Discovery; ≤4 for Optimization |
+| `NODE_Elimination(dim=4, constraint=bounded_positive)` | ✅ Full | Replaces Linear/MM/ParallelLinearMM |
+| Classical absorption/elimination modules | ✅ Full | Mixed: e.g., FirstOrder absorption + NODE elimination |
+| IIV (random effects) | ⚠ Pooled only | Per-subject RE currently not supported; Laplace post-hoc planned |
+| Multi-dose / infusion | ✅ Supported | Oral, IV bolus, multi-dose, ADDL/II, and zero-order central-compartment infusion (overlapping/staggered infusions sum). Depot (`CMT=1`) infusion, steady-state (`SS != 0`), and `EVID=2` events are rejected fail-loud |
+| Covariates | ⚠ Not yet | NODE modules cannot directly encode covariate effects in v0.6.1-rc2 |
+
+## Training Configuration
+
+NODE training is controlled by `TrainingConfig`:
+
+| Parameter | Default | Purpose |
+|-----------|---------|---------|
+| `max_epochs` | 500 | Maximum training iterations (early stopping may terminate early) |
+| `learning_rate` | 1e-3 | Adam learning rate |
+| `early_stopping_patience` | 20 | Stop if validation loss doesn't improve for N epochs |
+| `weight_decay` | 1e-5 | L2 regularization on network weights |
+| `batch_size` | None | Process all subjects per epoch (full-batch training) |
+
+## Initial Estimates & Transfer Learning
+
+NODE weights are initialized from a **pre-trained weight library** or **transfer from classical fits**:
+
+1. If a classical NLME parent model exists (warm-start children), inherit its fitted parameters for the mechanistic parts
+2. NODE network weights: Initialize from small random Gaussian (scaled by dim)
+3. Optionally apply transfer learning: Clone architecture and weights from a similar previously-trained NODE model
+
+The initialization strategy dramatically affects convergence. Starting from near-zero classical parameters is faster than training from random initialization.
+
+## Gate 1 Evaluation
+
+NODE fits pass the same Gate 1 checks as classical models:
+
+| Check | Status | Notes |
+|-------|--------|-------|
+| Convergence | ✅ Validated | Training loss plateau + early stopping |
+| PIT calibration | ✅ Validated | Posterior-predictive coverage (p ∈ \{0.05, 0.50, 0.95\}) |
+| Shrinkage | N/A | No random effects parameters (pooled training) |
+| CWRES | ⚠ Limited | Available if posterior-predictive sims present |
+
+<Callout type="warn">
+NODE posterior-predictive simulation is currently a stub; `sample_posterior_predictive()` returns `None`. This means NODE candidates do not emit CWRES or NPE diagnostics yet, which impacts Gate 1 pass rates. Laplace random-effects sampling is a Phase 3 completion item.
+</Callout>
+
+## Functional Distillation & Interpretability
+
+After NODE training converges, the learned neural sub-function can be **distilled** into interpretable parametric surrogates:
+
+### Post-Hoc Surrogate Fitting
+
+The trained NODE module's input-output mapping is approximated by a classical parametric function:
+
+```python
+# After training
+learned_function = lambda x: node_weights.apply(x)
+
+# Fit a Michaelis–Menten surrogate to the learned function
+def mmenten(x, params):
+    Vmax, Km = params
+    return Vmax * x / (Km + x)
+
+# Minimize: integral of (learned_function(x) - mmenten(x, params))²
+optimal_params = fit_surrogate(learned_function, mmenten, x_range=[0, 100])
+```
+
+This produces:
+- **Fitted Vmax, Km** that mimic the learned function
+- **Fidelity score**: MSE between learned and surrogate on held-out points
+- **Visual comparison**: Plot both curves for reviewer inspection
+
+The distilled parameters live in the `DiagnosticBundle.diagnostic_plots` and credibility report so reviewers can understand what the network learned.
+
+### Functional Visualization
+
+NODE networks are visualized as input-output curves:
+
+1. Evaluate the trained module over a grid of inputs (e.g., dose 1–1000 mg)
+2. Plot the learned function vs. classical alternatives (linear, MM, power-law)
+3. Shade uncertainty (if Laplace sampling is present)
+
+This helps reviewers see **where** NODE provides value (e.g., "inflection at high doses suggests two-phase kinetics") and where it agrees with classical forms.
+
+## Lane Constraints
+
+| Lane | Eligible | Dimension Cap | Requirements |
+|------|----------|----------------|--------------|
+| **Submission** | ❌ Never | N/A | Hard rule: NODE excluded by policy |
+| **Discovery** | ✅ Yes | dim ≤ 8 | Evidence Manifest must not block (data richness ≥ moderate, n_subjects ≥ 20) |
+| **Optimization** | ✅ Yes (LORO-CV) | dim ≤ 4 | LORO-CV Gate 2 requires predictive parity on held-out regimens |
+
+<Callout type="warn">
+The **Submission lane excludes NODE entirely**, regardless of fit quality. This is a governance decision (PRD §3), not a technical limitation. The classical and Bayesian backends are the regulatory standard for population PK.
+</Callout>
+
+## Reproducibility
+
+NODE fits are reproducible within the same JAX version (CPU-only):
+
+- **Seed escrowed**: `seed_registry.json` in the bundle
+- **JAX platform locked**: CPU-only (GPU is non-deterministic even with fixed seeds)
+- **Weight snapshots**: Fitted network weights saved as `.eqx` (Equinox) serialized models
+- **Training log**: Per-epoch loss, early-stopping trigger point
+
+Re-running the same bundle on a different machine with the same JAX/Diffrax versions produces bit-identical training trajectories.
+
+## Example: Oral Absorption with NODE
+
+```bash
+# NODE discovery on a dataset with complex absorption
+uv sync --extra node  # Install JAX/Diffrax/Equinox
+
+uv run apmode run ./data/complex_absorption.csv \
+  --lane discovery \
+  --parallel-models 2 \
+  -o ./runs
+```
+
+The discovery pipeline will generate candidates including:
+
+- Classical: FirstOrder, Transit, LaggedFirstOrder variants
+- **NODE**: NODE_Absorption(dim=4, constraint=monotone_increasing) with 1/2/3-cmt distribution
+- Automated search will rank them by BIC / cross-paradigm VPC/NPE
+
+If the best NODE candidate passes Gate 1 and Gate 2, inspect its learned absorption rate:
+
+```bash
+uv run apmode inspect $BUNDLE | grep -A 10 "NODE_Absorption"
+
+# Check the distilled surrogate in the credibility report
+uv run apmode report $BUNDLE --format md | grep -A 5 "Functional distillation"
+```
+
+---
+
+## Troubleshooting
+
+### NODE candidate fails to converge (training loss plateaus high)
+
+- **Likely cause**: Initialization from poor classical parameters; network dimension too large for the data
+- **Solution**: Reduce `dim` (try dim=2 or dim=3), ensure precursor classical fit converges, or increase `max_epochs`
+
+### InvalidSpec error on IV / infusion data
+
+- **Now supported**: IV bolus and zero-order infusion into the central compartment (`CMT=2`) are integrated by the piecewise eager solver, alongside oral absorption and multi-dose/ADDL/II regimens.
+- **Still rejected fail-loud**: infusions labelled into the absorption depot (`CMT=1`), steady-state rows (`SS != 0`), other-type events (`EVID=2`), and observations outside the central compartment.
+- **Fix**: label IV infusions as central (`CMT=2`) — a depot-labelled infusion is absorption-delayed and materially wrong. For steady-state or `EVID=2` regimens, use the classical NLME backend.
+
+### Memory explosion on large datasets
+
+- **Cause**: JAX materializes ODE solutions for all subjects in one batch
+- **Solution**: Subset to ~50 subjects, or wait for JAX vmap optimization (Phase 3 follow-on)
+
+---
+
+**See also**: [Classical NLME Backend](/docs/guide/backends/nlmixr2) for the regulatory standard; [Bayesian Backend](/docs/guide/backends/bayesian-stan) for full posterior inference; [Agentic LLM](/docs/guide/backends/agentic-llm) for automated refinement via typed DSL transforms.

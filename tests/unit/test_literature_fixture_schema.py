@@ -28,7 +28,7 @@ import pytest
 from apmode.benchmarks.models import LiteratureFixture, LiteratureReference
 
 _VALID_DOI = "10.1007/s10928-018-9588-7"
-_LONG_CITATION = "Germovsek et al. (2017) AAC 61(8):e00481-17"
+_LONG_CITATION = "Germovsek et al. (2016) AAC 60(8):4869-4877"
 _LONG_POPULATION = "205 neonates, gestational age 24-42 weeks, post-natal age 0-30 days"
 
 

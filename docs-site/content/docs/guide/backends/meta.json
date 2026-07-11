@@ -1,0 +1,5 @@
+{
+  "title": "Backends",
+  "icon": "Cpu",
+  "pages": ["index", "nlmixr2", "bayesian-stan", "node-hybrid", "agentic-llm"]
+}

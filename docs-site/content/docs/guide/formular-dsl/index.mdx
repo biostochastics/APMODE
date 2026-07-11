@@ -1,0 +1,110 @@
+---
+title: Formular DSL
+description: A typed domain-specific language for population PK models — the single source of truth for model structure across every APMODE backend.
+since: "0.6.1"
+---
+
+Formular is a typed domain-specific language for specifying population
+pharmacokinetic models. It is the single source of truth for model structure in
+APMODE: every model — whether dispatched to nlmixr2 (R), Stan/Torsten, or a
+neural-ODE backend (JAX/Diffrax) — is expressed as a Formular specification,
+compiled to a typed AST, validated against pharmacometric constraints, and lowered
+to backend-specific code.
+
+The name evokes *formulary* (pharmacy) and *formula* (mathematics). The language is
+deliberately constrained: it captures what a pharmacometrician would write on a
+whiteboard, not what a programmer would write in R or Python.
+
+## Why a dedicated language?
+
+<Cards>
+  <Card title="Safety boundary for agentic AI">
+    The agentic LLM backend operates exclusively through a fixed set of typed Formular
+    transforms — it cannot emit raw code. Every proposed change is a typed AST operation
+    the validator can accept or reject before compilation.
+  </Card>
+  <Card title="Backend independence">
+    A single spec lowers to nlmixr2 R code, Stan programs, or JAX/Diffrax NODE
+    configurations. Adding a backend means writing a new emitter, not redesigning the
+    model specification.
+  </Card>
+  <Card title="Reproducibility">
+    The compiled <code>DSLSpec</code> is the serializable unit stored under
+    <code>compiled_specs/</code> in every run bundle. Any candidate can be reconstructed
+    from its AST without re-running the search.
+  </Card>
+  <Card title="Constraint enforcement">
+    Pharmacometric constraints (volumes &gt; 0, rates &gt; 0, NODE dimensions within lane
+    ceilings, prior-family admissibility) are enforced at the language level, before any
+    backend code is generated.
+  </Card>
+</Cards>
+
+## Shape of a specification
+
+Formular's top-level blocks may appear **in any order**. `absorption`,
+`distribution`, `elimination`, and `observation` are each required exactly once;
+`variability` may appear zero or more times; `metadata`, `initial`, `covariates`,
+`priors`, and `units` are optional.
+
+**Structural declarations name calibration parameters _without_ values** — e.g.
+`absorption: FirstOrder(ka)`, `elimination: Linear(CL)`. Every calibration value lives
+in exactly one place: the top-level `initial: { ... }` block. This split — structure
+vs. calibration — is the central design rule of the grammar.
+
+```text
+model {
+    metadata:     { title = "..." }              # optional, ≤ 1
+    absorption:   FirstOrder(ka)                  # exactly 1 — structure only
+    distribution: OneCmt(V)                       # exactly 1 — structure only
+    elimination:  Linear(CL)                      # exactly 1 — structure only
+    variability:  { IIV(params=[CL, V], structure=diagonal) }  # 0 or more
+    covariates:   { CL <- WT.power(theta=0.75, ref=70) }       # optional, ≤ 1
+    observation:  Proportional(sigma_prop=0.1)    # exactly 1
+    initial:      { ka = 1.0, V = 30.0, CL = 2.0 }             # optional, ≤ 1 — all calibration values
+}
+```
+
+A **seventh semantic axis**, `priors`, is carried on the compiled `DSLSpec` — declared
+in Formular text, set via the `SetPrior` transform, or defaulted by the Bayesian
+pipeline. See [Priors](/docs/guide/formular-dsl/priors).
+
+## Compilation pipeline
+
+```text
+Formular text
+     │  Lark parser (Earley, 10 KB length guard)
+     ▼
+DSLTransformer ──► DSLSpec  (typed Pydantic AST)
+     │  validate_dsl(spec, lane=<Lane>)  — lane-aware semantic checks
+     ▼
+Backend emitter
+     ├─► emit_nlmixr2(spec)   → R code (nlmixr2 / rxode2)
+     ├─► emit_stan(spec)      → Stan program
+     └─► node runner          → JAX/Diffrax (consumes NODE modules directly)
+```
+
+`compile_dsl` is parse + AST only — it does **not** run lane-aware semantic checks.
+The orchestrator calls `validate_dsl(spec, lane=…)` separately, so the lane can be
+varied without recompiling.
+
+## In this section
+
+<Cards>
+  <Card title="Grammar" href="/docs/guide/formular-dsl/grammar">
+    Every block and module: absorption, distribution, elimination, variability,
+    covariates, observation, metadata, initial.
+  </Card>
+  <Card title="Semantics" href="/docs/guide/formular-dsl/semantics">
+    Validation rules and how one spec lowers to three backends.
+  </Card>
+  <Card title="Priors" href="/docs/guide/formular-dsl/priors">
+    The seventh axis: prior families, target taxonomy, and FDA-aligned provenance.
+  </Card>
+  <Card title="Transforms" href="/docs/guide/formular-dsl/transforms">
+    The 10 typed mutations — the agentic backend's only output type.
+  </Card>
+  <Card title="Error codes" href="/docs/guide/formular-dsl/error-codes">
+    The FRM-* diagnostic registry.
+  </Card>
+</Cards>

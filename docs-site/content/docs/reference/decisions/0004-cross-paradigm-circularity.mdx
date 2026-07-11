@@ -1,0 +1,170 @@
+---
+title: "ADR 0004: Cross-Paradigm Simulation-Metric Circularity Risk"
+description: An unresolved circularity risk in Gate 3 cross-paradigm ranking, documented and tracked.
+since: "0.6.1"
+---
+
+## Summary
+
+APMODE's Gate 3 (cross-paradigm ranking) disables likelihood-based metrics (NLPD/BIC) because different observation models produce likelihoods on incomparable scales. Instead, it ranks on **simulation metrics: VPC (visual predictive check) concordance, NPE (nonparametric prediction error), and AUC/Cmax bioequivalence**. All three are computed by asking: "How well does this candidate's *own* simulator, run forward from its fitted parameters, reproduce the observed data?"
+
+This document identifies a potential circularity: if the ground-truth data-generating process (DGP) structurally resembles one paradigm's simulator more than another's, that paradigm may show unfair advantage on simulation metrics through no fault of its modeling quality. **Status**: This risk is *unresolved, not disproven*. It is documented, tracked with an observability check, and tied to a clear re-evaluation trigger.
+
+---
+
+## Context: Why Likelihood-Scale Metrics Are Excluded
+
+Different paradigms use different observation models:
+- **Classical NLME** (nlmixr2): Gaussian likelihood (proportional/additive/combined error)
+- **NODE** (hybrid mechanistic): Often proportional error on ODE solution
+- **Bayesian** (Stan/Torsten): Gaussian or Student-t likelihood with explicit prior structure
+
+A classical fit yields `NLPD_classical = -2·log(L_proportional_gaussian)`.
+A NODE fit yields `NLPD_node = -2·log(L_node_specific)`.
+
+These are on **different numeric scales** — comparing them directly (e.g., "classical NLPD = 1200, NODE NLPD = 1100, therefore NODE is better") is invalid. This is the problem ADR 0004 solves by switching to simulation metrics.
+
+---
+
+## The Circularity Risk Identified
+
+**Stated precisely:** VPC, NPE, and AUC/Cmax are all *self-referential* — a candidate C is scored by asking "how well does C's own simulator reproduce C's fitted parameters against the observed data C was fit to?" 
+
+If the Suite A/B/C ground-truth data-generating process (DGP) **structurally resembles one paradigm's simulator more than another's**, then:
+- A classical NLME simulator (which literally solves the ODE that generated the data) will produce tighter VPC bands and lower NPE
+- A NODE simulator (whose learned dynamics only *approximate* the ODE, not reproduce it exactly) will inherently show larger residual spread
+
+This bias would have **nothing to do with which candidate would actually generalize to new data** — it is purely a consequence of structural simulator-DGP alignment.
+
+### Example
+
+Suppose the DGP is a simple 1-compartment oral model with first-order kinetics: `dC/dt = -CL/V·C` (closed form available).
+
+- **Classical fit**: estimates CL, V from data; simulator solves the exact 1-cmt ODE
+- **NODE fit**: learns a neural ODE that outputs a function approximating `dC/dt`
+
+Under identical true parameters:
+- Classical: simulations overlay the known ODE solution exactly
+- NODE: simulations depend on network convergence; even perfectly trained, numerical integration error accumulates
+
+NODE's higher NPE here is not evidence that classical modeling is superior — it reflects that both simulators are solving the same governing equations, but the classical solver has access to the closed form (no integration error), whereas NODE approximates. This is a trivial numerical-method bias, not a bias inherent to the paradigm.
+
+---
+
+## Why This Differs from the NLPD-Scale Problem
+
+**NLPD incomparability (decided elsewhere)**:
+- Different observation models → different likelihood scales
+- Solved by: disabling likelihood-based ranking, switching to simulation metrics
+
+**Simulation-metric circularity (this ADR)**:
+- Different simulator structural forms → potential paradigm-correlated bias in self-referential metrics
+- Solved by: this document explains the risk, reports an empirical check on a narrow case, and defines a re-evaluation trigger for the broader case
+
+---
+
+## Decision: Keep Simulation Metrics, Add Observability
+
+**Chosen approach**: Continue using VPC/NPE/AUC-Cmax as Gate 3's default cross-paradigm metrics. Add an observability check without gating.
+
+**Rationale**:
+
+1. **No viable alternative today.** Likelihood-scale metrics are excluded (NLPD incomparability — already settled). There is no third metric family in the codebase that avoids both problems simultaneously. Abandoning simulation metrics would be regression, not progress.
+
+2. **Empirical check on narrow case (passing).**
+   - Scenario A1 from Suite A: 1-cmt oral with known parameters `ka=1.5, V=70, CL=5`
+   - DGP: closed-form solution (true ground truth)
+   - Simulator path 1: closed-form solution (standing in for classical)
+   - Simulator path 2: fixed-step RK4 ODE integration (standing in for NODE-style forward pass)
+   - Observed data: generated from closed-form solution
+   - Composite scoring: weighted sum or Borda rank
+   - Result: score gap between paradigms **within documented tolerance** (`weighted_sum` delta ≤ 0.05; Borda-rank distance ≤ 1)
+   
+   This is evidence *against* a trivial numerical-integration-method bias, but it does **NOT** rule out the harder case: a simulator whose *structural form* differs from the DGP (e.g., NODE that learns nonlinear dynamics the classical ODE does not represent).
+
+3. **Observability upgrade.** Downgrading this decision from "we assume simulation metrics are fine" to "we tested the narrow case and it's fine; the broad case is flagged and unresolved" converts an implicit assumption into an auditable, re-testable claim with a named gap. This is itself an improvement.
+
+---
+
+## Observability Check: `paradigm_metric_spread`
+
+When Gate 3 survivors span **≥ 2 backends** (e.g., nlmixr2 classical + Stan Bayesian), the gate now emits a `paradigm_metric_spread` check:
+
+```json
+{
+  "gate_id": "gate3_cross_paradigm",
+  "passed": true,
+  "checks": [
+    {
+      "name": "paradigm_metric_spread",
+      "description": "Classical best_score=0.92, Bayesian best_score=0.88, delta=0.04",
+      "passed": true,
+      "details": {
+        "classical_best_score": 0.92,
+        "bayesian_best_score": 0.88,
+        "spread": 0.04,
+        "backend_breakdown": {
+          "nlmixr2": 0.92,
+          "stan": 0.88
+        }
+      }
+    }
+  ]
+}
+```
+
+**Unconditionally passes** — this is observability, not a gate. If a future re-evaluation *does* find paradigm-correlated bias, the threshold for flagging it must land in `policies/*.json` (no bare numeric literals in governance code), not inline.
+
+---
+
+## Status: Unresolved
+
+**What we know**:
+- NLPD incomparability → likelihood excluded ✓ (settled in Gate 3 design)
+- Narrow case (identical parameters, numerically distinct but structurally identical solvers) → no material bias ✓ (empirically tested)
+
+**What remains open**:
+- Broad case: DGP with mechanistic nonlinearity (e.g., saturable binding, non-MM elimination) that *no current backend's simulator matches natively* — would NODE or classical show systematic advantage on VPC/NPE/AUC-Cmax independent of held-out predictive accuracy?
+
+This is the **re-evaluation trigger** below.
+
+---
+
+## Re-Evaluation Trigger
+
+**Build a DGP-blind holdout scenario.** Create a Suite A/B-style synthetic benchmark where:
+
+1. The ground-truth **DGP has a mechanistic feature no current backend matches exactly**
+   - Example: saturable protein binding with non-Michaelis-Menten kinetics
+   - Neither classical closed-form/ODE nor Bräm-style hybrid NODE was designed to represent this natively
+
+2. Fit the benchmark data with each backend (classical nlmixr2, NODE, Bayesian Stan)
+
+3. **Score via Gate 3 cross-paradigm ranking** (VPC/NPE/AUC-Cmax)
+
+4. **Measure true held-out predictive accuracy** independently (genuine test split, per the `test_data_path` + `fixed_parameter` LORO-CV contract documented in CLAUDE.md)
+
+5. **Check for paradigm-correlated bias**: Does one paradigm systematically win on simulation metrics independent of true held-out accuracy?
+
+**If systematic bias is found**: Decision D (keep simulation metrics) must be revisited:
+- Option A: Add a paradigm-neutral correction term
+- Option B: Restrict cross-paradigm ranking to lanes that explicitly accept the residual circularity risk
+- Option C: Develop a new metric family (long-term research)
+
+**Current status of this scenario**: Does not exist yet. Suite B has real-data structural-mismatch anchors (e.g., `b10_bolus_1cptmm_mismatch`) but lacks a known ground-truth DGP. This specific scenario is out of scope for this ADR and not currently scheduled.
+
+---
+
+## References
+
+- Comets E, Brendel K, Mentré F. (2008). Comparison of nonlinear mixed-effects modeling software for pharmacokinetic data. *Comp Meth Prog Biomed* 90:154–166. [doi:10.1016/j.cmpb.2007.12.002](https://doi.org/10.1016/j.cmpb.2007.12.002)
+- Vehtari A, Gelman A, Gabry J. (2017). Practical Bayesian model evaluation using leave-one-out cross-validation and WAIC. *Stat Comput* 27:1413–1432.
+
+---
+
+## See Also
+
+- [ADR 0003: SOTA Absorption Extension](/docs/reference/decisions/0003-sota-absorption) — how absorption forms are compared within paradigm (NLPD protocol)
+- [Suite A Benchmark](/docs/reference/benchmarks/suite-a) — scenarios for testing this decision
+- [Suite B Benchmark](/docs/reference/benchmarks/suite-b) — structural mismatch anchors
+- [Gate 3 Ranking Policy](../../../guide/governance-reproducibility) — cross-paradigm ranking details

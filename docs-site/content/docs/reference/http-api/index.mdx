@@ -1,0 +1,627 @@
+---
+title: HTTP API Reference
+description: FastAPI-based HTTP interface for APMODE model discovery runs.
+since: "0.6.1"
+---
+
+## Overview
+
+The APMODE HTTP API provides a programmatic interface to the model discovery pipeline, allowing you to submit runs, query status, download results, and cancel jobs. The API is built on FastAPI with Uvicorn and ships as an optional feature.
+
+**Install API extras:**
+```bash
+uv sync --extra api  # Installs FastAPI + Uvicorn + aiosqlite
+```
+
+**Start the server:**
+```bash
+uv run apmode serve  # Defaults to 127.0.0.1:8765 (loopback)
+```
+
+---
+
+## Deployment Models
+
+### Development: Loopback (SSH tunnel)
+
+The default loopback binding is ideal for single-user and lab-network use:
+
+```bash
+# On the remote machine
+uv run apmode serve --runs-dir /scratch/apmode-runs
+
+# On your local machine, tunnel the connection
+ssh -L 8765:127.0.0.1:8765 remote-box
+
+# From your local machine, the API is available at http://127.0.0.1:8765
+curl http://127.0.0.1:8765/healthz
+```
+
+**No API key required** for loopback deployments. The bundled data may contain sensitive information (patient data, dosing schedules), so loopback + SSH tunnel keeps access to the machine owner.
+
+### Production: Public deployment
+
+Binding to a non-loopback address requires **all three** of the following:
+
+1. **`--allow-public` flag** — Acknowledges the deployment model
+2. **`APMODE_API_KEY` environment variable** — A static API key (e.g., `export APMODE_API_KEY=$(python -c 'import secrets; print(secrets.token_urlsafe(32))')`)
+3. **`--dataset-root PATH`** — Confines `POST /runs` dataset uploads to this directory
+
+Even with these safeguards, **always front a public API with:**
+- A TLS-terminating reverse proxy (nginx, Traefik, Cloudflare, etc.)
+- User-level authentication (OAuth2, mTLS, API key manager)
+- Per-bundle access control (restrict which users can see which runs)
+
+<Callout type="error">
+The static API key is a **floor, not a complete security model**. The `APMODE_API_KEY` environment variable is verified per-request via `hmac.compare_digest` to prevent timing attacks, but a public deployment needs layers of authentication and data isolation on top.
+</Callout>
+
+**Example public deployment (development only — do not replicate in production):**
+```bash
+export APMODE_API_KEY=$(python -c 'import secrets; print(secrets.token_urlsafe(32))')
+uv run apmode serve \
+  --host 0.0.0.0 \
+  --port 8765 \
+  --allow-public \
+  --dataset-root /scratch/apmode-data \
+  --runs-dir /scratch/apmode-runs
+
+# From a remote client:
+curl -H "X-API-Key: $APMODE_API_KEY" http://your-server:8765/healthz
+```
+
+---
+
+## Server Options
+
+```bash
+apmode serve [OPTIONS]
+```
+
+| Option | Type | Default | Notes |
+|--------|------|---------|-------|
+| `--host` | TEXT | 127.0.0.1 | Bind address (loopback default) |
+| `--port` | INT (1–65535) | 8765 | TCP port |
+| `--runs-dir` | PATH | runs | Bundle output directory |
+| `--db-path` | PATH | runs/.apmode_runs.sqlite3 | SQLite registry path |
+| `--allow-public` | flag | — | Required for non-loopback hosts |
+| `--allow-bayesian` | flag | — | Enable bayesian_stan backend in requests |
+| `--dataset-root` | PATH | — | Required with `--allow-public`; confines dataset paths |
+| `--timeout-graceful-shutdown` | INT (1–600) | 30 | Graceful shutdown timeout (seconds) |
+| `--log-level` | TEXT | info | uvicorn log level: debug, info, warning, error |
+
+---
+
+## Authentication
+
+### No authentication (loopback only)
+
+Loopback deployments do not require authentication:
+
+```bash
+curl http://127.0.0.1:8765/healthz
+```
+
+### API key authentication (required for public deployments)
+
+All endpoints except `/healthz` require the `X-API-Key` header when `APMODE_API_KEY` is set:
+
+```bash
+curl -H "X-API-Key: $APMODE_API_KEY" \
+  -X POST http://your-server:8765/runs \
+  -H "Content-Type: application/json" \
+  -d '{"dataset_path": "data/theo_sd.csv", "lane": "discovery"}'
+```
+
+The server verifies the key using `hmac.compare_digest()` to prevent timing-oracle attacks.
+
+---
+
+## Endpoints
+
+### `GET /healthz` — Liveness probe
+
+Health check endpoint. Always open (no authentication required).
+
+**Response (200 OK):**
+```json
+{
+  "status": "ok",
+  "apmode_version": "0.6.1-rc2"
+}
+```
+
+**Use case:** Kubernetes/container liveness probes, load-balancer health checks.
+
+---
+
+### `POST /runs` — Submit a run
+
+Submit a new model discovery run. Returns `202 Accepted` with a `Retry-After: 5` header while the run executes asynchronously.
+
+**Request body:**
+```json
+{
+  "dataset_path": "data/theo_sd.csv",
+  "lane": "discovery",
+  "seed": 753849,
+  "backend": "nlmixr2",
+  "timeout": 900,
+  "parallel_models": 1,
+  "policy": null,
+  "agentic": false,
+  "provider": "anthropic",
+  "model": null,
+  "max_iterations": 10,
+  "context_of_use": null,
+  "model_influence": null,
+  "decision_consequence": null
+}
+```
+
+**Required fields:**
+- `dataset_path` — Relative path within `--dataset-root` (e.g. `"data/trial.csv"`)
+
+**Optional fields:**
+- `lane` — submission, discovery, or optimization (default: submission)
+- `seed` — Random seed for reproducibility (default: 753849)
+- `backend` — nlmixr2 or bayesian_stan (default: nlmixr2)
+- `timeout` — Per-candidate timeout in seconds (default: 900)
+- `parallel_models` — Max concurrent fits (default: 1)
+- `policy` — Gate policy JSON file path (default: policies/\<lane>.json)
+- `agentic` — Enable LLM backend (default: false)
+- `provider` — anthropic, openai, gemini, ollama, openrouter, litellm (default: anthropic)
+- `model` — LLM model name (defaults per provider)
+- `max_iterations` — Max agentic iterations 1–25 (default: 10)
+- `context_of_use` — Context for Gate 2.5 credibility
+- `model_influence` — ASME V&V40 tier: low, medium, high
+- `decision_consequence` — Decision-consequence tier: low, medium, high
+
+**Response (202 Accepted):**
+```json
+{
+  "run_id": "run_abc123xyz",
+  "status": "PENDING",
+  "started_at": "2026-04-15T12:34:56Z",
+  "retry_after_seconds": 5
+}
+```
+
+**Response (400 Bad Request):**
+- Invalid dataset path (escapes `--dataset-root`)
+- Invalid lane or backend
+- Missing required fields
+
+**Response (409 Conflict):**
+- bayesian_stan requested but `--allow-bayesian` not set
+
+**Response (425 Too Early):**
+- Run exists but bundle is unsealed (result not yet ready)
+
+**Response (500 Internal Server Error):**
+- Dataset file not found or unreadable
+- Run orchestration failure (logged in uvicorn stdout)
+
+---
+
+### `GET /runs` — List runs
+
+Retrieve a list of recent run summaries from the SQLite registry.
+
+**Query parameters:**
+- `limit` — Max results to return (default: 50)
+- `offset` — Pagination offset (default: 0)
+- `lane` — Filter by lane (optional)
+- `status` — Filter by status (optional)
+
+**Response (200 OK):**
+```json
+{
+  "runs": [
+    {
+      "run_id": "run_abc123xyz",
+      "dataset_path": "data/theo_sd.csv",
+      "lane": "discovery",
+      "status": "COMPLETED",
+      "candidate_count": 42,
+      "started_at": "2026-04-15T12:34:56Z",
+      "completed_at": "2026-04-15T13:45:00Z"
+    }
+  ],
+  "total_count": 123
+}
+```
+
+---
+
+### `GET /runs/{id}/status` — Query run status
+
+Get the current status of a specific run.
+
+**Path parameters:**
+- `id` — Run ID (e.g. run_abc123xyz)
+
+**Response (200 OK):**
+```json
+{
+  "run_id": "run_abc123xyz",
+  "status": "RUNNING",
+  "started_at": "2026-04-15T12:34:56Z",
+  "completed_at": null,
+  "error": null
+}
+```
+
+**Possible statuses:**
+- `PENDING` — Submitted, not yet started
+- `RUNNING` — Model search in progress
+- `COMPLETED` — Run finished successfully
+- `CANCELLED` — User-initiated cancellation
+- `FAILED` — Run encountered an error
+- `INTERRUPTED` — Process crashed or was forcibly terminated
+
+**Response (404 Not Found):**
+- Run ID does not exist
+
+---
+
+### `GET /runs/{id}/bundle` — Download bundle
+
+Download the sealed reproducibility bundle as a ZIP file. Only available after the run completes (bundle is sealed).
+
+**Path parameters:**
+- `id` — Run ID
+
+**Response (200 OK):**
+- `Content-Type: application/zip`
+- Binary ZIP file containing all bundle artifacts
+
+**Response (404 Not Found):**
+- Run ID does not exist
+
+**Response (425 Too Early):**
+- Run is still in progress; bundle not yet sealed
+
+---
+
+### `GET /runs/{id}/rocrate` — Download RO-Crate
+
+Download the Workflow Run RO-Crate projection (Provenance Run Crate v0.5) as a ZIP file.
+
+**Path parameters:**
+- `id` — Run ID
+
+**Response (200 OK):**
+- `Content-Type: application/zip`
+- Binary ZIP file with RO-Crate metadata and bundle contents
+
+**Response (404 Not Found):**
+- Run ID does not exist or RO-Crate not yet projected
+
+**Response (425 Too Early):**
+- Run not complete; RO-Crate not available
+
+---
+
+### `DELETE /runs/{id}` — Cancel a run
+
+Cancel an in-progress run. Sends SIGTERM to the R/CmdStan process group, waits 5 seconds for graceful shutdown, then sends SIGKILL if needed.
+
+**Path parameters:**
+- `id` — Run ID
+
+**Response (204 No Content):**
+- Cancellation initiated successfully
+
+**Response (404 Not Found):**
+- Run ID does not exist
+
+**Response (409 Conflict):**
+- Run is already in a terminal state (COMPLETED, CANCELLED, FAILED, INTERRUPTED)
+
+---
+
+## Process Lifecycle & Cancellation
+
+When you `DELETE /runs/{id}` on an in-progress run, the following sequence occurs:
+
+1. **Initiate cancellation** — Cancel the asyncio task managing the run
+2. **SIGTERM** — Send SIGTERM to the child R/CmdStan process group
+3. **Grace period** — Wait up to 5 seconds for graceful shutdown
+4. **SIGKILL** — If the process hasn't exited, force-kill the entire process group
+5. **Seal partial bundle** — Write a partial reproducibility bundle with the audit trail so far
+6. **Update status** — Write `RunStatus.CANCELLED` to the database
+7. **Release slot** — Mark the run as complete so the slot is available for new runs
+
+The sequence is wrapped in `asyncio.shield` so a second cancellation request (e.g., from the lifespan shutdown handler) cannot interrupt it. This ensures that every cancelled run gets a sealed artifact with an audit trail.
+
+**Termination contract:**
+- Cancellation is atomic — either the run completes normally, or it's cancelled and sealed
+- Exit code does not change (the `apmode run` CLI always exits 0; status is queried from the bundle)
+- Partial results are available in the bundle (search trajectory up to the cancelled point)
+
+---
+
+## Run Store & Persistence
+
+The API uses a `SQLiteRunStore` backed by a single SQLite database file (default: `runs/.apmode_runs.sqlite3`) in WAL mode for safe concurrent access.
+
+### Startup sweep
+
+On server startup, the lifespan calls `SQLiteRunStore.initialize()`, which:
+1. Creates the database if it doesn't exist
+2. Idempotently sweeps any `RUNNING` rows from a crashed prior process to `INTERRUPTED`
+3. Registers an asyncio task to cancel all active tasks on shutdown
+
+### Concurrent writes
+
+Writes use `BEGIN IMMEDIATE` to ensure serializable isolation. The WAL mode allows readers (e.g., `GET /runs` from another client) to proceed while a write is in flight.
+
+### Per-run artifacts
+
+Each run produces:
+- A reproducibility bundle directory under `--runs-dir` (e.g., `runs/<run_id>/`)
+- A row in the SQLite registry with metadata (dataset_path, lane, status, timestamps)
+- Optional RO-Crate export (separate, does not mutate the bundle)
+
+---
+
+## Error Handling
+
+### 400 Bad Request
+
+- Invalid request body (missing required fields, wrong types)
+- Invalid dataset path (e.g., `../../etc/passwd`, not relative)
+- Invalid lane or backend name
+
+**Example:**
+```json
+{
+  "detail": "Dataset path must be relative and within --dataset-root"
+}
+```
+
+### 404 Not Found
+
+- Run ID does not exist
+- Bundle not available (run hasn't completed)
+
+### 409 Conflict
+
+- Backend not available (e.g., `bayesian_stan` without `--allow-bayesian`)
+- Run is already in a terminal state (cannot cancel a completed run)
+
+### 425 Too Early
+
+- Bundle is unsealed (run still in progress)
+- RO-Crate not yet projected
+
+### 500 Internal Server Error
+
+- Dataset file not found or unreadable
+- Orchestration failure (check uvicorn logs)
+- Database error
+
+**Common causes:**
+- `dataset_path` points to a nonexistent file
+- `--dataset-root` is not readable
+- Disk space exhausted while writing the bundle
+- R/CmdStan executable not found (check `uv run apmode doctor`)
+
+---
+
+## Request/Response Examples
+
+### Submit a discovery run
+
+```bash
+# Set API key (for public deployments only)
+export APMODE_API_KEY="your-key-here"
+
+# Submit a run
+curl -X POST http://127.0.0.1:8765/runs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "dataset_path": "data/theo_sd.csv",
+    "lane": "discovery",
+    "parallel_models": 4,
+    "agentic": true,
+    "provider": "anthropic",
+    "max_iterations": 10
+  }'
+
+# Response: 202 Accepted
+```
+
+### Poll for completion
+
+```bash
+RUN_ID="run_abc123xyz"
+
+# Poll every 5 seconds
+while true; do
+  STATUS=$(curl -s http://127.0.0.1:8765/runs/$RUN_ID/status | jq -r '.status')
+  echo "Status: $STATUS"
+  if [[ "$STATUS" == "COMPLETED" || "$STATUS" == "FAILED" ]]; then
+    break
+  fi
+  sleep 5
+done
+
+# Download the bundle when ready
+curl -o bundle.zip http://127.0.0.1:8765/runs/$RUN_ID/bundle
+```
+
+### Validate via inspection
+
+```bash
+# Inspect status
+curl http://127.0.0.1:8765/runs/$RUN_ID/status | jq
+
+# Inspect bundle (via CLI, after download)
+unzip -q bundle.zip
+apmode inspect .
+```
+
+### Cancel a run
+
+```bash
+RUN_ID="run_abc123xyz"
+curl -X DELETE http://127.0.0.1:8765/runs/$RUN_ID
+# Response: 204 No Content
+```
+
+---
+
+## Python Client Example
+
+Here's a minimal Python client for interacting with the API:
+
+```python
+import requests
+import time
+import json
+
+class APMODEClient:
+    def __init__(self, base_url="http://127.0.0.1:8765", api_key=None):
+        self.base_url = base_url
+        self.api_key = api_key
+
+    def _headers(self):
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["X-API-Key"] = self.api_key
+        return headers
+
+    def healthz(self):
+        resp = requests.get(f"{self.base_url}/healthz")
+        resp.raise_for_status()
+        return resp.json()
+
+    def submit_run(self, dataset_path, lane="discovery", **kwargs):
+        body = {
+            "dataset_path": dataset_path,
+            "lane": lane,
+            **kwargs
+        }
+        resp = requests.post(
+            f"{self.base_url}/runs",
+            json=body,
+            headers=self._headers()
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def get_status(self, run_id):
+        resp = requests.get(
+            f"{self.base_url}/runs/{run_id}/status",
+            headers=self._headers()
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def wait_for_completion(self, run_id, timeout_seconds=3600, poll_interval=5):
+        start = time.time()
+        while time.time() - start < timeout_seconds:
+            status = self.get_status(run_id)
+            if status["status"] in ("COMPLETED", "FAILED", "CANCELLED"):
+                return status
+            time.sleep(poll_interval)
+        raise TimeoutError(f"Run {run_id} did not complete within {timeout_seconds}s")
+
+    def download_bundle(self, run_id, output_path):
+        resp = requests.get(
+            f"{self.base_url}/runs/{run_id}/bundle",
+            headers=self._headers()
+        )
+        resp.raise_for_status()
+        with open(output_path, "wb") as f:
+            f.write(resp.content)
+
+    def cancel_run(self, run_id):
+        resp = requests.delete(
+            f"{self.base_url}/runs/{run_id}",
+            headers=self._headers()
+        )
+        resp.raise_for_status()
+        return resp.status_code == 204
+
+# Usage
+if __name__ == "__main__":
+    client = APMODEClient()
+    print("Health:", client.healthz())
+
+    # Submit a run
+    result = client.submit_run(
+        "data/theo_sd.csv",
+        lane="discovery",
+        parallel_models=4
+    )
+    run_id = result["run_id"]
+    print(f"Submitted run: {run_id}")
+
+    # Wait for completion
+    final_status = client.wait_for_completion(run_id)
+    print(f"Final status: {final_status['status']}")
+
+    # Download bundle
+    if final_status["status"] == "COMPLETED":
+        client.download_bundle(run_id, "bundle.zip")
+        print("Bundle downloaded: bundle.zip")
+```
+
+---
+
+## Troubleshooting
+
+<Callout type="warn">
+**Server won't start (port already in use):**
+```bash
+# Find the process using port 8765
+lsof -i :8765
+
+# Or use a different port
+uv run apmode serve --port 9000
+```
+</Callout>
+
+<Callout type="warn">
+**API key authentication failures:**
+- Ensure `APMODE_API_KEY` is set on the server before starting
+- Ensure the `X-API-Key` header matches exactly (case-sensitive)
+- For loopback deployments, no key is required
+</Callout>
+
+<Callout type="warn">
+**Runs show `INTERRUPTED` status:**
+- The server crashed or was shut down abruptly
+- Check uvicorn logs for error messages
+- Use `apmode validate <bundle_dir>` to inspect partial results
+</Callout>
+
+<Callout type="warn">
+**Dataset not found (HTTP 500):**
+- Verify the dataset file exists at the correct relative path
+- Ensure the path is relative to `--dataset-root`
+- Check file permissions (API process must be able to read the file)
+</Callout>
+
+---
+
+## Comparison: CLI vs. HTTP API
+
+| Aspect | CLI (`apmode run`) | HTTP API (`POST /runs`) |
+|--------|------------------|------------------------|
+| **Start method** | Direct command | HTTP request (async) |
+| **Blocking** | Blocks until complete | Returns immediately (202) |
+| **Monitoring** | Stdout logs | Poll `/runs/{id}/status` |
+| **Cancellation** | Ctrl+C (local) | `DELETE /runs/{id}` (remote) |
+| **Result access** | Local filesystem | Download via `/runs/{id}/bundle` |
+| **Best for** | Interactive exploration | Automated workflows, remote runs |
+
+---
+
+## Related Documentation
+
+- [CLI Reference](/docs/reference/cli) — Full command-line reference
+- [Getting Started](/docs/guide/getting-started/installation) — First-time setup and workflow

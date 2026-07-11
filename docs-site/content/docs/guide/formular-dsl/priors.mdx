@@ -1,0 +1,119 @@
+---
+title: Priors
+description: The seventh semantic axis — prior families, the target taxonomy, the admissibility matrix, and FDA-aligned provenance.
+since: "0.6.1"
+---
+
+import { Step, Steps } from 'fumadocs-ui/components/steps';
+
+Priors live on `DSLSpec.priors` as a typed list of `PriorSpec` objects — the seventh
+semantic axis of a Formular model. They are populated in one of three ways.
+
+## Three ways to set a prior
+
+<Steps>
+
+<Step>
+
+### Direct declaration in Formular text
+
+The optional `priors: { ... }` top-level block:
+
+```text
+priors: {
+    CL ~ LogNormal(mu=log(4.0), sigma=0.25) source=historical_data
+        doi="10.1002/psp4.12345" justification="..."
+}
+```
+
+Each entry lowers through the same canonical factory the `SetPrior` transform uses — so
+a human-authored prior produces an identical `PriorSpec` to the equivalent programmatic
+call.
+
+</Step>
+
+<Step>
+
+### Programmatic declaration
+
+The `SetPrior` transform — the path used by the agentic LLM backend, which cannot write
+raw Formular text. See [Transforms](/docs/guide/formular-dsl/transforms).
+
+</Step>
+
+<Step>
+
+### Default injection
+
+When no explicit prior is supplied, the Bayesian pipeline injects weakly-informative
+defaults: `Normal(log_init, 2)` on structural parameters, `HalfCauchy(1)` on ω,
+`HalfCauchy(σ_init)` on residual σ, `LKJ(2)` on correlation matrices.
+
+</Step>
+
+</Steps>
+
+<Callout type="info">
+  Priors are consumed by the Stan emitter and the Bayesian runner. The nlmixr2 emitter
+  and the JAX/NODE backend currently **ignore** priors unless explicitly wired — for those
+  backends, priors are advisory metadata stored in the bundle for audit.
+</Callout>
+
+## Prior families
+
+| Family | Parameters | Admissible targets |
+| --- | --- | --- |
+| `Normal(mu, sigma)` | real | log-scale structural, covariate coefficients |
+| `LogNormal(mu, sigma)` | positive | structural (natural scale) |
+| `HalfNormal(sigma)` | positive | ω (IIV/IOV SD), residual σ |
+| `HalfCauchy(scale)` | positive | ω, residual σ |
+| `Gamma(alpha, beta)` | positive | ω, residual σ |
+| `InvGamma(alpha, beta)` | positive | ω, residual σ |
+| `Beta(alpha, beta)` | `[0, 1]` | bioavailability F, mixing fractions |
+| `LKJ(eta)` | correlation | `corr_iiv` only |
+| `Mixture(components, weights)` | compound | structural, covariate (robust-MAP block) |
+| `HistoricalBorrowing(...)` | compound | structural, covariate (Schmidli 2014 robust MAP; compiles to `Mixture`) |
+
+## Target taxonomy
+
+Prior targets resolve against the current `DSLSpec`:
+
+| Target pattern | Kind | Example |
+| --- | --- | --- |
+| Name in `structural_param_names()` | `structural` | `"CL"`, `"V1"`, `"ka"` |
+| `omega_<param>` | `iiv_sd` | `"omega_CL"` |
+| `omega_iov_<param>` | `iov_sd` | `"omega_iov_CL"` |
+| `sigma_prop`, `sigma_add` | `residual_sd` | |
+| `corr_iiv` | `corr_iiv` | |
+| `beta_<param>_<covariate>` | `covariate` | `"beta_CL_WT"` |
+
+## Admissibility matrix
+
+Enforced at `SetPrior` validation time. Invalid `(target, family)` pairs are rejected
+before any emission:
+
+| Target kind | Admissible families |
+| --- | --- |
+| `structural` | `Normal`, `LogNormal`, `Mixture`, `HistoricalBorrowing` |
+| `iiv_sd` / `iov_sd` / `residual_sd` | `HalfNormal`, `HalfCauchy`, `Gamma`, `InvGamma` |
+| `corr_iiv` | `LKJ` only |
+| `covariate` | `Normal`, `Mixture`, `HistoricalBorrowing` |
+
+<Callout type="warn">
+  `LKJ` on `corr_iiv` is schema-accepted, but the Stan emitter does not yet declare
+  `corr_iiv` in the parameters block and will raise `NotImplementedError` if it sees one.
+  The schema accepts it so agentic planning can plan ahead.
+</Callout>
+
+## Provenance and FDA alignment
+
+Every `PriorSpec` carries a `source` — one of `uninformative`, `weakly_informative`,
+`historical_data`, `expert_elicitation`, `meta_analysis`, or `fixed_external`. The
+informative sources require a non-empty `justification`; `historical_data` additionally requires
+`historical_refs` listing source datasets. `fixed_external` marks externally fixed values
+used by the SumIG disposition-fixed gate.
+
+This aligns with FDA draft guidance **FDA-2025-D-3217** (January 2026) on Bayesian
+methodology — the resulting `prior_manifest.json` in the bundle is the artifact
+[Gate 2](/docs/guide/governance-reproducibility/gates) consumes for prior-justification
+review.

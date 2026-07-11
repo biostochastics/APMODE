@@ -129,8 +129,8 @@
       "family": "ddmore_repository",
       "urls": {"model": "http://repository.ddmore.eu/model/DDMODEL00000238"},
       "access_verified": "503 SERVICE UNAVAILABLE @ 2026-07-08",
-      "cite": "Germovsek et al. (2017) AAC 61(8):e00481-17",
-      "verification_note": "Bulk repository outage. Data may still be accessible via other channels (paper supplement, direct request). Re-verify before promotion runs."
+      "cite": "Germovsek et al. (2016) Antimicrob Agents Chemother 60(8):4869-4877. doi:10.1128/AAC.00577-16",
+      "verification_note": "Bulk repository outage; benchmarks/datasets/ddmore_gentamicin/prepare.py fetches the simulated DDMoRe package data from the SHA-256-pinned dpastoor/ddmore_scraping mirror."
     },
     {
       "id": "ddmore_repository_index",

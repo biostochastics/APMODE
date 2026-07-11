@@ -183,9 +183,10 @@ class TestUnitCoverageReport:
         assert "ka" in report.checked
         assert "sigma_prop" in report.checked
 
-    def test_unchecked_for_role_with_no_lookup_entry(self) -> None:
-        # TMDDCore params (V, R0, kon, koff, kint) — R0/kon/koff/kint have
-        # no role dimension entry (out of scope, see units.py docstring).
+    def test_tmdd_params_dimensionally_checked(self) -> None:
+        # TMDDCore params carry exact dimensions: R0/KD -> Concentration,
+        # koff/kint -> Rate (1/Time), kon -> 1/(Concentration*Time). With a
+        # consistent units block they are dimensionally checked, not unchecked.
         from apmode.dsl.ast_models import TMDDCore
 
         spec = _make_spec(
@@ -196,10 +197,38 @@ class TestUnitCoverageReport:
             units=UnitsDeclaration(time="h", amount="mg", concentration="ng/mL", volume="L"),
         )
         report = unit_coverage_report(spec)
-        for name in ("R0", "kon", "koff", "kint"):
-            assert name in report.unchecked, (name, report.unchecked)
-        assert "V" in report.checked
-        assert "CL" in report.checked
+        for name in ("R0", "kon", "koff", "kint", "V", "CL"):
+            assert name in report.checked, (name, report.unchecked)
+        assert report.mismatched == []
+
+    def test_intercompartmental_clearance_q_checked(self) -> None:
+        # Q/Q2/Q3 are inter-compartmental clearances (Volume/Time) — same
+        # dimension as CL, so a consistent units block checks them.
+        from apmode.dsl.ast_models import ThreeCmt, TwoCmt
+
+        two = _make_spec(
+            distribution=TwoCmt(),
+            initial={"ka": 1.0, "V1": 10.0, "V2": 20.0, "Q": 3.0, "CL": 5.0, "sigma_prop": 0.1},
+            units=UnitsDeclaration(time="h", amount="mg", concentration="ng/mL", volume="L"),
+        )
+        assert "Q" in unit_coverage_report(two).checked
+
+        three = _make_spec(
+            distribution=ThreeCmt(),
+            initial={
+                "ka": 1.0,
+                "V1": 10.0,
+                "V2": 20.0,
+                "V3": 30.0,
+                "Q2": 3.0,
+                "Q3": 2.0,
+                "CL": 5.0,
+                "sigma_prop": 0.1,
+            },
+            units=UnitsDeclaration(time="h", amount="mg", concentration="ng/mL", volume="L"),
+        )
+        checked = unit_coverage_report(three).checked
+        assert {"Q2", "Q3"} <= set(checked)
 
     def test_unresolved_token_marks_dependents_unchecked_not_mismatched(self) -> None:
         spec = _make_spec(

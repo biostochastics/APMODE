@@ -17,6 +17,12 @@ from apmode.governance.policy import (
 )
 from apmode.governance.validate_policies import validate_policy_file
 
+_VALID_RISK_MATRIX = {
+    "low": {"low": "low", "medium": "low", "high": "medium"},
+    "medium": {"low": "low", "medium": "medium", "high": "high"},
+    "high": {"low": "medium", "medium": "high", "high": "high"},
+}
+
 
 def _gate1(**overrides: object) -> Gate1Config:
     defaults = dict(
@@ -102,11 +108,7 @@ class TestRiskGradingConfig:
     def test_monotonic_matrix_accepted(self) -> None:
         rg = RiskGradingConfig(
             enabled=True,
-            matrix={
-                "low": {"low": "low", "medium": "low", "high": "medium"},
-                "medium": {"low": "low", "medium": "medium", "high": "high"},
-                "high": {"low": "medium", "medium": "high", "high": "high"},
-            },
+            matrix=_VALID_RISK_MATRIX,
         )
         assert rg.tier_for("high", "medium") == "high"
         assert rg.tier_for("low", "low") == "low"
@@ -122,15 +124,32 @@ class TestRiskGradingConfig:
                 },
             )
 
+    def test_enabled_matrix_must_be_complete(self) -> None:
+        with pytest.raises(ValueError, match="complete low/medium/high"):
+            RiskGradingConfig(
+                enabled=True,
+                matrix={"low": {"low": "low"}},
+            )
+
     def test_gate25_config_has_risk_grading_field(self) -> None:
         g25 = Gate25Config()
         assert g25.risk_grading is None
         assert g25.risk_grading_required is False
 
+    def test_risk_grading_required_requires_enabled_config(self) -> None:
+        with pytest.raises(ValueError, match="risk_grading_required=true"):
+            Gate25Config(risk_grading_required=True)
+        with pytest.raises(ValueError, match="risk_grading_required=true"):
+            Gate25Config(
+                risk_grading_required=True,
+                risk_grading=RiskGradingConfig(enabled=False),
+            )
+
     def test_unknown_credibility_factor_rejected(self) -> None:
         with pytest.raises(ValueError, match="unknown factor"):
             RiskGradingConfig(
                 enabled=True,
+                matrix=_VALID_RISK_MATRIX,
                 credibility_factors={"high": {"bogus_factor": "a"}},
             )
 

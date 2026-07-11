@@ -1,0 +1,104 @@
+---
+title: Benchmark Suites
+description: Three comprehensive benchmark suites for validating APMODE's PK modeling capabilities.
+since: "0.6.1"
+---
+
+APMODE ships with three complementary benchmark suites to validate structural recovery, robustness to real-world data challenges, and consistency with published reference parameterizations.
+
+## Overview
+
+| Suite | Purpose | Data Type | Key Validation |
+|-------|---------|-----------|-----------------|
+| **A** | Structure and parameter recovery | Simulated ground truth | Can APMODE recover the true model when the DGP is known? |
+| **B** | Robustness to perturbations | Real-data anchors with controlled degradation | How stable are fits under BLQ elevation, outliers, sparse sampling, and covariate missingness? |
+| **C** | Literature concordance | Published reference parameterizations | Does APMODE's output align with peer-reviewed literature fits on the same data? |
+
+---
+
+## Suite A — Simulated Ground Truth
+
+**Purpose**: Test the ability to recover known structural forms and parameter values when the data-generating process is explicit.
+
+Suite A comprises 21 scenarios spanning classical PKs (1–3 compartments, first-order and saturable absorption), special structures (TMDD, time-varying clearance, inter-occasion variability), and advanced absorption forms (transit, Erlang, parallel first-order, sum of inverse Gaussians).
+
+Each scenario produces a population dataset with:
+- **Known true parameters** (reference_params.json)
+- **Per-subject η draws** for recovery diagnostics
+- **Covariates** (weight, sex, renal function, post-natal age, etc.)
+- **Observation scenarios** (proportion vs. additive error, elevated LLOQ)
+
+**How to run**:
+```bash
+# Single replicate (~15 seconds)
+Rscript benchmarks/suite_a/simulate_all.R [output_dir]
+
+# 30 replicates for recovery-rate confidence intervals (~4 minutes)
+Rscript benchmarks/suite_a/simulate_all.R benchmarks/suite_a 30
+```
+
+**Requirements**: R 4.4+, `rxode2`, `lotri`, `jsonlite`.
+
+See [Suite A details](/docs/reference/benchmarks/suite-a) for the full scenario roster and design notes.
+
+---
+
+## Suite B — Real-Data Robustness
+
+**Purpose**: Evaluate performance under realistic data challenges: below-limit-of-quantification (BLQ) elevation, outliers, sparse absorption sampling, null covariates, inter-occasion variability, and covariate missingness.
+
+Suite B anchors 9 real-data cases (theophylline, mavoglurant, gentamicin, etc.) with controlled perturbations to stress the pipeline.
+
+Each case:
+- Converges across multiple random seeds (stability metric: cross-seed coefficient of variation)
+- Reports BIC, parameter estimates, and wall-clock time per seed
+- Optionally applies k-fold cross-validation (e.g., 5-fold on gentamicin for IOV evaluation)
+
+**How to run** (requires nlmixr2 on local R 4.4+):
+```bash
+uv run python -m apmode.benchmarks.suite_b_runner \
+  --out benchmarks/suite_b/suite_b_results.json \
+  --n-seeds 3 \
+  --base-seed 20260425
+```
+
+See [Suite B details](/docs/reference/benchmarks/suite-b) for case definitions, scoring gates, and split-strategy configuration.
+
+---
+
+## Suite C — Literature Anchor Fixtures
+
+**Purpose**: Validate consistency with published, peer-reviewed reference parameterizations on shared datasets.
+
+Suite C Phase-1 pairs 7 datasets with DSL specs and literature-fixture metadata capturing published parameter values and the symbol-to-DSL mapping (e.g., `TVCL` → `CL`).
+
+Supported fixtures include:
+- Theophylline (Boeckmann et al. 1992)
+- Warfarin (Funaki et al. 2018)
+- Mavoglurant (Wendling et al. 2015)
+- Gentamicin (Germovsek et al. 2017)
+- And others
+
+**How to regenerate**:
+```bash
+# Live fit (requires R 4.4+ with nlmixr2)
+python -m apmode.benchmarks.suite_c_phase1_runner
+
+# Score the snapshot
+python -m apmode.benchmarks.suite_c_phase1_cli \
+  --inputs benchmarks/suite_c/phase1_npe_inputs.json \
+  --out scorecard.json
+```
+
+<Callout type="info">
+There is **no scheduled CI job** for Suite C regeneration. The committed `phase1_npe_inputs.json` is a generated snapshot, not continuously validated. Regenerate on-demand before citing Suite C results as evidence of methodology improvement — see [Suite C details](/docs/reference/benchmarks/suite-c) for the contract that ensures fairness.
+</Callout>
+
+---
+
+## Related Resources
+
+- [Suite A: Detailed scenarios and design notes](/docs/reference/benchmarks/suite-a)
+- [Suite B: Perturbation roster and cross-seed stability](/docs/reference/benchmarks/suite-b)
+- [Suite C: Literature fixtures and metric definitions](/docs/reference/benchmarks/suite-c)
+- [Case Study: Eleveld Propofol Coverage Analysis](/docs/reference/benchmarks/eleveld-propofol)

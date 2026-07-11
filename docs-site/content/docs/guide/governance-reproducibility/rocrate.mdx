@@ -1,0 +1,354 @@
+---
+title: RO-Crate Export & Import
+description: FAIR packaging and interoperability for reproducibility bundles.
+since: "0.6.1"
+---
+
+APMODE bundles can be exported to **RO-Crate** format for FAIR data sharing and machine-readable provenance. RO-Crate is a standardized, lightweight method for packaging research data, code, and metadata as linked data.
+
+## What is RO-Crate?
+
+**RO-Crate** (Research Object Crate) is a community standard for describing and packaging research outputs with structured provenance. APMODE uses the **Workflow Run RO-Crate — Provenance Run Crate v0.5** profile, which is designed to capture:
+
+- Input data and parameters
+- Workflow/pipeline definition
+- Execution steps (orchestration, backend runs, quality gates)
+- Outputs and results
+- Software dependencies
+- Computational environment
+
+**Why RO-Crate for APMODE?**
+
+- **FAIR principles** — Findable, Accessible, Interoperable, Reusable
+- **Machine-readable provenance** — Enables downstream tools to parse and audit runs
+- **Standards-based** — Aligned with Workflow Hub, Zenodo, and regulatory frameworks
+- **Interoperability** — Can be imported into other workflow systems without loss of information
+
+## RO-Crate as a projection
+
+<Callout>
+RO-Crate is a **read-only projection** of a sealed reproducibility bundle — **not a replacement**.
+
+- The Pydantic bundle remains the producer-side source of truth
+- The bundle is **never mutated** during RO-Crate export
+- All data flows one direction: bundle → RO-Crate
+- The crate references files and structure from the original bundle
+</Callout>
+
+### What gets projected?
+
+The RO-Crate includes:
+
+| Component | Source in bundle | Role in crate |
+|-----------|------------------|---------------|
+| Data manifest | `data_manifest.json` | Input data summary + schema version |
+| Evidence profiler output | `evidence_manifest.json` | Data signal assessment |
+| DSL specs | `compiled_specs/*.json` | Model structures (ComputationalWorkflow items) |
+| Backend results | `results/*_result.json` | Fit parameters, diagnostics (CreateAction) |
+| Gate decisions | `gate_decisions/gate*.json` | Quality control steps (ControlAction) |
+| Candidate lineage | `candidate_lineage.json` | Model derivation graph (prov:wasDerivedFrom) |
+| Bayesian artifacts | `bayesian/*.json` + `bayesian/posterior_draws/*.parquet` | Prior specs, MCMC diagnostics, posterior samples |
+| Credibility report | `credibility/*.json` | ICH M15 assessment |
+| _COMPLETE sentinel | `_COMPLETE` | Integrity anchor (File with additionalType: apmode:completeSentinel) |
+
+The crate is validated against the **Provenance Run Crate v0.5** profile using `roc-validator` (required in CI).
+
+## Exporting to RO-Crate
+
+### Directory form
+
+```bash
+uv run apmode bundle rocrate export {bundle_dir} --out {output_dir}
+```
+
+Creates a directory structure:
+
+```
+{output_dir}/
+├── ro-crate-metadata.json      # Crate metadata (JSON-LD)
+├── ro-crate-preview.html       # Human-readable preview
+├── data_manifest.json          # (symlink or copy to bundle artifact)
+├── evidence_manifest.json
+├── compiled_specs/
+│   ├── cand_a1b2.json
+│   └── cand_a1b2.R
+├── results/
+│   └── cand_a1b2_result.json
+├── gate_decisions/
+│   ├── gate1_cand_a1b2.json
+│   ├── gate2_cand_a1b2.json
+│   └── ...
+├── bayesian/
+│   ├── prior_manifest.json
+│   └── posterior_draws/
+│       └── cand_bayes_1.parquet
+└── ...
+```
+
+### ZIP form
+
+```bash
+uv run apmode bundle rocrate export {bundle_dir} --out {output.zip}
+```
+
+Packages the crate as a single ZIP file (portable, easier to share).
+
+## Importing from RO-Crate
+
+To reconstruct or validate an APMODE bundle from a crate:
+
+```bash
+uv run apmode bundle rocrate import {crate} --out {reconstructed_bundle_dir}
+```
+
+**What happens:**
+
+1. Reads `ro-crate-metadata.json` and all referenced files
+2. Reconstructs the Pydantic bundle structure
+3. Verifies SHA-256 digests from the original `_COMPLETE` sentinel
+4. Writes a new bundle directory with full provenance preservation
+
+<Callout type="warn">
+The importer verifies that `_COMPLETE` digests match. If the crate was modified or files are missing, the import will fail with a digest mismatch.
+</Callout>
+
+## Validation
+
+All exported crates are validated against the Provenance Run Crate v0.5 profile:
+
+### Manual validation
+
+```bash
+# Requires roc-validator (pip install rocrate-validator)
+roc-validator -p provenance-run-crate-0.5 {crate}/ro-crate-metadata.json
+```
+
+### CI validation
+
+```bash
+uv run apmode validate {bundle_dir} --rocrate --crate {exported_crate}
+```
+
+This is part of the standard test suite — export/import round-trips must pass validation before CI clears a run.
+
+<Callout type="info">
+`roc-validator` runs at **REQUIRED** severity, meaning validation failures block merge in CI.
+</Callout>
+
+## RO-Crate structure (schema overview)
+
+The crate uses a JSON-LD context combining:
+
+- **RO-Crate 1.1** (`https://w3id.org/ro/crate/1.1/context`)
+- **Workflow Run RO-Crate v0.5** (`https://w3id.org/ro/wfrun/provenance/0.5`)
+- **APMODE vocabulary** (`https://w3id.org/apmode/terms#`) — minimal extensions for gates, policies, regulatory fields
+
+### Example fragment: Data manifest
+
+```json
+{
+  "@id": "data_manifest.json",
+  "name": "Data Manifest",
+  "description": "Input dataset summary and profiler output",
+  "@type": ["File", "Dataset"],
+  "contentSize": 12345,
+  "encodingFormat": "application/json"
+}
+```
+
+### Example fragment: Candidate as CreateAction
+
+```json
+{
+  "@id": "#action_cand_a1b2",
+  "@type": "CreateAction",
+  "name": "Estimation of candidate model cand_a1b2",
+  "object": {
+    "@id": "compiled_specs/cand_a1b2.json"
+  },
+  "result": {
+    "@id": "results/cand_a1b2_result.json"
+  },
+  "instrument": {
+    "@id": "#backend_nlmixr2"
+  },
+  "endTime": "2026-07-10T15:30:45Z"
+}
+```
+
+### Example fragment: Gate as ControlAction
+
+```json
+{
+  "@id": "#gate1_cand_a1b2",
+  "@type": "ControlAction",
+  "name": "Gate 1: Technical Validity",
+  "object": {
+    "@id": "results/cand_a1b2_result.json"
+  },
+  "result": {
+    "@id": "gate_decisions/gate1_cand_a1b2.json"
+  },
+  "apmode:gatePassed": true,
+  "apmode:policyVersion": "0.7.1"
+}
+```
+
+### Lineage and derivation
+
+Candidate-to-candidate relationships are expressed as PROV derivation:
+
+```json
+{
+  "@id": "compiled_specs/cand_child.json",
+  "prov:wasDerivedFrom": {
+    "@id": "compiled_specs/cand_parent.json"
+  }
+}
+```
+
+This allows downstream tools to reconstruct the search DAG without parsing `candidate_lineage.json` separately.
+
+## Practical workflows
+
+### Share a run with collaborators
+
+```bash
+# Export to ZIP for email/cloud storage
+uv run apmode bundle rocrate export {bundle_dir} --out my_run.zip
+
+# Collaborator imports and validates
+uv run apmode bundle rocrate import my_run.zip --out {reconstructed_bundle_dir}
+uv run apmode validate {reconstructed_bundle_dir}
+```
+
+### FAIR archival (Zenodo, OSF)
+
+```bash
+# Export as ZIP
+uv run apmode bundle rocrate export {bundle_dir} --out apmode_run_2026_07_10.zip
+
+# Upload ZIP to Zenodo (manual or via `apmode bundle rocrate publish` in Phase 2+)
+# Zenodo embeds crate metadata in its knowledge graph
+```
+
+### Regulatory submission
+
+```bash
+# Generate RO-Crate for FDA/EMA submission package
+uv run apmode bundle rocrate export {bundle_dir} --out regulatory_package.zip
+
+# Crate includes:
+# - Sealed bundle digest (_COMPLETE)
+# - Gate decisions (Gate 1, 2, 2.5, 3)
+# - Credibility report (Gate 2.5)
+# - DSL specs (model structure audit trail)
+# - Backend results (parameters, diagnostics)
+# - Bayesian priors (if applicable)
+```
+
+Regulatory reviewers can:
+- Verify integrity via `_COMPLETE` digest
+- Audit gate decisions line-by-line
+- Extract candidate lineage
+- Reconstruct models from DSL specs
+
+## APMODE vocabulary
+
+The minimal `apmode:` namespace adds regulatory and policy fields:
+
+```json
+{
+  "@context": {
+    "apmode": "https://w3id.org/apmode/terms#"
+  },
+  "apmode:gatePassed": true,
+  "apmode:policyVersion": "0.7.1",
+  "apmode:laneType": "submission",
+  "apmode:credibilityContext": {
+    "contextOfUse": "population_pk",
+    "limitations": ["limited external validity in elderly"]
+  }
+}
+```
+
+These fields are optional; tools that don't understand them simply ignore them safely (JSON-LD semantics).
+
+## Round-trip verification
+
+The importer verifies SHA-256 match during import:
+
+```bash
+# Original bundle SHA-256 (in _COMPLETE)
+uv run apmode inspect {original_bundle_dir} --json | jq '.digest'
+
+# Reconstructed bundle SHA-256 (after import)
+uv run apmode inspect {reconstructed_bundle_dir} --json | jq '.digest'
+
+# If they match, the crate is bit-identical to the original
+```
+
+## Key concepts
+
+<Cards>
+  <Card
+    title="Projection Pattern"
+    description="RO-Crate is derived from the sealed bundle; bundle is never mutated during export."
+  />
+  <Card
+    title="WRROC v0.5 Profile"
+    description="Standardized profile for workflow run provenance. Validated in CI via roc-validator."
+  />
+  <Card
+    title="Integrity Anchored"
+    description="_COMPLETE sentinel and SHA-256 digests preserved in crate for tamper detection."
+  />
+  <Card
+    title="FAIR Interoperability"
+    description="crate can be shared, archived, imported, and processed by standard RO-Crate tools."
+  />
+</Cards>
+
+## Related standards
+
+- **RO-Crate specification**: https://w3id.org/ro/crate/
+- **Workflow Run RO-Crate (WRROC)**: https://w3id.org/ro/wfrun/provenance/0.5
+- **PROV-O (W3C)**: Provenance data model used for lineage
+- **FAIR Principles**: Findability, Accessibility, Interoperability, Reusability
+
+## CLI reference
+
+```bash
+# Export to directory
+apmode bundle rocrate export {bundle_dir} --out {dir}
+
+# Export to ZIP
+apmode bundle rocrate export {bundle_dir} --out {file.zip}
+
+# Import from crate
+apmode bundle rocrate import {crate} --out {bundle_dir}
+
+# Validate bundle + crate round-trip
+apmode validate {bundle_dir} --rocrate --crate {crate}
+
+# (Future) Publish to WorkflowHub or Zenodo
+apmode bundle rocrate publish {crate.zip} --zenodo
+```
+
+## FAQ
+
+**Q: Can I modify the RO-Crate after export?**
+
+A: Not recommended. If you modify files, the `_COMPLETE` digest will no longer match, and the importer will detect tampering.
+
+**Q: Is the RO-Crate required for a valid APMODE run?**
+
+A: No. The Pydantic bundle is sufficient for all APMODE operations. RO-Crate is an *optional* projection for interoperability and archival.
+
+**Q: Can I publish a crate to Zenodo?**
+
+A: Yes, in Phase 2+ via `apmode bundle rocrate publish`. Currently, you must upload the ZIP manually.
+
+**Q: What if the crate is corrupted?**
+
+A: The importer will fail on digest mismatch and refuse to import a corrupted crate.

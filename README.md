@@ -10,7 +10,7 @@
   [![Version](https://img.shields.io/badge/version-v0.6.1--rc2-blue)]()
   <!-- apmode:/AUTO:badge_version -->
   <!-- apmode:AUTO:badge_tests -->
-  [![Tests](https://img.shields.io/badge/tests-3427%20collected-success)]()
+  [![Tests](https://img.shields.io/badge/tests-3453%20collected-success)]()
   <!-- apmode:/AUTO:badge_tests -->
   [![License](https://img.shields.io/badge/license-GPL--2.0--or--later-green)](LICENSE)
   [![Python](https://img.shields.io/badge/python-3.12%E2%80%933.14-yellow)]()
@@ -35,7 +35,7 @@ APMODE is a **governed meta-system** that composes five population PK modeling p
 
 **Formular — a typed PK DSL — is the control surface.** Models are specified in [Formular](docs/FORMULAR.md), an order-insensitive grammar of top-level blocks (`absorption`, `distribution`, `elimination`, `variability`, `observation`/`observations`, `covariates`, `priors`, `units`, `metadata`, `initial`) — structural declarations name parameters, a separate `initial: {}` block supplies calibration values, and `priors: {}` lets an author write priors directly in Formular text (in addition to the programmatic `SetPrior` transform). Specs compile to a typed AST, are validated against pharmacometric constraints, and lower to backend-specific code (nlmixr2 R, Stan/Torsten, JAX/Diffrax). The agentic LLM backend (Phase 3) operates exclusively through the <!-- apmode:AUTO:transforms -->10<!-- apmode:/AUTO:transforms --> typed Formular transforms — including `SetPrior` for Bayesian workflows — it cannot emit raw code.
 
-> **Status**: **<!-- apmode:AUTO:version_tag -->v0.6.1-rc2<!-- apmode:/AUTO:version_tag -->** (2026-04-25) — 0.6.1 release candidate. <!-- apmode:AUTO:tests_nonlive -->3410<!-- apmode:/AUTO:tests_nonlive --> tests passing (`-m "not live"`); `mypy --strict` clean; `ruff` clean. Supports Python 3.12–3.14. Gate policy schema <!-- apmode:AUTO:policy_gate -->0.7.1<!-- apmode:/AUTO:policy_gate -->; profiler policy <!-- apmode:AUTO:policy_profiler -->2.1.0<!-- apmode:/AUTO:policy_profiler --> (manifest_schema_version = <!-- apmode:AUTO:profiler_manifest -->2<!-- apmode:/AUTO:profiler_manifest -->). v0.6.1 ships the FastAPI HTTP API surface (`apmode serve`, `POST /runs`, cancellation lifecycle), Suite C Phase-1 MLE + Bayesian fixtures with on-demand NPE scoring (no scheduled CI job — see [Suite C README](benchmarks/suite_c/README.md)), SOTA absorption preview forms, and the RO-Crate projector hardening pass. Reproducibility bundles continue to carry a `_COMPLETE` sentinel with a SHA-256 digest; `apmode validate` refuses unsealed bundles. See [CHANGELOG.md](CHANGELOG.md) for the full release-candidate changes.
+> **Status**: **<!-- apmode:AUTO:version_tag -->v0.6.1-rc2<!-- apmode:/AUTO:version_tag -->** (2026-04-25) — 0.6.1 release candidate. <!-- apmode:AUTO:tests_nonlive -->3436<!-- apmode:/AUTO:tests_nonlive --> tests passing (`-m "not live"`); `mypy --strict` clean; `ruff` clean. Supports Python 3.12–3.14. Gate policy schema <!-- apmode:AUTO:policy_gate -->0.7.1<!-- apmode:/AUTO:policy_gate -->; profiler policy <!-- apmode:AUTO:policy_profiler -->2.1.0<!-- apmode:/AUTO:policy_profiler --> (manifest_schema_version = <!-- apmode:AUTO:profiler_manifest -->2<!-- apmode:/AUTO:profiler_manifest -->). v0.6.1 ships the FastAPI HTTP API surface (`apmode serve`, `POST /runs`, cancellation lifecycle), Suite C Phase-1 MLE + Bayesian fixtures with on-demand NPE scoring (no scheduled CI job — see [Suite C README](benchmarks/suite_c/README.md)), SOTA absorption preview forms, and the RO-Crate projector hardening pass. Reproducibility bundles continue to carry a `_COMPLETE` sentinel with a SHA-256 digest; `apmode validate` refuses unsealed bundles. See [CHANGELOG.md](CHANGELOG.md) for the full release-candidate changes.
 
 ### Capability status
 
@@ -47,7 +47,7 @@ A reader-facing snapshot of what is runnable today vs. what is partial / planned
 | Automated structural search | ✅ Stable | Evidence-driven, deterministic budget (≤ 30–50 candidates/run) |
 | Reproducibility bundle + RO-Crate projection | ✅ Stable | Sealed `_COMPLETE` SHA-256; WRROC v0.5 export + ZIP round-trip |
 | Bayesian PK (Stan/Torsten via cmdstanpy) | ✅ Available | MCMC Gate 1 thresholds shipped (R̂/ESS/divergences/E-BFMI/Pareto-k); Suite C Bayesian roster (vancomycin Roberts 2011) ships in v0.6 |
-| Hybrid mechanistic-NODE (JAX/Diffrax) | ⚠ Available, oral-only | Pooled-NLL training (no per-subject random effects yet); never submission-eligible (PRD §3 hard rule) |
+| Hybrid mechanistic-NODE (JAX/Diffrax) | ⚠ Available | Oral + IV bolus/central-infusion (depot infusion, `SS != 0`, and `EVID=2` rejected); pooled-NLL training (no per-subject random effects yet); never submission-eligible (PRD §3 hard rule) |
 | Agentic LLM backend | ⚠ Available, opt-in | Off by default (`--agentic`); discovery / optimization lanes only; ≤ 25 typed-transform iterations per run |
 | Optimization lane (LORO-CV Gate 2) | ✅ Available | Gate 2 enforces LORO-CV folds, NPDE mean/variance bands, VPC concordance; `policies/optimization.json` is a versioned artefact; cross-paradigm scoring-contract ranker shipped in the 0.6 release-candidate line |
 | HTTP API + `apmode serve` | ✅ Available | Loopback by default; refuses non-loopback without `--allow-public`; full endpoint contract under [HTTP API](#http-api). Long-poll status (`?wait=N`) is a documented future enhancement, not in v0.6.1-rc1 |
@@ -226,8 +226,8 @@ continues to point the policy loader at an alternative directory.
 ### Test + typecheck + lint
 
 ```bash
-uv run pytest tests/ -q                         # <!-- apmode:AUTO:tests -->3427<!-- apmode:/AUTO:tests --> collected
-uv run pytest tests/ -q -m "not live"           # <!-- apmode:AUTO:tests_nonlive -->3410<!-- apmode:/AUTO:tests_nonlive --> skip live LLM tests
+uv run pytest tests/ -q                         # <!-- apmode:AUTO:tests -->3453<!-- apmode:/AUTO:tests --> collected
+uv run pytest tests/ -q -m "not live"           # <!-- apmode:AUTO:tests_nonlive -->3436<!-- apmode:/AUTO:tests_nonlive --> skip live LLM tests
 uv run mypy src/apmode/ --strict                # type checking
 uv run ruff check src/apmode/ tests/            # linting
 uv run python scripts/sync_readme.py --check    # README ↔ codebase drift guard
@@ -706,7 +706,7 @@ reason, vote). `apmode inspect <bundle>` renders the per-signal table;
 
 ## Test Suite
 
-**<!-- apmode:AUTO:tests -->3427<!-- apmode:/AUTO:tests --> tests collected** (<!-- apmode:AUTO:tests_nonlive -->3410<!-- apmode:/AUTO:tests_nonlive --> non-live) across multiple strategies — all counts auto-synced by `scripts/sync_readme.py`:
+**<!-- apmode:AUTO:tests -->3453<!-- apmode:/AUTO:tests --> tests collected** (<!-- apmode:AUTO:tests_nonlive -->3436<!-- apmode:/AUTO:tests_nonlive --> non-live) across multiple strategies — all counts auto-synced by `scripts/sync_readme.py`:
 
 ```bash
 uv run pytest tests/unit/ -q               # unit tests
@@ -1185,7 +1185,7 @@ Every CI run and every tagged release ships a [CycloneDX](https://cyclonedx.org/
 This README's numeric claims (version, test count, transform count, CLI-command count, dataset count, policy versions, profiler manifest version) are rewritten from the codebase by [`scripts/sync_readme.py`](scripts/sync_readme.py). Each auto-synced value sits between HTML comment markers like:
 
 ```
-<!-- apmode:AUTO:tests -->3427<!-- apmode:/AUTO:tests -->
+<!-- apmode:AUTO:tests -->3453<!-- apmode:/AUTO:tests -->
 ```
 
 Running the script:
@@ -1217,7 +1217,7 @@ Wire `scripts/sync_readme.py --check` into pre-commit or CI to block PRs that le
 User-facing constraints in `<!-- apmode:AUTO:version_tag -->v0.6.1-rc2<!-- apmode:/AUTO:version_tag -->`. Status descriptors: **partial** = behaviour available with caveats; **planned** = scoped follow-on; **deferred** = explicit ADR-documented out-of-scope. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and the `docs/adr/` series for the full design rationale.
 
 - **Multi-dose steady state** *(partial)* — `ADDL` / `II` dose expansion is supported across all backends; `SS != 0` is supported in the nlmixr2 lane only. Stan and NODE backends hard-reject `SS != 0` at Gate 1; see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and current validator/backend limitations.
-- **NODE infusions** *(deferred)* — the NODE backend is oral-only; infusion data (`RATE > 0`) is rejected with `InvalidSpecError`. Piecewise-JAX-solver follow-on remains deferred; see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for backend scope.
+- **NODE infusions** *(partial)* — zero-order constant-rate infusion (`RATE > 0` or `DUR > 0`) into the central compartment is now supported via the eager piecewise solver; overlapping and staggered infusions sum correctly. Still rejected with `InvalidSpecError`: infusions labelled into the absorption depot (`CMT=1`), steady-state rows (`SS != 0`), and other-type events (`EVID=2`). See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for backend scope.
 - **NODE random effects** *(planned)* — current NODE training is pooled-population NLL (no per-subject random effects). Laplace approximation on a ≤16×16 block of latent/input-layer parameters (block-diagonal Hessian primary; L-BFGS + ridge fallback) is the next milestone; full-NN-weight RE remains research-branch.
 - **NODE scaling** *(planned)* — the Python-list subject loop scales to ~50 subjects. The next release replaces it with `jax.lax.map` per subject plus a `jax.vmap` fastpath for uniform time grids (target memory ceiling on A100-40G ≈ 2000 subjects for a 4-compartment NODE).
 - **NODE posterior-predictive simulation** *(planned)* — `sample_posterior_predictive` is currently an inert stub returning `None` with `UserWarning`. The Laplace-RE landing draws random effects from the posterior and routes per-subject simulations through the canonical `build_predictive_diagnostics`.

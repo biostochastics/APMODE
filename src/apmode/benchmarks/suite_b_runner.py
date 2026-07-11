@@ -666,7 +666,7 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
         "--out",
         type=Path,
         default=Path("benchmarks/suite_b/suite_b_results.json"),
-        help="Destination path for the suite_b_results.json the CI workflow reads.",
+        help="Destination path for the generated suite_b_results.json snapshot.",
     )
     parser.add_argument(
         "--cases",

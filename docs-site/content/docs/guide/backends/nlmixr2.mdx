@@ -1,0 +1,174 @@
+---
+title: Classical NLME Backend (nlmixr2)
+description: The primary population pharmacokinetic estimation engine via R/nlmixr2—stable, regulatory-grade, and the submission-lane default.
+since: "0.6.0"
+---
+
+## Overview
+
+The classical NLME (nonlinear mixed-effects) backend is APMODE's primary population PK estimation engine. It wraps **nlmixr2** (an R package for population PK modeling) and exposes it through the `BackendRunner` protocol.
+
+- **Primary use case**: Submission-lane standard; regulatory-grade model evaluation
+- **Estimators**: SAEM (Stochastic Approximation EM) and FOCEi (First-Order Conditional Estimation with Interaction)
+- **Process isolation**: Spawns R as a subprocess; safe against R crashes
+- **Suite A/C coverage**: The benchmark reference implementation for structure and parameter recovery
+
+## How It Works
+
+```
+Formular spec → DSL compiler → nlmixr2 R code → SAEM/FOCEi → BackendResult
+```
+
+The `Nlmixr2Runner` follows a file-based IPC pattern:
+
+1. **Compile** the DSLSpec to nlmixr2 R code using `emit_nlmixr2()`
+2. **Write request** JSON to a temp directory: `request.json` containing spec, data path, initial estimates, seed
+3. **Spawn Rscript** subprocess running `src/apmode/r/harness.R`
+4. **R harness**:
+   - Loads request.json
+   - Calls `nlmixr2::nlmixr()` with SAEM or FOCEi
+   - Writes `response.json` with results and diagnostics
+   - Writes `logs.jsonl` with per-iteration progress (SAEM iteration counts, OFV values, step sizes)
+5. **Read response** and parse into `BackendResult`
+6. **Handle timeout**: If wall-clock exceeds budget, send SIGTERM to process group, wait 5 seconds, then SIGKILL
+
+## Key Features
+
+### Robust to R Crashes
+
+Process isolation means R segmentation faults (SIGSEGV), memory exhaustion, or other hard crashes do not crash the orchestrator. The runner classifies exit codes:
+- `0`: success
+- `1`: R error (parsed from logs)
+- `137`: SIGKILL (timeout)
+- `139`: SIGSEGV (segmentation fault)
+
+### Warm-Start Efficiency
+
+After the deterministic Phase 1 search completes, the best ~3-5 converged classical candidates seed **Phase 3 warm-start children**. Each child inherits the parent's fitted parameters (CL, V, ka, etc.) from SAEM convergence, cutting convergence time by 3–5x. Warm-started children fit faster because the optimizer starts near a good local maximum instead of an arbitrary guess.
+
+### Data Adapter Contract
+
+Before sending data to R, the Python runner pre-adapts the on-disk CSV through `apmode.data.adapters.to_nlmixr2_format()`:
+
+1. **NMID → ID rename**: APMODE's canonical column is `NMID` (nonmem subject ID), but nlmixr2 expects `ID`. Without this rename, FOCEI silently enters an infinite "Theta reset (ETA drift)" loop.
+2. **PK-row DVID filter**: Multi-analyte datasets (e.g., warfarin with `DVID="cp"` and `"pca"`) are filtered to PK observations only (`DVID` in `["cp", "1", "conc", "concentration"]`). Missing this causes nlmixr2 to raise "mis-match in nbr endpoints in model & in data" or hang.
+3. **Categorical covariate remap**: String or two-level integer covariates (e.g., `SEX="M"/"F"`, `GROUP=1/2`) are remapped to 0/1 for nlmixr2's categorical-covariate expectations.
+4. **Metadata column strip**: True-simulator metadata columns (e.g., `V`, `CL`, `KA` from a simulator) are stripped so they don't interfere with fitting.
+
+The adapted CSV is written to the per-fit scratch directory as `data_nlmixr2.csv`, and the `RSubprocessRequest` points to that adapted copy. **The on-disk source CSV is never modified** — only the runner's working copy is adapted, so bundle digests and per-fold artifacts remain unchanged.
+
+<Callout type="info">
+The R harness includes a defensive NMID → ID rename as a second safety layer. If an operator runs `Rscript harness.R` directly during debugging, the rename prevents re-triggering the infinite-loop hang.
+</Callout>
+
+## Estimation Options
+
+### SAEM (Default for Search)
+
+- **Strengths**: Robust initialization, handles stiff ODEs, good at finding global optima
+- **Use when**: Exploring the search space; fitting initial candidates from NCA estimates
+- **Iterations**: Typically 10–50 iterations for convergence; ~1–5 minutes per fit on 50–100 subjects
+- **Parallelization**: Fits are CPU-bound (R single-threaded); use `--parallel-models` to parallelize across candidates
+
+### FOCEi (Required for FREM)
+
+- **Strengths**: Faster than SAEM; gold standard for covariate effects
+- **Use when**: Missing-data workflow with FREM (fixed-effects random-effects model); active covariate discovery via stepwise covariates model
+- **Trade-off**: More sensitive to initial estimates; can fail to converge from poor starts (this is where SAEM's warm-start children help)
+- **Note**: FREM fitting explicitly requires FOCE-I because SAEM collapses subject-level covariate random effects to zero
+
+<Callout type="warn">
+The orchestrator automatically selects FOCE-I when the missing-data directive resolves to FREM. Classical search uses SAEM by default.
+</Callout>
+
+## Gate 1 Diagnostics
+
+Classical NLME fits are evaluated on:
+
+| Diagnostic | Method | Threshold (Submission) | Purpose |
+|-----------|--------|------------------------|---------|
+| **CWRES normality** | Shapiro-Wilk test on conditional weighted residuals | p &gt; 0.05 indicative | Detects structural model misspecification |
+| **PIT calibration** | Posterior-predictive coverage at p ∈ \{0.05, 0.50, 0.95\} | n-scaled tolerance per lane policy | Checks if predictions are well-calibrated |
+| **Shrinkage** | (σ_between / σ_total)^2 on both IIV and RUV | ≤30% | High shrinkage signals parameter non-identifiability |
+| **Convergence** | Gradient norm at final iteration | ≤100 | Verifies optimizer convergence |
+
+The **VPC (Visual Predictive Check)** is generated but no longer used for Gate 1 (replaced by PIT calibration in 0.4.2). It is retained in the bundle for reporting and within-paradigm concordance ranking.
+
+## Initial Estimates Strategy
+
+Classical candidates are seeded from **per-subject PKNCA-style NCA**:
+
+1. Terminal phase lambda_z selected by curve-stripping with adjusted-R² tie-break (Huang 2025)
+2. Linear-up/log-down AUC integration (Purves 1992; the reference for nlmixr2's own `pk.calc.auc`)
+3. QC gates on adj-R², AUC extrapolation fraction, and span ratio
+4. Population median used when ≥50% of subjects fail QC (fallback to dataset-card defaults or conservative fixed values)
+5. **Unit-aware CL heuristic**: If raw CL &lt; 0.5 L/h, DV magnitude &gt; 50 ng/mL, and dose ≥ 1 mg (human-scale), apply 1000× scaling to accommodate the mg-to-ng/mL convention
+
+These initial estimates dramatically reduce SAEM convergence time vs. fitting from arbitrary values. Per-subject NCA diagnostics are emitted as `nca_diagnostics.jsonl` in the bundle.
+
+## Bayesian Posterior Predictive Simulation
+
+After convergence, the harness draws from the fitted model's posterior predictive distribution (500 simulations by default, configurable via `Gate3Config.n_posterior_predictive_sims`):
+
+- Per-subject empirical-Bayes ETAs (posterior random effects at observed covariates)
+- Predicted observations at the observed sampling times (no separate VPC grid; post-hoc binning for coverage)
+- Simulation matrix shape: (n_sims, n_subjects, n_obs_per_subject)
+
+These simulations feed the canonical `build_predictive_diagnostics()` helper, which computes VPC and NPE (normalized prediction error) for cross-paradigm ranking in Gate 3.
+
+## Convergence Troubleshooting
+
+### Model hangs or times out (wall-clock budget exceeded)
+
+- **Likely cause**: SAEM struggling with a very stiff ODE system (e.g., oral absorption with high ke and low absorption rate)
+- **Solution**: Increase `--timeout` flag (default 900 s = 15 min per fit). Or, if this is a single problematic candidate, the orchestrator logs it and moves on.
+
+### "Theta reset (ETA drift)" infinite loop
+
+- **Likely cause**: Data ID column named `NMID` instead of `ID` (or the adapter's NMID→ID rename is skipped)
+- **Solution**: Verify your input CSV has the `ID` column OR let the adapter handle the rename (it runs by default)
+
+### FOCEI fails to converge; SAEM succeeds
+
+- **Likely cause**: FOCEI started from poor initial estimates
+- **Solution**: Use SAEM for root candidates, then generate FOCEI-fitted children (the warm-start inherits SAEM's converged parameters)
+
+## Reproducibility
+
+All nlmixr2 fits are reproducible:
+
+- **Seed escrowed**: `seed_registry.json` in the bundle records the root seed
+- **R RNG state**: Set `RNGkind("L'Ecuyer-CMRG")` for parallel-safe seeding
+- **Thread control**: `OMP_NUM_THREADS=1`, `MKL_NUM_THREADS=1` to eliminate BLAS non-determinism
+- **Fit artifacts**: Per-candidate `{candidate_id}_result.json` is deterministic given the same data, seed, and nlmixr2 version
+
+Re-running the same bundle on a different machine with the same R/nlmixr2 versions produces bit-identical fits.
+
+## Example: Fitting a Submission-Lane Model
+
+```bash
+# Download a public dataset
+uv run apmode datasets theo_sd -o ./data
+
+# Run the submission-lane pipeline (classical NLME only)
+uv run apmode run ./data/theo_sd.csv --lane submission --parallel-models 4 -o ./runs
+
+# Inspect the best candidate
+BUNDLE=$(uv run apmode ls --sort bic --limit 1 --format path)
+uv run apmode inspect "$BUNDLE"
+
+# Open the regulatory report
+uv run apmode report "$BUNDLE"
+```
+
+The submission-lane run will:
+1. Profile the data (richness, nonlinear CL, absorption coverage, covariates)
+2. Generate ~20–30 classical root candidates from the cross-product of modules (Phase 1)
+3. Fit each in parallel using SAEM
+4. Generate 3–6 warm-start children from the best roots (Phase 3)
+5. Evaluate all candidates through Gate 1 (technical validity) and Gate 2 (submission admissibility)
+6. Rank by BIC and recommend the best survivor
+
+---
+
+**See also**: [Agentic LLM Backend](/docs/guide/backends/agentic-llm) for iterative model refinement via DSL transforms; [Bayesian Backend](/docs/guide/backends/bayesian-stan) for MCMC-based population PK.

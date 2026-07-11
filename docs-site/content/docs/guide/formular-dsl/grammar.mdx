@@ -1,0 +1,195 @@
+---
+title: Grammar
+description: Every Formular block and module — absorption, distribution, elimination, variability, covariates, observation, metadata, and initial estimates.
+since: "0.6.1"
+---
+
+A Formular model has four required blocks (in any order), plus zero-or-more
+`variability:` blocks and several optional at-most-one blocks (`metadata:`,
+`initial:`, `covariates:`, `priors:`, `units:`).
+
+```text
+model {
+    absorption:   <absorption-module>      # exactly one, structural declaration only
+    distribution: <distribution-module>    # exactly one, structural declaration only
+    elimination:  <elimination-module>     # exactly one, structural declaration only
+    variability:  { <items...> }           # zero or more
+    covariates:   { CL <- WT.power(theta=0.75, ref=70), ... }  # optional, at most one
+    observation:  <observation-module>     # exactly one
+    metadata:     { title = "...", ... }   # optional, at most one
+    initial:      { ka = 1.0, V = 70.0 }   # optional, at most one — all calibration values
+}
+```
+
+<Callout type="info">
+  Structural declarations name calibration parameters **without** values. Every
+  calibration value lives in exactly one place — the `initial:` block. Structural
+  topology fields (`Transit.n`, `Erlang.n`, `SumIG.k`, NODE `dim`) and observation sigmas
+  stay inline; they are not calibration values.
+</Callout>
+
+## Absorption
+
+`n` (Transit, Erlang) and `k` (SumIG) are structural and stay inline with their values.
+
+| Module | Syntax | Calibration values (in `initial:`) |
+| --- | --- | --- |
+| IV bolus | `IVBolus()` | none |
+| First-order | `FirstOrder(ka)` | `ka`: absorption rate (h⁻¹) |
+| Zero-order | `ZeroOrder(dur)` | `dur`: infusion duration (h) |
+| Lagged first-order | `LaggedFirstOrder(ka, tlag)` | `ka`, `tlag` (h) |
+| Transit | `Transit(n=4, ktr, ka)` | `n` topology (≥ 1); `ktr` (h⁻¹), `ka` |
+| Mixed | `MixedFirstZero(ka, dur, frac)` | `ka`, `dur`; `frac ∈ (0, 1)` |
+| Erlang | `Erlang(n=3, ktr)` | integer `n` (1..7); chain, no terminal `ka`; `ktr` |
+| Parallel first-order | `ParallelFirstOrder(ka1, ka2, frac)` | two depots; `frac ∈ (0, 1)` |
+| SumIG | `SumIG(k=2, MT_1, MT_2, RD2_1, RD2_2, weight_1)` | `k` structural; `MT_1 < MT_2`; Discovery + Optimization only |
+| NODE | `NODE_Absorption(dim=4, constraint_template=monotone_increasing)` | none (NODE weights have no `initial:` entry) |
+
+`Erlang` lowers as an explicit n-compartment ODE chain (not via `rxode2::transit()` —
+see [ADR-0003](/docs/reference/decisions/0003-sota-absorption)). `SumIG` lowers as a
+closed-form analytic input rate and carries an identifiability gate: for `k ≥ 2`,
+disposition parameters (CL/V/Q) must be externally fixed. `SumIG` is blocked from the
+Submission lane (Csajka 2005; Weiss 2022).
+
+<Callout type="warn">
+  Stan/Torsten support for `Erlang`, `ParallelFirstOrder`, and `SumIG` is deferred to a
+  follow-on release; the Stan emitter raises `NotImplementedError` and routes to nlmixr2.
+</Callout>
+
+## Distribution
+
+| Module | Syntax | Calibration values |
+| --- | --- | --- |
+| One-compartment | `OneCmt(V)` | `V` (L) |
+| Two-compartment | `TwoCmt(V1, V2, Q)` | `V1`, `V2`, `Q` (L/h) |
+| Three-compartment | `ThreeCmt(V1, V2, V3, Q2, Q3)` | |
+| TMDD full | `TMDD_Core(V, R0, kon, koff, kint)` | Mager & Jusko 2001 |
+| TMDD QSS | `TMDD_QSS(V, R0, KD, kint)` | Gibiansky 2008 |
+
+## Elimination
+
+| Module | Syntax | Calibration values |
+| --- | --- | --- |
+| Linear | `Linear(CL)` | `CL` (L/h) |
+| Michaelis–Menten | `MichaelisMenten(Vmax, Km)` | saturable |
+| Parallel linear + MM | `ParallelLinearMM(CL, Vmax, Km)` | mixed |
+| Time-varying | `TimeVarying(CL, decay_fn=<fn>)` | `decay_fn ∈ {exponential, half_life, linear}`; `kdecay` optional (default 0.1) |
+| NODE | `NODE_Elimination(dim=4, constraint_template=bounded_positive)` | none |
+
+Validator-enforced `TimeVarying` semantics:
+
+```text
+exponential:  CL(t) = CL · exp(-kdecay · t)
+half_life:    CL(t) = CL / (1 + kdecay · t)     (kdecay = ln(2)/t_half)
+linear:       CL(t) = max(CL · (1 - kdecay · t), 0)
+```
+
+TMDD modules require `Linear` elimination.
+
+## Variability
+
+`IIV` / `IOV` are the only `variability:` item kinds. Multiple items go in braces; a
+single item may omit them. Covariate effects are a separate block (below).
+
+```text
+variability: {
+    IIV(params=[CL, V1, ka], structure=block)
+    IOV(params=[CL], occasions=ByStudy)
+}
+```
+
+| Item | Options |
+| --- | --- |
+| `IIV` | `structure`: `diagonal` or `block` (block requires ≥ 2 params) |
+| `IOV` | `occasions`: `ByStudy`, `ByVisit(col)`, `ByDoseEpoch(col)`, `Custom(col)` |
+
+## Covariates
+
+Covariate effects are declared in a dedicated top-level `covariates:` block using arrow
+syntax (`param <- covariate.form(...)`), one entry per `(param, covariate)` pair.
+
+```text
+covariates: {
+    CL <- WT.power(theta=0.75, ref=70),
+    CL <- SEX.categorical(reference="M"),
+    CL <- PMA.maturation(tm50=45, hill=3)
+}
+```
+
+| Form | Syntax | Fields |
+| --- | --- | --- |
+| `power` | `cov.power(theta=<coef>, ref=<value>)` | `theta`: coefficient estimate; `ref`: fixed reference (e.g. 70 kg — Anderson & Holford 2008) |
+| `exponential` | `cov.exponential(theta=<coef>)` | `theta` only |
+| `linear` | `cov.linear(theta=<coef>)` | `theta` only |
+| `categorical` | `cov.categorical(reference=<level>)` | `reference`: baseline level name |
+| `maturation` | `cov.maturation(tm50=<val>, hill=<val>)` | `tm50`, `hill` estimates |
+
+<Callout type="info">
+  Covariate-column existence is **not** checked at validation time — it is a data-binding
+  check that occurs when the emitter composes the spec with a concrete dataset. No
+  duplicate `(param, covariate)` pair is permitted (case-insensitive).
+</Callout>
+
+## Observation
+
+| Module | Syntax |
+| --- | --- |
+| Proportional | `Proportional(sigma_prop=0.1)` |
+| Additive | `Additive(sigma_add=0.5)` |
+| Combined | `Combined(sigma_prop=0.1, sigma_add=0.5)` |
+| BLQ M3 | `BLQ_M3(loq_value=0.1)` or composed with `error_model=` |
+| BLQ M4 | `BLQ_M4(loq_value=0.1)` or composed with `error_model=` |
+
+`BLQ_M3` / `BLQ_M4` accept `error_model ∈ {proportional, additive, combined}` selecting
+which residual form composes with the likelihood-based BLQ correction (Beal 2001); the
+bare form defaults to proportional.
+
+## Metadata
+
+Free-text provenance carried on `DSLSpec.metadata`; it never affects compilation,
+validation, or emission. All fields are optional strings.
+
+```text
+metadata: {
+    title = "1-cmt oral, allometric WT on CL",
+    intent = "Recover structural CL/V from Phase 1 PK data",
+    context_of_use = "exploratory",
+    analyte = "drugX",
+    version = "v1"
+}
+```
+
+## Initial estimates
+
+A flat `parameter = value` dict — the single source of truth for every calibration
+value referenced by the structural modules.
+
+```text
+initial: { ka = 1.5, V = 70.0, CL = 5.0 }
+```
+
+The validator cross-checks this block against the calibration parameters actually
+referenced: a used-but-absent parameter is `FRM-AST-012`; a present-but-unreferenced
+value is `FRM-AST-013`. Order does not matter.
+
+## Complete example
+
+```text
+model {
+    metadata: { title = "2cmt transit MM covariate example" }
+    variability: {
+        IIV(params=[CL, V1, ka], structure=block)
+    }
+    covariates: {
+        CL <- WT.power(theta=0.75, ref=70)
+    }
+    absorption: Transit(n=4, ktr, ka)
+    elimination: ParallelLinearMM(CL, Vmax, Km)
+    distribution: TwoCmt(V1, V2, Q)
+    observation: Combined(sigma_prop=0.1, sigma_add=0.5)
+    initial: { ktr = 2.0, ka = 1.0, V1 = 30.0, V2 = 40.0, Q = 5.0, CL = 2.0, Vmax = 50.0, Km = 5.0 }
+}
+```
+
+Blocks are shown out of conventional order to illustrate that order does not matter —
+the compiled AST is identical regardless of source order.

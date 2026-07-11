@@ -1,0 +1,132 @@
+---
+title: "Case Study: Eleveld Propofol — Coverage Analysis"
+description: A worked example of DSL coverage assessment for a complex published PK model.
+since: "0.6.1"
+---
+
+This case study walks through the assessment of whether APMODE's Formular DSL can represent the full structural complexity of the Eleveld propofol pharmacokinetic-pharmacodynamic model, and what extensions would be needed.
+
+**Reference**: Eleveld DJ, Colin P, Absalom AR, Struys MMRF (2018). Pharmacokinetic-pharmacodynamic model for propofol for broad application in anaesthesia and sedation. *Br J Anaesth* 120(5):942–959. [doi:10.1016/j.bja.2018.01.018](https://doi.org/10.1016/j.bja.2018.01.018)
+
+---
+
+## The Model: Eleveld Propofol (2018)
+
+The Eleveld model is a **3-compartment IV-infusion mammillary model** with rich covariate structure:
+
+| Parameter | Structural Features |
+|-----------|-------------------|
+| **V1, V2, V3** (volumes) | Allometric scaling on **fat-free mass** (FFM, derived from weight + sex + height/BMI) |
+| **CL** (clearance) | Allometric on FFM × maturation (Hill on PMA) × age-decay (linear, adults) × opioid multiplier (categorical) |
+| **Q2, Q3** (intercompartmental clearances) | Allometric on FFM × age-modulated factor (piecewise linear for pediatric vs. adult) |
+| **KE0** (PD effect-site) | Allometric on weight (standard exponential form) |
+
+This model includes:
+- **Derived covariates** (FFM computed from weight, height, sex)
+- **Composite effects** (multiple covariate forms on a single parameter)
+- **Piecewise / age-dependent logic** (different functional forms for pediatric vs. adult populations)
+- **Pharmacodynamic compartment** (PD effect-site)
+
+---
+
+## DSL Primitive Inventory
+
+APMODE's Formular DSL (v0.6) supports five covariate link forms:
+
+| Form | Equation | Use Case |
+|------|----------|----------|
+| `power` | `(cov / cov_ref)^β` | Allometric scaling (e.g., weight, FFM) |
+| `exponential` | `exp(β · cov)` | Continuous risk factors |
+| `linear` | `1 + β · cov` | Linear covariate effects |
+| `categorical` | Multiplicative offset | Binary/nominal covariates (e.g., sex, opioid co-admin) |
+| `maturation` | `cov^β / (cov^β + TM50^β)` | Hill saturation (e.g., post-natal age) |
+
+---
+
+## Coverage Gap Analysis
+
+### Supported by DSL ✓
+
+- ✓ **Allometric scaling on weight**: `power` form
+- ✓ **Categorical opioid multiplier on CL**: `categorical` form
+- ✓ **Categorical sex effect on V1/V3**: `categorical` form
+
+### Partially Supported ⚠
+
+- ⚠ **Maturation function on PMA**
+  - **nlmixr2 backend**: Implemented
+  - **Stan backend**: `NotImplementedError` — not yet supported
+  - **Impact**: Cannot use Eleveld for Bayesian fixtures in v0.6
+
+### Not Supported ✗
+
+| Gap | Impact | Workaround |
+|-----|--------|-----------|
+| **Derived covariates** (FFM = f(weight, height, sex)) | FFM is not a column in the input CSV | Pre-compute FFM and supply as input column |
+| **Composite covariate effects** (e.g., CL = base × allometric(FFM) × maturation(PMA) × decay(age) × opioid) | Each `CovariateLink` applies in sequence, but the *piecewise age-decay* form is not expressible as a single form | Refactor published model to use simpler functional forms, or defer to DSL extension in v0.7+ |
+| **PD/effect-site compartment** (KE0) | DSL is PK-only; no `EffectSite` primitive | Derive KE0 from published literature and fix it, or extend DSL to include PD |
+
+---
+
+## Recommendation: Phase-1 Deferral
+
+**Status for Suite C Phase-1 (v0.6.1)**: ⏸ **NO-GO — defer to v0.7+**
+
+Three blocking gaps make Eleveld unsuitable for Phase-1 Bayesian fixtures:
+
+1. **Stan emitter lacks maturation support.** The nlmixr2 emitter implements `maturation` (Hill function on post-natal age), but Stan raises `NotImplementedError`. Adding it requires:
+   - Prior specification (HalfNormal? LogNormal?) for the Hill `TM50` parameter
+   - Stan code generator branch for `pow(cov, beta) / (pow(cov, beta) + pow(TM50, beta))`
+   - Golden tests against nlmixr2 output
+   
+   This is non-trivial but well-scoped — a discovery-track task for v0.7.
+
+2. **No derived-covariate path.** Eleveld defines FFM = f(weight, height, sex), but the DSL cannot generate new columns from existing ones. Options:
+   - Input CSV must carry a precomputed `FFM` column (manual preprocessing)
+   - Add a `DerivedCovariate` primitive to the DSL (v0.7+ feature)
+   
+   Either way, it is out of scope for v0.6.
+
+3. **Age-decay on CL is piecewise, not a single form.** The published model uses:
+   ```
+   CL = base × allometric(FFM) × maturation(PMA) × decay(age) × opioid
+   ```
+   
+   The `decay(age)` term is a weighting function that the model defines via a `gAge` parameter with different slopes for pediatric vs. adult. This doesn't fit any of the five current `CovariateLink` forms — it's composite logic, not a primitive.
+
+---
+
+## Path Forward: Eleveld in v0.7+
+
+Once these gaps are closed, Eleveld becomes a high-value Phase-2 Bayesian fixture because:
+- ✓ Rich covariate structure (tests the DSL's expressiveness)
+- ✓ Pediatric-to-adult transition (tests maturation and age-decay forms)
+- ✓ Published on real clinical data (high external validity)
+
+**v0.7 roadmap** includes:
+- [ ] Implement `maturation` form in Stan emitter
+- [ ] Add `DerivedCovariate` primitive (or simpler: document the precomputed-column workaround)
+- [ ] Design composite-effect syntax (or document the multi-`CovariateLink` composition pattern)
+
+Once shipped, add `benchmarks/suite_c/propofol_eleveld_2018.dsl.json` and `propofol_eleveld_2018.yaml`.
+
+---
+
+## Lesson: DSL Coverage Assessment
+
+This case study illustrates the assessment process for any complex published model:
+
+1. **Map published parameter names to DSL primitives** — Does every structural form have a DSL equivalent?
+2. **Test backend support** — Does the target emitter (nlmixr2, Stan, etc.) implement each primitive?
+3. **Document gaps clearly** — Distinguish "not supported", "partially supported", and "workaround exists"
+4. **Plan prioritization** — Which gaps are critical for your use case? Which can wait?
+
+The Eleveld analysis revealed that **maturation support in Stan** is the highest-ROI gap (enables Bayesian pediatric models across the field), so it is prioritized in the v0.7 roadmap alongside other absorption-form extensions.
+
+---
+
+## See Also
+
+- [ADR 0003: SOTA Absorption Extension](/docs/reference/decisions/0003-sota-absorption) — precedent for how DSL primitives get added end-to-end
+- [Suite C: Literature Anchor Fixtures](/docs/reference/benchmarks/suite-c) — context for why Eleveld was deferred
+- [Formular Reference](../../../guide/formular-dsl) — complete DSL primitive documentation

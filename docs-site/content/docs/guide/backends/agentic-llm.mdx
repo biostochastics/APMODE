@@ -1,0 +1,380 @@
+---
+title: Agentic LLM Backend
+description: Closed-loop model improvement via large language models—operating exclusively through typed Formular transforms with full audit trail and safety boundaries.
+since: "0.6.0"
+---
+
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
+
+## Overview
+
+The agentic LLM backend is a **closed-loop model refinement system** where a large language model proposes population PK model improvements based on diagnostic feedback. The LLM operates exclusively within the Formular DSL grammar — it **cannot emit raw code**.
+
+- **Primary use**: Discovery and Optimization lanes; iterative model exploration beyond deterministic search
+- **Iteration budget**: Hard-capped at 25 iterations per run (configurable `--max-iterations`, but capped at 25)
+- **Default behavior**: OFF by default (use `--agentic` flag to enable)
+- **LLM providers**: Anthropic (default), OpenAI, Google Gemini, Ollama (local), OpenRouter
+- **Privacy**: Off by default to respect user choice about sending model diagnostics to an LLM provider
+
+<Callout type="warn">
+**Privacy and transparency:** When `--agentic` is enabled, aggregated fit diagnostics (convergence, CWRES summary, shrinkage, VPC coverage — but never raw patient data) are sent to the selected LLM provider. This is an intentional design choice, not a bug. Disable `--agentic` if you want to avoid LLM API calls.
+</Callout>
+
+## How It Works
+
+```
+Best classical candidate (or minimal spec) → LLM loop ↓
+  ┌─────────────────────────────────────┐
+  │ FOR each iteration (max 25):        │
+  │  1. EVALUATE current spec (fit)     │
+  │  2. SUMMARIZE diagnostics (redact)  │
+  │  3. PROMPT LLM with feedback        │
+  │  4. PARSE LLM response → transforms │
+  │  5. VALIDATE & APPLY transforms     │
+  │  6. REPEAT                          │
+  └─────────────────────────────────────┘
+         ↓
+    Best candidate by BIC (across all agentic iterations)
+```
+
+### Iteration Loop
+
+Each iteration follows this sequence:
+
+1. **Fit the current spec** using the inner runner (nlmixr2, Stan, or JAX NODE)
+2. **Extract diagnostics** (convergence, CWRES, shrinkage, VPC, NPE) and redact patient-level data
+3. **Build system prompt** with pharmacometric guidance + current best candidate info
+4. **Build user message** with diagnostic summary + previous iteration history
+5. **Call LLM** with temperature=0 (deterministic) to propose transforms
+6. **Parse JSON response** into typed `FormularTransform` objects (via `transform_parser.py`)
+7. **Validate preconditions** (e.g., "can only convert_transit_to_erlang if current absorption is Transit")
+8. **Apply transforms** sequentially, updating the DSLSpec each time
+9. **Semantic validation** to catch invalid specs before re-fitting
+10. **Trace all I/O** to `agentic_trace/{iteration_id}_{input,output,meta}.json` for reproducibility
+11. **Return to step 1** with the refined spec (unless iteration budget exhausted or LLM says "stop")
+
+## Available Transforms
+
+The LLM cannot freely propose changes — it can **only** select from these 10 typed operations, all validated before application:
+
+| Transform | Purpose | Example |
+|-----------|---------|---------|
+| `swap_module` | Replace a structural module (absorption/distribution/elimination/observation) | Linear → MichaelisMenten CL |
+| `add_covariate_link` | Add a covariate effect on a parameter (power/exponential/linear/categorical/maturation) | Allometric WT → CL |
+| `adjust_variability` | Modify IIV structure (add/remove parameter from block, upgrade diagonal to block) | Remove IIV on ka (high shrinkage) |
+| `set_transit_n` | Change transit compartment count | Increase Transit n from 3 to 4 |
+| `toggle_lag` | Enable or disable absorption lag time (tlag) | Add tlag for delayed onset |
+| `replace_with_node` | Swap a module to Neural ODE (Discovery/Optimization only) | Absorption → NODE_Absorption(dim=4) |
+| `convert_transit_to_erlang` | Transit → Erlang (integer n, no terminal ka) | Structural simplification |
+| `add_parallel_route` | FirstOrder → ParallelFirstOrder (two absorption depots) | Split absorption into fast+slow |
+| `set_sumig_components` | Adjust SumIG (sum-of-inverse-Gaussian) parameters | Change mixture timing |
+| `set_prior` | Declare or replace a typed prior (Bayesian workflows) | HalfNormal(0, 0.5) on IIV ω |
+
+### Validation Before Application
+
+Each transform is validated against:
+
+1. **Preconditions**: e.g., `convert_transit_to_erlang` requires current absorption to *be* Transit
+2. **Parameter cardinality**: Swapping elimination modules updates the `initial:` block with new parameter names
+3. **Parameterization admissibility**: Prior families are checked against the target (e.g., HalfNormal only on IIV/RUV, LogNormal on structural params)
+4. **Lane eligibility**: `replace_with_node` is rejected in the Submission lane
+
+If a transform fails validation, the LLM is told the error reason and asked to propose an alternative.
+
+## LLM Providers
+
+All providers run with **temperature=0** (deterministic sampling):
+
+<Tabs items={['Anthropic', 'OpenAI', 'Google Gemini', 'Ollama (local)', 'OpenRouter']}>
+<Tab value="Anthropic">
+- **Default** (`--provider anthropic`)
+- **Model**: `claude-sonnet-4-20250514` (configurable via `--model`)
+- **Auth**: `ANTHROPIC_API_KEY` environment variable
+- **Cost**: Per-token pricing
+- **Payload cache**: SHA-256 hash for offline replay
+- **Model versioning**: Full semantic version in traces
+
+```bash
+export ANTHROPIC_API_KEY="sk-ant-..."
+uv run apmode run ./data.csv --lane discovery --agentic --provider anthropic
+```
+</Tab>
+<Tab value="OpenAI">
+- **Model**: `gpt-4o` (default; configurable)
+- **Auth**: `OPENAI_API_KEY` environment variable
+- **Cost**: Per-token pricing
+- **Batching**: Supported for cost optimization
+
+```bash
+export OPENAI_API_KEY="sk-..."
+uv run apmode run ./data.csv --lane discovery --agentic \
+  --provider openai --model gpt-4o
+```
+</Tab>
+<Tab value="Google Gemini">
+- **Model**: `gemini-2.5-flash` (default)
+- **Auth**: `GEMINI_API_KEY` or `GOOGLE_API_KEY` environment variable
+- **Cost**: Per-token pricing
+
+```bash
+export GEMINI_API_KEY="..."
+uv run apmode run ./data.csv --lane discovery --agentic \
+  --provider gemini --model gemini-2.5-flash
+```
+</Tab>
+<Tab value="Ollama (local)">
+- **Model**: `qwen3:4b` (default; requires local Ollama install)
+- **Auth**: None (runs locally)
+- **Cost**: Free (runs on your hardware)
+- **Setup**: `ollama pull qwen3:4b`
+
+```bash
+# Start Ollama first: ollama serve
+uv run apmode run ./data.csv --lane discovery --agentic \
+  --provider ollama --model qwen3:4b --ollama-host http://localhost:11434
+```
+</Tab>
+<Tab value="OpenRouter">
+- **Model**: `anthropic/claude-sonnet-4-20250514` (any OpenRouter model)
+- **Auth**: `OPENROUTER_API_KEY` environment variable
+- **Cost**: Per-provider pricing (often lower than direct APIs)
+
+```bash
+export OPENROUTER_API_KEY="sk-or-..."
+uv run apmode run ./data.csv --lane discovery --agentic \
+  --provider openrouter --model anthropic/claude-sonnet-4-20250514
+```
+</Tab>
+</Tabs>
+
+## Reproducibility & Caching
+
+All agentic I/O is cached for **offline replay** and **reproducibility**:
+
+### Per-Iteration Artifacts
+
+Each iteration writes three files to `agentic_trace/{iteration_id}_{suffix}.json`:
+
+```json
+// input.json: What was sent to the LLM
+{
+  "iteration": 1,
+  "timestamp": "2026-04-25T10:30:45Z",
+  "payload": {
+    "system_prompt": "You are a pharmacometrician...",
+    "user_message": "Current spec: ...\nDiagnostics: ...",
+    "diagnostics_summary": {
+      "convergence": true,
+      "ofv": -123.45,
+      "cwres_mean": 0.02,
+      "shrinkage": {"CL": 0.15, "V": 0.08},
+      "vpc_coverage": 0.92
+    }
+  },
+  "payload_hash": "sha256:abc123def456..."
+}
+
+// output.json: What the LLM returned
+{
+  "iteration": 1,
+  "model": "claude-sonnet-4-20250514",
+  "stop_reason": "end_turn",
+  "content": "[{\"type\": \"swap_module\", \"axis\": \"elimination\", ...}]",
+  "finish_tokens": 345,
+  "input_tokens": 2145
+}
+
+// meta.json: Metadata + cost
+{
+  "iteration": 1,
+  "duration_seconds": 2.34,
+  "total_tokens": 2490,
+  "cost_usd": 0.015,
+  "model_version": "claude-sonnet-4-20250514",
+  "cached_from_iteration": null  // set if this iteration's output was replayed
+}
+```
+
+### Replay Cache
+
+If you run the same bundle again with `--resume-agentic`, the orchestrator:
+1. Loads `classical_checkpoint.json` (skips multi-hour SAEM)
+2. Checks `agentic_trace/` for cached responses matching the same payload hash
+3. If cache hit, replays the stored response without calling the LLM
+4. If cache miss, calls the LLM (and adds to the cache)
+
+This enables:
+- **Deterministic replay**: Re-run without LLM calls (no cost, no quota hits)
+- **CI testing**: Validate agentic logic against stored LLM responses
+- **Fault recovery**: Restart after API 5xx or timeout without re-running SAEM
+
+## Diagnostic Redaction
+
+When sending diagnostics to the LLM, the `redact_for_llm()` allow-list ensures **no patient-level data leaks**:
+
+### Allowed Fields (Whitelist)
+
+```python
+ALLOWED_DIAGNOSTIC_FIELDS = {
+    "convergence", "gradient_norm", "ofv", "aic", "bic",  # Fit quality
+    "cwres_mean", "cwres_sd", "outlier_fraction",         # Residual diagnostics
+    "shrinkage",                                           # Parameter shrinkage
+    "vpc_coverage", "pit_calibration",                     # Predictive diagnostics
+    "npe_score",                                           # NPE (population-level)
+    # ... more field names ...
+}
+```
+
+**Rejected fields** (blocked from LLM):
+- `parameter_estimates` (actual fitted values)
+- Subject-level random effects
+- Individual observation pairs (y_obs, y_pred)
+- Covariate values
+
+### Imputation-Stability Cherry-Picking Guard
+
+When multiple-imputation is active, the LLM sees only **pooled + stability diagnostics**, not per-imputation draws. This prevents the LLM from detecting and exploiting a "lucky" imputation that happened to yield good fit.
+
+## Running Agentic Discovery
+
+### Minimal Setup
+
+```bash
+export ANTHROPIC_API_KEY="sk-ant-..."  # or OPENAI_API_KEY, GEMINI_API_KEY, etc.
+
+uv run apmode run ./data/mavoglurant.csv \
+  --lane discovery \
+  --agentic \
+  --max-iterations 10 \
+  -o ./runs
+```
+
+### Full Workflow
+
+```bash
+# 1. Run discovery with agentic enabled (classical SAEM takes 30–60 min, then LLM loop)
+uv run apmode run ./data/mavoglurant.csv \
+  --lane discovery \
+  --agentic \
+  --provider anthropic \
+  --max-iterations 15 \
+  --parallel-models 2 \
+  -o ./runs
+
+# 2. Inspect the results
+BUNDLE=$(uv run apmode ls --sort bic --limit 1 --format path)
+uv run apmode inspect "$BUNDLE"
+
+# 3. View the agentic iteration trace
+uv run apmode trace "$BUNDLE" --iteration 5    # details of iteration 5
+uv run apmode trace "$BUNDLE" --cost           # total tokens + cost
+
+# 4. Generate the regulatory report
+uv run apmode report "$BUNDLE"
+```
+
+### Resuming After Interruption
+
+If the LLM loop crashes or hits a quota limit:
+
+```bash
+# Skip classical SAEM, resume from classical_checkpoint.json
+uv run apmode run ./data/mavoglurant.csv \
+  --lane discovery \
+  --agentic \
+  --resume-agentic \
+  -o ./runs/run_20260425T103045Z
+```
+
+This restarts from iteration N+1 without re-running the classical search.
+
+## Lane Eligibility
+
+| Lane | Agentic Eligible | Constraints |
+|------|---|---|
+| **Submission** | ❌ Never | Hard-blocked by policy (`agentic_eligible = false`) |
+| **Discovery** | ✅ Yes | No restrictions; full transform set available |
+| **Optimization** | ✅ Yes (LORO-CV) | LORO-CV Gate 2 enforces predictive parity on held-out regimens |
+
+## Privacy Considerations
+
+<Callout type="info">
+**Agentic LLM is OFF by default** specifically to respect user choice about sharing model diagnostics with an external LLM provider. You must explicitly pass `--agentic` to enable it.
+
+No patient-level identifiers or raw observations are sent to the LLM. Only aggregated diagnostics (mean, SD, coverage) cross the network.
+</Callout>
+
+If privacy is a concern:
+- Use the **Ollama provider** for local, on-device processing (no network calls)
+- Run with `--dry-run` to preview the pipeline without executing fits
+- Audit `agentic_trace/` to inspect what was sent to the LLM
+
+## Troubleshooting
+
+### LLM proposes invalid transforms
+
+- **Cause**: Network latency, quota issues, or model hallucination
+- **Solution**: LLM responses are validated before application; invalid transforms trigger a retry with error feedback. Check `agentic_trace/*_output.json` for the raw LLM response.
+
+### "Max iterations (25) exhausted"
+
+- **Cause**: LLM proposes changes every iteration but model doesn't improve
+- **Solution**: Either the search space is saturated or the LLM is exploring local minima. Check `apmode trace $BUNDLE --cost` for token usage. Consider `--max-iterations` lower than 25 to save cost.
+
+### "Temperature must be 0" error
+
+- **Cause**: You passed a non-zero temperature via `--model-kwargs`
+- **Solution**: Deterministic sampling (temperature=0) is required for reproducibility. Do not override.
+
+### API quota hit mid-run
+
+- **Cause**: Iteration N exhausts the provider's quota
+- **Solution**: The run fails at iteration N. Resume with `--resume-agentic` after quota resets; previously completed iterations are replayed from cache (no cost).
+
+## Example: Covariate Discovery on Mavoglurant
+
+The Novartis mavoglurant dataset (120 subjects, 6 potential covariates) is ideal for agentic exploration:
+
+```bash
+uv run apmode run ./data/mavoglurant.csv \
+  --lane discovery \
+  --agentic \
+  --max-iterations 12 \
+  -o ./runs
+
+# Inspect what the LLM discovered
+uv run apmode trace ./runs/run_*/spec_final.json | grep covariates
+
+# Check cost
+uv run apmode trace ./runs/run_*/ --cost
+# Output: "Total tokens: 45,230 | Cost: ~$0.68 (Anthropic Claude Sonnet 4)"
+```
+
+Expected LLM strategy:
+1. **Iteration 1–3**: Evaluate the classical root (e.g., 2-cmt with linear CL), identify high shrinkage on CL
+2. **Iteration 4–6**: Add allometric WT effect on CL, then SEX categorical effect
+3. **Iteration 7–10**: Experiment with covariate interactions, adjust IIV structure
+4. **Iteration 11–12**: Fine-tune (e.g., swap error model from proportional to combined based on VPC coverage)
+
+The best agentic candidate typically beats the classical root by 5–10 BIC points if structure improvements exist.
+
+---
+
+## The Safety Contract
+
+The LLM operates within a **strict type boundary**. It cannot:
+- ❌ Write R code, Stan code, or Python
+- ❌ Access raw patient data
+- ❌ Propose arbitrary parameter values
+- ❌ Modify the data pipeline or validation logic
+
+It can only:
+- ✅ Propose one of 10 typed, enumerated transforms
+- ✅ See aggregated diagnostics (population-level summaries)
+- ✅ Receive feedback on failed proposals and retry
+
+This design means **agentic LLM is fundamentally safer than code-generation approaches**. The typed-transform boundary is the security mechanism.
+
+---
+
+**See also**: [Classical NLME Backend](/docs/guide/backends/nlmixr2) for routine workflows; [Bayesian Backend](/docs/guide/backends/bayesian-stan) for prior-informed discovery; [Formular DSL Guide](/docs/guide/formular-dsl) for the transform contract and DSL semantics.

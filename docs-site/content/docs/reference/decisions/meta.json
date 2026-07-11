@@ -1,0 +1,5 @@
+{
+  "title": "Design Decisions",
+  "icon": "GitPullRequestArrow",
+  "pages": ["index", "0003-sota-absorption", "0004-cross-paradigm-circularity"]
+}

@@ -1,0 +1,198 @@
+---
+title: "Suite C: Literature Anchor Fixtures"
+description: Published reference parameterizations for consistency validation with peer-reviewed models.
+since: "0.6.1"
+---
+
+Suite C Phase-1 compares APMODE's population PK fits against published, peer-reviewed reference parameterizations on shared datasets. Each fixture pairs a dataset with a DSL spec and literature-fixture metadata capturing the reference parameter values plus the symbol-to-DSL mapping.
+
+## Phase-1 Fixtures
+
+| Dataset | Route | DSL Skeleton | Reference |
+|---------|-------|--------------|-----------|
+| `theophylline_boeckmann_1992` | Oral | 1-cmt + FO ka | Schoemaker et al. (2019) [doi:10.1002/psp4.12471](https://doi.org/10.1002/psp4.12471) |
+| `warfarin_funaki_2018` | Oral | 1-cmt + lagged-FO ka | Fidler et al. (2019) [doi:10.1002/psp4.12445](https://doi.org/10.1002/psp4.12445) |
+| `mavoglurant_wendling_2015` | Oral | 2-cmt + FO ka | Wendling et al. (2015) [doi:10.1007/s11095-014-1574-1](https://doi.org/10.1007/s11095-014-1574-1) |
+| `phenobarbital_grasela_1985` | IV bolus | 1-cmt | Grasela & Donn (1985) [doi:10.1159/000457062](https://doi.org/10.1159/000457062) |
+| `oral_1cpt_acop_2016` | Oral | 1-cmt + FO ka | ACOP 2016 / `nlmixr2data::Oral_1CPT` [doi:10.32614/CRAN.package.nlmixr2data](https://doi.org/10.32614/CRAN.package.nlmixr2data) |
+| `gentamicin_germovsek_2017` | IV bolus | 1-cmt | Germovsek et al. (2016) [doi:10.1128/AAC.00577-16](https://doi.org/10.1128/AAC.00577-16) |
+| `schoemaker_nlmixr2_tutorial` | IV bolus | 1-cmt | Schoemaker et al. (2019) [doi:10.1002/psp4.12471](https://doi.org/10.1002/psp4.12471) |
+
+---
+
+## Running Suite C
+
+### Step 1: Regenerate fits (live R required)
+
+```bash
+# Requires R 4.4+ with compiled nlmixr2
+python -m apmode.benchmarks.suite_c_phase1_runner
+```
+
+This step:
+- Runs honest-mode estimation on each fixture (see "Metric definitions" below)
+- Computes VPC, NPE, PIT calibration, and AUC/Cmax bioequivalence per fixture
+- Writes results to `benchmarks/suite_c/phase1_npe_inputs.json`
+
+### Step 2: Score the snapshot
+
+```bash
+python -m apmode.benchmarks.suite_c_phase1_cli \
+  --inputs benchmarks/suite_c/phase1_npe_inputs.json \
+  --out scorecard.json \
+  --markdown-summary scorecard.md
+```
+
+### Step 3: Commit
+
+```bash
+git add benchmarks/suite_c/phase1_npe_inputs.json scorecard.json scorecard.md
+git commit -m "score(suite-c): regenerate Phase-1 fixture scorecards post-[change]"
+```
+
+<Callout type="info">
+**No scheduled CI job.** There is no cron-based regeneration of Suite C results. The committed `phase1_npe_inputs.json` is a generated snapshot, not continuously validated. Regenerate on-demand before citing Suite C results as evidence of methodology change.
+</Callout>
+
+---
+
+## Metric Definitions
+
+### NPE (Nonparametric Prediction Error)
+
+**This is NOT classical NPDE.** APMODE's NPE is the **median absolute prediction error** from posterior-predictive simulations:
+
+```
+NPE = median(|observed_i - predicted_i|) / scale_i
+```
+
+where `scale_i` depends on the observation model:
+- **Proportional**: divided by observed value
+- **Additive**: raw residual
+- **Combined**: divided by sqrt(observed² + 1²)
+
+Reference: `apmode.benchmarks.scoring.compute_npe`. See [Design Decisions: Cross-Paradigm Circularity](/docs/reference/decisions/0004-cross-paradigm-circularity) for technical notes on why this metric is used and its limitations.
+
+### PIT Calibration
+
+**PIT** = Probability Integral Transform. For each observation, compute:
+```
+PIT_i = CDF(observed_i | simulated distribution)
+```
+
+A well-calibrated posterior should have PITs uniform on [0, 1]. Suite C reports the median PIT per fixture as a marginal calibration check (not a formal NPDE battery, but an observability metric).
+
+### Honest-Mode Fit Contract
+
+Suite C's "honest mode" ensures fairness:
+
+1. **No literature seeding**: NCA estimators are never seeded with reference parameters
+2. **Per-fixture k-fold CV**: Each fixture is fit on train folds with NPE computed on held-out test folds
+3. **Fixed THETA**: Held-out NPE uses `fixed_parameter=True` (freeze THETA, fit ETAs only) so the cross-validation does not leak information between train and test
+
+This contract is pinned by `tests/unit/test_suite_c_phase1_runner.py::test_run_fixture_apmode_side_never_seeded_from_literature_reference_params`.
+
+---
+
+## Scoring Gates
+
+| Criterion | Gate | Default | Purpose |
+|-----------|------|---------|---------|
+| Wins vs. literature | Overall | ≥ 60% | Majority of fixtures should match or beat literature |
+| PIT calibration | Per-fixture | 0.40–0.60 (p50) | Posterior is neither under- nor over-confident |
+
+The committed snapshot was last regenerated 2026-04-25 and reported **40% (2/5) fixtures beating literature** — below the 60% CI target. No new fixtures have been added since that run.
+
+---
+
+## Fixture File Structure
+
+Each fixture consists of three files:
+
+### DSL Spec
+**File**: `<dataset_id>.dsl.json`
+
+```json
+{
+  "absorption": {...},
+  "distribution": {...},
+  "elimination": {...},
+  "variability": {...},
+  "observation": {...},
+  "covariates": {...},
+  "priors": {...}
+}
+```
+
+Export via `DSLSpec(...).model_dump_json(indent=2)`.
+
+### Literature Reference
+**File**: `<dataset_id>.yaml`
+
+```yaml
+literature_reference:
+  title: "Propofol Population Pharmacokinetics in Adults"
+  authors: ["Eleveld DJ", "Colin P", ...]
+  year: 2018
+  doi: "10.1016/j.bja.2018.01.018"
+  journal: "British Journal of Anaesthesia"
+  volume: 120
+  issue: 5
+  pages: "942-959"
+
+reference_params:
+  CL:
+    typical_value: 1.85
+    unit: "L/h"
+  V1:
+    typical_value: 18.1
+    unit: "L"
+
+parameterization_mapping:
+  TVCL: "CL"
+  TVV1: "V1"
+```
+
+---
+
+## Adding a New Fixture
+
+1. **Decide on a stable `dataset_id`** (snake_case, lowercase)
+2. **Create the DSL spec**:
+   ```python
+   spec = DSLSpec(...)
+   with open(f"benchmarks/suite_c/{dataset_id}.dsl.json", "w") as f:
+       f.write(spec.model_dump_json(indent=2))
+   ```
+3. **Create the literature fixture YAML** with `LiteratureReference`, `reference_params`, and `parameterization_mapping`
+4. **Register in the loader**:
+   ```python
+   # src/apmode/benchmarks/literature_loader.py
+   PHASE1_MLE_FIXTURE_IDS.append(f"{dataset_id}")
+   ```
+5. **Regenerate**:
+   ```bash
+   python -m apmode.benchmarks.suite_c_phase1_runner
+   python -m apmode.benchmarks.suite_c_phase1_cli ...
+   ```
+
+---
+
+## Current Status (2026-04-25)
+
+| Finding | Status |
+|---------|--------|
+| Phase-1 MLE fixtures (7 total) | ✓ Complete |
+| Phase-1 Bayesian fixtures (1: vancomycin Roberts 2011) | ✓ Complete |
+| Eleveld propofol (Bayesian candidate) | ⏸ Deferred to v0.7 (Stan maturation covariate not yet implemented) |
+| True decorrelated NPDE (`_compute_npde`) | ✓ Implemented; not yet wired into Suite C output |
+| Regeneration on CI schedule | ✗ Removed (was perpetually green) |
+
+---
+
+## Related Resources
+
+- [Suite C Case Definitions](https://github.com/biostochastics/APMODE/tree/main/benchmarks/suite_c)
+- [Phase-1 Fixture Loader](https://github.com/biostochastics/APMODE/blob/main/src/apmode/benchmarks/literature_loader.py)
+- [Benchmark Overview](/docs/reference/benchmarks)
+- [Case Study: Eleveld Propofol Coverage Analysis](/docs/reference/benchmarks/eleveld-propofol)

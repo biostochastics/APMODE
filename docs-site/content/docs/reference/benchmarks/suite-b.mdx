@@ -1,0 +1,203 @@
+---
+title: "Suite B: Real-Data Robustness"
+description: Real-data anchors with controlled perturbations to test stability under realistic challenges.
+since: "0.6.1"
+---
+
+Suite B anchors real population pharmacokinetic datasets with controlled perturbations to stress-test APMODE's robustness to below-limit-of-quantification (BLQ) elevation, outliers, sparse absorption sampling, null covariates, inter-occasion variability, and covariate missingness.
+
+## Cases
+
+| ID | Dataset | Perturbation | Purpose |
+|---|---|---|---|
+| B4 | Theophylline | None | NODE anchor |
+| B5a | Mavoglurant | Inject BLQ @ 25% | BLQ robustness (mild) |
+| B5b | Mavoglurant | Inject BLQ @ 40% | BLQ robustness (severe) |
+| B6 | Mavoglurant | Inject outliers @ 5% | Outlier sensitivity |
+| B7 | Mavoglurant | Remove absorption samples | Sparse absorption coverage |
+| B8 | Mavoglurant | Add 5 null covariates | Covariate filtering |
+| B9 | Gentamicin | None (5-fold k-fold CV) | IOV challenge with cross-validation |
+| B10 | Bolus 1-cpt MM | None | Structural mismatch anchor |
+| B11 | Mavoglurant | Add protocol pooling (2 protocols, varied LLOQ) | Protocol heterogeneity |
+| B12a | Mavoglurant | Covariate missingness @ 10% | Covariate completeness (mild) |
+| B12b | Mavoglurant | Covariate missingness @ 20% | Covariate completeness (moderate) |
+| B12c | Mavoglurant | Covariate missingness @ 30% | Covariate completeness (severe) |
+
+---
+
+## Running Suite B
+
+### Live runner (requires local R 4.4+ with nlmixr2)
+
+```bash
+# Full run (all cases, 3 seeds, ~30 min)
+uv run python -m apmode.benchmarks.suite_b_runner \
+  --out benchmarks/suite_b/suite_b_results.json \
+  --dataset-csv ddmore_gentamicin=/abs/path/to/gentamicin.csv \
+  --n-seeds 3 \
+  --base-seed 20260425 \
+  --timeout-seconds 1800
+```
+
+### Fast smoke test (single case)
+
+```bash
+uv run python -m apmode.benchmarks.suite_b_runner \
+  --cases b4_theophylline_node \
+  --n-seeds 2 \
+  --estimation focei \
+  --timeout-seconds 600
+```
+
+### Scoring
+
+```bash
+uv run python -m apmode.benchmarks.suite_b_cli \
+  --inputs benchmarks/suite_b/suite_b_results.json \
+  --out scorecard.json \
+  --markdown-summary scorecard.md
+```
+
+---
+
+## Output Schema
+
+Each case produces a result object with convergence metrics across seeds:
+
+```json
+{
+  "case_id": "b5_mavoglurant_blq25",
+  "suite": "B",
+  "dataset_id": "nlmixr2data_mavoglurant",
+  "skipped": false,
+  "n_seeds": 3,
+  "convergence_rate": 1.0,
+  "cross_seed_cv_max": 0.07,
+  "cross_seed_cv_per_param": {
+    "CL": 0.05,
+    "V": 0.07,
+    "ka": 0.03
+  },
+  "seed_results": [
+    {
+      "seed": 20260425,
+      "converged": true,
+      "minimization_status": "successful",
+      "parameter_estimates": {"CL": 5.0, "V": 70.0, "ka": 1.4},
+      "bic": 1234.5,
+      "wall_time_seconds": 47.3
+    }
+  ]
+}
+```
+
+---
+
+## Scoring Criteria
+
+Suite B uses two gates to detect methodology drift:
+
+| Gate | Criterion | Default Threshold | Purpose |
+|------|-----------|-------------------|---------|
+| Convergence | Fraction of seeds that converge to a minimum | ≥ 0.80 (80%) | Detects optimizer instability |
+| Cross-seed stability | Max coefficient of variation across seeds | ≤ 0.50 (50%) | Detects RNG-signature overfitting |
+
+<Callout type="warn">
+A miss on either gate is a **methodology drift signal, not a release blocker**. The nightly regeneration is operator-driven; `suite_b_results.json` is a snapshot ignored by git. Per-PR tests exercise the runner/scorer logic on temporary fixtures.
+</Callout>
+
+---
+
+## Cross-Seed Stability (PRD § R8)
+
+For each case, the runner performs **N independent fits** at different random seeds and reports the across-seed coefficient of variation (CV) per parameter, plus a headline `cross_seed_cv_max`.
+
+This metric detects **RNG-signature overfitting**: an agentic backend that overfits to a specific random seed will exhibit large `cross_seed_cv_max` even when the model itself is correct.
+
+### Formula
+
+For parameter θ across seeds s ∈ [1, N]:
+```
+CV(θ) = SD(θ₁, θ₂, ..., θₙ) / mean(θ₁, θ₂, ..., θₙ)
+cross_seed_cv_max = max(CV(all parameters))
+```
+
+The threshold (0.50) is intentionally loose — a v0.7 follow-up will tighten it once more data accumulates.
+
+---
+
+## Split Strategies (Cross-Validation)
+
+Cases can declare a `split_strategy` (currently only **B9: gentamicin, subject-level 5-fold**) to drive genuine **k-fold cross-validation** instead of the default cross-seed sweep:
+
+1. The runner splits subjects into disjoint train/test CSVs per fold
+2. Each fold receives a fit with `test_data_path` pointing to the held-out test set
+3. Per-fold VPC, NPE, and AUC/Cmax are computed on genuinely held-out subjects
+4. Output carries a `fold` index (null for cases without cross-validation)
+
+```json
+{
+  "seed_results": [
+    {
+      "fold": 0,
+      "converged": true,
+      "npe_score": 0.18,
+      ...
+    },
+    {
+      "fold": 1,
+      "converged": true,
+      "npe_score": 0.21,
+      ...
+    }
+  ]
+}
+```
+
+---
+
+## Perturbation Recipes
+
+### BLQ Injection
+```python
+inject_blq(dataset, fraction=0.25)
+```
+Randomly marks `fraction` of non-zero observations as below the limit of quantification, imputing to `LLOQ/2`. Tests robustness to missing data.
+
+### Outlier Injection
+```python
+inject_outliers(dataset, fraction=0.05, multiplier=3)
+```
+Randomly multiplies `fraction` of observations by `multiplier`. Tests influence of extreme values.
+
+### Sparse Absorption Removal
+```python
+remove_absorption_samples(dataset)
+```
+Removes early (absorption-phase) observations. Tests whether structural identification is robust to sparse early sampling.
+
+### Null Covariate Injection
+```python
+add_null_covariates(dataset, n_null=5)
+```
+Adds N independent random covariates. Tests whether the covariate-selection mechanism correctly filters noise.
+
+### Protocol Pooling
+```python
+add_protocol_pooling(dataset, n_protocols=2)
+```
+Splits subjects across protocols with different sampling schemes and LLOQ values. Tests protocol heterogeneity handling.
+
+### Covariate Missingness
+```python
+inject_covariate_missingness(dataset, fraction=0.10)
+```
+Randomly marks `fraction` of covariate values as missing. Tests imputation strategy.
+
+---
+
+## Related Resources
+
+- [Suite B Case Definitions](https://github.com/biostochastics/APMODE/blob/main/src/apmode/benchmarks/suite_b_extended.py)
+- [Perturbation Recipes](https://github.com/biostochastics/APMODE/blob/main/src/apmode/data/perturbations.py)
+- [Benchmark Overview](/docs/reference/benchmarks)

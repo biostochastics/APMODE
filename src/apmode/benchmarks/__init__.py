@@ -36,7 +36,7 @@ Supporting infrastructure:
                                 + fixed-THETA literature comparator
   suite_c_phase1_scoring:       Suite C scoring math (FixtureScore,
                                 fraction-beats-literature-median)
-  suite_c_phase1_cli:           Suite C scorer CLI used by the weekly workflow
+  suite_c_phase1_cli:           Suite C scorer CLI run manually/on-demand
   suite_c_phase2_synthetic:     Synthetic-panel methodology validation
                                 scaffold; explicitly NOT a real-expert claim
 """

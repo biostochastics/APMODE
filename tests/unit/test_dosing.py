@@ -250,6 +250,36 @@ class TestExpandInfusionEvents:
         stop_times = sorted(stops["TIME"].values)
         np.testing.assert_array_almost_equal(stop_times, [2.0, 14.0])
 
+    def test_stop_row_honours_non_canonical_cmt_and_dv_columns(self) -> None:
+        """The synthetic stop row carries the mapped CMT/DV column names.
+
+        Regression for the deferred C1 minor: ``expand_infusion_events`` no
+        longer hardcodes the literals ``"CMT"``/``"DV"``. When the caller maps
+        differently-named columns, the stop event must write the compartment
+        under the mapped ``col_cmt`` name (routing an infusion-into-central
+        correctly) and leave the mapped ``col_dv`` null.
+        """
+        df = pd.DataFrame(
+            {
+                "NMID": [1, 1, 1],
+                "TIME": [0.0, 1.0, 3.0],
+                "EVID": [1, 0, 0],
+                "AMT": [500.0, 0.0, 0.0],
+                "cmt": [2, 2, 2],  # non-canonical, lowercase
+                "conc": [0.0, 100.0, 40.0],  # non-canonical DV name
+                "RATE": [250.0, 0.0, 0.0],
+            }
+        )
+        result = expand_infusion_events(df, col_cmt="cmt", col_dv="conc")
+
+        stops = result[result["EVID"] == INFUSION_STOP_EVID]
+        assert len(stops) == 1
+        # Compartment routed under the mapped name, not a stray "CMT" column.
+        assert "CMT" not in result.columns
+        assert stops.iloc[0]["cmt"] == 2
+        # The mapped DV column is null on the synthetic stop event.
+        assert pd.isna(stops.iloc[0]["conc"])
+
 
 # ---------------------------------------------------------------------------
 # build_event_table tests

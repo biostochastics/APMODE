@@ -1,0 +1,81 @@
+---
+title: Transforms
+description: The 10 typed mutations to a Formular spec — the only output type the agentic LLM backend can produce.
+since: "0.6.1"
+---
+
+Transforms are the set of admissible mutations to a `DSLSpec`. Each is a frozen
+Pydantic model with a `type` discriminator; their union, `FormularTransform`, is the
+**agentic LLM backend's output type**. No other form of DSL mutation is admissible — the
+LLM cannot emit raw code. This is the primary safety boundary of the whole system.
+
+## The 10 transforms
+
+| Transform | Purpose | Payload |
+| --- | --- | --- |
+| `swap_module` | Replace an absorption/distribution/elimination/observation module | `position`, `new_module` (structural only), `initial_overrides` |
+| `add_covariate_link` | Add a covariate effect | `param`, `covariate`, `form`, plus the form's required fields |
+| `adjust_variability` | Add/remove an IIV term or upgrade diagonal → block | `param`, `action ∈ {add, remove, upgrade_to_block}` |
+| `set_transit_n` | Change transit compartment count | `n` |
+| `toggle_lag` | Enable/disable absorption `tlag` | `enabled`, optional `tlag` |
+| `replace_with_node` | Swap an axis to a NODE module (Discovery/Optimization only) | `position`, `dim`, `constraint_template` |
+| `convert_transit_to_erlang` | `Transit(n)` → `Erlang(n)`; `ktr` carries forward | `n` (1..7) |
+| `add_parallel_route` | `FirstOrder(ka)` → `ParallelFirstOrder()` | `ka2`, `frac` |
+| `set_sumig_components` | Update SumIG calibration values (`k` unchanged) | `MT_1`, `MT_2`, `RD2_1`, `RD2_2`, `weight_1` |
+| `set_prior` | Declare or replace a prior (idempotent replace-or-append) | `target`, `family`, `source`, `justification`, `historical_refs` |
+
+## Semantics
+
+`apply_transform(spec, t)` returns a **new** `DSLSpec` with a fresh `model_id` —
+transforms are pure; the input spec is never mutated. `validate_transform(spec, t)`
+returns a list of string errors without applying; the agentic loop runs validate before
+apply and feeds failures back to the LLM for correction.
+
+Every transform that changes structural modules re-derives the required `initial:` keys:
+unchanged names carry forward automatically, and new names must be supplied via the
+transform's payload — or `apply_transform` raises `ValueError`. **A spec can never leave
+`apply_transform` with a calibration parameter unresolved.**
+
+## The safety boundary, in layers
+
+<Cards>
+  <Card title="Precondition checks (plan time)">
+    E.g. <code>set_transit_n</code> rejects a spec whose absorption is not
+    <code>Transit</code>; <code>set_prior</code> rejects nonsense
+    <code>(target, family)</code> pairs via the admissibility matrix.
+  </Card>
+  <Card title="Full validation (apply time)">
+    After applying, the full validator runs — so invalid <em>compound</em> states are
+    caught even when each individual transform passes its own precondition.
+  </Card>
+  <Card title="Typed deserialization (entry)">
+    <code>parse_transforms(json_str)</code> is the only path by which LLM-authored
+    transforms enter the pipeline — raw model output is parsed into
+    <code>list[FormularTransform]</code>, or rejected.
+  </Card>
+</Cards>
+
+<Callout type="info">
+  This is why the agentic backend is bounded: it can propose only these 10 typed
+  operations, each individually validated, each producing an auditable AST diff recorded
+  in the run bundle's candidate lineage DAG. See the
+  [agentic backend](/docs/guide/backends/agentic-llm) for the iteration loop.
+</Callout>
+
+## Extending the transform set
+
+Adding a new transform is a deliberate, reviewed change — not a runtime extension.
+Contrast the two Formular extension tracks:
+
+- **New module types** (rare) — a new absorption/distribution/elimination/observation
+  form requires a formal ODE specification, grammar + AST + validator + emitter changes,
+  tests, and pharmacometrician review. Tracked as an open design question, expected to go
+  through an ADR.
+- **New enum values** (common, lightweight) — new `constraint_template` values, new
+  `CovariateLink.form` values, new `IOV.occasion` kinds, or new prior families are typed
+  enum extensions: extend the `Literal`, extend the admissibility/ceiling table, extend
+  each emitter, add tests.
+
+Separating these keeps grammar-version churn decoupled from routine enum extensions —
+important for the agentic backend, which may propose new constraint templates without
+implying a full grammar bump.

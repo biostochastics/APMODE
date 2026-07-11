@@ -1,0 +1,12 @@
+{
+  "title": "Formular DSL",
+  "icon": "Braces",
+  "pages": [
+    "index",
+    "grammar",
+    "semantics",
+    "priors",
+    "transforms",
+    "error-codes"
+  ]
+}

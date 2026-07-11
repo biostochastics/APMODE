@@ -1,0 +1,266 @@
+---
+title: Bayesian Backend (Stan/Torsten)
+description: Bayesian population PK via Stan and Torsten—MCMC-based estimation with full posterior inference and FDA-aligned prior specification.
+since: "0.6.0"
+---
+
+## Overview
+
+The Bayesian backend enables **Bayesian population PK estimation** via **Stan** (probabilistic programming language) and **Torsten** (Stan library for PK/PD modeling). It implements the full `BackendRunner` protocol with MCMC sampling, posterior diagnostics, and prior-justification documentation aligned with FDA guidance (FDA-2025-D-3217).
+
+- **Primary use case**: Prior-informed model refinement, sensitivity analysis, regulatory workflows requiring full posterior uncertainty
+- **Sampler**: No-U-Turn Sampler (NUTS) via CmdStan with automatic adaptation
+- **Prerequisite**: CmdStan 2.36+ installed via `cmdstanpy.install_cmdstan()`
+- **Lane eligibility**: Discovery and Optimization lanes (not Submission unless paired with classical sensitivity analysis)
+
+## How It Works
+
+```
+Formular spec → DSL compiler → Stan program → CmdStan/NUTS → Posterior samples → BackendResult
+```
+
+The `BayesianRunner` follows a subprocess pattern mirroring the classical backend:
+
+1. **Compile** the DSLSpec to a Stan program using `emit_stan()`
+2. **Build** the compiled Stan executable via CmdStan (first-time only; cached)
+3. **Write request** JSON: `request_id/request.json` with spec, data path, priors, sampler config
+4. **Spawn Python harness** (`src/apmode/bayes/harness.py`) that:
+   - Loads the request JSON
+   - Calls `cmdstanpy.CmdStanModel.sample()` with configured chains/warmup/sampling counts
+   - Parses posterior draws and sampler diagnostics
+   - Computes R̂, bulk/tail ESS, E-BFMI, Pareto-k (Vehtari 2021 algorithms)
+   - Writes `response.json` with results, diagnostics, and posterior-draw metadata
+5. **Read response** and construct `BackendResult` with posterior samples and prior metadata
+6. **Handle timeout**: If wall-clock exceeds budget, terminate the CmdStan child process group (SIGTERM → 5s grace → SIGKILL)
+
+## Stan Program Lowering
+
+The Stan emitter (`src/apmode/dsl/stan_emitter.py`) compiles the Formular AST to a complete Stan program:
+
+- **Data block**: Population observations, event table (dosing, covariates, sampling times)
+- **Parameters block**: Typical values (log-transformed for computational stability), variance components (IIV/RUV), random effects
+- **Model block**: Prior declarations + observed-data likelihood
+- **Generated quantities block**: Posterior-predictive simulations per subject
+
+### Supported Formular Features
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Absorption (FirstOrder, Transit, LaggedFirstOrder, etc.) | ✅ Supported | Torsten ODE solvers |
+| Distribution (1/2/3-cmt, TMDD) | ✅ Supported | PMX parameterization |
+| Elimination (Linear, MM, ParallelLinearMM, TimeVarying) | ✅ Supported | Except TimeVarying beyond exponential decay |
+| IIV (diagonal, block) | ✅ Supported | Non-centered parameterization |
+| IOV | ✅ Supported | Occasion-indexed hierarchy |
+| Covariates (power, exponential, linear, categorical) | ⚠ Partial | Maturation covariate not yet supported |
+| Priors (Normal, LogNormal, HalfNormal, etc.) | ✅ Supported | Target-specific admissibility checked |
+| BLQ (M3, M4) | ✅ Supported | Left-censored likelihood |
+| v0.7 absorption (Erlang, ParallelFirstOrder, SumIG) | ⚠ Partial | Erlang lowered; ParallelFirstOrder/SumIG raise `NotImplementedError` |
+
+<Callout type="warn">
+Maturation-covariate lowering (e.g., Hill-type ontogeny) is deferred to v0.7.1. Specs using maturation currently raise `NotImplementedError` and fall back to nlmixr2.
+
+Multi-analyte models (`observations:` block with DVID routing) are nlmixr2-only; Stan does not support per-endpoint multiplexing today.
+</Callout>
+
+## Prior Specification
+
+Priors are declared either **inline in Formular** or via **the `SetPrior` transform** (for agentic workflows). Both paths resolve identically:
+
+### Inline Priors (Formular)
+
+```
+model {
+    priors: {
+        CL ~ LogNormal(mu=log(4.0), sigma=0.25),
+        V ~ LogNormal(mu=log(100), sigma=0.5),
+        IIV_CL ~ HalfNormal(0, 0.5)
+    }
+}
+```
+
+### Prior Families by Parameter Type
+
+| Target | Valid families | Example |
+|--------|---|----------|
+| **Structural params** (log-scale: CL, V, ka, Vmax, Km) | Normal, LogNormal, Mixture, HistoricalBorrowing | LogNormal(μ, σ) for typical values |
+| **Variance params** (IIV ω, RUV σ) | HalfNormal, HalfCauchy, Gamma, InvGamma | HalfNormal(0, 0.5) for log-space BSV |
+| **Correlation matrices** | LKJ | LKJ(2) for weakly-informative |
+
+<Callout type="info">
+**Default priors** (when none is specified): Weakly informative log-Normal on structural params (μ=0, σ=1) and half-normal on variance components. These are overridden by explicit `priors:` block or transforms.
+
+**Hierarchical priors**: HistoricalBorrowing (Schmidli 2014 robust MAP) lets you incorporate published reference values as prior-mean anchors with inflated variance to allow data to update.
+</Callout>
+
+## Sampler Configuration
+
+NUTS behavior is tuned via `SamplerConfig` (Pydantic model):
+
+| Parameter | Default | Purpose |
+|-----------|---------|---------|
+| `chains` | 4 | Parallel chains for R̂ / ESS diagnostics |
+| `warmup_iterations` | 1000 | Burn-in per chain |
+| `sampling_iterations` | 1000 | Post-warmup draws per chain |
+| `target_accept_stat` (adapt_delta) | 0.8 | HMC step-size adaptation target (higher = smaller steps, fewer divergences, slower) |
+| `max_tree_depth` | 12 | Leapfrog integrator recursion ceiling |
+| `thin` | 1 | Save every Nth draw (default: no thinning) |
+
+### Tuning for Difficult Posteriors
+
+**If divergences appear** (HMC numeric issues):
+- Increase `target_accept_stat` to 0.9 or 0.95 (smaller steps, slower but more stable)
+- Increase `max_tree_depth` to 14 or 15 (deeper exploration)
+
+**If ESS is low** (high autocorrelation):
+- Increase sampling iterations
+- Consider reparameterization (non-centered for hierarchical models)
+
+**If compilation is slow**:
+- First-time Stan compilation takes 30–60s; subsequent fits use the cached binary
+- Increase `timeout` if compilation + sampling exceeds budget
+
+## Gate 1: Bayesian Diagnostics
+
+Bayesian fits are evaluated on MCMC-specific Gate 1 thresholds:
+
+| Diagnostic | Method | Threshold | Purpose |
+|-----------|--------|-----------|---------|
+| **R̂ (Rank-normalized)** | Vehtari 2021 rank-normalized Gelman-Rubin | ≤ 1.01 | Chain convergence; values &gt;1.01 signal non-mixing chains |
+| **ESS bulk** | Rank-weighted bulk effective sample size | ≥ 400 per chain | Tail mixing quality (parameter posterior inference) |
+| **ESS tail** | Rank-weighted tail ESS | ≥ 400 per chain | Extreme-value inference quality |
+| **Divergences** | HMC diagnostic: leapfrog integration errors | = 0 (hard zero) | Indicates posterior pathology or numeric instability |
+| **E-BFMI** | Energy-Bayesian Fraction of Missing Information | ≥ 0.3 | Flags pathological HMC geometry; &lt;0.2 indicates tuning failure |
+| **Pareto-k (LOO)** | Pareto smoothed importance sampling for leave-one-out CV | ≤ 0.7 | Outlier influence on posterior; &gt;0.7 signals high-influence observations |
+| **PIT calibration** | Posterior-predictive coverage (same as classical) | Per-lane policy | Checks if posterior predictions are well-calibrated |
+
+<Callout type="warn">
+**Divergences = 0 is a hard floor.** Even a single divergence in any chain flags the fit for failure (unless explicitly overridden by policy). Divergences indicate the sampler got stuck in a numerically unstable region and may have missed parts of the posterior.
+</Callout>
+
+## Prior-Justification Artifact
+
+When a Bayesian model passes Gate 1, a **prior-justification document** is emitted (`bayesian/prior_manifest.json`) for Gate 2.5 (credibility qualification) and regulatory review:
+
+```json
+{
+  "candidate_id": "cand_a1b2",
+  "priors": {
+    "CL": {
+      "family": "LogNormal",
+      "params": {"mu": 1.386, "sigma": 0.25},
+      "source": "published_reference",
+      "citation": "10.1128/AAC.01708-10",
+      "rationale": "Vancomycin Roberts 2011 population estimate"
+    },
+    "IIV_CL": {
+      "family": "HalfNormal",
+      "params": {"sigma": 0.5},
+      "source": "default",
+      "rationale": "Weakly informative; allows data-driven estimation"
+    }
+  },
+  "fda_alignment": "FDA-2025-D-3217 section 5.2.3"
+}
+```
+
+This artifact satisfies FDA guidance (FDA-2025-D-3217) for transparent prior specification and allows reviewers to assess whether priors are justified and non-informative vs. data.
+
+## Posterior-Predictive Simulation
+
+After MCMC convergence, the harness draws 500 posterior-predictive replicates per subject:
+
+1. **Posterior samples**: Thin the post-warmup draws (default no thinning)
+2. **Per-draw simulation**: For each retained MCMC draw (n_draws), solve the ODE at observed sampling times
+3. **Random effects**: For each simulation, draw per-subject random effects from the posterior Ω estimate
+4. **Observation model**: Apply the error model (proportional, additive, combined) to simulated concentrations
+
+The simulation matrix feeds `build_predictive_diagnostics()` to compute VPC and NPE for Gate 3 cross-paradigm ranking.
+
+## Installation & Configuration
+
+### Install CmdStan
+
+```bash
+uv sync --extra bayesian
+python -c "import cmdstanpy; cmdstanpy.install_cmdstan()"
+```
+
+This downloads and builds CmdStan 2.36+ (≈500 MB). Subsequent fits reuse the binary.
+
+### Verify Installation
+
+```bash
+uv run apmode doctor | grep -i bayesian
+```
+
+Should show `✅ CmdStan` if the install succeeded.
+
+### Run a Bayesian Fit
+
+```bash
+uv run apmode run ./data/theo_sd.csv \
+  --lane discovery \
+  --backend bayesian_stan \
+  --bayes-chains 4 \
+  --bayes-warmup 1000 \
+  --bayes-sampling 1000 \
+  -o ./runs
+```
+
+## Example: Prior-Informed Vancomycin Model (Suite C)
+
+The Suite C Bayesian roster includes **vancomycin (Roberts 2011)** as a literature-anchor fixture. The model specifies log-Normal priors centered on published typical values:
+
+```text
+model {
+    metadata: { title = "Vancomycin Roberts 2011 prior-informed" }
+    absorption: IVBolus()
+    distribution: OneCmt(V)
+    elimination: Linear(CL)
+    variability: { IIV(params=[CL, V], structure=block) }
+    observation: Combined(sigma_prop=0.1, sigma_add=0.5)
+    priors: {
+        CL ~ LogNormal(mu=log(4.6), sigma=0.25),    # Roberts 2011 typical CL
+        V ~ LogNormal(mu=log(105), sigma=0.5),      # Roberts 2011 typical V
+        IIV_CL ~ HalfNormal(0, 0.5),
+        IIV_V ~ HalfNormal(0, 0.5)
+    }
+    initial: { CL = 4.6, V = 105 }
+}
+```
+
+The Bayesian fit on the vancomycin dataset (n=12) yields:
+
+- Posterior median CL ≈ 4.8 L/h, posterior credible interval captures the prior's published value
+- All chains mix well (R̂ &lt; 1.01 for every parameter)
+- Full posterior for probabilistic decision-making in Phase 3 optimization
+
+## Troubleshooting
+
+### Compilation errors
+
+- **Cause**: Stan language syntax or unsupported Formular feature
+- **Check**: Look at the raw Stan code in the bundle's `compiled_specs/{candidate_id}.stan`
+- **Fix**: Simplify the spec (remove covariates, reduce complexity) or file an issue
+
+### High divergence count
+
+- **Cause**: Posterior geometry is pathological (e.g., strong correlations, extreme parameter scales)
+- **Solution**: 
+  - Increase `--bayes-adapt-delta` to 0.9
+  - Increase `--bayes-max-treedepth` to 14
+  - Consider reparameterization (e.g., use log-scale priors to improve mixing)
+
+### Low ESS / high autocorrelation
+
+- **Cause**: Sampler not exploring efficiently; may need more warmup or different parameterization
+- **Solution**: Increase `--bayes-warmup` and `--bayes-sampling`; check posterior correlations in the prior-manifest
+
+### Memory exhaustion on large datasets
+
+- **Cause**: Stan allocates big matrices for gradient computation (Jacobian) on high-dimensional problems
+- **Solution**: Reduce dataset size (subsample subjects), reduce number of chains, or split into smaller models
+
+---
+
+**See also**: [Classical NLME Backend](/docs/guide/backends/nlmixr2) for the regulatory standard; [Agentic LLM Backend](/docs/guide/backends/agentic-llm) for automated model refinement via Bayesian transforms.

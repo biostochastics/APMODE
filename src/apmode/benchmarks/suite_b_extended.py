@@ -203,7 +203,7 @@ CASE_B9_GENTA_IOV = BenchmarkCase(
     suite="B",
     dataset_id="ddmore_gentamicin",
     description=(
-        "Gentamicin neonatal IOV dataset (Germovsek 2017). "
+        "Gentamicin neonatal IOV dataset (Germovsek 2016). "
         "Tests IOV estimation on CL with multiple occasions per subject. "
         "Known algorithmic challenge: many tools estimate IOV poorly."
     ),

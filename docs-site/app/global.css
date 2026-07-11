@@ -1,0 +1,82 @@
+@import 'tailwindcss';
+@import 'fumadocs-ui/css/neutral.css';
+@import 'fumadocs-ui/css/preset.css';
+
+/* ------------------------------------------------------------------ *
+ *  APMODE brand theme — "scientific instrument"
+ *  A cool, teal-tinted neutral base with a deep spruce-teal accent.
+ *  Type: IBM Plex Sans (body/headings) + IBM Plex Mono (code).
+ * ------------------------------------------------------------------ */
+
+@theme {
+  --font-sans: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, monospace;
+}
+
+/* Light — clinical paper, cool graphite ink, spruce-teal accent. */
+:root {
+  --color-fd-background: hsl(190, 24%, 98.4%);
+  --color-fd-foreground: hsl(200, 22%, 12%);
+  --color-fd-muted: hsl(192, 20%, 95%);
+  --color-fd-muted-foreground: hsl(200, 12%, 42%);
+  --color-fd-popover: hsl(190, 26%, 99%);
+  --color-fd-popover-foreground: hsl(200, 22%, 12%);
+  --color-fd-card: hsl(190, 24%, 96.6%);
+  --color-fd-card-foreground: hsl(200, 22%, 12%);
+  --color-fd-border: hsla(196, 22%, 62%, 0.42);
+  --color-fd-primary: hsl(185, 66%, 30%);
+  --color-fd-primary-foreground: hsl(185, 40%, 98%);
+  --color-fd-secondary: hsl(191, 22%, 93.5%);
+  --color-fd-secondary-foreground: hsl(200, 22%, 14%);
+  --color-fd-accent: hsla(186, 40%, 74%, 0.32);
+  --color-fd-accent-foreground: hsl(186, 60%, 22%);
+  --color-fd-ring: hsl(185, 55%, 40%);
+  --color-fd-overlay: hsla(200, 30%, 8%, 0.28);
+}
+
+/* Dark — deep teal-graphite, luminous teal accent. */
+.dark {
+  --color-fd-background: hsl(200, 28%, 6.4%);
+  --color-fd-foreground: hsl(190, 16%, 91%);
+  --color-fd-muted: hsl(200, 20%, 12.5%);
+  --color-fd-muted-foreground: hsla(190, 14%, 70%, 0.85);
+  --color-fd-popover: hsl(200, 24%, 10%);
+  --color-fd-popover-foreground: hsl(190, 16%, 88%);
+  --color-fd-card: hsl(200, 24%, 9.2%);
+  --color-fd-card-foreground: hsl(190, 16%, 96%);
+  --color-fd-border: hsla(190, 30%, 60%, 0.16);
+  --color-fd-primary: hsl(176, 62%, 58%);
+  --color-fd-primary-foreground: hsl(200, 40%, 8%);
+  --color-fd-secondary: hsl(200, 20%, 13.5%);
+  --color-fd-secondary-foreground: hsl(190, 16%, 90%);
+  --color-fd-accent: hsla(186, 44%, 40%, 0.28);
+  --color-fd-accent-foreground: hsl(186, 40%, 88%);
+  --color-fd-ring: hsl(176, 55%, 52%);
+  --color-fd-overlay: hsla(200, 40%, 2%, 0.5);
+}
+
+html {
+  scrollbar-gutter: stable;
+}
+
+html > body[data-scroll-locked] {
+  margin-right: 0px !important;
+  --removed-body-scroll-bar-size: 0px !important;
+}
+
+/* Refined selection + monospace tuning for a technical feel. */
+::selection {
+  background-color: hsla(185, 66%, 40%, 0.22);
+}
+
+code,
+kbd,
+pre {
+  font-variant-ligatures: none;
+}
+
+/* A hairline accent under the top navigation for a bit of instrument-panel depth. */
+#nd-nav {
+  border-bottom: 1px solid var(--color-fd-border);
+  backdrop-filter: saturate(1.4) blur(8px);
+}

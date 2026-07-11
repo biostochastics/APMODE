@@ -1,0 +1,116 @@
+---
+title: Error Codes
+description: The FRM-* diagnostic registry — structured error codes emitted by the Formular validator, grouped by taxon.
+since: "0.6.1"
+---
+
+Every Formular diagnostic carries a structured `FRM-{TAXON}-NNN` code. Codes are the
+single source of truth for validation failures — a CI test asserts that every code the
+validator can emit appears in this registry, so a check can never ship undocumented.
+
+Each error carries a `severity` (currently always `error`) and, where a single obviously
+correct fix exists, a `remediation` string.
+
+## Where each code is raised
+
+Most codes are returned as a `ValidationError` from `validate_dsl`. A handful are the
+exception — raised as a `FormularCompileError` **before** a `DSLSpec` exists:
+
+- `FRM-AST-010` / `FRM-AST-011` — block-cardinality violations, detected on the raw parse
+  tree.
+- `FRM-AST-016` / `FRM-AST-017` — unknown / duplicate `use` macro, detected during macro
+  expansion.
+- `FRM-PRIOR-001` — a `priors:` block entry that fails to construct.
+
+## Taxonomy
+
+| Taxon | Meaning |
+| --- | --- |
+| `SYN` | Grammar / parse-level errors (reserved; not yet emitted by the validator) |
+| `AST` | AST-shape / structural-integrity errors — duplicates, missing content, dangling references, incompatible pairings |
+| `SEM` | Semantic / numeric constraint violations — positivity, ranges, integer floors, capped values |
+| `LANE` | Lane-admissibility rejections — well-formed but not admissible in the requested lane |
+| `BE` | Backend-capability errors — a capability the spec needs that the named emitter lacks |
+| `DATA` | Data-bound checks that require the bound dataset, not just the spec |
+| `POLICY` | Policy-bound checks against a loaded gate policy |
+| `PRIOR` | Prior declaration / lowering errors |
+
+## FRM-SEM — semantic / numeric
+
+| Code | Description |
+| --- | --- |
+| `FRM-SEM-001` | A structural parameter (volume, rate, sigma, …) must be `> 0`. |
+| `FRM-SEM-002` | A structural parameter must be `>= 0` (e.g. `tlag`). |
+| `FRM-SEM-003` | A fraction/weight must lie strictly in `(0, 1)`. |
+| `FRM-SEM-004` | An integer count (Transit/Erlang `n`, NODE `dim`) must be `>= 1`. |
+| `FRM-SEM-005` | Erlang chain length `n` exceeds the cap of 7. |
+| `FRM-SEM-006` | SumIG `k` is outside the supported range `[1, 2]`. |
+| `FRM-SEM-007` | SumIG requires `MT_1 < MT_2` (label-switching guard). |
+| `FRM-SEM-008` | SumIG `k >= 2` requires CL/V/Q fixed externally. |
+| `FRM-SEM-009` | NODE `dim` exceeds the max dim for its `constraint_template`. |
+| `FRM-SEM-010` | The `units:` block is dimensionally inconsistent. |
+
+## FRM-AST — structural integrity
+
+| Code | Description |
+| --- | --- |
+| `FRM-AST-001` | A parameter appears in more than one IIV block. |
+| `FRM-AST-002` | The same `(param, covariate)` link is declared twice. |
+| `FRM-AST-003` | An IIV/IOV block declares an empty `params` list. |
+| `FRM-AST-004` | `structure="block"` IIV requires at least 2 params. |
+| `FRM-AST-005` | An IIV block references an unknown structural parameter. |
+| `FRM-AST-006` | An IOV block references an unknown structural parameter. |
+| `FRM-AST-007` | A covariate link references an unknown structural parameter. |
+| `FRM-AST-008` | IIV/IOV declared on a parameter emitters do not apply eta to (e.g. Transit `n`). |
+| `FRM-AST-009` | TMDD distribution requires Linear elimination. |
+| `FRM-AST-010` | A required top-level block is absent. *(compile-time)* |
+| `FRM-AST-011` | A singleton block appears twice, or mutually exclusive observation blocks both appear. *(compile-time)* |
+| `FRM-AST-012` | A used calibration parameter has no value in `initial:`. |
+| `FRM-AST-013` | `initial:` declares a value no module references. |
+| `FRM-AST-014` | Two `observations:` entries declare the same `dvid`. |
+| `FRM-AST-015` | An `observations:` `prediction` names no known state variable. |
+| `FRM-AST-016` | A `use <name>` statement names an unknown macro. *(compile-time)* |
+| `FRM-AST-017` | The same macro name appears in more than one `use` statement. *(compile-time)* |
+
+## FRM-LANE — lane admissibility
+
+| Code | Description |
+| --- | --- |
+| `FRM-LANE-001` | NODE modules are not admissible in the Submission lane. |
+| `FRM-LANE-002` | NODE `dim` exceeds the requested lane's dimension ceiling. |
+| `FRM-LANE-003` | Absorption form (e.g. SumIG) is not admissible in the requested lane. |
+| `FRM-LANE-004` | NODE variant used without the `experimental.node` opt-in. |
+
+## FRM-BE — backend capability
+
+| Code | Description |
+| --- | --- |
+| `FRM-BE-001` | The requested backend name is not a registered emitter. |
+| `FRM-BE-002` | The spec exercises a capability the named backend does not support. |
+
+## FRM-DATA — data-bound
+
+| Code | Description |
+| --- | --- |
+| `FRM-DATA-001` | A multi-analyte `observations:` block, but the dataset has no `DVID` column. |
+| `FRM-DATA-002` | A covariate link references a column absent from the bound dataset. |
+
+## FRM-POLICY — policy-bound
+
+| Code | Description |
+| --- | --- |
+| `FRM-POLICY-001` | The loaded policy's lane does not match the lane validation was requested for. |
+| `FRM-POLICY-002` | The spec uses a NODE module but the policy's `gate2.node_eligible` is false. |
+
+## FRM-PRIOR — priors
+
+| Code | Description |
+| --- | --- |
+| `FRM-PRIOR-001` | A `priors:` block entry failed to construct — unresolvable target, family/target-kind mismatch, or an informative source missing `justification` / `historical_refs`. *(compile-time)* |
+
+<Callout type="info">
+  When priors are constructed via the Python API rather than the grammar block, the same
+  justification and family-admissibility checks apply — but they surface as prose-string
+  errors or `pydantic.ValidationError` rather than a coded `FRM-PRIOR-*`. Only the
+  Formular `priors:` grammar block carries the coded form.
+</Callout>

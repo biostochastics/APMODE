@@ -1,0 +1,167 @@
+---
+title: Semantics
+description: Lane-aware validation rules, NODE constraint templates, and how one spec lowers to nlmixr2, Stan/Torsten, and JAX/Diffrax.
+since: "0.6.1"
+---
+
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
+
+Parsing produces a typed AST; **validation** enforces pharmacometric constraints
+before any code is generated. The validator (`validate_dsl`) is lane-aware and
+accumulates all violations (non-fail-fast) rather than stopping at the first.
+
+## Semantic validation rules
+
+| Rule | Constraint |
+| --- | --- |
+| Positivity | Volumes, rates, clearances, sigmas must be &gt; 0 |
+| Unit interval | `MixedFirstZero.frac ∈ (0, 1)` exclusive |
+| Non-negative | `tlag ≥ 0` |
+| Positive integer | Transit `n`, NODE `dim` must be ≥ 1 |
+| NODE lane admissibility | NODE modules rejected in the Submission lane |
+| NODE dim ceilings | `dim ≤ min(template_max_dim, lane_ceiling)` |
+| Block IIV | `structure=block` requires ≥ 2 params |
+| TMDD requires Linear elim | `TMDD_Core` / `TMDD_QSS` require `Linear` elimination |
+| No duplicate IIV params | A parameter cannot appear in multiple IIV blocks |
+| No duplicate covariate links | A `(param, covariate)` pair cannot appear twice |
+| No variability on Transit `n` | Transit `n` cannot carry IIV/IOV/CovariateLink |
+| Params exist | IIV/IOV/CovariateLink must reference a structural parameter |
+| `initial:` missing (`FRM-AST-012`) | A used calibration parameter has no value |
+| `initial:` unused (`FRM-AST-013`) | An `initial:` value no module references |
+| Prior target/family match | `(target_kind, family)` must be admissible |
+| Informative-prior justification | `historical_data` / `expert_elicitation` / `meta_analysis` require justification |
+
+<Callout type="info">
+  Two block-cardinality checks (missing/duplicate, `FRM-AST-010` / `FRM-AST-011`) run
+  earlier, on the raw parse tree, and raise `FormularCompileError` rather than appearing
+  in the validator's returned list. See the [error codes](/docs/guide/formular-dsl/error-codes).
+</Callout>
+
+### Example rejections
+
+```text
+MixedFirstZero(ka, dur, frac) with initial: { frac = 1.5 }
+  → ValidationError: MixedFirstZero.frac must be in (0, 1), got 1.5
+
+IIV(params=[CL], structure=block)
+  → ValidationError: block IIV requires >= 2 params, got 1
+
+NODE_Absorption(dim=6, constraint_template=monotone_increasing) in Discovery
+  → ValidationError: NODE dim 6 exceeds template max 4 for monotone_increasing
+
+absorption: FirstOrder(ka) with no "ka" entry in initial:
+  → ValidationError [FRM-AST-012]: 'ka' is used by a structural module but has no
+                     value in the initial: block
+```
+
+## NODE constraint templates
+
+NODE absorption and elimination modules require a `constraint_template` that restricts
+the learned function's shape.
+
+| Template | Meaning | Template max dim |
+| --- | --- | --- |
+| `monotone_increasing` | Output increases with input | 4 |
+| `monotone_decreasing` | Output decreases with input | 4 |
+| `bounded_positive` | Output strictly positive | 6 |
+| `saturable` | Increases then plateaus (Michaelis–Menten-like) | 4 |
+| `unconstrained_smooth` | Smooth only; no shape constraint | 8 |
+
+The effective ceiling is `min(template_max, lane_ceiling)`:
+
+| Lane | Lane ceiling | NODE admissible? |
+| --- | --- | --- |
+| Submission | — | **No** (hard rule) |
+| Discovery | 8 | Yes |
+| Optimization | 4 | Yes |
+
+## Backend lowering — one spec, three targets
+
+The same spec lowers to every backend. Consider:
+
+```text
+model {
+    absorption: FirstOrder(ka)
+    distribution: OneCmt(V)
+    elimination: Linear(CL)
+    variability: IIV(params=[CL, V], structure=diagonal)
+    observation: Proportional(sigma_prop=0.1)
+    initial: { ka = 1.0, V = 30.0, CL = 2.0 }
+}
+```
+
+<Tabs items={['nlmixr2 (R)', 'Stan / Torsten', 'JAX / Diffrax']}>
+
+<Tab value="nlmixr2 (R)">
+
+```r
+function() {
+  ini({
+    tka <- log(1.0); tcl <- log(2.0); tv <- log(30.0)
+    eta.cl ~ 0.1; eta.v ~ 0.1
+    add.sd <- 0.1
+  })
+  model({
+    ka <- exp(tka)
+    cl <- exp(tcl + eta.cl)
+    v  <- exp(tv + eta.v)
+    d/dt(depot)  = -ka * depot
+    d/dt(center) =  ka * depot - (cl / v) * center
+    cp <- center / v
+    cp ~ prop(add.sd)
+  })
+}
+```
+
+</Tab>
+
+<Tab value="Stan / Torsten">
+
+```text
+parameters {
+  real log_ka;  real log_cl;  real log_v;
+  vector<lower=0>[2] omega;    // [ω_CL, ω_V]
+  real<lower=0> sigma_prop;
+  matrix[2, N] eta;
+}
+model {
+  // priors injected from DSLSpec.priors (defaults if empty)
+  log_ka ~ normal(0, 2);  log_cl ~ normal(log(2.0), 2);  log_v ~ normal(log(30.0), 2);
+  omega  ~ cauchy(0, 1);  sigma_prop ~ cauchy(0, 0.1);
+  to_vector(eta) ~ std_normal();
+  // likelihood uses Torsten PKModelOneCpt with log_cl + omega[1]*eta[1,i], etc.
+}
+```
+
+</Tab>
+
+<Tab value="JAX / Diffrax">
+
+```python
+# Mechanistic skeleton — same ODE; IIV applied at solve-time.
+def rhs(t, y, theta):
+    depot, center = y
+    ka, cl, v = theta
+    return jnp.array([-ka * depot, ka * depot - (cl / v) * center])
+
+# IIV: theta_i = theta * exp(eta_i), eta_i ~ N(0, diag(omega))
+# Solver: Diffrax.Tsit5, adaptive step; Optax Adam on pooled NLL.
+```
+
+</Tab>
+
+</Tabs>
+
+<Callout type="warn">
+  Any spec that passes `validate_dsl` for the target lane lowers cleanly in nlmixr2. Stan
+  supports the core mechanistic forms and BLQ M3/M4 censored likelihoods, but still
+  rejects IOV, maturation covariate links, NODE modules, and the preview absorption forms
+  (`Erlang`, `ParallelFirstOrder`, `SumIG`) pending follow-on lowering work.
+</Callout>
+
+## The formal reference
+
+This page summarizes the validation and lowering behaviour. The formal Phase 2
+specification — macros, transform provenance, the equations view, and signatures — lives
+in the project's `docs/FORMULAR_SEMANTICS.md`, which is the authoritative source for the
+`units:` and multi-analyte `observations:` blocks.

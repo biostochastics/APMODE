@@ -266,5 +266,5 @@ def test_short_fit_recovers_within_30pct(fixture_id: str, tmp_path: Path) -> Non
         "harness landing the synthetic-data simulator (plan Task 43 "
         "follow-up). The structural validation above already enforces "
         "the fixture is wired correctly; the actual fit is exercised "
-        "via the weekly CI workflow once the simulator lands."
+        "via an on-demand operator run once the simulator lands."
     )

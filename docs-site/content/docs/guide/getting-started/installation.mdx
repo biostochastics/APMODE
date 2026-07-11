@@ -1,0 +1,69 @@
+---
+title: Installation
+description: Install APMODE with uv, then verify the R, CmdStan, and LLM toolchain in one command.
+---
+
+APMODE is a Python package with optional R, Bayesian, and LLM backends. The core
+install is Python-only; each backend is an opt-in extra.
+
+## Prerequisites
+
+- **Python** 3.12, 3.13, or 3.14
+- **Package manager** — [uv](https://docs.astral.sh/uv/)
+- **Optional (classical)** — R 4.4+ with `nlmixr2`, `rxode2`, `jsonlite`, `lotri`,
+  `mice`, `missRanger`. The mock R subprocess tests run without R installed.
+- **Optional (Bayesian)** — CmdStan 2.36+ via `cmdstanpy.install_cmdstan()`
+- **Optional (agentic)** — an LLM API key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
+  `GEMINI_API_KEY`, `OPENROUTER_API_KEY`) or a local Ollama install
+- **Optional (HTTP API)** — `uv sync --extra api` pulls FastAPI + Uvicorn + aiosqlite
+
+## Install
+
+```bash
+git clone https://github.com/biostochastics/APMODE.git
+cd APMODE
+
+# Core install (all extras)
+uv sync --all-extras
+```
+
+## Verify the toolchain
+
+`apmode doctor` inspects every optional component — R/nlmixr2, CmdStan, Python
+dependencies, and LLM keys — and reports what is healthy.
+
+```bash
+# Human-readable health report
+uv run apmode doctor
+
+# One-line CI check — empty output means all green
+uv run apmode doctor --json | jq '.components[] | select(.status!="ok")'
+
+# Confirm the CLI entry point
+uv run apmode --help
+```
+
+<Callout type="info">
+  You do not need every backend to get started. The classical (nlmixr2) path is the
+  default; Bayesian, NODE, and agentic backends can be added later without reinstalling.
+</Callout>
+
+## Input data
+
+APMODE ingests NONMEM-style CSV validated by a Pandera schema.
+
+- **Required columns** — `ID`, `TIME`, `DV`, `AMT`, `EVID` (0 = observation,
+  1 = dose, 2 = other event).
+- **Optional event fields** — `CMT`, `RATE`, `ADDL` / `II`, `SS`, `MDV`, `BLQ`,
+  `DVID` (multi-analyte routing).
+- **Categorical covariates** — canonical encoding is `{0, 1}`; common forms
+  (`M`/`F`, `Yes`/`No`, `Case`/`Control`) are auto-detected and remapped. Multi-level
+  categoricals must be one-hot encoded by the analyst.
+
+Datasets in the public registry (`apmode datasets`) ship pre-conformed — use them as
+schema templates.
+
+<Callout type="info" title="Next">
+  Continue to the [Quickstart](/docs/guide/getting-started/quickstart) for a worked
+  end-to-end run.
+</Callout>

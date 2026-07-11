@@ -1,0 +1,138 @@
+---
+title: Backends Overview
+description: APMODE's five population PK modeling paradigms—classical NLME, Bayesian, neural ODE, and agentic LLM—unified under one governance funnel.
+---
+
+## The Five Paradigms
+
+APMODE composes five population pharmacokinetic modeling approaches into a single discovery workflow. Each backend is a complete implementation of the `BackendRunner` protocol, consuming a typed Formular DSL specification and emitting a `BackendResult` with estimates, diagnostics, and convergence metadata.
+
+| Paradigm | Technology | Status | Lane Eligibility | Notes |
+|----------|-----------|--------|------------------|-------|
+| **Classical NLME** | nlmixr2 (R) + SAEM/FOCEi | ✅ Stable | Submission primary | Process-isolated subprocess |
+| **Bayesian PK** | Stan/Torsten + cmdstanpy | ✅ Available | Discovery/Optimization | MCMC diagnostics integrated into Gate 1 |
+| **Hybrid Neural ODE** | JAX/Diffrax + Equinox | ⚠ Available (oral + IV bolus/central-infusion) | Discovery/Optimization | Constrained approximation; never regulatory-submission-eligible |
+| **Agentic LLM** | Anthropic/OpenAI/Gemini | ⚠ Available (opt-in) | Discovery/Optimization | Transform-only loop; ≤25 iterations; off by default |
+| **Automated search** | Multi-backend dispatch | ✅ Stable | All lanes | Phase 1 root + Phase 3 warm-start children (deterministic budget) |
+
+## Shared Interface: BackendRunner Protocol
+
+All backends implement the `BackendRunner` protocol, which defines a uniform contract for fitting and generating predictions:
+
+```python
+@runtime_checkable
+class BackendRunner(Protocol):
+    async def run(
+        self,
+        spec: DSLSpec,                           # Model structure
+        data_manifest: DataManifest,             # Data provenance + split info
+        initial_estimates: dict[str, float],     # NCA-derived or warm-start
+        seed: int,
+        timeout_seconds: int | None = None,
+        *,
+        data_path: Path | None = None,          # Training CSV
+        split_manifest: dict[str, object] | None = None,  # k-fold / LORO-CV
+        gate3_policy: Gate3Config | None = None,
+        nca_diagnostics: list[NCASubjectDiagnostic] | None = None,
+        fixed_parameter: bool = False,          # For LORO-CV: no re-estimation
+        test_data_path: Path | None = None,     # For held-out diagnostics
+    ) -> BackendResult: ...
+```
+
+The `BackendResult` contains:
+- Parameter estimates and shrinkage
+- Objective function value, AIC, BIC
+- Convergence diagnostics (CWRES, VPC, NPE)
+- Backend-specific fields (e.g., Bayesian posterior draws, NODE weights)
+
+## Evidence Manifest Dispatch
+
+The **Evidence Manifest** — produced by the Data Profiler — is not descriptive metadata. It is a **disqualifying filter** that constrains which backends run based on what the data supports.
+
+<Callout type="info">
+The profiler examines dataset characteristics (sample size, richness, absorption coverage, nonlinear clearance signals, covariate missingness, BLQ burden) and emits a structured manifest. The Lane Router reads this manifest and blocks backends that lack sufficient evidence.
+</Callout>
+
+### Dispatch Rules
+
+| Evidence Flag | Effect |
+|---|---|
+| `richness_category = "sparse"` + `absorption_coverage = "inadequate"` | NODE backends not dispatched (insufficient identifiability) |
+| `identifiability_ceiling = "low"` (estimated from condition number) | Compartment count capped at 1 |
+| `identifiability_ceiling = "medium"` | Compartment count capped at 2 |
+| `identifiability_ceiling = "high"` | Up to 3 compartments permitted |
+| Lane = Submission | NODE and agentic LLM backends hard-blocked (not admissible regardless of data) |
+| Lane = Discovery or Optimization | NODE and agentic eligible (if data supports) |
+
+## The Hard Rule: Submission Lane Exclusion
+
+**NODE and agentic LLM backends are never eligible for regulatory submission.** This is a fundamental design principle (PRD §3), not a tunable weight.
+
+<Callout type="warn">
+Even if a NODE or agentic model passes Gate 1 (technical validity) and Gate 2 (lane admissibility) in the Discovery lane, it cannot be recommended for submission. The `policies/submission.json` policy enforces `node_eligible = false` at the policy level.
+</Callout>
+
+This reflects a regulatory judgment: these paradigms offer different tradeoffs (NODE provides flexible functional flexibility but lower interpretability; agentic LLM explores via DSL transforms with full audit trail but introduces LLM versioning and provider dependency). The submission lane prioritizes human-interpretable classical and Bayesian models.
+
+## Gate 1: Technical Validity
+
+Every backend must pass **Gate 1** — a set of convergence, diagnostics, and numerical validity checks:
+
+| Check | nlmixr2 | Bayesian | NODE | Agentic |
+|-------|---------|----------|------|---------|
+| Convergence | Gradient norm, OFV stability | Sampler auto-tuning success | Training loss plateau | N/A (passes-through) |
+| CWRES normality | Shapiro-Wilk p-value | N/A | N/A | Inherited from inner runner |
+| Shrinkage limits | ≤30% (Submission) | N/A | N/A | Policy-specific |
+| PIT calibration | p-quantile coverage ✓ | p-quantile coverage ✓ | p-quantile coverage ✓ | Inherited |
+| Bayesian-specific | N/A | R̂ ≤ 1.01, ESS ≥ 400, E-BFMI ≥ 0.3, Pareto-k ≤ 0.7 | N/A | N/A |
+
+## Lane-Specific Policies
+
+Gate policies are versioned JSON files (`policies/{submission,discovery,optimization}.json`) and are versioned (`v0.7.1` as of APMODE 0.6.1-rc2).
+
+<Cards>
+  <Card
+    title="Submission Lane"
+    href="/docs/guide/backends/nlmixr2"
+    description="Classical NLME only; strictest evidence standards; Bayesian supported with prior justification."
+  />
+  <Card
+    title="Discovery Lane"
+    href="/docs/guide/backends"
+    description="All backends admissible; wider tolerances on convergence and identifiability; NODE eligible with ICH M15 credibility documentation."
+  />
+  <Card
+    title="Optimization Lane (Phase 3)"
+    href="/docs/guide/backends"
+    description="All backends; adds LORO-CV (leave-one-regimen-out) Gate 2 constraint; used for predictive model validation on held-out dose regimens."
+  />
+</Cards>
+
+## Reproducibility & Auditability
+
+Every backend execution produces:
+1. **Candidate specification**: DSLSpec JSON (compiled Formular AST)
+2. **Backend result**: Pydantic BackendResult with all estimates and diagnostics
+3. **Gate decisions**: Per-check pass/fail with thresholds and observed values
+4. **Lineage**: Parent-child relationships (warm-start, transform application for agentic)
+
+All artifacts are written to the reproducibility bundle and sealed with a SHA-256 digest (`_COMPLETE` sentinel) so any run can be audited or replayed years later.
+
+## Choosing a Backend
+
+<Callout type="info">
+**For routine workflows:** Use the classical NLME backend (default). It is mature, fast, and the regulatory standard.
+
+**For Bayesian exploration:** Enable `--backend bayesian_stan` in the Discovery lane. Requires CmdStan installation (`cmdstanpy.install_cmdstan()`) and LLM provider keys are not needed.
+
+**For mechanistic flexibility:** Use the NODE backend in Discovery lane. Useful when classical compartmental models underfit; requires `uv sync --extra node` (JAX/Diffrax).
+
+**For automated model exploration:** Enable `--agentic` in Discovery lane. The LLM iteratively proposes typed DSL transforms (not raw code) and refines the model. Requires an LLM API key; off by default to respect user privacy.
+</Callout>
+
+## Next Steps
+
+- Read the [classical NLME backend](/docs/guide/backends/nlmixr2) guide for the primary estimation engine
+- Learn about [Bayesian workflows](/docs/guide/backends/bayesian-stan) with Stan/Torsten
+- Explore [hybrid neural ODE](/docs/guide/backends/node-hybrid) for complex absorption / elimination
+- Understand the [agentic LLM backend](/docs/guide/backends/agentic-llm) contract and safety boundaries

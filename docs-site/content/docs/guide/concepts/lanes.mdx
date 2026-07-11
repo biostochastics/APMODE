@@ -1,0 +1,155 @@
+---
+title: Operating Lanes
+description: Understand the three separate pipelines with different backends, stopping rules, and evidence standards.
+---
+
+APMODE routes work through **three separate operating lanes**, each with different admissible backends, stopping rules, and evidence thresholds. This is not a single configurable loop — they are distinct pipelines.
+
+## The Three Lanes
+
+### Submission
+
+**Purpose:** Regulatory-grade model recommendations for regulatory submissions.
+
+**Primary use case:** Build a population PK model for an IND/NDA/EIND filing where the evidence standard is highest and only the most interpretable models are eligible.
+
+| Aspect | Specification |
+|--------|---|
+| **Admissible backends** | Classical NLME (nlmixr2 SAEM/FOCEi) + Bayesian Stan/Torsten |
+| **Stopping rule** | Fixed deterministic budget: Phase 1 roots + Phase 3 warm-start children (~30–50 candidates) |
+| **NODE/Agentic eligible?** | **No (hard rule).** NODE and agentic LLM models never qualify for "recommended" status in Submission. |
+| **LORO-CV required?** | No |
+| **NODE dimension ceiling** | N/A (NODE excluded) |
+| **Key Gate 2 checks** | Identifiability (profile-likelihood CI), shrinkage ≤ 30%, reproducible estimation |
+| **Context of use** | Full ICH M15 qualification required (Gate 2.5) |
+
+**Classical lane characteristics:**
+- Deterministic evidence-driven search — the profiler output (richness, nonlinear-clearance signals, etc.) shapes which structural modules are tried, but does not iterate beyond a fixed budget.
+- Every candidate passes the full gate funnel: Gate 1 (technical validity), Gate 2 (lane admissibility), Gate 2.5 (ICH M15 credibility), Gate 3 (ranking).
+- Ranked by BIC within the classical paradigm; Bayesian candidates ranked separately with their own evidence criteria.
+
+---
+
+### Discovery
+
+**Purpose:** Broad model exploration across multiple modeling approaches to understand which structures best explain the data.
+
+**Primary use case:** Research setting, model-building phase, or when you want to compare classical, mechanistic, neural, and agentic approaches side-by-side.
+
+| Aspect | Specification |
+|--------|---|
+| **Admissible backends** | Classical NLME + Bayesian Stan/Torsten + Hybrid Neural ODE + Agentic LLM |
+| **Stopping rule** | Evidence-driven + optional agentic LLM iteration (≤25 transforms per run) |
+| **NODE/Agentic eligible?** | **Yes**, with data-driven dimension ceiling (≤8 for NODE latent dims) and Gate 2.5 required |
+| **LORO-CV required?** | No |
+| **NODE dimension ceiling** | Discovery: ≤ 8 latent dimensions (profiler evaluates data richness/sample count) |
+| **Key Gate 2 checks** | NODE requires Gate 2.5; no hard shrinkage ceiling |
+| **Context of use** | Gate 2.5 credibility qualification required |
+
+**Discovery lane characteristics:**
+- Exploration across paradigms (structural, mechanistic, neural).
+- Agentic backend available to propose transforms iteratively (on by default in `--lane discovery --agentic`).
+- Cross-paradigm ranking (Gate 3) compares classical, Bayesian, and NODE on simulation-based metrics (VPC concordance, NPE, AUC/Cmax BE) rather than likelihood alone.
+- Useful for mechanistic insights, hypothesis testing, and model comparison workflows.
+
+---
+
+### Optimization
+
+**Purpose:** Predictive-performance optimization via leave-one-out repeated cross-validation (LORO-CV), enforcing that the best model generalizes to unseen data.
+
+**Primary use case:** When predictive accuracy on held-out subjects is the goal, or when you want to validate model generalization before regulatory submission.
+
+| Aspect | Specification |
+|--------|---|
+| **Admissible backends** | Classical NLME + Bayesian Stan/Torsten + Hybrid Neural ODE + Agentic LLM |
+| **Stopping rule** | Same as Discovery, but candidates must pass LORO-CV Gate 2 checks |
+| **NODE/Agentic eligible?** | **Yes**, with stricter dimension ceiling (≤4 for NODE latent dims) |
+| **LORO-CV required?** | **Yes.** Every candidate must survive k-fold cross-validation. Gate 2 evaluates NPDE mean/variance concordance and VPC coverage on held-out folds. |
+| **NODE dimension ceiling** | Optimization: ≤ 4 latent dimensions (tighter constraint than Discovery) |
+| **Key Gate 2 checks** | LORO-CV NPDE mean ≤ 0.3, variance ∈ [0.5, 1.5], VPC coverage ≥ 80% on held-out data |
+| **Context of use** | Full credibility qualification required; includes sensitivity analysis artifact |
+
+**Optimization lane characteristics:**
+- Data is split into k regimen-based folds (subjects dosed under the same protocol go together).
+- Each candidate is fit k times, once per training fold, with posterior predictive diagnostics computed on the held-out fold.
+- True held-out generalization — the model never sees the test-fold subjects during fitting.
+- Produces the strongest evidence for predictive performance on future subjects.
+
+---
+
+## Lane Selection Guide
+
+Use this flowchart to pick the right lane:
+
+<Callout type="info">
+**Regulatory submission?** → Submission  
+**Model exploration / comparison?** → Discovery  
+**Predictive validation?** → Optimization  
+</Callout>
+
+### When to use Submission
+- Preparing an IND, NDA, or other regulatory filing.
+- You want only the most interpretable, identifiable models.
+- You are willing to sacrifice some predictive performance for regulatory confidence.
+- NODE and agentic models are explicitly off the table.
+
+### When to use Discovery
+- You are in the research or hypothesis-testing phase.
+- You want to compare classical, neural, Bayesian, and LLM-generated models.
+- You want to use agentic LLM model improvement (iterative transforms).
+- Interpretability is preferred but not required.
+
+### When to use Optimization
+- Your primary goal is predictive accuracy on future subjects.
+- You want formal cross-validation evidence that the model generalizes.
+- You are comfortable with the longer runtime (k fits per candidate).
+- You want to validate the model's performance before regulatory submission.
+
+---
+
+## Backend Availability by Lane
+
+| Backend | Submission | Discovery | Optimization |
+|---------|---|---|---|
+| Classical NLME (nlmixr2) | ✓ | ✓ | ✓ |
+| Bayesian (Stan/Torsten) | ✓ | ✓ | ✓ |
+| Hybrid Neural ODE | ✗ | ✓ | ✓ |
+| Agentic LLM | ✗ | ✓ | ✓ |
+
+---
+
+## Evidence Thresholds by Lane
+
+Each lane has lane-specific Gate policy thresholds. For example:
+
+| Check | Submission | Discovery | Optimization |
+|-------|---|---|---|
+| CWRES mean ≤ | 0.10 | 0.15 | 0.12 |
+| PIT tail tolerance (z_α) | 1.5 (strictest) | 2.5 (widest) | 2.0 |
+| Shrinkage max | 30% | not required | 30% |
+| Identifiability profile-likelihood CI | Required | No | Required |
+
+Stricter thresholds in Submission reflect higher regulatory evidence standards; Discovery is more permissive to encourage exploration.
+
+---
+
+## Hard Rules
+
+These rules are enforced at the gate level and cannot be overridden:
+
+<Callout type="warn">
+**NODE/Agentic models are never eligible for "recommended" status in Submission.** This is a hard rule, not a tunable weight. A NODE model that passes all gates in Submission will be ranked but never recommended. Use Discovery or Optimization if you want to explore NODE.
+</Callout>
+
+<Callout type="warn">
+**LORO-CV is mandatory in Optimization.** Candidates that fail cross-validation gates (NPDE concordance, VPC coverage on held-out data) do not advance to ranking.
+</Callout>
+
+---
+
+## Next Steps
+
+- **Understand Evidence Manifest** — see [Evidence Manifest](/docs/guide/concepts/evidence-manifest) to learn how the Data Profiler constrains backend dispatch.
+- **Backends** — see [Backends](/docs/guide/backends) for details on each modeling approach.
+- **Governance** — see [Governance & Reproducibility](/docs/guide/governance-reproducibility/gates) for how gates work.

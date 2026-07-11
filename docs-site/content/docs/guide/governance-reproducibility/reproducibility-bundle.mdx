@@ -1,0 +1,341 @@
+---
+title: Reproducibility Bundle
+description: Structure and integrity of APMODE's sealed bundles.
+since: "0.6.1"
+---
+
+Every APMODE run produces a **reproducibility bundle** — a self-contained, sealed directory containing all artifacts needed to audit, validate, or replay the results.
+
+## Bundle structure
+
+A typical bundle is organized as:
+
+```
+{run_id}/                                  # sparkid (e.g., "run_a1b2c3d4")
+├── _COMPLETE                              # Sentinel file (JSON) with SHA-256 digest
+├── data_manifest.json                     # Input dataset summary + schema version
+├── evidence_manifest.json                 # Profiler output (data signal assessment)
+├── split_manifest.json                    # Train/test/validation split metadata
+├── initial_estimates.json                 # NCA-derived or fallback parameter guesses
+├── nca_diagnostics.jsonl                  # Per-subject NCA QC results
+├── seed_registry.json                     # RNG seeds for all stochastic steps
+├── policy_file.json                       # Copy of gate thresholds (versioned)
+├── backend_versions.json                  # R, nlmixr2, CmdStan, Python versions
+├── missing_data_directive.json            # Missing-data handling strategy (if MI/FREM used)
+├── imputation_stability.json              # Rubin pooling metrics (MI runs only)
+├── categorical_encoding_provenance.json   # Covariate remapping log
+├── search_trajectory.jsonl                # Per-candidate BIC, convergence, metadata
+├── failed_candidates.jsonl                # Candidates that failed Gate 1/2
+├── candidate_lineage.json                 # DAG: parent → child, transform labels
+├── search_graph.json                      # Full search DAG (agentic runs only)
+├── classical_checkpoint.json              # Resume point for --resume-agentic
+├── ranking.json                           # Gate 3 output: ranked survivors
+├── report_provenance.json                 # Report generator identity + timestamps
+├── gate_decisions/
+│   ├── gate1_{candidate_id}.json
+│   ├── gate1b_{candidate_id}.json         # Bayesian Gate 1 (separate from classical)
+│   ├── gate2_{candidate_id}.json
+│   ├── gate2_5_{candidate_id}.json
+│   └── gate3_{candidate_id}.json
+├── compiled_specs/
+│   ├── {candidate_id}.json                # DSLSpec (Pydantic model)
+│   └── {candidate_id}.R                   # Lowered nlmixr2 R code
+├── results/
+│   ├── {candidate_id}_result.json         # BackendResult (parameters, diagnostics)
+│   └── {candidate_id}_seed_{i}_result.json # Multi-seed runs (if applicable)
+├── bayesian/                              # (Bayesian runs only)
+│   ├── prior_manifest.json                # Prior specifications
+│   ├── simulation_protocol.json           # MCMC sampler configuration
+│   ├── mcmc_diagnostics.json              # R̂, ESS, E-BFMI, Pareto-k
+│   └── posterior_draws/{candidate_id}.parquet # Posterior samples
+├── loro_cv/                               # (Optimization lane only)
+│   └── {candidate_id}_folds.json          # LORO-CV fold assignments
+├── credibility/
+│   └── {candidate_id}_credibility.json    # ICH M15 credibility assessment
+├── agentic_trace/                         # (Agentic runs only, --agentic flag)
+│   ├── {iteration_id}_input.json          # LLM prompt context
+│   ├── {iteration_id}_output.json         # LLM response + parsed transforms
+│   └── {iteration_id}_meta.json           # Model version, token cost, timestamps
+├── run_lineage.json                       # Multi-run provenance (if chained runs)
+├── report.html                            # Regulatory report (rendered)
+└── report.md                              # Regulatory report (Markdown)
+```
+
+## The _COMPLETE sentinel
+
+The `_COMPLETE` file marks the bundle as sealed and integrity-checked. It is a JSON object:
+
+```json
+{
+  "schema_version": 2,
+  "run_id": "run_a1b2c3d4",
+  "sealed_timestamp": "2026-07-10T15:30:45Z",
+  "file_digests": {
+    "data_manifest.json": "sha256:abc123...",
+    "initial_estimates.json": "sha256:def456...",
+    ...
+  }
+}
+```
+
+**SHA-256 digests** are computed over every file except:
+- `_COMPLETE` and `_COMPLETE.tmp` (the sentinel itself and its write-in-progress twin)
+- `bom.cdx.json` (SBOM sidecar, digest-exempt)
+- `attestation.json` (optional QA/QC reviewer sign-off, digest-exempt)
+
+### Why digest exclusions?
+
+SBOM and attestation are **added after sealing** as post-hoc provenance artifacts. Excluding them from the digest allows you to:
+- Regenerate the SBOM with newer tools
+- Attach reviewer attestation without invalidating the integrity anchor
+
+The importer verifies that `_COMPLETE` matches all other files; mismatches indicate post-hoc tampering.
+
+## Validation and integrity
+
+To verify a bundle is sealed and intact:
+
+```bash
+# Refuse to work with unsealed bundles
+uv run apmode validate {bundle_dir}
+
+# JSON output for CI
+uv run apmode validate {bundle_dir} --json | jq '.ok'
+```
+
+**What validation checks:**
+1. `_COMPLETE` exists
+2. SHA-256 digests match all listed files
+3. No unexpected files (flags post-hoc additions)
+4. All required artifacts are present (completeness check)
+
+<Callout type="error">
+**`apmode validate` will refuse to process unsealed bundles.** If `_COMPLETE` is missing or digests don't match, the bundle is considered incomplete and potentially compromised.
+</Callout>
+
+## Gate decision files
+
+Gate results are stored in `gate_decisions/` with a strict naming convention:
+
+| Gate | Filename pattern | Example |
+|------|------------------|---------|
+| Gate 1 (classical) | `gate1_{candidate_id}.json` | `gate1_cand_a1b2.json` |
+| Gate 1b (Bayesian) | `gate1b_{candidate_id}.json` | `gate1b_cand_a1b2.json` |
+| Gate 2 | `gate2_{candidate_id}.json` | `gate2_cand_a1b2.json` |
+| Gate 2.5 | `gate2_5_{candidate_id}.json` | `gate2_5_cand_a1b2.json` |
+| Gate 3 | `gate3_{candidate_id}.json` | `gate3_cand_a1b2.json` |
+
+<Callout type="warn">
+**The underscore in `gate2_5_` is critical.** CLI commands use globs like `gate2_5_*.json`, which would fail with `gate25_*.json`. Always use the underscore.
+</Callout>
+
+## Core artifacts explained
+
+### data_manifest.json
+High-level summary: number of subjects, observations, dosing events, covariates, split strategy, MD strategy. Does not contain raw patient data.
+
+### evidence_manifest.json
+Output of the **Data Profiler**. Includes:
+- Richness category (sparse, moderate, rich)
+- Absorption coverage assessment
+- Nonlinear clearance signals (if detected)
+- Policy hash (versioned profiler thresholds)
+
+### search_trajectory.jsonl
+One JSON line per candidate:
+```json
+{
+  "candidate_id": "cand_a1b2",
+  "generation": 0,
+  "backend": "nlmixr2",
+  "spec_fingerprint": "abc123...",
+  "converged": true,
+  "ofv": -1234.56,
+  "bic": 1245.67,
+  "aic": 1200.45,
+  "wall_time_seconds": 45.3
+}
+```
+
+Use this for debugging search quality, tracing which candidates were attempted, and analyzing convergence patterns.
+
+### gate_decisions/gate1_\{candidate_id\}.json
+Per-check Gate 1 results:
+```json
+{
+  "gate_id": "gtid_xyz",
+  "gate_name": "technical_validity",
+  "candidate_id": "cand_a1b2",
+  "passed": true,
+  "checks": [
+    {
+      "check_id": "convergence",
+      "passed": true,
+      "observed": true,
+      "threshold": null
+    },
+    {
+      "check_id": "cwres_mean",
+      "passed": true,
+      "observed": 0.012,
+      "threshold": 0.1,
+      "units": "unitless"
+    }
+  ],
+  "summary_reason": "All checks passed",
+  "policy_version": "0.7.1",
+  "timestamp": "2026-07-10T15:30:45Z"
+}
+```
+
+### compiled_specs/\{candidate_id\}.json
+The **DSLSpec** — a full Pydantic model representing the model structure:
+
+```json
+{
+  "absorption": { "model": "first_order", "lag": true },
+  "distribution": { "model": "one_compartment", "parameters": ["vc", "q2", "vp2"] },
+  "elimination": { "model": "michaelis_menten", "parameters": ["vmax", "km"] },
+  "variability": { "model": "log_normal", "eta_distribution": "normal" },
+  "observation": { "model": "proportional_error" },
+  "initial_estimates": { "vc": 50.0, "vmax": 100.0, ... },
+  "priors": [ /* Bayesian prior specs */ ],
+  "units": { "vc": "L", "vmax": "mg/h", ... },
+  "metadata": { "author": "...", "rationale": "..." }
+}
+```
+
+### results/\{candidate_id\}_result.json
+**BackendResult** — the full model fit output:
+
+```json
+{
+  "model_id": "cand_a1b2",
+  "backend": "nlmixr2",
+  "converged": true,
+  "ofv": -1234.56,
+  "aic": 1200.45,
+  "bic": 1245.67,
+  "parameter_estimates": { "vc": { "estimate": 50.2, "se": 3.1 }, ... },
+  "eta_shrinkage": { "eta_vc": 0.15, ... },
+  "diagnostics": {
+    "gof": { "rmse": 1.2, "mae": 0.8 },
+    "cwres": { "mean": 0.012, "median": -0.05 },
+    "vpc": { "lower_coverage": 0.89, "median_coverage": 0.91, "upper_coverage": 0.92 },
+    "pit_calibration": { ... },
+    "npe_score": 1.05,
+    "auc_cmax_be_score": 0.92
+  },
+  "wall_time_seconds": 45.3,
+  "backend_versions": { "r_version": "4.4.0", "nlmixr2": "3.2.1" }
+}
+```
+
+## SBOM sidecar
+
+The **Software Bill of Materials** (`bom.cdx.json`) is generated separately:
+
+```bash
+uv run apmode bundle sbom {bundle_dir}
+```
+
+This creates a CycloneDX SBOM listing all Python + R + system dependencies. It is **excluded from the sealed digest**, allowing you to regenerate it without invalidating `_COMPLETE`.
+
+## SBOM and RO-Crate export
+
+The SBOM is auto-discovered by the RO-Crate projector and tagged as:
+```json
+{
+  "@id": "bom.cdx.json",
+  "name": "Software Bill of Materials",
+  "encodingFormat": "application/vnd.cyclonedx+json",
+  "additionalType": ["File", "apmode:sbom"]
+}
+```
+
+## Artifact locking
+
+During sealing, all bundles are locked via a **process-wide threading.RLock**:
+
+1. The orchestrator acquires the lock
+2. Reads all files via `rglob()`
+3. Streams each file in 1 MiB chunks (not loaded wholesale into memory)
+4. Computes SHA-256 digest
+5. Writes `_COMPLETE` and atomically renames from `_COMPLETE.tmp`
+
+This prevents TOCTOU (time-of-check-time-of-use) races even if future code offloads writes to `asyncio.to_thread()`. The lock is held for the **entire** operation, not just individual files.
+
+## Practical workflows
+
+### Validate a bundle
+
+```bash
+# Quick validation (OK/FAIL)
+uv run apmode validate {bundle_dir}
+
+# Detailed validation with JSON output
+uv run apmode validate {bundle_dir} --json
+
+# Validate with RO-Crate export verification
+uv run apmode validate {bundle_dir} --rocrate --crate {crate.zip}
+```
+
+### Inspect a bundle
+
+```bash
+# Top-line summary: best candidate, gate results
+uv run apmode inspect {bundle_dir}
+
+# JSON export for programmatic access
+uv run apmode inspect {bundle_dir} --json | jq '.candidates[0]'
+
+# Examine gate decisions
+uv run apmode inspect {bundle_dir} --json | jq '.gates.gate1'
+```
+
+### Replay a model fit
+
+```bash
+# Extract the DSL spec for the best candidate
+uv run apmode inspect {bundle_dir} --json | jq '.candidates[0].spec' > best_spec.json
+
+# Compile to R code
+uv run apmode formular lower best_spec.json --backend nlmixr2 > best_model.R
+
+# Refit with the same data (deterministic given the same seed)
+# ...use nlmixr2 directly or re-run apmode with the saved CSV
+```
+
+## Key concepts
+
+<Cards>
+  <Card
+    title="_COMPLETE Sentinel"
+    description="JSON file with SHA-256 digests of all bundle files; absence signals incomplete run."
+  />
+  <Card
+    title="Digest Exclusions"
+    description="SBOM, attestation, and temporary files are excluded so post-hoc artifacts don't invalidate integrity."
+  />
+  <Card
+    title="Gate Filename Convention"
+    description="gate1_, gate1b_, gate2_, gate2_5_ (with underscore), gate3_. Critical for CLI globs."
+  />
+  <Card
+    title="Deterministic Sealing"
+    description="Files streamed in 1 MiB chunks with process-wide lock to prevent concurrent mutation."
+  />
+</Cards>
+
+## Related commands
+
+```bash
+# List bundles in current runs directory
+uv run apmode ls --sort bic --limit 10
+
+# Compare two bundles
+uv run apmode diff {bundle1} {bundle2}
+
+# Export to RO-Crate (next section)
+uv run apmode bundle rocrate export {bundle_dir} --out {out.zip}
+```

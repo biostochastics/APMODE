@@ -119,6 +119,7 @@ UNITLESS: Dimension = (0, 0, 0)
 VOLUME: Dimension = (0, 1, -1)  # Amount / Concentration
 CLEARANCE: Dimension = (-1, 1, -1)  # Volume / Time
 RATE: Dimension = (-1, 0, 0)  # 1 / Time
+SECOND_ORDER_RATE: Dimension = (-1, 0, -1)  # 1 / (Concentration * Time) — TMDD kon
 AMOUNT_PER_TIME: Dimension = (-1, 1, 0)  # Amount / Time (Vmax)
 
 _DIMENSION_LABELS: dict[Dimension, str] = {
@@ -129,6 +130,7 @@ _DIMENSION_LABELS: dict[Dimension, str] = {
     VOLUME: "Volume",
     CLEARANCE: "Clearance",
     RATE: "Rate",
+    SECOND_ORDER_RATE: "1/(Concentration*Time)",
     AMOUNT_PER_TIME: "Amount/Time",
 }
 
@@ -140,17 +142,24 @@ _DIMENSION_DEPENDENCIES: dict[Dimension, tuple[str, ...]] = {
     VOLUME: ("volume", "amount", "concentration_num", "concentration_den"),
     AMOUNT_PER_TIME: ("amount", "time"),
     CONCENTRATION: ("concentration_num", "concentration_den"),
+    SECOND_ORDER_RATE: ("time", "concentration_num", "concentration_den"),
     RATE: ("time",),
     TIME: ("time",),
     UNITLESS: (),
 }
 
-# Per the task brief: exactly this role table, no more. Parameters with no
-# entry here (Q/Q2/Q3, TMDD's R0/kon/koff/kint/KD, SumIG/ParallelFirstOrder
-# component params, structural n/k/dim/decay_fn, NODE weights, ...) are
-# reported as "unchecked", not silently guessed at.
+# Only calibration parameters whose dimension is *exact* PK physics (never a
+# guess) appear here — inter-compartmental clearances (Q/Q2/Q3 = Volume/Time),
+# TMDD binding constants (R0/KD = Concentration, koff/kint = 1/Time, kon =
+# 1/(Concentration*Time)), and the one-compartment core roles. Parameters whose
+# dimension genuinely cannot be inferred without guessing (SumIG/
+# ParallelFirstOrder component params, structural n/k/dim/decay_fn, NODE
+# weights, ...) are deliberately absent and reported as "unchecked".
 _ROLE_DIMENSIONS: dict[str, Dimension] = {
     "CL": CLEARANCE,
+    "Q": CLEARANCE,
+    "Q2": CLEARANCE,
+    "Q3": CLEARANCE,
     "V": VOLUME,
     "V1": VOLUME,
     "V2": VOLUME,
@@ -158,6 +167,11 @@ _ROLE_DIMENSIONS: dict[str, Dimension] = {
     "ka": RATE,
     "ktr": RATE,
     "kdecay": RATE,
+    "koff": RATE,
+    "kint": RATE,
+    "kon": SECOND_ORDER_RATE,
+    "R0": CONCENTRATION,
+    "KD": CONCENTRATION,
     "Vmax": AMOUNT_PER_TIME,
     "Km": CONCENTRATION,
     "tlag": TIME,

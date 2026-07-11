@@ -981,7 +981,11 @@ class Orchestrator:
                 )
                 emitter.write_credibility_report(cred_report)
 
-                if g25_config is not None and g25_config.risk_grading is not None:
+                if (
+                    g25_config is not None
+                    and g25_config.risk_grading is not None
+                    and g25_config.risk_grading.enabled
+                ):
                     risk_report = generate_risk_grading_report(
                         sr_result,
                         lane=self._config.lane,

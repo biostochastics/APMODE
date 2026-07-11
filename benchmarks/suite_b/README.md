@@ -99,9 +99,10 @@ uv run python -m apmode.benchmarks.suite_b_cli \
 * Skipped cases (NODE B1–B3) excluded from gate maths.
 
 A miss is a methodology drift signal, **not** a release block. The
-nightly regeneration is operator-driven; this directory holds the
-checked-in `suite_b_results.json` snapshot the per-PR scoring tests
-read.
+nightly regeneration is operator-driven; `suite_b_results.json` is a
+generated local snapshot ignored by git, and per-PR tests exercise the
+runner/scorer logic on temporary fixtures rather than reading a committed
+Suite B result file.
 
 ## Cross-seed stability monitor (PRD §5 / R8)
 

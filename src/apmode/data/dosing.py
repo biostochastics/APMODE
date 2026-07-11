@@ -104,6 +104,8 @@ def expand_infusion_events(
     col_amt: str = "AMT",
     col_rate: str = "RATE",
     col_dur: str = "DUR",
+    col_cmt: str = "CMT",
+    col_dv: str = "DV",
 ) -> pd.DataFrame:
     """Generate explicit infusion stop events for rate-based infusions.
 
@@ -124,8 +126,9 @@ def expand_infusion_events(
     has_dur = col_dur in result.columns
 
     if not has_rate and not has_dur:
-        # No infusions — add helper column as zero
+        # No infusions — add helper columns as inert defaults
         result["_INF_RATE"] = 0.0
+        result["_INF_ID"] = -1
         return result
 
     rate = result[col_rate].fillna(0.0) if has_rate else pd.Series(0.0, index=result.index)
@@ -144,6 +147,11 @@ def expand_infusion_events(
     inf_dur.loc[needs_dur] = amt.loc[needs_dur] / inf_rate.loc[needs_dur]
 
     result["_INF_RATE"] = inf_rate
+    # Identity linking each infusion start to its synthetic stop. Downstream
+    # piecewise solvers pair a stop to its start by this id (not by (cmt, rate)),
+    # so a reset-terminated infusion's stop cannot be mistaken for an unrelated
+    # same-rate infusion started later. -1 marks a non-infusion row.
+    result["_INF_ID"] = -1
 
     # Find infusion dose rows
     is_infusion = result[col_evid].isin([1, 4]) & (inf_rate > 0) & (inf_dur > 0)
@@ -152,8 +160,9 @@ def expand_infusion_events(
         return result
 
     stop_rows: list[dict[str, object]] = []
-    for idx in result.index[is_infusion]:
+    for inf_id, idx in enumerate(result.index[is_infusion]):
         row = result.loc[idx]
+        result.loc[idx, "_INF_ID"] = inf_id
         stop_time = float(row[col_time]) + float(inf_dur.loc[idx])
         stop_rows.append(
             {
@@ -161,8 +170,9 @@ def expand_infusion_events(
                 col_time: stop_time,
                 col_evid: INFUSION_STOP_EVID,
                 col_amt: 0.0,
-                "CMT": row.get("CMT", 1),
+                col_cmt: row.get(col_cmt, 1),
                 "_INF_RATE": -float(inf_rate.loc[idx]),  # negative = stop
+                "_INF_ID": inf_id,  # shares its start's id
             }
         )
 
@@ -171,7 +181,7 @@ def expand_infusion_events(
         # Fill missing columns with defaults (DV=NaN for synthetic events)
         for col in result.columns:
             if col not in stops.columns:
-                if col in ("DV",):
+                if col == col_dv:
                     stops[col] = np.nan
                 else:
                     stops[col] = 0 if result[col].dtype in ("int64", "int32") else 0.0
@@ -191,6 +201,7 @@ def build_event_table(
     col_amt: str = "AMT",
     col_rate: str = "RATE",
     col_dur: str = "DUR",
+    col_cmt: str = "CMT",
     col_dv: str = "DV",
 ) -> pd.DataFrame:
     """Build a complete, sorted event table for explicit-event backends.
@@ -221,6 +232,8 @@ def build_event_table(
         col_amt=col_amt,
         col_rate=col_rate,
         col_dur=col_dur,
+        col_cmt=col_cmt,
+        col_dv=col_dv,
     )
     return _sort_event_table(with_infusions, col_id=col_id, col_time=col_time, col_evid=col_evid)
 

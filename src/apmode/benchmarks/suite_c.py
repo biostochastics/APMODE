@@ -130,7 +130,7 @@ CASE_C1_MAVOGLURANT = BenchmarkCase(
 # ---------------------------------------------------------------------------
 
 GENTAMICIN_PUBLISHED = PublishedModel(
-    citation="Germovsek et al. (2017) AAC 61(8):e00481-17",
+    citation="Germovsek et al. (2016) AAC 60(8):4869-4877; doi:10.1128/AAC.00577-16",
     structure="1-CMT IV, linear elimination, IOV on CL, allometric WT",
     n_parameters=8,
     estimation_method="FOCE-I",
@@ -148,7 +148,7 @@ CASE_C2_GENTAMICIN = BenchmarkCase(
     description=(
         "Gentamicin IOV literature comparison: 205 neonates, 2788 obs. "
         "IOV on CL is the primary challenge — algorithmic stress test. "
-        "Published NONMEM model (Germovsek 2017) as reference anchor. "
+        "Published NONMEM model (Germovsek 2016) as reference anchor. "
         "CC0 license, fully open."
     ),
     lane="submission",

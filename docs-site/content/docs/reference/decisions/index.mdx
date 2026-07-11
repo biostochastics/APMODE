@@ -1,0 +1,91 @@
+---
+title: Design Decisions
+description: Why key architectural choices were made in APMODE.
+since: "0.6.1"
+---
+
+This section documents the reasoning behind significant APMODE design choices — the trade-offs considered, constraints encountered, and solutions adopted.
+
+## Overview
+
+Each design decision page explains:
+- **The problem or question** that prompted the decision
+- **Candidate approaches** considered
+- **What was chosen and why** — the decision itself
+- **Implementation status** — what's shipped, what's deferred
+- **Re-evaluation trigger** — when this decision might be revisited
+
+---
+
+## Decisions
+
+### [ADR 0003: SOTA Absorption Extension](/docs/reference/decisions/0003-sota-absorption)
+
+**Scope**: v0.7 addition of Erlang, parallel first-order, and sum-of-inverse-Gaussians absorption forms to the Formular DSL.
+
+**Summary**: APMODE's typed PK DSL is extensible by design. This ADR documents how three new absorption variants were added, including grammar/AST/emitter changes, lane-admissibility tables, profiler manifest evolution, and the NLPD-harness contract for fair ranking across absorption forms.
+
+**Key decisions**:
+- Three forms (not five): Weibull deferred; FAT/PBFTPK refused on regulatory grounds
+- SumIG single-dose only in v0.7; multi-dose superposition deferred
+- SumIG requires "disposition fixed" gate to avoid identifiability collapse
+- Within-paradigm NLPD comparability maintained via frozen observation model, identical CV folds, and literal policy floors
+
+---
+
+### [ADR 0004: Cross-Paradigm Simulation-Metric Circularity Risk](/docs/reference/decisions/0004-cross-paradigm-circularity)
+
+**Scope**: Gate 3 ranking across paradigms (classical NLME, NODE, Bayesian) when NLPD/BIC are not comparable.
+
+**Summary**: Because different observation models produce likelihoods on incomparable scales, Gate 3 disabled likelihood-based ranking and switched to simulation metrics (VPC, NPE, AUC/Cmax). But simulation metrics are self-referential: a candidate is scored by how well its *own* simulator reproduces data it was fit to. If the ground-truth data-generating process structurally resembles one paradigm's simulator more than another's, that paradigm may show unfair advantage.
+
+**Key findings**:
+- This is unresolved, not disproven — the empirical check under identical parameters showed no bias, but the harder case (learned NODE dynamics only approximating the ODE) remains untested
+- Keep VPC/NPE/AUC-Cmax as the default (no better alternative exists today)
+- Add observability (`paradigm_metric_spread` check) without gating
+- Define a re-evaluation trigger: a deliberately paradigm-mismatched benchmark scenario
+
+---
+
+## Chronology
+
+| Date | ADR | Title | Status |
+|------|-----|-------|--------|
+| 2026-04-25 | 0003 | SOTA Absorption Extension (v0.7) | Accepted |
+| 2026-07-10 | 0004 | Cross-Paradigm Simulation-Metric Circularity Risk | Accepted (unresolved) |
+
+---
+
+## Contributing a New Decision
+
+If you discover an architectural choice that should be documented:
+
+1. **File an ADR** in `/docs/adr/` using the template:
+   ```
+   # ADR NNNN — <Title>
+   
+   **Date**: YYYY-MM-DD
+   **Status**: Proposed|Accepted|Rejected|Superseded
+   
+   ## Context
+   [What prompted this decision?]
+   
+   ## Decision
+   [What was chosen?]
+   
+   ## Rationale
+   [Why this choice over alternatives?]
+   
+   ## Re-evaluation Trigger
+   [When might this change?]
+   ```
+
+2. **Link it here** once accepted by adding an entry to the decisions list above.
+
+---
+
+## Related Resources
+
+- [APMODE Architecture Overview](../../../guide/concepts/architecture)
+- [Formular DSL Reference](../../../guide/formular-dsl)
+- [Governance & Gate Policies](../../../guide/governance-reproducibility)

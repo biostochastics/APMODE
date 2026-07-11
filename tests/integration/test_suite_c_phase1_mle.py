@@ -59,7 +59,7 @@ def test_phase1_roster_has_seven_fixtures() -> None:
 
     The original plan was 5 fixtures (theo / warfarin / mavoglurant /
     gentamicin / schoemaker). v0.6.1 adds two open / no-credentialed
-    fixtures so the weekly CI workflow can produce a complete
+    fixtures so an on-demand operator run can produce a complete
     scorecard without manual DDMoRe / MIMIC-IV fetches:
 
     * ``phenobarbital_grasela_1985`` — real, public, peer-reviewed

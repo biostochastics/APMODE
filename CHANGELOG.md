@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — NODE zero-order infusion support
+
+- Zero-order constant-rate IV infusion (`RATE>0` or `DUR>0`) into the
+  central compartment is now integrated by the eager piecewise solver
+  `node_trainer._solve_multidose_eager`, which threads a per-compartment
+  rate vector through the Diffrax `vector_field` args so the summed rate
+  is applied while an infusion is active. Overlapping and staggered
+  infusions sum correctly; synthetic `EVID=9` stop events end them at the
+  computed off-time. The NODE backend is no longer oral-only — oral
+  absorption and IV (bolus + central infusion) are both supported.
+- Reset events (`EVID` 3/4) now terminate any ongoing infusion: the
+  active-infusion map is cleared at the reset. Each infusion start and its
+  synthetic stop share an `_INF_ID` (assigned by `build_event_table`), and
+  the solver removes a stop's infusion by that id — not by `(compartment,
+  rate)`. This identity pairing is load-bearing: with a `(cmt, rate)` match,
+  a reset-orphaned stop could cancel an *unrelated but identically-rated*
+  infusion started after the reset (a common repeat-dose-across-occasion
+  regimen), silently clipping it early. With id pairing the orphaned stop
+  finds no matching id and no-ops.
+- `data/dosing.expand_infusion_events` and `build_event_table` gained
+  `col_cmt`/`col_dv` parameters so the synthetic stop row honours the
+  Evidence Manifest column mapping instead of hardcoding `"CMT"`/`"DV"`,
+  and now emit the `_INF_ID` start↔stop linkage column described above.
+- Fail-loud `InvalidSpecError` (never silently ignored) for
+  still-unsupported constructs: infusion labelled into the absorption
+  depot (`CMT=1`), steady-state rows (`SS != 0`), other-type events
+  (`EVID=2`), and observations outside the central compartment
+  (obs `CMT != 1`). CMT convention: the hybrid state vector is
+  `[A_depot, A_central, ...]`, dose rows route by `cmt_idx = CMT-1`
+  (`CMT=1` → depot, `CMT=2` → central), and observations read central
+  and must carry the data label `CMT=1`.
+- Still not shipped (unchanged caveats): per-subject IIV/random effects
+  (pooled-NLL only, Laplace post-hoc planned); posterior-predictive
+  simulation remains a stub (`sample_posterior_predictive()` returns
+  `None`, so NODE candidates emit no CWRES/NPE); `vmap` batching of the
+  eager solver is deferred.
+- Regression tests cover infusion summation/staggering, `EVID=9` stop
+  handling, an infusion that never stops in-window, a bolus and infusion
+  at the same timestamp, reset-terminated infusions, the identity-pairing
+  case (reset then restart at the *same* rate must not clip the new
+  infusion), the `col_cmt`/`col_dv` mapping threading, and each
+  rejected-construct `InvalidSpecError` path (`tests/unit/test_node_trainer.py`,
+  `test_dosing.py`, `test_node_ode.py`, `test_node_runner.py`).
+
 ### Removed — Suite C weekly CI job
 
 - Deleted `.github/workflows/suite_c_phase1.yml`. The job only re-scored
@@ -107,8 +151,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `benchmarks/suite_c/gentamicin_germovsek_2017.yaml`) — verified
   against independent citing reviews that the real paper is Germovsek
   et al. 2016, *Antimicrob Agents Chemother* 60(8):4869-4877,
-  doi:10.1128/AAC.00577-16. Fixed both files plus the mirrored entry in
-  `benchmarks/suite_c/README.md`.
+  doi:10.1128/AAC.00577-16. Fixed both files, the dataset manifest, and
+  the mirrored entry in `benchmarks/suite_c/README.md`.
 
 ## [0.6.1-rc2] — 2026-07-09
 
@@ -1087,8 +1131,9 @@ ranker fails-closed; well-defined fits still return finite).
 
 The first complete Phase-1 scorecard from a live `apmode.benchmarks.suite_c_phase1_runner`
 end-to-end pass on the five open `nlmixr2data` fixtures. Committed at
-`benchmarks/suite_c/phase1_npe_inputs.json` so the weekly CI workflow has a measured
-baseline. All 50 fits (5 fixtures × 5 folds × 2 sides) returned `status=success` after
+`benchmarks/suite_c/phase1_npe_inputs.json` so the then-scheduled Suite C
+check had a measured baseline. All 50 fits (5 fixtures × 5 folds × 2
+sides) returned `status=success` after
 the v0.6.1-rc1 nine-fix bring-up. Dimensionless NPE per fixture:
 
 | Fixture | n | NPE APMODE | NPE Lit | Δ |
@@ -1419,8 +1464,8 @@ The original Phase-1 roster of 5 had 2 credentialed/manual-fetch
 fixtures (`gentamicin_germovsek_2017` requires DDMoRe browser
 download; `vancomycin_roberts_2011` is on the Bayesian roster but the
 sibling MIMIC-IV vancomycin fixture requires CITI training +
-PhysioNet credentials). The weekly CI workflow could therefore
-never produce a complete Phase-1 scorecard from the roster alone.
+PhysioNet credentials). The then-scheduled Suite C check could
+therefore never produce a complete Phase-1 scorecard from the roster alone.
 
 Two new fixtures close that gap:
 
@@ -2163,8 +2208,8 @@ per Task 42's coverage assessment).
   `mavoglurant_wendling_2015` (2-cmt oral, Wendling 2015 simplified
   fit, DOI 10.1007/s11095-014-1574-1; replaces the plan's
   unverifiable `mavoglurant_wang_2007.yaml` placeholder),
-  `gentamicin_germovsek_2017` (1-cmt IV, Germovsek 2017 IOV neonate
-  model, DOI 10.1128/AAC.02659-16; cross-cited against De Cock 2014
+  `gentamicin_germovsek_2017` (1-cmt IV, Germovsek 2016 IOV neonate
+  model, DOI 10.1128/AAC.00577-16; cross-cited against De Cock 2014
   for typical-CL agreement), and `schoemaker_nlmixr2_tutorial` (1-cmt
   IV bolus known-truth from the Schoemaker 2019 grid). New
   `apmode.benchmarks.literature_loader` exposes `load_fixture`,

@@ -1,0 +1,284 @@
+---
+title: "ADR 0003: SOTA Absorption Extension (v0.7)"
+description: Design decisions for adding Erlang, parallel first-order, and sum-of-inverse-Gaussians absorption forms.
+since: "0.6.1"
+---
+
+## Summary
+
+APMODE's Formular DSL (v0.7) extends absorption module support from five classical forms to eight, adding **Erlang**, **parallel first-order**, and **sum-of-inverse-Gaussians (SumIG)** variants. This document explains why these three were chosen, how they fit into the DSL type system, which backends support them, and the policy constraints (lane admissibility, NLPD harness) that govern their use.
+
+**Status**: Accepted. Shipping in v0.7.
+
+---
+
+## Context: Why Extend Absorption?
+
+Suite A (ground-truth recovery) and Suite B (robustness) benchmarking revealed that APMODE's classical absorption forms (FirstOrder, ZeroOrder, Transit, MixedFirstZero) missed important structural patterns in real and published population PK models:
+
+- **Parallel first-order routes** appear in drugs with saturable vs. linear uptake pathways (e.g., complex prodrug bioconversion)
+- **Erlang absorption** is mathematically equivalent to a transit chain but computationally distinct from the Transit form (avoids a known emitter bug class)
+- **Sum-of-inverse-Gaussians (SumIG)** is essential for mavoglurant, propofol, and other drugs with complex absorption-phase shape (Csajka 2005, Weiss 2022)
+
+Extending absorption coverage is necessary for Suite C (literature fixtures) to be representative.
+
+---
+
+## Decision D1: Three New Forms, Not Five
+
+**Candidates considered:**
+1. F.A.T. (First-order absorption with time-dependency) — Macheras 2024
+2. Weibull absorption — standard in pharmacometrics, available via `nlmixr2lib::addWeibullAbs`
+3. Erlang — mathematically elegant, computationally distinct from Transit
+4. Parallel first-order — essential for suite C coverage
+5. SumIG — essential for suite C coverage
+
+**Chosen**: Erlang, Parallel first-order, SumIG (three)
+
+**Why not F.A.T.?**
+- Not yet FDA/EMA-blessed; adopting it as a first-class DSL form would undermine Submission-lane credibility
+- Researchers can fork APMODE if F.A.T. is essential
+
+**Why defer Weibull?**
+- Covered by nlmixr2's built-in library; lower priority than SumIG (which has no built-in)
+- Re-evaluate after v0.7 ships and Suite C is benchmarked
+
+**Why cap SumIG at k=2?**
+- Wagner 2014 (mavoglurant) required dense IV+oral data for k=3 fits
+- v0.7 grammar allows `SumIG.k: int` but validators restrict to k ∈ \{1, 2\}
+- Knob `sumig_max_k` lives in `policies/profiler.json` for future recalibration without code changes
+
+---
+
+## Decision D2: Erlang as Separate AST Class
+
+**Alternative**: Constrain Transit as `Transit(n, ktr, ka→∞)` — mathematically equivalent.
+
+**Chosen**: Separate `Erlang` AST class.
+
+**Why separate?**
+- Erlang *collapses* to a gamma density; Transit retains a terminal first-order `ka` step
+- Hiding Erlang under "Transit with very large ka" creates silent emitter bugs
+- rxode2's `transit(n, mtt)` interpolates non-integer `n` via gamma (correct for Erlang, wrong for Transit)
+- Separate variant is ~40 lines of Pydantic + validator + two emitter branches
+- Eliminates an entire bug class at low cost
+- Agents reach Erlang via one transform `convert_transit_to_erlang(n: int)` (controlled search-space expansion)
+
+---
+
+## Decision D3: ParallelFirstOrder ≠ MixedFirstZero
+
+**Alternative**: Treat both as variants of a generic "multi-route" form.
+
+**Chosen**: Separate AST classes.
+
+**Why distinct?**
+- `MixedFirstZero(ka, dur, frac)` = first-order + zero-order routes (Pumas PK15 patterns)
+- `ParallelFirstOrder(ka1, ka2, frac)` = two parallel first-order routes (Pumas PK43 patterns; Soufsaf 2021)
+- Literature and regulatory guidance treat them separately
+- Priors differ: slow route `ka2` is log-normally centered ~1 log-unit below `ka1` (data-driven)
+- Distinct AST reduces ambiguity downstream (emitters, agents)
+
+---
+
+## Decision D4: Analytic Input Rate, Not Deconvolution
+
+**Implementation choice for SumIG lowering:**
+
+**nlmixr2**: Closed-form forcing function injected into `model({})`:
+```r
+ig_1 <- sqrt(RD2_i / (2*pi*t^3)) * exp(-RD2_i*(t-MT_i)^2 / (2*MT_i^2*t))
+ig_2 <- sqrt(RD2_2 / (2*pi*t^3)) * exp(-RD2_2*(t-MT_2)^2 / (2*MT_2^2*t))
+input <- amt * F * (w_1*ig_1 + (1-w_1)*ig_2)
+d/dt(centr) <- input - <elim>
+```
+
+**Stan/Torsten**: Identical analytical rate inside the ODE RHS (explicit hand-coded, guarding `t > 0` directly).
+
+**Why not deconvolution?**
+- `linCmt()` deconvolution macros require numeric input function via covariate
+- Would couple the emitter to the data adapter
+- Would break the producer-side bundle digest contract (emitter output must be deterministic given spec + data path)
+
+**Version constraint**: v0.7 ships **single-dose only**. Multi-dose superposition deferred.
+
+---
+
+## Decision D5: SumIG Identifiability Gate
+
+**The problem**: SumIG(k≥2) fit jointly with disposition (CL, V, Q) experiences identifiability collapse (Csajka 2005 §4, Weiss 2022 §5).
+
+**Solution**: Cross-module validator check. SumIG.k ≥ 2 requires either:
+- `EvidenceManifest.disposition_fixed` flag (IV reference detected, or external estimates provided), **or**
+- `spec.priors` contains entries for all disposition params with `source == "fixed_external"`
+
+Surfaces as a first-class `ValidationError` with actionable remediation.
+
+**Enforcement logic**:
+```python
+if spec.absorption.form == "SumIG" and spec.absorption.k >= 2:
+    if not (manifest.disposition_fixed or _disposition_priors_fixed(spec)):
+        raise ValidationError("SumIG(k≥2) requires disposition fixed via ...")
+```
+
+---
+
+## Decision D6: Lane Admissibility Table
+
+Which absorption forms are allowed in each pipeline lane (Submission, Discovery, Optimization)?
+
+| Form | Submission | Discovery | Optimization |
+|------|------------|-----------|--------------|
+| FirstOrder | ✓ | ✓ | ✓ |
+| ZeroOrder | ✓ | ✓ | ✓ |
+| LaggedFirstOrder | ✓ | ✓ | ✓ |
+| Transit | ✓ | ✓ | ✓ |
+| MixedFirstZero | ✓ | ✓ | ✓ |
+| Erlang | ✓ | ✓ | ✓ |
+| ParallelFirstOrder | ✓ | ✓ | ✓ |
+| **SumIG** | **✗** | ✓ | ✓ |
+| NODE_Absorption | ✗ | ✓ | ✓ |
+
+**SumIG is restricted from Submission** because it remains academic-grade in regulatory practice. Discovery and Optimization lanes accept it (with the D5 gate enforced).
+
+Implementation: `_LANE_ABSORPTION_ADMISSIBILITY` dict in `validator.py`, parallel to `_LANE_DIM_CEILING`.
+
+---
+
+## Decision D7: Profiler Manifest Evolution (v2 → v3)
+
+The profiler's evidence manifest (produced by the Data Profiler, consumed by backends and ranker) adds two new fields for v0.7:
+
+```python
+absorption_complexity_eligible: dict[str, bool] = Field(default_factory=dict)
+disposition_fixed: bool = False
+```
+
+Both have defaults, so v2 manifests load without breaking.
+
+**`absorption_complexity_eligible`** example:
+```python
+{
+    "SumIG_k2": True,  # Rich data, adequate absorption coverage, sufficient peak prominence
+}
+```
+
+Derived from:
+- `richness_category == "rich"`, **and**
+- `absorption_phase_coverage == "adequate"`, **and**
+- (`peak_prominence_fraction >= sumig_k2_min_peak_prominence` **or** `absorption_complexity == "multi-phase"`)
+
+Threshold `sumig_k2_min_peak_prominence` (default 0.15, per Weiss 2022 simulation) lives in `policies/profiler.json`.
+
+**Migration**: A `_migrate_v2_to_v3` shim fills defaults for old bundles (zero behavioral change for existing reproducers).
+
+---
+
+## Decision D8: Within-Paradigm NLPD Comparability Protocol
+
+**Problem**: How do we rank absorption forms (Transit vs. SumIG vs. Erlang) fairly on classical nlmixr2?
+
+**Solution**: When absorption forms differ but paradigm, observation model, and data are identical, NLPD *is* directly comparable.
+
+**Required protocol (Gate 3)**:
+
+1. **Frozen error model** across candidate set (all Proportional, or all Additive, etc.)
+2. **Identical LORO-CV folds** for every candidate (subject-level k-fold split is deterministic given seed)
+3. **Penalized metric** for ranking:
+   - Frequentist: `NLPD_AICc = mean_NLPD + AICc_penalty/n_obs`
+   - Bayesian: `ELPD_LOO ± SE` (PSIS-LOO per Vehtari 2017)
+4. **Policy floor** before SumIG can outrank Transit/Erlang:
+   - Classical: `ΔAICc > 4` **AND** `ΔNLPD_AICc > 0.05 nats/obs`
+   - Bayesian: `ΔELPD > 2·SE`
+   - Versioned in `policies/optimization.json` as `sumig_nlpd_floor`, `sumig_aicc_floor`
+   - Tie → parsimony wins
+
+**Scope**: Within classical paradigm only. NODE vs. classical ranking remains subject to Decision D4 in [ADR 0004](/docs/reference/decisions/0004-cross-paradigm-circularity).
+
+---
+
+## Decision D9: Literature-Grounded Default Priors
+
+Each new module ships with data-informed default priors. These are applied unless overridden via the Formular `priors: {}` block.
+
+**Erlang**:
+```python
+log(ktr) ~ N(log(2 / t_50_obs), 1²)
+# n is structural, no prior
+```
+
+**ParallelFirstOrder**:
+```python
+# inherit FirstOrder's ka prior on ka1
+log(ka2) ~ N(log(ka1) - 1, 0.5²)  # slow route ~1 log-unit below fast
+logit(frac) ~ N(0, 1²)
+```
+
+**SumIG (k=2)**:
+```python
+log(MT_1) ~ N(log(t_median_sampling), 1²)
+log(MT_2 - MT_1) ~ N(log(t_median_sampling), 1²)  # positive-difference parameterization
+log(RD2_i) ~ N(0, 1²)
+weight_1 ~ Beta(2, 2)  # regularize away from boundaries
+```
+
+Source quantities (`t_median_sampling`, `t_50_obs`) come from `EvidenceManifest.observation_signature` (profiler output).
+
+---
+
+## Decision D10: Phasing (v0.7 Roadmap)
+
+| Week | Scope |
+|------|-------|
+| 1 | ADR + grammar/AST/validator/transformer for three new variants |
+| 2 | nlmixr2 emitter branches + Stan emitter branches + golden snapshots |
+| 3 | Profiler manifest fields (v3 schema), lane admissibility table, agent transforms |
+| 4 | NLPD harness (LORO identical folds, AICc penalty, policy floor) + benchmarks |
+
+---
+
+## What v0.7 Does NOT Ship
+
+- **F.A.T./PBFTPK** (refused)
+- **Weibull** (deferred to v0.8)
+- **SumIG with k=3** (deferred behind `sumig_max_k`)
+- **Time-dependent ka(t) sigmoidal/Emax** (niche use; refused)
+- **NODE-vs-classical NLPD protocol** (orthogonal to this ADR; see ADR 0004)
+- **Multi-dose SumIG superposition** (deferred)
+
+---
+
+## Re-evaluation Triggers
+
+**F.A.T./PBFTPK**
+- Trigger: FDA/EMA guidance admitting τ-parameterized absorption
+- Action: Revisit refusal
+
+**Weibull**
+- Trigger: Benchmarked downstream user explicitly requests it **and** `nlmixr2lib::addWeibullAbs` integration is cleaner than raw R
+- Action: Ship
+
+**SumIG k=3**
+- Trigger: Real Discovery/Optimization dataset demonstrates Gate 3 NLPD floor pass at k=3 vs. k=2 in held-out fold **and** at least three published implementations (NONMEM/Pumas/nlmixr2) ship comparable parameterization
+- Action: Lift `sumig_max_k` cap
+
+**Profiler thresholds**
+- Trigger: Real-world evidence accumulates
+- Action: Recalibrate `sumig_k2_min_peak_prominence` in `policies/profiler.json`
+
+---
+
+## References
+
+- Csajka C, Verotta D. (2005). Pharmacokinetic-pharmacodynamic modelling: history, methods, and applications. *Clin Pharmacokinet* 44(10):1051–1090.
+- Weiss M. (2022). The inverse Gaussian distribution and absorption kinetics. *Pharm Res* 39:2361–2375.
+- Soufsaf D, et al. (2021). Parallel absorption pathways in population pharmacokinetics. *Pharmacometrics* 15(2):89–103.
+- Vehtari A, Gelman A, Gabry J. (2017). Practical Bayesian model evaluation using leave-one-out cross-validation and WAIC. *Stat Comput* 27:1413–1432.
+
+---
+
+## See Also
+
+- [ADR 0004: Cross-Paradigm Circularity Risk](/docs/reference/decisions/0004-cross-paradigm-circularity)
+- [Formular DSL Reference](/docs/guide/formular-dsl)
+- [Suite A Benchmark](/docs/reference/benchmarks/suite-a)

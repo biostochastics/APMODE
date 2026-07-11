@@ -1,0 +1,37 @@
+---
+title: Changelog
+description: Release highlights for recent APMODE versions. The full changelog lives in the repository.
+---
+
+This page summarizes recent release highlights. The complete, authoritative changelog —
+every entry, every version — lives in
+[`CHANGELOG.md`](https://github.com/biostochastics/APMODE/blob/main/CHANGELOG.md) at the
+repository root and follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) with
+[semantic versioning](https://semver.org/).
+
+<Callout type="info">
+  APMODE tracks two version notions on purpose. The **declared** version is the milestone
+  being built toward; the **runtime** version is the artifact identity of the installed
+  bytes (written from VCS tags). `apmode --version` shows both when they differ.
+</Callout>
+
+## v0.6.1-rc2
+
+- **HTTP API surface** — `apmode serve`, `POST /runs`, and the full cancellation
+  lifecycle. Loopback by default; refuses non-loopback binds without `--allow-public` +
+  `APMODE_API_KEY` + `--dataset-root`. See the [HTTP API reference](/docs/reference/http-api).
+- **Suite C** — Phase-1 MLE + Bayesian fixtures with on-demand NPE scoring (no scheduled
+  CI job). See [Suite C](/docs/reference/benchmarks/suite-c).
+- **SOTA absorption preview forms** — `Erlang`, `ParallelFirstOrder`, and `SumIG`. See
+  [ADR-0003](/docs/reference/decisions/0003-sota-absorption).
+- **RO-Crate projector hardening** — sealed `_COMPLETE` SHA-256 sentinel; `apmode validate`
+  refuses unsealed bundles.
+- **Agentic-LLM QA** — a prompt-injection fix on covariate-name flow, an adversarial
+  red-team test suite, and an advisory `trajectory_compliance.json` verdict flagging
+  degenerate-optimization patterns across a run. Gate policy schema bumped `0.7.0 → 0.7.1`.
+
+## Earlier releases
+
+Detailed per-release deltas — including the v0.2 → v0.3 migration, the Formular v0.6 → v0.7
+grammar change, the Bayesian backend rollout, and the governance-gate evolution — are in
+the repository's [`CHANGELOG.md`](https://github.com/biostochastics/APMODE/blob/main/CHANGELOG.md).

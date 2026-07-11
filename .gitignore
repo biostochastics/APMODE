@@ -51,6 +51,12 @@ benchmarks/runs/
 # Test fixtures legitimately track .log SAEM-stream replay corpus
 !tests/fixtures/saem/*.log
 
+# Generated benchmark outputs / downloaded public mirrors
+benchmarks/datasets/ddmore_gentamicin/gentamicin_iov.csv
+benchmarks/datasets/ddmore_gentamicin/raw/
+benchmarks/suite_a/eta_recovery_report.json
+benchmarks/suite_b/suite_b_results.json
+
 # Research / scratch (gitignored exploration)
 _research/
 
@@ -66,3 +72,7 @@ docs/DIAGNOSTICS_REFINEMENT_ROADMAP.md
 # Shipped version drifts (e.g., __all__ ordering, version tuple) break
 # CI linting on clean checkouts. Let hatch-vcs produce it at build time.
 src/apmode/_version.py
+
+# Session/tooling artifacts (browser-automation cache, stray screenshots)
+.playwright-mcp/
+home.png

@@ -59,17 +59,47 @@ class TrainingResult:
     minimization_status: str = "max_evaluations"
 
 
+# Event sort priority within one timestamp (lower = earlier). Mirrors
+# apmode.data.dosing._EVID_SORT_PRIORITY so the eager solver applies events
+# in the same deterministic order as the on-disk event table:
+#   reset -> reset+dose -> dose/infusion-start -> infusion-stop -> observation.
+_DOSE_EVID_PRIORITY: dict[int, int] = {3: 0, 4: 1, 1: 2, 9: 3}
+_OBS_PRIORITY = 5
+
+
 def _solve_multidose_eager(
     model: HybridPKODE,
     y0: jax.Array,
     obs_times: jax.Array,
-    dose_events: list[tuple[float, float, int, int]],
+    dose_events: list[tuple[float, float, int, int, float, int]],
 ) -> jax.Array:
     """Piecewise ODE integration with merged dose+observation timeline.
 
     Merges dose events and observation times into a single chronological
-    timeline. Integrates forward segment-by-segment, applying state jumps
-    at dose events and recording predicted state at observation times.
+    timeline. Integrates forward segment-by-segment, applying state jumps at
+    bolus events and threading a per-compartment infusion-rate vector through
+    each segment. Records predicted state at observation times.
+
+    Each dose event is a 6-tuple ``(time, amt, cmt, evid, inf_rate, inf_id)``:
+      * bolus:           ``evid in {1, 4}``, ``amt > 0``, ``inf_rate == 0``.
+      * infusion start:  ``evid in {1, 4}``, ``inf_rate > 0`` (no bolus jump).
+      * infusion stop:   ``evid == 9``, ``inf_rate < 0`` (synthetic, from
+        :func:`apmode.data.dosing.build_event_table`).
+      * reset:           ``evid in {3, 4}`` zeros the state.
+    ``inf_id`` is a shared identity assigned by ``build_event_table``: an
+    infusion start and its paired stop carry the *same* id; every non-infusion
+    row carries ``-1``.
+
+    Overlapping infusions sum. Each active infusion is tracked by its ``inf_id``;
+    the per-compartment rate vector passed as ``args`` to ``model.solve`` is the
+    sum over active infusions, and when nothing is active ``args=None`` is passed
+    so the bolus-only path is byte-identical to the pre-infusion behaviour. A
+    stop removes the active infusion with its *matching id* — pairing on identity
+    (not on ``(cmt, rate)``) is what keeps repeat-same-rate-across-reset regimens
+    correct: a reset (EVID 3/4) terminates all ongoing infusions (clears the
+    active map), so a later stop whose start the reset already removed simply
+    finds no entry and no-ops, and can never clip an unrelated identically-rated
+    infusion started after the reset.
 
     This function uses concrete Python values for control flow (not traced),
     so it works with eager JAX execution but NOT inside JIT.
@@ -82,37 +112,60 @@ def _solve_multidose_eager(
     if not dose_events and n_obs > 0:
         return model.solve(y0, obs_times)
 
-    # Build merged chronological timeline of (time, kind, index) entries:
+    # Build merged chronological timeline of (time, priority, kind, index):
     #   kind is "dose" or "obs"; index points into dose_events or obs_times.
-    timeline: list[tuple[float, str, int]] = []
-    for i, (t, _amt, _cmt, _evid) in enumerate(dose_events):
-        timeline.append((t, "dose", i))
+    timeline: list[tuple[float, int, str, int]] = []
+    for i, (t, _amt, _cmt, evid, _rate, _id) in enumerate(dose_events):
+        timeline.append((t, _DOSE_EVID_PRIORITY.get(int(evid), _OBS_PRIORITY), "dose", i))
     for i in range(n_obs):
-        timeline.append((float(obs_times[i]), "obs", i))
+        timeline.append((float(obs_times[i]), _OBS_PRIORITY, "obs", i))
 
-    # Stable sort: doses before obs at same time (process dose first)
-    timeline.sort(key=lambda x: (x[0], 0 if x[1] == "dose" else 1))
+    # Deterministic order: by time, then event priority (dose-start before
+    # dose-stop before observation). Stable sort keeps input order as tiebreak.
+    timeline.sort(key=lambda x: (x[0], x[1]))
 
     state = y0
     t_current = 0.0
+    # Active infusions keyed by their shared ``inf_id`` -> (cmt_idx, rate)
+    # (untraced Python floats so control flow stays outside JIT). The solver
+    # ``args`` is their per-compartment sum; empty => ``args=None``.
+    active_infusions: dict[int, tuple[int, float]] = {}
     predictions = [jnp.zeros(n_states)] * n_obs  # placeholder
 
-    for t_event, event_type, idx in timeline:
-        # Integrate to this event time if needed
+    for t_event, _priority, event_type, idx in timeline:
+        # Integrate to this event time if needed, threading the active rate.
         if t_event > t_current + 1e-12:
-            sol = model.solve(state, jnp.array([t_event]), t0=t_current)
+            rate_args: jax.Array | None = None
+            if active_infusions:
+                rate_vec = [0.0] * n_states
+                for ci, r in active_infusions.values():
+                    rate_vec[ci] += r
+                if any(r != 0.0 for r in rate_vec):
+                    rate_args = jnp.asarray(rate_vec, dtype=y0.dtype)
+            sol = model.solve(state, jnp.array([t_event]), t0=t_current, args=rate_args)
             state = sol[0]
             t_current = t_event
 
         if event_type == "dose":
-            _t_dose, amt, cmt, evid = dose_events[idx]
-            # Apply reset (EVID=3 or 4)
+            _t_dose, amt, cmt, evid, inf_rate, inf_id = dose_events[idx]
+            cmt_idx = max(0, min(cmt - 1, n_states - 1))
+            # Apply reset (EVID=3 or 4): zero the state AND terminate ongoing
+            # infusions. A later stop whose start id is gone then no-ops, so the
+            # summed rate never goes negative and no live infusion is clipped.
             if evid in (3, 4):
                 state = jnp.zeros(n_states)
-            # Apply dose (EVID=1 or 4)
-            if evid in (1, 4) and amt > 0:
-                cmt_idx = max(0, min(cmt - 1, n_states - 1))
+                active_infusions.clear()
+            # Apply bolus (EVID=1 or 4) — only for non-infusion rows; an
+            # infusion delivers its AMT gradually via the rate term instead.
+            if evid in (1, 4) and amt > 0 and inf_rate == 0.0:
                 state = state.at[cmt_idx].add(amt)
+            # Start (inf_rate > 0) an infusion under its id, or stop (inf_rate < 0)
+            # by removing the active infusion with the matching id. An orphaned
+            # stop (id already reset-cleared) simply finds no entry -> no-op.
+            if inf_rate > 0.0:
+                active_infusions[inf_id] = (cmt_idx, inf_rate)
+            elif inf_rate < 0.0:
+                active_infusions.pop(inf_id, None)
         else:
             # Record state at observation time
             predictions[idx] = state

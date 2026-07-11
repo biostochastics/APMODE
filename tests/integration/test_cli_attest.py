@@ -180,6 +180,33 @@ class TestAttestCLISealed:
         data = json.loads((run_dir / "attestation.json").read_text())
         assert data["gate_overrides"][0]["authorized_by"] == "jdoe"
 
+    def test_gate_override_justification_may_contain_colons(self, tmp_path: Path) -> None:
+        run_dir = _seal_bundle(tmp_path, "run_sealed_attest_override_colons")
+        result = runner.invoke(
+            app,
+            [
+                "attest",
+                str(run_dir),
+                "--reviewer-id",
+                "jdoe",
+                "--reviewer-role",
+                "PK reviewer",
+                "--decision",
+                "approved",
+                "--rationale",
+                "ok",
+                "--gate-override",
+                "gate1:cwres_mean_max:true:Reason: sparse design with no author override",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads((run_dir / "attestation.json").read_text())
+        override = data["gate_overrides"][0]
+        assert override["override_justification"] == (
+            "Reason: sparse design with no author override"
+        )
+        assert override["authorized_by"] == "jdoe"
+
     def test_malformed_gate_override_exits_1(self, tmp_path: Path) -> None:
         run_dir = _seal_bundle(tmp_path, "run_sealed_attest_bad_override")
         result = runner.invoke(

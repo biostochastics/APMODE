@@ -1,0 +1,140 @@
+---
+title: "Suite A: Simulated Ground Truth"
+description: 21 scenarios for structural recovery and parameter estimation accuracy when the data-generating process is known.
+since: "0.6.1"
+---
+
+Suite A comprises 21 simulated population pharmacokinetic scenarios with known ground truth, designed to test whether APMODE can identify the correct structural form and recover the true parameter values.
+
+## Scenarios
+
+| ID | True Model | Key Test |
+|---|---|---|
+| A1 | 1-cmt oral, first-order absorption, linear elimination | Basic structure identification |
+| A2 | 2-cmt IV, parallel linear + Michaelis-Menten elimination | Compartment count + nonlinear clearance |
+| A3 | Transit (n=3, ktr=2), 1-cmt, linear elimination | Transit chain detection |
+| A4 | 1-cmt oral, MM elimination | Nonlinear clearance detection |
+| A5 | TMDD quasi-steady-state (SC mAb) | TMDD vs. 2-cmt discrimination |
+| A6 | 1-cmt oral + WT^0.75 allometry + categorical renal effect (n=100) | Covariate structure recovery |
+| A7 | 2-cmt + saturable MM absorption | NODE shape recovery + surrogate fidelity |
+| A8 | 1-cmt oral + CRCL^0.75 + monotonic autoinduction exp(−0.15·t/24) (n=100) | Time-varying CL + covariate recovery |
+| A9 | Erlang (n=3 explicit chain), 1-cmt, linear elimination | Erlang vs. transit discrimination |
+| A10 | Parallel first-order depots (ka1=2, ka2=0.3, frac=0.6) | Parallel-absorption structure recovery |
+| A11 | First-order + zero-order depots (ka=1.5, dur=3, frac=0.55) | Mixed-mechanism absorption recovery |
+| A12 | Standalone zero-order absorption (dur=4) | Zero-order-only structure recovery |
+| A13 | Sum-of-2-Inverse-Gaussians (MT₁=0.5, MT₂=3.5), 1-cmt | SumIG(k=2) shape recovery |
+| A14 | 3-cmt IV bolus (V1=5, V2=15, V3=100, Q2=8, Q3=1.5) | Deep compartment + terminal phase recovery |
+| A15 | TMDD full binding (Mager & Jusko 2001), 3 dose arms (10/60/400 mg, n=60) | kon/koff identifiability via dose-ranging |
+| A16 | 1-cmt oral, time-varying CL: CL(t)=CL0·exp(−0.0015·t), QD×14d | Unconfounded time-varying CL recovery |
+| A17 | 1-cmt oral, block IIV (CL-V corr≈0.4) + additive residual error | Correlated BSV + additive-error recovery |
+| A18 | 1-cmt oral, IOV on ka across 3 occasions | Inter-occasion variability recovery |
+| A19 | 1-cmt oral, Hill/sigmoid maturation on CL (PNA, TM50=15) (n=100) | Maturation-form covariate recovery |
+| A20a/A20b | 1-cmt oral, elevated LLOQ=0.12 (~19% BLQ) | Paired: BLQ_M3 vs. BLQ_M4 likelihood comparison |
+| A21 | TMDD QSS, dual endpoint (DVID=1 free drug, DVID=2 total target) | Multi-analyte observation-model recovery |
+
+---
+
+## Data Format
+
+Each scenario produces a population dataset conforming to NONMEM format:
+
+| Column | Description |
+|--------|-------------|
+| `NMID` | Subject ID (1..n) |
+| `TIME` | Time since dose (hours) |
+| `DV` | Dependent variable (concentration in mg/L for observations, 0 for doses) |
+| `MDV` | Missing-DV flag (1 for dose/NA, 0 for observed) |
+| `EVID` | Event type (0 = observation, 1 = dose) |
+| `AMT` | Dose amount (mg) |
+| `CMT` | Compartment (1 for depot/central dose, 2 for observation in oral scenarios) |
+| `BLQ` | Below-LLOQ flag (1 = below limit, M3-imputed to LLOQ/2) |
+| `Covariates` | `WT` (kg), `SEX` (0/1), scenario-specific (e.g., `RENAL`, `CRCL`, `PNA`) |
+| `OCC` | Occasion index (A18 only) |
+| `DVID` | Endpoint ID for multi-analyte scenarios (A21) |
+
+Each scenario includes:
+- **`<scenario>.csv`** — Population dataset
+- **`<scenario>_eta.csv`** — Per-subject η draws for recovery diagnostics
+- **`reference_params.json`** — True parameter values, ω (inter-individual variability), σ (residual error SD on data scale)
+
+---
+
+## Running Suite A
+
+### Single replicate
+```bash
+Rscript benchmarks/suite_a/simulate_all.R [output_dir]
+```
+Outputs 21 CSV pairs (data + eta) in ~15 seconds.
+
+### Multiple replicates (for stability assessment)
+```bash
+Rscript benchmarks/suite_a/simulate_all.R benchmarks/suite_a 30
+```
+Produces 30 independent replicates of all scenarios with different random seeds for robustness analysis.
+
+### Requirements
+- R 4.4+
+- `rxode2` (ODE solver)
+- `lotri` (covariance matrix generation)
+- `jsonlite` (JSON I/O)
+
+---
+
+## Design Notes
+
+### Residual Error Convention
+- σ is **standard deviation on the data scale** (not variance)
+- NONMEM's `SIGMA` block uses variance: square σ values when converting
+
+### Below-LLOQ Imputation
+- Observations below the limit of quantification are imputed as `LLOQ/2` with `BLQ=1` flag
+- This matches M3 (MSIS3) imputation strategy
+
+### Seed Strategy
+- Per-scenario, per-replicate seeds ensure independent RNG streams
+- Formula: `BASE_SEED + scenario_idx × 10000 + replicate_idx × 100`
+- Scenarios never depend on each other's random state
+
+### Special Scenarios
+
+**A20a / A20b (Paired BLQ comparison)**
+- Both A20a and A20b share the same CSV (`a20_1cmt_oral_blq_elevated_lloq.csv`)
+- They are a paired benchmark unit, not two independent recovery tests
+- Scored against identical ground truth
+
+**A13 (Sum of Inverse Gaussians)**
+- Single-dose only in v0.6
+- Multi-dose superposition deferred to v0.7+
+- Ground truth uses explicit `DOSE` constant (not event-column `amt`) due to rxode2 5.0.2 scoping
+
+**A18 (Inter-Occasion Variability)**
+- Event-table column must be literally named `occ` (lowercase, for rxode2 nested-omega mechanism)
+- Renamed to `OCC` (uppercase) in output CSV for DSL conformance
+
+---
+
+## Interpretation Guide
+
+### What "recovery" means
+For each scenario, an acceptable recovery is one where:
+1. APMODE identifies the correct structural form
+2. Parameter estimates converge toward true values within typical RSE ranges (~20–50% depending on information content)
+3. Individual predictions (IPREDictions) overlay observed data and match the per-subject η draws
+
+### Cross-Scenario Patterns
+- **A1–A4**: Classical structures (foundation for more complex models)
+- **A5–A8**: Real-world challenges (TMDD, time-varying covariates)
+- **A9–A13**: Advanced absorption forms (Erlang, parallel routes, SumIG)
+- **A14–A18**: Variability structures (multi-compartment, IOV, correlated BSV)
+- **A19–A21**: Covariates and multi-endpoint (maturation, TMDD with biomarker)
+
+---
+
+## References
+
+- Boeckmann, Sheiner & Beal (1994). *NONMEM Users Guide.* NONMEM Project Group, UCSF.
+- Comets, Brendel & Mentré (2008). Comparison of nonlinear mixed-effects modeling software for pharmacokinetic data. *Comp Meth Prog Biomed* 90:154–166. [doi:10.1016/j.cmpb.2007.12.002](https://doi.org/10.1016/j.cmpb.2007.12.002)
+- Gibiansky et al. (2008). Noninvasive tumour resistance in patients treated with sunitinib. *J Pharmacokinet Pharmacodyn* 35:573–591. [doi:10.1007/s10928-008-9102-8](https://doi.org/10.1007/s10928-008-9102-8)
+- Duvnjak et al. (2024). Technical Report 2024: NONMEM vs. Pumas vs. nlmixr. *CPT:PSP*. [doi:10.1002/psp4.13213](https://doi.org/10.1002/psp4.13213)
+- Richardson et al. (2025). APMODE Suite A: Benchmark Design and Ground Truth. *Commun Med*. [doi:10.1038/s43856-025-01054-8](https://doi.org/10.1038/s43856-025-01054-8)

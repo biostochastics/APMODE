@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import enum
 import json
+import re
 from datetime import UTC, datetime
 from pathlib import Path  # noqa: TC003 — used at runtime in Typer annotations
 from typing import Annotated
@@ -54,6 +55,7 @@ class AttestDecision(enum.StrEnum):
 
 _TRUE_TOKENS = frozenset({"true", "1", "yes", "pass", "passed"})
 _FALSE_TOKENS = frozenset({"false", "0", "no", "fail", "failed"})
+_AUTHORIZED_BY_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,128}$")
 
 
 class GateOverrideParseError(ValueError):
@@ -78,19 +80,26 @@ def _parse_gate_override(raw: str, *, default_authorized_by: str) -> GateOverrid
 
     ``AUTHORIZED_BY`` is optional and defaults to the attesting
     reviewer (``--reviewer-id``) when omitted — the common case is the
-    same person both reviews and authorizes the override. Splitting on
-    ``:`` with a max of 5 fields means a justification string may
-    itself contain colons without being mis-parsed as an extra field.
+    same person both reviews and authorizes the override. The first
+    three colons delimit the required fields. A final colon-delimited
+    segment is treated as ``AUTHORIZED_BY`` only when it looks like an
+    identifier; otherwise it remains part of the free-text justification.
     """
-    parts = raw.split(":", 4)
-    if len(parts) < 4:
+    parts = raw.split(":", 3)
+    if len(parts) != 4:
         msg = (
             f"invalid --gate-override {raw!r}: expected "
             "GATE_ID:CHECK_ID:ORIGINAL_PASSED:JUSTIFICATION[:AUTHORIZED_BY]"
         )
         raise GateOverrideParseError(msg)
-    gate_id, check_id, original_passed_raw, justification = parts[:4]
-    authorized_by = parts[4] if len(parts) == 5 and parts[4] else default_authorized_by
+    gate_id, check_id, original_passed_raw, remainder = parts
+    justification = remainder
+    authorized_by = default_authorized_by
+    if ":" in remainder:
+        maybe_justification, maybe_authorized_by = remainder.rsplit(":", 1)
+        if maybe_justification and _AUTHORIZED_BY_RE.fullmatch(maybe_authorized_by):
+            justification = maybe_justification
+            authorized_by = maybe_authorized_by
     if not gate_id or not check_id:
         msg = f"invalid --gate-override {raw!r}: GATE_ID and CHECK_ID must be non-empty"
         raise GateOverrideParseError(msg)

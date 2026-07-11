@@ -26,8 +26,11 @@ from apmode.bundle.models import ParameterEstimate
 from apmode.errors import InvalidSpecError
 
 if TYPE_CHECKING:
+    import pandas as pd
+
     from apmode.bundle.models import (
         BackendResult,
+        ColumnMapping,
         DataManifest,
         NCASubjectDiagnostic,
         ScoringContract,
@@ -49,11 +52,16 @@ class SubjectRecord(_SubjectRequired, total=False):
     """Per-subject payload for NODE training.
 
     The ``dose_events`` field is only present on the event-driven piecewise
-    path (multi-dose or delayed dose); the legacy single-dose-at-t0 path
-    encodes the dose in ``y0`` instead and omits this field.
+    path (multi-dose, delayed dose, or infusion); the legacy single-dose-at-t0
+    path encodes the dose in ``y0`` instead and omits this field.
+
+    Each event is a 5-tuple ``(time, amt, cmt, evid, inf_rate)`` where
+    ``inf_rate`` is the signed per-event infusion rate (``> 0`` at an
+    ``EVID in {1, 4}`` start, ``< 0`` at the paired synthetic ``EVID=9`` stop,
+    ``0`` for a bolus). See ``node_trainer._solve_multidose_eager``.
     """
 
-    dose_events: list[tuple[float, float, int, int]]
+    dose_events: list[tuple[float, float, int, int, float, int]]
 
 
 def configure_jax_platform(platform: Literal["cpu", "gpu"]) -> None:
@@ -413,6 +421,78 @@ class NodeBackendRunner:
         # Mock mode: create synthetic subjects from initial estimates
         return self._make_mock_subjects(data_manifest, initial_estimates, n_cmt=n_cmt)
 
+    def _reject_unsupported_rows(self, event_df: pd.DataFrame, cm: ColumnMapping) -> None:
+        """Fail loudly on dosing constructs the NODE runner does not yet support.
+
+        Phase C1 supports bolus multi-dose and zero-order infusions. Steady-state
+        (SS), other-event (EVID=2) rows, and observations outside the central
+        compartment (CMT != 1) are not implemented; rejecting them explicitly
+        prevents a silent, wrong fit.
+
+        CMT convention (see also ``_load_subjects_from_csv`` /
+        ``node_trainer._solve_multidose_eager``). The hybrid ODE state vector is
+        ``[A_depot, A_central, ...]`` — index 0 is the absorption depot, index 1
+        is central. Dose rows route by ``cmt_idx = CMT - 1`` (CMT=1 -> depot,
+        CMT=2 -> central), whereas observations are always read from the central
+        compartment and are required to carry the data label CMT=1. Because a
+        zero-order infusion (RATE>0) into the depot is an absorption-delayed,
+        materially wrong solve for the IV case, an infusion whose dose row is
+        labelled CMT=1 (depot) is rejected here: IV infusions must target the
+        central compartment (CMT=2 for the ``[depot, central]`` layout).
+        """
+        # Only treat a column as the steady-state control flag when the manifest
+        # explicitly maps it. A dataset may carry a benign covariate literally
+        # named "SS" (e.g. a simulation-parameter column with values like 99 on
+        # observation rows); a hardcoded "SS" fallback would false-reject it.
+        if cm.ss and cm.ss in event_df.columns and (event_df[cm.ss].fillna(0) != 0).any():
+            raise InvalidSpecError(
+                "NODE backend does not yet support steady-state dosing (SS != 0). "
+                "Use the nlmixr2 backend for steady-state data.",
+                spec_id="node_runner",
+            )
+
+        if (event_df[cm.evid] == 2).any():
+            raise InvalidSpecError(
+                "NODE backend does not yet support other-type events (EVID=2). "
+                "Use the nlmixr2 backend for data with EVID=2 rows.",
+                spec_id="node_runner",
+            )
+
+        cmt_col = cm.cmt or "CMT"
+
+        # Reject infusions that land in the absorption depot (CMT<=1 -> index 0).
+        # ``expand_infusion_events`` stores the (signed) rate in ``_INF_RATE``;
+        # start rows are EVID in {1, 4} with ``_INF_RATE > 0``.
+        if "_INF_RATE" in event_df.columns:
+            inf_starts = event_df[
+                event_df[cm.evid].isin([1, 4]) & (event_df["_INF_RATE"].fillna(0.0) > 0.0)
+            ]
+            if not inf_starts.empty:
+                # No CMT column => every dose defaults to CMT=1 (depot).
+                into_depot = (
+                    (inf_starts[cmt_col].fillna(1) <= 1).any()
+                    if cmt_col in inf_starts.columns
+                    else True
+                )
+                if into_depot:
+                    raise InvalidSpecError(
+                        "NODE backend routes an infusion (RATE>0) labelled CMT=1 into "
+                        "the absorption depot, not the central compartment, producing "
+                        "an absorption-delayed and materially wrong concentration "
+                        "curve. IV infusions must target the central compartment "
+                        "(CMT=2 for the [depot, central] state layout). Re-label the "
+                        "infusion dose rows or use the nlmixr2 backend.",
+                        spec_id="node_runner",
+                    )
+
+        obs_rows = event_df[event_df[cm.evid] == 0]
+        if cmt_col in obs_rows.columns and (obs_rows[cmt_col].fillna(1) != 1).any():
+            raise InvalidSpecError(
+                "NODE backend only supports observations in the central compartment "
+                "(CMT=1); multi-endpoint observation routing is not yet implemented.",
+                spec_id="node_runner",
+            )
+
     def _load_subjects_from_csv(
         self,
         data_path: Path,
@@ -439,23 +519,23 @@ class NodeBackendRunner:
             col_amt=cm.amt,
             col_rate=cm.rate or "RATE",
             col_dur=cm.dur or "DUR",
+            col_cmt=cm.cmt or "CMT",
+            col_dv=cm.dv,
         )
 
         subjects: list[SubjectRecord] = []
 
-        # Reject infusions for NODE (not yet consumed in piecewise solver)
-        rate_col = cm.rate or "RATE"
-        if rate_col in event_df.columns and (event_df[rate_col].fillna(0) > 0).any():
-            raise InvalidSpecError(
-                "NODE backend does not yet support infusion dosing (RATE > 0). "
-                "Use the nlmixr2 backend for infusion data.",
-                spec_id="node_runner",
-            )
+        # Phase C1 MVP: infusions (RATE>0) ARE supported via the piecewise
+        # eager solver. The following remain unimplemented and must fail
+        # loudly rather than being silently ignored.
+        self._reject_unsupported_rows(event_df, cm)
+
+        cmt_col = cm.cmt or "CMT"
 
         for _sid, sdf in event_df.groupby(cm.subject_id):
             obs_rows = sdf[sdf[cm.evid] == 0].sort_values(cm.time)
-            # Include EVID=3 (resets) in event extraction
-            event_rows = sdf[sdf[cm.evid].isin([1, 3, 4])].sort_values(cm.time)
+            # Include EVID=3 (resets) and EVID=9 (synthetic infusion stops).
+            event_rows = sdf[sdf[cm.evid].isin([1, 3, 4, 9])].sort_values(cm.time)
 
             if len(obs_rows) == 0:
                 continue
@@ -463,7 +543,6 @@ class NodeBackendRunner:
             times = jnp.array(obs_rows[cm.time].values, dtype=jnp.float32)
             observations = jnp.array(obs_rows[cm.dv].values, dtype=jnp.float32)
             n_states = 3 if n_cmt == 2 else 2
-            cmt_col = cm.cmt or "CMT"
 
             if len(event_rows) == 0:
                 # No doses/events — zero initial state
@@ -479,12 +558,16 @@ class NodeBackendRunner:
                 continue
 
             # Check if we can use the legacy single-dose JIT path:
-            # exactly 1 dose event at TIME=0 with EVID=1 and no resets
+            # exactly 1 dose event at TIME=0 with EVID=1, no resets, no infusion
             dose_events_only = event_rows[event_rows[cm.evid].isin([1, 4])]
             has_resets = (event_rows[cm.evid] == 3).any()
+            has_infusion = "_INF_RATE" in sdf.columns and bool(
+                (sdf["_INF_RATE"].fillna(0.0) != 0.0).any()
+            )
             single_dose_at_zero = (
                 len(dose_events_only) == 1
                 and not has_resets
+                and not has_infusion
                 and float(dose_events_only[cm.time].iloc[0]) == 0.0
                 and int(dose_events_only[cm.evid].iloc[0]) == 1
             )
@@ -509,18 +592,33 @@ class NodeBackendRunner:
                     }
                 )
             else:
-                # Multi-dose / delayed dose / reset: use event-driven piecewise path
+                # Multi-dose / delayed dose / reset / infusion: event-driven path.
                 y0 = jnp.zeros(n_states, dtype=jnp.float32)
-                all_events: list[tuple[float, float, int, int]] = []
+                all_events: list[tuple[float, float, int, int, float, int]] = []
+                has_cmt = cmt_col in event_rows.columns
+                has_inf = "_INF_RATE" in event_rows.columns
+                has_inf_id = "_INF_ID" in event_rows.columns
                 event_cols = [cm.time, cm.evid, cm.amt]
-                if cmt_col in event_rows.columns:
+                cmt_pos = inf_pos = inf_id_pos = -1
+                if has_cmt:
+                    cmt_pos = len(event_cols)
                     event_cols.append(cmt_col)
+                if has_inf:
+                    inf_pos = len(event_cols)
+                    event_cols.append("_INF_RATE")
+                if has_inf_id:
+                    inf_id_pos = len(event_cols)
+                    event_cols.append("_INF_ID")
                 for values in event_rows[event_cols].itertuples(index=False, name=None):
                     time_val = float(values[0])
                     evid = int(values[1])
                     amt = float(values[2]) if evid in (1, 4) else 0.0
-                    cmt_val = int(values[3]) if len(values) > 3 else 1
-                    all_events.append((time_val, amt, cmt_val, evid))
+                    cmt_val = int(values[cmt_pos]) if has_cmt else 1
+                    # _INF_RATE is already signed (+ at start, - at the synthetic
+                    # EVID=9 stop); _INF_ID links a stop to the start it ends.
+                    inf_rate = float(values[inf_pos]) if has_inf else 0.0
+                    inf_id = int(values[inf_id_pos]) if has_inf_id else -1
+                    all_events.append((time_val, amt, cmt_val, evid, inf_rate, inf_id))
 
                 subjects.append(
                     {

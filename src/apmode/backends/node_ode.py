@@ -106,11 +106,19 @@ class HybridPKODE(eqx.Module):
     def Q(self) -> jax.Array:
         return jnp.exp(self.log_Q)
 
-    def vector_field(self, t: jax.Array, y: jax.Array, _args: None) -> jax.Array:
-        """ODE right-hand side for Diffrax."""
-        if self.n_cmt == 1:
-            return self._vf_1cmt(t, y)
-        return self._vf_2cmt(t, y)
+    def vector_field(self, t: jax.Array, y: jax.Array, args: jax.Array | None) -> jax.Array:
+        """ODE right-hand side for Diffrax.
+
+        ``args`` carries an optional per-compartment infusion rate vector
+        (length ``n_states``). Overlapping infusions are summed by the caller,
+        so the vector is simply added to each compartment's ``dA/dt``. ``None``
+        (the Diffrax default when no ``args`` is supplied) reproduces the
+        rate-free field exactly — no zero-vector arithmetic is applied.
+        """
+        base = self._vf_1cmt(t, y) if self.n_cmt == 1 else self._vf_2cmt(t, y)
+        if args is None:
+            return base
+        return base + args
 
     def _vf_1cmt(self, t: jax.Array, y: jax.Array) -> jax.Array:
         """1-compartment hybrid ODE."""
@@ -161,6 +169,7 @@ class HybridPKODE(eqx.Module):
         t0: float = 0.0,
         solver: diffrax.AbstractSolver | None = None,  # type: ignore[type-arg]
         max_steps: int = 4096,
+        args: jax.Array | None = None,
     ) -> jax.Array:
         """Integrate the ODE and return state at requested times.
 
@@ -170,6 +179,9 @@ class HybridPKODE(eqx.Module):
             t0: Integration start time (dose time). Defaults to 0.0.
             solver: Diffrax solver (default: Tsit5).
             max_steps: Maximum solver steps.
+            args: Optional constant per-compartment infusion rate vector
+                (length ``n_states``) applied across the whole segment. ``None``
+                integrates the rate-free field (legacy/bolus behaviour).
 
         Returns:
             Array of shape (len(times), n_states).
@@ -189,6 +201,7 @@ class HybridPKODE(eqx.Module):
             t1=times[-1],
             dt0=None,
             y0=y0,
+            args=args,
             saveat=saveat,
             stepsize_controller=stepsize_controller,
             max_steps=max_steps,

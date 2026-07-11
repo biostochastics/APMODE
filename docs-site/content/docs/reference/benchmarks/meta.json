@@ -1,0 +1,5 @@
+{
+  "title": "Benchmarks",
+  "icon": "FlaskConical",
+  "pages": ["index", "suite-a", "suite-b", "suite-c", "eleveld-propofol"]
+}

@@ -1,0 +1,249 @@
+---
+title: Evidence Manifest
+description: The Data Profiler's typed output that constrains backend dispatch — not descriptive metadata, but disqualifying constraints.
+---
+
+The **Evidence Manifest** is the Data Profiler's structured output describing what the dataset supports. It is not descriptive metadata — it is a **disqualifying filter** that constrains which backends run and which structural modules are eligible.
+
+## What is the Evidence Manifest?
+
+Every APMODE run begins with ingestion and profiling. The profiler analyzes the PK data and emits an `evidence_manifest.json` file containing:
+
+- **Richness classification** — sparse, moderate, or rich sampling density
+- **Absorption characteristics** — simple, multi-phase, or delayed absorption
+- **Nonlinear clearance signals** — evidence strength (none, weak, moderate, strong)
+- **Compartmentality indicators** — whether the data supports 1-, 2-, or 3-compartment models
+- **Data quality flags** — BLQ burden, missing covariates, protocol heterogeneity
+- **NODE readiness** — dimension ceiling for Neural ODE backends based on data richness
+
+**Key insight:** The profiler is evidence-driven, not opinion-driven. Every field is tied to pharmacometric heuristics (curvature ratios, terminal-phase fits, dose-AUC proportionality) and thresholds from published literature (Huang 2025, Richardson 2025, Beal 2001, etc.).
+
+---
+
+## Example: How the Manifest Constrains Dispatch
+
+Consider a dataset with sparse sampling and weak absorption coverage:
+
+```json
+{
+  "richness_category": "sparse",
+  "absorption_phase_coverage": "inadequate",
+  "nonlinear_clearance_evidence_strength": "none"
+}
+```
+
+**Dispatch consequences:**
+- **NODE backend** — blocked. Sparse data cannot reliably train a neural ODE.
+- **Classical search** — only 1-cmt and 2-cmt candidates generated (3-cmt unidentifiable).
+- **Absorption modules** — FirstOrder only (Transit, Erlang, LaggedFirstOrder suppressed).
+- **Rank recommendation** — even a well-fit NODE model cannot be recommended in Submission lane (hard rule).
+
+The profiler does not rank or score these decisions — it just reports what the data supports. Downstream dispatch (Lane Router, Search Engine, Gate policies) consumes these flags and applies the rules.
+
+---
+
+## Manifest Structure
+
+### Schema Version
+
+The manifest carries a `manifest_schema_version` field (currently **v3**). APMODE fails fast if this number is unknown, ensuring that old bundles do not silently use stale dispatch logic.
+
+**Schema v3** introduced structured `nonlinear_clearance_signals` — a dictionary mapping signal IDs to typed signal objects, each carrying:
+- Algorithm used (e.g., "MM curvature ratio", "terminal monoexp R²")
+- Citation (Huang 2025, Richardson 2025, etc.)
+- Policy key and threshold
+- Observed value + 90% CI
+- Eligibility reason (eligible / ineligible)
+- Vote (for / against nonlinear clearance)
+
+This replaces v2's flat scalar fields and enables ICH M15 traceability.
+
+### Policy Version
+
+Every manifest embeds `policy_sha256` from `policies/profiler.json` (currently **v2.1.0**). This is not version negotiation — it is an audit trail. If you re-run the profiler with a different policy, the hash changes and you can audit which policy produced which manifest.
+
+---
+
+## Key Manifest Fields and Their Impact
+
+<Cards>
+  <Card title="richness_category" href="#richness">
+    Sampling density: sparse, moderate, or rich. Controls NODE dim ceiling and identifiability floor.
+  </Card>
+  <Card title="nonlinear_clearance_evidence_strength" href="#nonlinear">
+    Multi-signal vote: none, weak, moderate, strong. Drives whether MM elimination candidates are generated.
+  </Card>
+  <Card title="absorption_complexity" href="#absorption">
+    Simple, multi-phase, or lag-signature. Determines which absorption modules are enumerated.
+  </Card>
+  <Card title="identifiability_ceiling" href="#identifiability">
+    low / medium / high. Caps compartment count at 1 / 2 / 3 respectively.
+  </Card>
+  <Card title="node_dim_budget" href="#node">
+    0 (excluded), 1–4 (Optimization), or 1–8 (Discovery). Guards NODE dispatch against overfitting sparse data.
+  </Card>
+  <Card title="blq_burden" href="#blq">
+    Fraction of observations below quantification limit. Triggers M3 likelihood or M7+ imputation.
+  </Card>
+</Cards>
+
+### Richness Category
+
+Based on the median number of observations per subject:
+
+| Category | Median obs/subject | Typical scenario | Impact |
+|----------|---|---|---|
+| **sparse** | &lt; 4 | Small trial, limited sampling | Identifiability low; NODE excluded; more conservative error model |
+| **moderate** | 4–7 | Standard PK trial | Identifiability medium; NODE gateable if ≥20 subjects; mixed-effect models plausible |
+| **rich** | ≥ 8 | Intensive sampling, Phase I | Identifiability high; NODE feasible (Discovery ≤8 dims, Optimization ≤4 dims); complex absorption/elimination modules enumerated |
+
+### Nonlinear Clearance Evidence
+
+A **multi-signal voting system** that integrates three independent checks:
+
+1. **Curvature ratio** — slopes in early vs. late phase (MM kinetics show steeper late slope)
+2. **Terminal monoexponential fit quality** — if the late phase is genuinely linear (R² ≥ 0.85), that argues *against* MM
+3. **Dose-AUC proportionality** — power model exponent (Smith 2000) — nonproportionality suggests saturation
+
+**Evidence strength thresholds:**
+- **Strong** — all 3 signals fire → full MM / ParallelLinearMM cross-product enumerated
+- **Moderate** — 2 signals fire → MM included as a sentinel candidate only
+- **Weak** — 1 signal fires → MM not auto-included
+- **None** — no signal fires → only linear candidates
+
+This multi-signal approach resolves false positives from single heuristics (e.g., warfarin's early/late curvature is misleading on a 2-cmt linear model).
+
+### Absorption Complexity
+
+| Value | Implies | Modules enumerated |
+|-------|---------|---|
+| **simple** | Likely first-order or bolus absorption | FirstOrder, IVBolus |
+| **multi-phase** | Early fast + late slow phase in absorption curve | Transit, Erlang, ParallelFirstOrder |
+| **lag-signature** | Delayed absorption onset before peak | LaggedFirstOrder, optionally Transit |
+| **unknown** | Terminal fit too poor to classify | FirstOrder only (conservative fallback) |
+
+### Identifiability Ceiling
+
+Compartment count ceiling based on richness and subject count:
+
+| Ceiling | Richness | Subjects | Rationale |
+|--------|----------|----------|-----------|
+| **low** | sparse + few subjects | &lt; 10 | 1-cmt only (3+ parameters unidentifiable) |
+| **medium** | moderate | 10–50 | Up to 2-cmt (5–7 parameters) |
+| **high** | rich | &gt; 50 | Up to 3-cmt (8–10 parameters) |
+
+This is a soft gate at candidate generation — search engine respects it; Gate 2 applies identifiability profile-likelihood CI checks.
+
+### NODE Dimension Budget
+
+Controlled by `policies/profiler.json → node_readiness`:
+
+| Lane | Min subjects | Min median samples/subject | Max latent dims | Condition |
+|-----|---|---|---|---|
+| **Discovery** | 20 | 8 | 8 | Moderate–rich data only |
+| **Optimization** | 10 | 4 | 4 | Stricter constraint due to LORO-CV cost |
+| **Submission** | n/a | n/a | 0 | NODE never eligible |
+
+If the data does not meet the minimums, `node_dim_budget = 0` and NODE backends are not dispatched.
+
+### BLQ Handling
+
+| BLQ burden | Action | Rationale |
+|------------|--------|-----------|
+| &lt; 5% | M7+ (impute 0, inflate residual error) | Rare BLQ; simple imputation acceptable |
+| 5–20% | Policy-driven choice (M3 vs M7+) | Moderate BLQ; trade-off between likelihood complexity and bias |
+| ≥ 20% | M3 likelihood (right-censored) | High BLQ; M3 required to avoid severe bias |
+
+---
+
+## Initial Estimates: The Cascade
+
+When the profiler cannot derive reliable initial estimates from **per-subject NCA**, it falls back through a **four-step cascade**:
+
+```
+1. NCA-derived estimates (per-subject curve-stripping)
+   ↓ (if ≥50% of subjects fail QC)
+2. Dataset-card published_model.key_estimates
+   ↓ (if not available)
+3. Data-driven fallback (population Cmax/AUC/Tmax geomeans)
+   ↓ (if fallback fails)
+4. Conservative hard-coded defaults (CL=5 L/h, V=70 L, ka=1 h⁻¹)
+```
+
+**Why the cascade?**
+- **NCA** is gold-standard but fails on sparse data or unusual dose timing.
+- **Dataset card** (user-provided or from nlmixr2data registry) adds human-curated context.
+- **Data-driven** uses observed population statistics to avoid implausible defaults.
+- **Hard-coded** is the floor — always valid, but not fitted to your data.
+
+Each step is recorded in `initial_estimates.json` with a `fallback_source` field for auditability.
+
+---
+
+## Profiler Policy: Versioning & Tuning
+
+The profiler's thresholds live in `policies/profiler.json` (currently **v2.1.0**):
+
+```bash
+# Inspect the policy
+uv run apmode policies profiler
+
+# Use a custom policy
+uv run apmode run data.csv --policy custom-profiler.json
+```
+
+All numeric values in the policy are documented with citations:
+
+- **Smith 2000** — dose-proportionality power model (θ, min dose levels)
+- **Huang 2025** — λz terminal-fit selector (min points, adj-R² tolerance)
+- **Richardson 2025** — flip-flop detection (ka/λz ratio, quality guards)
+- **Beal 2001** — BLQ M3 likelihood threshold
+
+Changing a policy does **not** change the code — it changes the profiler output. Every run records `policy_sha256` in the manifest, so you can audit which policy produced which dispatch decisions.
+
+---
+
+## How the Manifest Flows Downstream
+
+<Callout type="info">
+The Evidence Manifest is consumed by three components:
+
+1. **Search Space Builder** — uses `nonlinear_clearance_evidence_strength`, `absorption_complexity`, `richness_category` to enumerate root candidates
+2. **Lane Router** — checks `node_dim_budget` to gate NODE dispatch per lane
+3. **Gate policies** — advisory thresholds (e.g., `richness=sparse` influences identifiability, shrinkage, and cross-paradigm ranking)
+
+No manifest field is itself disqualifying at Gate 1/2/3. Disqualification lives in the Gate policies.
+</Callout>
+
+---
+
+## Example: Mavoglurant (120 subjects, rich sampling)
+
+```json
+{
+  "manifest_schema_version": 3,
+  "richness_category": "rich",
+  "absorption_complexity": "simple",
+  "nonlinear_clearance_evidence_strength": "moderate",
+  "identifiability_ceiling": "high",
+  "covariate_burden": 6,
+  "node_dim_budget": 8,
+  "blq_burden": 0.0
+}
+```
+
+**Dispatch:**
+- Classical: 1-cmt + 2-cmt + 3-cmt (identifiability ceiling: high)
+- Absorption: FirstOrder + Transit(n=3, 4) + Lagged (multi-phase detected)
+- Elimination: Linear + MM + ParallelLinearMM (moderate nonlinear evidence)
+- NODE: eligible (Discovery ≤8 dims, Optimization ≤4 dims)
+- ~25–35 root candidates generated, ~10–15 Phase 3 children
+- Search + gates → ~1 recommended classical + 1 NODE + 1 Bayesian candidate
+
+---
+
+## Next Steps
+
+- **Lanes** — see [Operating Lanes](/docs/guide/concepts/lanes) to understand how manifest fields drive lane-specific dispatch.
+- **Governance** — see [Governance & Reproducibility](/docs/guide/governance-reproducibility/gates) to learn how gates consume manifest fields.
+- **Profiler Details** — see the [PRD § 4.2.1](https://github.com/biostochastics/apmode/blob/main/docs/PRD_APMODE_v0.3.md) for formal specifications.

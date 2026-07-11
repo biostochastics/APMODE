@@ -169,7 +169,7 @@ datasets:
       DDMODEL00000003:  "Hamren 2008 diabetes tesaglitazar (KPD turnover; DDMoRe qualification exemplar)"
       DDMODEL00000103:  "Trefz 2015 Kuvan/PKU turnover-KPD"
       DDMODEL00000130:  "Karaiskos 2015 CMS/colistin PK (executable original code)"
-      DDMODEL00000238:  "Germovsek 2017 gentamicin neonatal IOV (already in registry.yaml)"
+      DDMODEL00000238:  "Germovsek 2016 gentamicin neonatal IOV (already in registry.yaml)"
       DDMODEL00000243:  "TTE example"
       DDMODEL00000247:  "Item Response Theory example"
       DDMODEL00000248:  "Preterm-neonatal morphine/phenobarbital TDM"

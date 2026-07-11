@@ -1,0 +1,676 @@
+---
+title: CLI Reference
+description: Complete reference for the APMODE command-line interface.
+---
+
+> **Note:** This page is generated from `apmode --help`. Regenerate it when commands change by running the help system and updating this documentation.
+
+## Overview
+
+The APMODE CLI provides a complete interface to the PK model discovery pipeline — from data exploration to bundle inspection and regulatory reporting. Every read command honors `--json` for machine-readable output.
+
+```bash
+apmode --help          # Main help
+apmode <command> --help # Command-specific help
+```
+
+---
+
+## Core Commands
+
+### `run` — Execute the full discovery pipeline
+
+Run the complete APMODE pipeline on a PK dataset: ingest → profile → NCA → split → search → governance gates → bundle.
+
+**Usage:**
+```bash
+apmode run <dataset.csv> [OPTIONS]
+```
+
+**Key options:**
+
+| Option | Type | Default | Notes |
+|--------|------|---------|-------|
+| `--lane` | submission \| discovery \| optimization | submission | Operating lane (regulatory vs. exploratory vs. LORO-CV) |
+| `--seed` | INTEGER | 753849 | Root random seed for reproducibility |
+| `--output, -o` | PATH | runs | Bundle output directory |
+| `--backend` | nlmixr2 \| bayesian_stan | nlmixr2 | Estimation backend |
+| `--timeout` | INTEGER (s≥1) | 900 | Per-candidate timeout (seconds) |
+| `--parallel-models, -j` | INTEGER (≥1) | 1 | Max concurrent model evaluations |
+| `--dry-run` | flag | — | Preview without running backends |
+| `--policy` | PATH | policies/\<lane>.json | Gate policy JSON file |
+
+**Execution options:**
+- `--binary-encode COL=VAL1:0,VAL2:1` — Override categorical covariate remap (repeatable)
+- `--provenance PATH` — Optional data-provenance JSON sidecar
+- `--verbose, -v` — Detailed logs
+- `--quiet, -q` — Suppress non-essential output
+- `--yes, -y` — Skip interactive confirmations
+
+**Agentic LLM (Phase 3):**
+- `--agentic` / `--no-agentic` — Enable the LLM backend (off by default)
+- `--provider` — LLM provider: anthropic, openai, gemini, ollama, openrouter, litellm (default: anthropic)
+- `--model` — LLM model name (defaults per provider: claude-sonnet, gpt-4o, gemini-2.5-flash, etc.)
+- `--api-base` — Override LLM API base URL
+- `--max-iterations` — Max agentic iterations (1–25, default: 10)
+- `--resume-agentic` — Skip classical search; resume from `classical_checkpoint.json`
+
+**Bayesian backend (Phase 2+):**
+- `--bayes-chains INTEGER` (≥1) — NUTS chains (default: 4)
+- `--bayes-warmup INTEGER` (≥100) — Warmup iterations/chain (default: 1000)
+- `--bayes-sampling INTEGER` (≥100) — Sampling iterations/chain (default: 1000)
+- `--bayes-adapt-delta FLOAT` (0.5–0.999) — NUTS target acceptance (default: 0.95)
+- `--bayes-max-treedepth INTEGER` (4–20) — NUTS max tree depth (default: 12)
+
+**Credibility & governance (Gate 2.5):**
+- `--context-of-use TEXT` — Context of use for credibility qualification
+- `--model-influence` — ASME V&V40 tier: low, medium, high
+- `--decision-consequence` — Decision-consequence tier: low, medium, high
+
+**Examples:**
+```bash
+# Submission lane (default, classical NLME)
+apmode run ./data/trial.csv
+
+# Discovery lane with parallelization
+apmode run ./data/trial.csv --lane discovery -j 4
+
+# Bayesian backend
+apmode run ./data/trial.csv --lane discovery --backend bayesian_stan
+
+# Agentic LLM backend (discovery/optimization only)
+apmode run ./data/trial.csv --lane discovery --agentic --provider anthropic
+
+# Resume after API failure
+apmode run ./data/trial.csv --lane discovery --agentic --resume-agentic -o ./runs/run_xyz
+
+# Preview without running backends
+apmode run ./data/trial.csv --dry-run
+```
+
+**Environment variables:**
+- `APMODE_LANE`, `APMODE_SEED`, `APMODE_OUTPUT_DIR`, `APMODE_BACKEND`, `APMODE_TIMEOUT`, `APMODE_PARALLEL_MODELS`, `APMODE_POLICY`, `APMODE_AGENTIC`, `APMODE_PROVIDER`, `APMODE_MODEL`, `APMODE_API_BASE`, `APMODE_AGENTIC_MAX_ITER`
+
+---
+
+### `validate` — Check bundle completeness
+
+Validate a reproducibility bundle for required/optional JSON files and directory contents. With `--rocrate`, also run `roc-validator` on the exported crate.
+
+**Usage:**
+```bash
+apmode validate <bundle_dir> [OPTIONS]
+```
+
+**Options:**
+- `--json` — Machine-readable JSON output (exit 0 on success, 1 on failure)
+- `--rocrate` / `--no-rocrate` — Also validate RO-Crate export (requires `--crate`)
+- `--crate PATH` — Path to RO-Crate directory or ZIP
+- `--rocrate-profile TEXT` — RO-Crate profile identifier (default: provenance-run-crate-0.5)
+- `--rocrate-severity TEXT` — Validation severity: REQUIRED, RECOMMENDED, OPTIONAL (default: REQUIRED)
+
+**Example:**
+```bash
+apmode validate ./runs/run_abc123
+apmode validate ./runs/run_abc123 --rocrate --crate ./runs/run_abc123.crate.zip --json
+```
+
+---
+
+### `inspect` — Bundle summary
+
+Inspect a reproducibility bundle and print a formatted summary: data manifest, evidence profile, search trajectory, and gate decisions.
+
+**Usage:**
+```bash
+apmode inspect <bundle_dir> [OPTIONS]
+```
+
+**Options:**
+- `--json` — Merge all underlying manifests and trajectory/governance summary into one JSON payload
+- `--rocrate-view` — Print RO-Crate summary (mainEntity, top-level action triad) if a crate export exists
+- `--crate PATH` — Path to RO-Crate directory or ZIP (auto-detects `<bundle_dir>.crate[.zip]`)
+
+**Example:**
+```bash
+apmode inspect ./runs/run_abc123
+apmode inspect ./runs/run_abc123 --json | jq '.gates.gate3'
+apmode inspect ./runs/run_abc123 --rocrate-view
+```
+
+---
+
+### `datasets` — Discover & download public PK datasets
+
+Discover and download curated public PK datasets from the registry. List available datasets, download by name, or filter by route/elimination.
+
+**Usage:**
+```bash
+apmode datasets [DATASET_NAME] [OPTIONS]
+```
+
+**Arguments:**
+- `[fetch]` — Dataset name to download (omit to list all)
+
+**Options:**
+- `--output, -o PATH` — Output directory for CSVs (default: datasets)
+- `--route TEXT` — Filter: oral, iv_bolus, iv_infusion
+- `--elimination TEXT` — Filter: linear, michaelis_menten
+- `--json` — Registry or download result as JSON
+
+**Examples:**
+```bash
+apmode datasets                                  # List all
+apmode datasets theo_sd -o ./data               # Download one
+apmode datasets --route oral -o ./data          # Filter by route
+apmode datasets --json | jq '.datasets[].name'  # Machine-readable
+```
+
+---
+
+### `explore` — Interactive pipeline walkthrough
+
+Step-by-step interactive exploration: fetch → ingest → profile → NCA → search space → (optional) run. Walks the user through decisions at each stage.
+
+**Usage:**
+```bash
+apmode explore <dataset> [OPTIONS]
+```
+
+**Arguments:**
+- `<dataset>` — Dataset name (e.g. 'theo_sd') or path to local CSV
+
+**Options:**
+- `--lane` — submission \| discovery \| optimization (default: discovery)
+- `--non-interactive, -y` — Skip prompts; run full pipeline
+- `--output, -o PATH` — Output directory (default: runs)
+- `--seed INTEGER` — Random seed (default: 753849)
+- `--policy PATH` — Gate policy JSON (default: policies/\<lane>.json)
+- `--parallel-models, -j INTEGER` — Max concurrent models (default: 1)
+
+**Examples:**
+```bash
+apmode explore theo_sd              # Interactive wizard
+apmode explore theo_sd -y           # Non-interactive; full run
+apmode explore ./mydata.csv         # Local file
+apmode explore theo_sd -y --policy my_policy.json -j 4
+```
+
+---
+
+## Analysis & Inspection Commands
+
+### `diff` — Compare two bundles
+
+Compare two reproducibility bundles side-by-side. Shows differences in evidence manifest, search outcomes, gate decisions, and rankings.
+
+**Usage:**
+```bash
+apmode diff <bundle_a> <bundle_b> [OPTIONS]
+```
+
+**Options:**
+- `--json` — Structured diff (evidence/ranking/gates) for scripting/CI
+
+**Examples:**
+```bash
+apmode diff ./runs/run_abc123 ./runs/run_def456
+apmode diff ./runs/baseline ./runs/candidate --json | jq '.ranking_changes'
+```
+
+---
+
+### `log` — Query decisions & parameters
+
+Query logs, gate decisions, and parameters from a bundle. Retrieve summaries, failed candidates, gate-specific results, or top-N ranked candidates with parameters.
+
+**Usage:**
+```bash
+apmode log <bundle_dir> [OPTIONS]
+```
+
+**Options:**
+- `--gate TEXT` — Filter to a specific gate: gate1, gate2, gate2_5, gate3
+- `--failed` — Show only failed candidates
+- `--top, -n INTEGER` (≥0) — Show top N ranked candidates with parameters (default: 0 = disabled)
+- `--json` — Gate/failed/top-N data as JSON
+
+**Examples:**
+```bash
+apmode log ./runs/run_abc123                           # Summary
+apmode log ./runs/run_abc123 --failed                  # Failed candidates
+apmode log ./runs/run_abc123 --gate gate1              # Gate 1 details
+apmode log ./runs/run_abc123 --top 3                   # Top 3 with parameters
+apmode log ./runs/run_abc123 --top 5 --json | jq '.candidates[].bic'
+```
+
+---
+
+### `trace` — Agentic LLM iteration traces
+
+Inspect agentic LLM iteration traces. Shows the propose-validate-compile-fit loop history (Phase 3, agentic backend only). The agentic stage runs two modes by default (refine + independent) in separate subdirectories.
+
+**Usage:**
+```bash
+apmode trace <bundle_dir> [OPTIONS]
+```
+
+**Options:**
+- `--iteration, -i INTEGER` — Show detail for a specific iteration
+- `--cost` — Show token/cost aggregation across modes
+- `--compliance` — Show trajectory_compliance.json advisory verdict
+- `--mode TEXT` — Filter to a single mode: refine or independent
+- `--json` — Machine-readable JSON output
+
+**Examples:**
+```bash
+apmode trace ./runs/run_abc123                        # All modes
+apmode trace ./runs/run_abc123 --mode refine          # Refine only
+apmode trace ./runs/run_abc123 --iteration 5 --mode refine
+apmode trace ./runs/run_abc123 --cost                 # Cost rollup
+apmode trace ./runs/run_abc123 --json
+```
+
+---
+
+### `lineage` — Transform history for a candidate
+
+Trace the transform lineage of a specific candidate. Shows the chain of DSL transforms from root to the target, with gate status at each step.
+
+**Usage:**
+```bash
+apmode lineage <bundle_dir> <candidate_id> [OPTIONS]
+```
+
+**Arguments:**
+- `<bundle_dir>` — Bundle directory path
+- `<candidate_id>` — Target candidate ID (e.g. cand_a3f8)
+
+**Options:**
+- `--spec` — Show DSL spec at each step
+- `--gate` / `--no-gate` — Show gate outcomes per step (default: on)
+- `--json` — Machine-readable JSON output
+
+**Examples:**
+```bash
+apmode lineage ./runs/run_abc123 cand_a3f8              # Transform chain
+apmode lineage ./runs/run_abc123 cand_a3f8 --spec       # With DSL snapshots
+apmode lineage ./runs/run_abc123 cand_a3f8 --json
+```
+
+---
+
+## Reporting & Publishing
+
+### `report` — Regulatory report
+
+View or generate a structured regulatory report from a bundle. If report.html / report.md artifacts exist in the bundle, displays them immediately. Full on-demand report generation (PDF, DOCX) is a Phase 3 feature.
+
+**Usage:**
+```bash
+apmode report <bundle_dir> [OPTIONS]
+```
+
+**Options:**
+- `--format, -f` — html (opens browser) or md (pager); default: html
+- `--no-browser` — Print path instead of opening browser
+- `--json` — JSON manifest of available artifacts and paths
+
+**Examples:**
+```bash
+apmode report ./runs/run_abc123                    # HTML in browser
+apmode report ./runs/run_abc123 --format md        # Markdown in pager
+apmode report ./runs/run_abc123 --json
+```
+
+---
+
+### `attest` — Human-in-the-loop sign-off
+
+Attest to a sealed reproducibility bundle (human reviewer sign-off). Writes `<bundle_dir>/attestation.json`. The bundle must be sealed (contain `_COMPLETE`); attestation is a post-run review, not a production step.
+
+**Usage:**
+```bash
+apmode attest <bundle_dir> [OPTIONS]
+```
+
+**Required options:**
+- `--reviewer-id TEXT` — Identifier of the attesting reviewer
+- `--reviewer-role TEXT` — Reviewer's role (e.g. 'PK reviewer')
+- `--decision TEXT` — approved, approved_with_conditions, or rejected
+- `--rationale TEXT` — Free-text rationale
+
+**Optional:**
+- `--gate-override TEXT` — Override an automated gate check (repeatable)
+- `--force` / `--no-force` — Overwrite existing attestation
+- `--json` — JSON output: `{ok: bool, path: string}`
+
+**Example:**
+```bash
+apmode attest ./runs/run_abc123 \
+  --reviewer-id alice_smith \
+  --reviewer-role "PK Reviewer" \
+  --decision approved \
+  --rationale "Model passes all regulatory gates; data adequate for submission."
+```
+
+---
+
+## List & Governance
+
+### `ls` — List run bundles
+
+List APMODE run bundles with a summary table. Scans a directory for subdirectories that look like run bundles and shows sortable summaries.
+
+**Usage:**
+```bash
+apmode ls [RUNS_DIR] [OPTIONS]
+```
+
+**Arguments:**
+- `[runs_dir]` — Directory to search (default: ./runs)
+
+**Options:**
+- `--sort` — time (newest first), lane, candidates, or bic (default: time)
+- `--limit, -n INTEGER` (≥0) — Maximum runs to show (0 = all; default: 20)
+- `--format` — table (Rich), path (one per line, shell-friendly), or json (default: table)
+
+**Examples:**
+```bash
+apmode ls                                           # Default (./runs, newest first)
+apmode ls ./my_runs
+apmode ls --sort bic --limit 10                     # Top 10 by BIC
+apmode ls --format path | xargs apmode validate     # Shell pipeline
+BUNDLE=$(apmode ls --sort bic --limit 1 --format path) && apmode inspect "$BUNDLE"
+apmode ls --format json | jq '.[0].path'            # Machine-readable
+```
+
+---
+
+### `policies` — Inspect gate policy files
+
+List and inspect gate policy files. Gate policies live in the repository's `policies/` directory and are versioned artifacts controlling Gate 1/2/2.5/3 thresholds per lane.
+
+**Usage:**
+```bash
+apmode policies [LANE] [OPTIONS]
+```
+
+**Arguments:**
+- `[lane]` — Optional: filter to a specific lane (submission, discovery, optimization)
+
+**Options:**
+- `--validate` — Validate JSON schema of each policy file
+- `--json` — Policy summary as JSON (lane, version, gates, validation result)
+
+**Examples:**
+```bash
+apmode policies                         # List all lanes
+apmode policies submission              # Inspect submission thresholds
+apmode policies --validate              # CI-grade schema check
+apmode policies --json | jq '.policies[].version'
+```
+
+---
+
+## Visualization & Diagnostics
+
+### `graph` — Visualize search DAG
+
+Visualize the full search DAG (directed acyclic graph). Shows the tree/graph of all candidate models explored during the run, with convergence status, gate status, and BIC on each node.
+
+**Usage:**
+```bash
+apmode graph <bundle_dir> [OPTIONS]
+```
+
+**Options:**
+- `--format, -f TEXT` — tree (ASCII tree), dot (Graphviz), mermaid, or json (default: tree)
+- `--output, -o PATH` — Write output to file
+- `--backend TEXT` — Filter by backend: nlmixr2, jax_node, agentic_llm, bayesian_stan
+- `--converged` — Show only converged candidates
+- `--depth INTEGER` — Max tree depth (default: 10)
+
+**Examples:**
+```bash
+apmode graph ./runs/run_abc123                              # ASCII tree view
+apmode graph ./runs/run_abc123 --format dot -o dag.dot      # Graphviz export
+apmode graph ./runs/run_abc123 --converged --backend nlmixr2
+apmode graph ./runs/run_abc123 --format mermaid > dag.md
+```
+
+---
+
+### `doctor` — Check runtime dependencies
+
+Check that all runtime dependencies are installed and reachable. Verifies: R, nlmixr2, rxode2, cmdstan (optional), and LLM provider connectivity.
+
+**Usage:**
+```bash
+apmode doctor [OPTIONS]
+```
+
+**Options:**
+- `--json` — Per-component status as JSON (suppresses Rich output)
+
+**Examples:**
+```bash
+apmode doctor
+apmode doctor --json | jq '.components[] | select(.status!="ok")'
+```
+
+---
+
+## Server & HTTP API
+
+### `serve` — Start the HTTP API
+
+Serve the APMODE HTTP API behind Uvicorn. The default loopback binding (127.0.0.1:8765) works with the canonical SSH tunnel workflow: `ssh -L 8765:127.0.0.1:8765 remote-box`.
+
+**Usage:**
+```bash
+apmode serve [OPTIONS]
+```
+
+**Basic options:**
+- `--host TEXT` — Bind address (default: 127.0.0.1 loopback; non-loopback requires `--allow-public`)
+- `--port INTEGER` (1–65535) — TCP port (default: 8765)
+- `--runs-dir PATH` — Bundle output directory (default: runs)
+- `--db-path PATH` — SQLite registry file (default: runs/.apmode_runs.sqlite3)
+
+**Public deployment (requires all three):**
+- `--allow-public` — Acknowledge non-loopback binding
+- `APMODE_API_KEY` environment variable — Static API key (verified per-request via `hmac.compare_digest`)
+- `--dataset-root PATH` — Confine `POST /runs` dataset_path to this directory
+
+**Additional options:**
+- `--allow-bayesian` — Permit bayesian_stan in `POST /runs` body (off by default)
+- `--timeout-graceful-shutdown INTEGER` (1–600) — Shutdown grace period in seconds (default: 30)
+- `--log-level TEXT` — uvicorn log level: debug, info, warning, error (default: info)
+
+<Callout type="info">
+**Loopback deployment:** No API key required when binding to 127.0.0.1. The canonical workflow is:
+```bash
+# Remote machine
+ssh remote-box
+uv run apmode serve --runs-dir /scratch/apmode-runs
+
+# Local machine
+ssh -L 8765:127.0.0.1:8765 remote-box
+curl http://127.0.0.1:8765/healthz  # From your local machine
+```
+</Callout>
+
+<Callout type="warn">
+**Public deployment:** Always front a public `apmode serve` deployment with a TLS-terminating reverse proxy that handles user authentication. The static API key is a floor, not a complete security model.
+</Callout>
+
+**Examples:**
+```bash
+# Loopback (default)
+uv run apmode serve
+
+# Custom port and paths
+uv run apmode serve --port 9000 --runs-dir /scratch/apmode-runs --db-path /scratch/apmode-runs/registry.sqlite3
+
+# Public deployment (requires reverse proxy, TLS, auth in front)
+export APMODE_API_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+uv run apmode serve --host 0.0.0.0 --allow-public --dataset-root /scratch/apmode-data
+
+# Enable Bayesian backend
+uv run apmode serve --allow-bayesian
+```
+
+---
+
+## DSL Tooling
+
+### `formular` — Formular DSL inspection and validation
+
+Inspect, validate, lower, and diff Formular DSL specifications. The Formular DSL is APMODE's typed language for population PK models — order-insensitive blocks (`absorption`, `distribution`, `elimination`, `variability`, `observation`, `covariates`, `priors`, `units`, `initial`, `metadata`).
+
+**Usage:**
+```bash
+apmode formular <subcommand> [OPTIONS]
+```
+
+**Subcommands:**
+
+| Subcommand | Purpose |
+|-----------|---------|
+| `fmt <spec.formular>` | Canonicalize block order; `--migrate` for pre-0.7 specs |
+| `lint <spec.formular>` | AST/semantic/lane validation; span-anchored FRM-* diagnostics |
+| `validate <spec.formular>` | Multi-level validation (syntax/ast/semantic/data-bound/lane-bound/backend-bound/policy-bound) |
+| `explain <spec.formular>` | Human-readable summary; `--equations` shows symbolic ODE system |
+| `signature <spec.formular>` | Compact one-line module-choice summary (P2.4) |
+| `diff <spec1.formular> <spec2.formular>` | Order-insensitive structural diff |
+| `lower <spec.formular>` | Emit backend code after validation; `--backend {nlmixr2,stan,frem}` |
+| `compat <spec.formular>` | Code-derived per-backend capability matrix |
+
+**Examples:**
+```bash
+apmode formular fmt model.formular                       # Canonicalize
+apmode formular fmt model.formular --migrate             # Pre-0.7 migration
+apmode formular lint model.formular                      # Diagnostics
+apmode formular validate model.formular --level all      # Full validation
+apmode formular explain model.formular                   # Summary
+apmode formular explain model.formular --equations       # ODE system
+apmode formular diff model_a.formular model_b.formular   # Structural diff
+apmode formular lower model.formular --backend nlmixr2   # R code
+apmode formular compat model.formular                    # Capability matrix
+```
+
+---
+
+### `bundle` — Reproducibility bundle operations
+
+Operate on APMODE reproducibility bundles: RO-Crate export/import, SBOMs, and publishing.
+
+**Subcommands:**
+
+| Subcommand | Purpose |
+|-----------|---------|
+| `rocrate` | RO-Crate (Workflow Run / Provenance Run Crate v0.5) projection |
+| `sbom` | Generate CycloneDX SBOM sidecar |
+| `import` | Round-trip a Workflow Run RO-Crate back into an APMODE bundle |
+| `publish` | Publish bundle's RO-Crate to an external registry |
+
+**RO-Crate examples:**
+```bash
+# Export directory form
+apmode bundle rocrate export runs/<run_id> --out runs/<run_id>.crate
+
+# Export ZIP form (deterministic, sorted, fixed 1980-01-01 timestamps)
+apmode bundle rocrate export runs/<run_id> --out runs/<run_id>.crate.zip
+
+# Validate RO-Crate
+apmode validate runs/<run_id> --rocrate --crate runs/<run_id>.crate
+
+# Round-trip import (extracts + re-verifies _COMPLETE digest)
+apmode bundle import runs/<run_id>.crate.zip --out runs/<run_id>-imported
+
+# Inspect RO-Crate summary
+apmode inspect runs/<run_id> --rocrate-view --crate runs/<run_id>.crate
+
+# Generate SBOM sidecar
+apmode bundle sbom runs/<run_id>
+```
+
+---
+
+## Shell Completion
+
+### `completion` — Install shell completion
+
+Install, show, or uninstall shell completion for the APMODE CLI.
+
+**Usage:**
+```bash
+apmode completion <subcommand>
+```
+
+**Subcommands:**
+- `install` — Install completion for your current shell
+- `show` — Print completion source on stdout (for manual customization)
+- `uninstall` — Remove the completion block or file
+
+**Examples:**
+```bash
+apmode completion install
+apmode completion show
+apmode completion uninstall
+```
+
+---
+
+## Environment Variables Reference
+
+Every `apmode run` option that has an `[env var: ...]` clause can be set as an environment variable. This lets you set defaults for your workflow:
+
+```bash
+export APMODE_LANE=discovery
+export APMODE_OUTPUT_DIR=./runs
+export APMODE_SEED=753849
+export APMODE_TIMEOUT=900
+export APMODE_PARALLEL_MODELS=4
+export APMODE_BACKEND=nlmixr2
+export APMODE_PROVIDER=anthropic       # For --agentic
+export APMODE_AGENTIC_MAX_ITER=15
+export APMODE_POLICY=./policies/custom.json
+
+# Now omit the flags and pick up these defaults
+uv run apmode run ./data/trial.csv
+```
+
+An existing `APMODE_POLICIES_DIR` environment variable continues to work for pointing the policy loader to an alternative policy directory.
+
+---
+
+## JSON Output for Scripting
+
+Every read command supports `--json` to emit machine-readable output, suppressing Rich formatting. Exit code is 0 on success, 1 on failure:
+
+```bash
+# Scripting examples
+apmode validate "$BUNDLE" --json | jq '.ok'
+apmode inspect  "$BUNDLE" --json | jq '.gates.gate3'
+apmode log      "$BUNDLE" --top 5 --json | jq '.candidates[].rank_entry.bic'
+apmode datasets --json | jq '.datasets[] | select(.route=="oral") | .name'
+apmode doctor   --json | jq '.components[] | select(.status!="ok")'
+apmode trace    "$BUNDLE" --json | jq '.iterations[] | .cost_usd'
+apmode lineage  "$BUNDLE" cand_a3f8 --json
+apmode ls --format json | jq '.[0].path'
+```
+
+---
+
+## Tips & Tricks
+
+<Callout type="info">
+**Best practices:**
+- Use `--dry-run` before a long run to preview the candidate budget and dispatch plan
+- Use `--parallel-models -j 4` (or your machine's core count) to speed up fitting
+- Use `apmode explore` for interactive walkthrough before committing to `apmode run`
+- Use `apmode ls --sort bic --limit 1 --format path` to get the best run's path for scripting
+- Use `apmode diff` to compare runs and understand what changed between attempts
+</Callout>

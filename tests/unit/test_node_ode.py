@@ -209,6 +209,59 @@ class TestDifferentiability:
         assert has_nonzero, "Gradients should be non-zero"
 
 
+class TestInfusionRateTerm:
+    """Per-compartment infusion rate injected through ``vector_field`` args."""
+
+    def _make_ode(self) -> HybridPKODE:
+        return HybridPKODE(
+            config=ODEConfig(
+                n_cmt=1,
+                node_position="absorption",
+                constraint_template="bounded_positive",
+                node_dim=3,
+                mechanistic_params={"ka": 1.0, "CL": 2.0, "V": 20.0},
+            ),
+            key=jax.random.PRNGKey(0),
+        )
+
+    def test_rate_added_to_each_compartment(self) -> None:
+        ode = self._make_ode()
+        t = jnp.array(1.0)
+        y = jnp.array([0.0, 10.0])
+
+        base = ode.vector_field(t, y, None)
+        rate = jnp.array([3.0, 5.0])
+        with_rate = ode.vector_field(t, y, rate)
+
+        assert jnp.allclose(with_rate - base, rate)
+
+    def test_none_args_equals_zero_args(self) -> None:
+        """Default (None) rate must reproduce a zero-rate vector exactly."""
+        ode = self._make_ode()
+        t = jnp.array(2.5)
+        y = jnp.array([12.0, 7.0])
+
+        base = ode.vector_field(t, y, None)
+        zero = ode.vector_field(t, y, jnp.zeros(2))
+
+        assert jnp.array_equal(base, zero)
+
+    def test_solve_accepts_rate_args(self) -> None:
+        """``solve`` threads a constant rate vector into the integration."""
+        ode = self._make_ode()
+        times = jnp.linspace(0.0, 5.0, 11)
+        y0 = jnp.array([0.0, 0.0])
+        rate = jnp.array([0.0, 10.0])
+
+        sol_rate = ode.solve(y0, times, args=rate)
+        sol_zero = ode.solve(y0, times, args=None)
+
+        # Constant infusion into central must raise the central amount;
+        # zero-rate leaves it flat at zero.
+        assert float(sol_rate[-1, 1]) > 1.0
+        assert float(sol_zero[-1, 1]) == pytest.approx(0.0, abs=1e-6)
+
+
 class TestSubjectRE:
     """Per-subject random effects on the hybrid ODE."""
 

@@ -339,7 +339,7 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
         "--out",
         type=Path,
         default=Path("benchmarks/suite_a/eta_recovery_report.json"),
-        help="Destination path for the eta_recovery_report.json the CI workflow reads.",
+        help="Destination path for the generated eta_recovery_report.json snapshot.",
     )
     parser.add_argument(
         "--suite-dir",

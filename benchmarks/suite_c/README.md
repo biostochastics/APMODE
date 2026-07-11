@@ -32,9 +32,11 @@ For gentamicin, the De Cock 2014 paper covers gentamicin/tobramycin/vancomycin
 and reports population CL for a 4-kg full-term neonate (`Cldrug = 0.21 L/h`),
 but the gentamicin-specific IOV model with a separate intercompartmental
 covariance structure that the `ddmore_gentamicin` dataset is fit to is
-Germovsek et al. 2017. Both papers are cited in the registry; the fixture
-uses the Germovsek IOV parameterization because it matches the dataset card
-already on disk (`benchmarks/datasets/ddmore_gentamicin`).
+Germovsek et al. 2016 (DOI
+[10.1128/AAC.00577-16](https://doi.org/10.1128/AAC.00577-16)).
+Both papers are cited in the registry; the fixture uses the Germovsek IOV
+parameterization because it matches the dataset prepared by
+`benchmarks/datasets/ddmore_gentamicin/prepare.py`.
 
 ## Metric definition and current scorecard status
 

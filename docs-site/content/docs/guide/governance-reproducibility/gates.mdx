@@ -1,0 +1,241 @@
+---
+title: Governance Gates
+description: APMODE's sequential gating framework for model validation and ranking.
+since: "0.6.1"
+---
+
+APMODE implements a **gated funnel**, not a weighted scoring system. Every candidate model passes through sequential disqualifying gates before survivors are ranked.
+
+## The gated funnel
+
+```
+Candidate Model
+    ↓
+  Gate 1: Technical Validity (disqualifying)
+    ↓ [pass] → Gate 2: Lane-Specific Admissibility (disqualifying)
+    ↓ [pass] → Gate 2.5: Credibility Qualification (disqualifying)
+    ↓ [pass] → Gate 3: Cross-Paradigm Ranking
+    ↓
+  Final Ranking (survivors ordered by composite score)
+```
+
+**Key principle:** Failure at any gate (1, 2, or 2.5) is disqualifying. Only survivors enter Gate 3, where they are ranked. This ensures that recommended models meet **minimum** regulatory and methodological standards, not merely high scores.
+
+## Gate 1: Technical Validity
+
+Gate 1 evaluates whether a model's estimation is technically sound and the fitted parameters clinically plausible.
+
+### Checks performed
+
+- **Convergence** — Did the estimation algorithm converge? (e.g., nlmixr2 SAEM or FOCEi completed without reporting failure)
+- **Parameter plausibility** — Are structural parameters within reasonable pharmacokinetic ranges? (e.g., negative clearances are rejected; extreme values trigger review)
+- **State trajectory validity** — Do simulations stay non-negative and free of NaN across the observation time range?
+- **CWRES diagnostics** — Conditional weighted residuals show |mean| &lt; threshold and outlier fraction &lt; policy limit
+- **PIT calibration** — Probability Integral Transform (PIT) or NPDE-lite on posterior-predictive distributions; subject-robust aggregation at percentiles 5%, 50%, 95% per PRD §4.3.1
+- **Split integrity** — If k-fold or held-out validation is active, train/test splits maintain subject separation
+- **Seed stability** — Results consistent across independent random seeds (if multiple seeds run)
+- **Imputation stability** (MI-only) — When Multiple Imputation is active, convergence rate and rank stability meet directive-driven thresholds
+
+**Bayesian-specific checks** (Gate 1b):
+- R̂ (potential scale reduction) ≤ 1.01
+- Bulk ESS ≥ 400, Tail ESS ≥ 400
+- Divergences = 0
+- E-BFMI (energy Bayesian Fraction of Missing Information) ≥ 0.3
+- Pareto-k ≤ 0.7 (for importance sampling diagnostics)
+
+### Configuration
+
+Gate 1 thresholds are **versioned policy artifacts** stored in `policies/{lane}.json`. They are not hard-coded in the source. To inspect or modify them:
+
+```bash
+apmode policies submission --json | jq '.gate1'
+apmode policies discovery --json | jq '.gate1'
+apmode policies optimization --json | jq '.gate1'
+```
+
+## Gate 2: Lane-Specific Admissibility
+
+Gate 2 enforces lane-specific constraints that determine which modeling paradigms are eligible for use in each workflow.
+
+### Submission lane
+
+Candidates must demonstrate:
+- **Interpretability** — Parameters can be mapped to compartments and elimination routes
+- **Shrinkage** — IIV shrinkage &lt; policy threshold (excessive shrinkage indicates weak information)
+- **Identifiability flags** — No Hessian singularities or near-singular matrices
+- **NODE/agentic exclusion** — **Hard rule:** Hybrid NODE and agentic-LLM models are never eligible for "recommended" status in the Submission lane (PRD §3). They may be evaluated for comparison but cannot satisfy Gate 2.
+
+### Discovery lane
+
+Candidates must demonstrate:
+- **Shrinkage** (same as Submission)
+- **Identifiability** (same as Submission)
+- Classical NLME, NODE, agentic LLM, and Bayesian backends are all admissible
+
+### Optimization lane (LORO-CV)
+
+Candidates must pass:
+- **LORO-CV folds** — Leave-One-Region-Out cross-validation; models must maintain performance across training/test partitions
+- **NPDE mean/variance bands** — Cross-validation diagnostic concordance
+- **VPC concordance** — Posterior-predictive coverage within tolerance
+
+## Gate 2.5: Credibility Qualification
+
+Gate 2.5 implements ICH M15 credibility assessment, evaluating regulatory fitness based on data adequacy, model context of use, and limitations.
+
+### Evaluation framework
+
+Candidates are assessed on:
+- **Data adequacy** — Does the dataset support the inference scope? (e.g., sufficient time points for absorption characterization, adequate sample coverage)
+- **Context of use** — Is the model intended for dose justification, population PK, or exploratory discovery?
+- **Limitations** — What are explicit model limitations, and are they acceptable for the intended use?
+- **Risk classification** — Limitations are mapped to risk classes (e.g., "limited external validity" → "moderate risk")
+
+For **Bayesian models**, the assessment includes:
+- **Prior justification** — Are priors documented, justified, and aligned with external evidence?
+- **Prior sensitivity** — Sensitivity analyses showing robustness to prior specification
+
+### Output
+
+Gate 2.5 produces a `CredibilityReport` artifact stored in the bundle, consumed by the HTML/Markdown regulatory report.
+
+```bash
+uv run apmode report {bundle_dir}  # includes credibility summary
+```
+
+## Gate 3: Cross-Paradigm Ranking
+
+Gate 3 ranks all Gate 2.5 survivors. It is the only **non-disqualifying** gate; all survivors enter the ranking, but they are ordered by composite score.
+
+### Why simulation-based metrics?
+
+Direct comparison of BIC / NLPD across backend families is disabled because different backends' likelihoods operate on different scales:
+- Classical NLME (nlmixr2) uses conditional likelihood
+- NODE uses mean-squared-error loss
+- Bayesian models use marginal likelihood
+
+To make ranking apples-to-apples, Gate 3 uses **simulation-based metrics** applied uniformly to all backends:
+
+### Ranking components
+
+Each candidate is evaluated on:
+- **VPC concordance** — Do posterior-predictive simulations cover observed data within target bands? (visual predictive check)
+- **NPE** — Normalized Prediction Error (held-out or within-sample per policy); lower is better
+- **AUC/Cmax Bioequivalence** — For NCA-eligible subjects, bioequivalence around observed PK parameters
+- **BIC** (within-paradigm only) — Models from the same backend family are ordered by BIC; cross-paradigm BIC comparisons are not used
+
+### Aggregation methods
+
+Gate 3 supports two aggregation methods, lane-specific:
+
+**Weighted sum** (Submission):
+```
+composite_score = w_vpc · vpc_metric + w_npe · npe_metric + w_auc · auc_metric + w_bic · bic_metric
+```
+
+**Borda count** (Discovery, Optimization):
+```
+Each metric is ranked independently; Borda score = sum of ranks
+Handles outliers better than weighted sum; more robust when components have different scales
+```
+
+### Eligibility floors and uniform-drop rule
+
+- **AUC/Cmax NCA eligibility**: Minimum eligible subjects set via `auc_cmax_nca_min_eligible` (absolute count) and `auc_cmax_nca_min_eligible_fraction` (fraction). Both must be met; below either floor, `auc_cmax_be_score` is set to `None`.
+- **Uniform-drop rule**: If any survivor lacks a score component (e.g., NCA-ineligible), that component is removed for *all* survivors. This keeps ranking apples-to-apples.
+
+### Configuration and inspection
+
+```bash
+# Inspect gate thresholds
+apmode policies submission --json | jq '.gate3'
+
+# View ranking results
+uv run apmode log {bundle_dir} --top 5  # ranked candidates
+```
+
+## Gate output format
+
+All gate decisions are stored in the bundle at `gate_decisions/`:
+- `gate1_{candidate_id}.json` — Classical Gate 1
+- `gate1b_{candidate_id}.json` — Bayesian Gate 1 (does not overwrite classical)
+- `gate2_{candidate_id}.json` — Gate 2 (admissibility)
+- `gate2_5_{candidate_id}.json` — Gate 2.5 (credibility)
+- `gate3_{candidate_id}.json` — Gate 3 (ranking)
+
+Each file contains:
+- `gate_id`, `gate_name`, `candidate_id`
+- `passed` (boolean)
+- `checks` array with per-check detail: observed value, threshold, units, evidence reference
+- `summary_reason` (human-readable failure description)
+- `policy_version` (version of the policy file used)
+- `timestamp` (ISO 8601)
+
+<Callout type="info">
+The filename convention uses underscore separators (`gate2_5_`, not `gate25_`) so CLI globs like `gate2_5_*.json` work correctly.
+</Callout>
+
+## Policy versioning
+
+Thresholds are never hard-coded. Instead, they live in versioned JSON policy files under `policies/{lane}.json`:
+
+- `policies/submission.json`
+- `policies/discovery.json`
+- `policies/optimization.json`
+
+Each policy file carries a `policy_version` string (e.g., `"0.7.1"`). Every gate decision embeds the policy version used, ensuring reproducibility and traceability.
+
+To validate policy files in CI:
+
+```bash
+uv run apmode policies --validate
+```
+
+## Practical workflow
+
+### Running a pipeline with gates
+
+```bash
+# Full Submission lane (Gates 1, 2, 2.5, 3)
+uv run apmode run ./data/theo_sd.csv --lane submission -o ./runs
+
+# Discovery lane (same gates, broader admissibility)
+uv run apmode run ./data/theo_sd.csv --lane discovery -o ./runs
+```
+
+### Inspecting gate decisions
+
+```bash
+# Summary of gate decisions for a bundle
+uv run apmode inspect {bundle_dir}
+
+# Full gate results as JSON
+uv run apmode inspect {bundle_dir} --json | jq '.gates'
+
+# Diff gate decisions between runs
+uv run apmode diff {bundle1} {bundle2} --json | jq '.gates'
+
+# Log all gate failures
+uv run apmode log {bundle_dir} --gate 1 --failed
+```
+
+## Key concepts
+
+<Cards>
+  <Card
+    title="Disqualifying vs. Ranking"
+    description="Gates 1, 2, 2.5 are disqualifying (failures remove candidates). Gate 3 ranks survivors."
+  />
+  <Card
+    title="Policy-Driven Thresholds"
+    description="All gate parameters come from versioned policy JSON, ensuring auditability."
+  />
+  <Card
+    title="Simulation-Based Ranking"
+    description="VPC, NPE, AUC-Cmax are computed uniformly across backends to work around likelihood-scale incomparability."
+  />
+  <Card
+    title="Bayesian Extensions"
+    description="Gate 1b adds MCMC diagnostics (R̂, ESS, divergences, E-BFMI, Pareto-k) for Bayesian models."
+  />
+</Cards>

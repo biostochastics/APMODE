@@ -1,0 +1,52 @@
+---
+title: How to Cite
+description: Cite APMODE in publications — BibTeX, APA, and the machine-readable CITATION.cff.
+---
+
+If you use APMODE in your research, please cite it. The canonical, machine-readable
+citation lives in [`CITATION.cff`](https://github.com/biostochastics/APMODE/blob/main/CITATION.cff)
+at the repository root; GitHub renders a "Cite this repository" widget from it.
+
+Every reproducibility bundle also carries machine-readable provenance via its
+[RO-Crate projection](/docs/guide/governance-reproducibility/rocrate) — cite the software
+here, and attach the crate for the exact run.
+
+## BibTeX
+
+```text
+@software{kornilov_apmode,
+  author  = {Kornilov, Sergey A.},
+  title   = {{APMODE: Adaptive Pharmacokinetic Model Discovery Engine}},
+  version = {0.6.1-rc2},
+  year    = {2026},
+  license = {GPL-2.0-or-later},
+  url     = {https://github.com/biostochastics/APMODE}
+}
+```
+
+## APA
+
+> Kornilov, S. A. (2026). *APMODE: Adaptive Pharmacokinetic Model Discovery Engine*
+> (Version 0.6.1-rc2) [Computer software]. https://github.com/biostochastics/APMODE
+
+<Callout type="info">
+  Replace the `version` with the release you actually used — APMODE embeds both a declared
+  and a runtime version, and reproducibility depends on citing the exact artifact. Run
+  `apmode --version` to see both.
+</Callout>
+
+## Underlying methods
+
+APMODE composes established pharmacometric methods; when a specific method is central to
+your analysis, cite the primary source as well. Frequently relevant references include:
+
+- **nlmixr2** — the classical NLME engine.
+- **Savic et al. (2007)** — transit compartment absorption.
+- **Mager & Jusko (2001)**, **Gibiansky et al. (2008)** — TMDD models.
+- **Beal (2001)**, **Ahn et al. (2008)** — BLQ likelihood methods.
+- **Anderson & Holford (2008)** — allometric scaling defaults.
+- **Vehtari et al. (2021)** — rank-normalized R̂ and ESS for the Bayesian gates.
+- **Schmidli et al. (2014)** — robust MAP priors for historical borrowing.
+
+Full citations appear in the relevant [Formular](/docs/guide/formular-dsl) and
+[backend](/docs/guide/backends) pages.

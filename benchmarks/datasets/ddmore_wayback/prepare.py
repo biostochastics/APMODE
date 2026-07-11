@@ -29,7 +29,7 @@ CANONICAL_IDS = [
     ("DDMODEL00000003", "Hamren 2008 diabetes tesaglitazar (KPD turnover)"),
     ("DDMODEL00000103", "Trefz 2015 Kuvan/PKU turnover-KPD"),
     ("DDMODEL00000130", "Karaiskos 2015 CMS/colistin PK"),
-    ("DDMODEL00000238", "Germovsek 2017 gentamicin neonatal IOV"),
+    ("DDMODEL00000238", "Germovsek 2016 gentamicin neonatal IOV"),
     ("DDMODEL00000243", "TTE example"),
     ("DDMODEL00000247", "IRT example"),
     ("DDMODEL00000248", "Preterm-neonatal morphine + phenobarbital"),

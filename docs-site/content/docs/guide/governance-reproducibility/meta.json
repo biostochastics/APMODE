@@ -1,0 +1,5 @@
+{
+  "title": "Governance & Reproducibility",
+  "icon": "ShieldCheck",
+  "pages": ["gates", "reproducibility-bundle", "rocrate"]
+}

@@ -1,0 +1,16 @@
+{
+  "title": "Documentation",
+  "description": "Concepts, the Formular DSL, backends, and how APMODE governs a run.",
+  "icon": "BookOpen",
+  "root": true,
+  "pages": [
+    "---Start here---",
+    "getting-started",
+    "---The moat---",
+    "formular-dsl",
+    "---How it works---",
+    "concepts",
+    "governance-reproducibility",
+    "backends"
+  ]
+}

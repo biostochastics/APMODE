@@ -1,0 +1,172 @@
+---
+title: Quickstart
+description: A worked end-to-end run — from a public theophylline dataset to a sealed, replayable regulatory report.
+---
+
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
+import { Step, Steps } from 'fumadocs-ui/components/steps';
+
+This is the canonical "first hour with APMODE": it exercises the full pipeline
+front-to-back and lands you at a readable regulatory report and a sealed
+reproducibility bundle.
+
+## A worked end-to-end walkthrough
+
+<Steps>
+
+<Step>
+
+### Browse the registry
+
+```bash
+uv run apmode datasets
+```
+
+The registry ships in-tree datasets plus a research catalogue under
+`benchmarks/datasets/`.
+
+</Step>
+
+<Step>
+
+### Download a dataset
+
+```bash
+uv run apmode datasets theo_sd -o ./data
+```
+
+`theo_sd` is a single-dose theophylline dataset — 12 subjects, small enough to run in
+a few minutes.
+
+</Step>
+
+<Step>
+
+### Explore before committing
+
+```bash
+uv run apmode explore ./data/theo_sd.csv
+```
+
+`explore` runs the data profiler, an NCA pass, and a search-space preview — so you see
+the [Evidence Manifest](/docs/guide/concepts/evidence-manifest) before launching a run.
+
+</Step>
+
+<Step>
+
+### Run the submission-lane pipeline
+
+```bash
+uv run apmode run ./data/theo_sd.csv --lane submission --parallel-models 4 -o ./runs
+```
+
+Classical NLME with a deterministic budget. `theo_sd` (12 subjects) takes roughly
+3–5 minutes at `-j 4`; larger datasets scale up (mavoglurant's 120 subjects ≈ 60–90
+minutes).
+
+</Step>
+
+<Step>
+
+### Inspect the best candidate
+
+```bash
+BUNDLE=$(uv run apmode ls --sort bic --limit 1 --format path)
+uv run apmode inspect "$BUNDLE"
+uv run apmode log "$BUNDLE" --top 3
+uv run apmode graph "$BUNDLE" --format tree
+```
+
+</Step>
+
+<Step>
+
+### Open the regulatory report
+
+```bash
+uv run apmode report "$BUNDLE"                      # HTML in browser
+uv run apmode report "$BUNDLE" --format md | less   # Markdown in a pager
+```
+
+</Step>
+
+<Step>
+
+### Validate the bundle
+
+```bash
+uv run apmode validate "$BUNDLE"
+```
+
+`validate` confirms the bundle is sealed (`_COMPLETE` SHA-256 sentinel) and replayable.
+
+</Step>
+
+</Steps>
+
+## Lane variants
+
+<Tabs items={['Discovery', 'Bayesian', 'Agentic', 'Optimization']}>
+
+<Tab value="Discovery">
+
+Classical + NODE + agentic LLM admissible:
+
+```bash
+uv run apmode run ./data/theo_sd.csv --lane discovery
+```
+
+</Tab>
+
+<Tab value="Bayesian">
+
+Requires the Bayesian extras + CmdStan:
+
+```bash
+uv sync --extra bayesian
+uv run python -c "import cmdstanpy; cmdstanpy.install_cmdstan()"
+uv run apmode run ./data/theo_sd.csv --lane discovery \
+    --backend bayesian_stan --bayes-chains 4 --bayes-warmup 1000 --bayes-sampling 1000
+```
+
+</Tab>
+
+<Tab value="Agentic">
+
+Off by default; discovery / optimization lanes only:
+
+```bash
+uv run apmode run ./data/theo_sd.csv --lane discovery --agentic --provider anthropic
+```
+
+If a long agentic run crashes, `--resume-agentic` restarts the LLM loop from the
+existing `classical_checkpoint.json` without re-running the classical stage.
+
+</Tab>
+
+<Tab value="Optimization">
+
+Adds LORO-CV Gate 2:
+
+```bash
+uv run apmode run ./data/theo_sd.csv --lane optimization
+```
+
+</Tab>
+
+</Tabs>
+
+## Comparing runs
+
+```bash
+uv run apmode diff ./runs/run_a ./runs/run_b           # side-by-side summary
+uv run apmode diff ./runs/run_a ./runs/run_b --json    # structured diff for CI
+uv run apmode lineage "$BUNDLE" <candidate_id>         # transform chain root → candidate
+uv run apmode trace "$BUNDLE" --cost                   # agentic token + $ rollup
+```
+
+<Callout type="info" title="Next">
+  See the full [CLI Reference](/docs/reference/cli), or read how a run gets evaluated
+  in [Governance & Reproducibility](/docs/guide/governance-reproducibility/gates).
+</Callout>

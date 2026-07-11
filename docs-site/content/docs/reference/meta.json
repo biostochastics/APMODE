@@ -1,0 +1,14 @@
+{
+  "title": "Reference",
+  "description": "CLI, HTTP API, benchmarks, design decisions, and how to cite APMODE.",
+  "icon": "Terminal",
+  "root": true,
+  "pages": [
+    "cli",
+    "http-api",
+    "benchmarks",
+    "decisions",
+    "changelog",
+    "how-to-cite"
+  ]
+}
