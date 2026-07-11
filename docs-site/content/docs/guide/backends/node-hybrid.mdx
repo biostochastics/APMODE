@@ -17,7 +17,7 @@ The NODE (neural ordinary differential equation) backend enables **hybrid mechan
 <Callout type="warn">
 **Dosing support: oral + IV bolus/infusion (central compartment).** The NODE backend handles oral absorption, IV bolus, multi-dose regimens, and ADDL/II expansion. Zero-order constant-rate IV infusions (`RATE>0` or `DUR>0`) into the central compartment are integrated by the piecewise eager solver: overlapping and staggered infusions sum correctly, and a reset event terminates any ongoing infusion. Still rejected with a fail-loud error: infusions labelled into the absorption depot (`CMT=1`), steady-state rows (`SS != 0`), other-type events (`EVID=2`), and observations outside the central compartment. IV infusions must target central (`CMT=2`).
 
-**No posterior samples yet.** NODE posterior-predictive simulation is an inert stub returning `None`; Laplace-approximation random-effects draws are a Phase 3 completion item.
+**Pooled posterior-predictive ships; VPC/NPDE await random effects.** NODE candidates now emit NPE, AUC/Cmax bioequivalence, and real *pooled* CWRES from a pooled forward simulation on the observed-time grid. VPC and NPDE stay unset on purpose: without between-subject variability a pooled predictive distribution systematically under-covers, so those population diagnostics are gated behind mixed-effects NODE (input-layer random effects, planned).
 </Callout>
 
 ## How It Works
@@ -142,41 +142,54 @@ NODE fits pass the same Gate 1 checks as classical models:
 | Check | Status | Notes |
 |-------|--------|-------|
 | Convergence | ✅ Validated | Training loss plateau + early stopping |
-| PIT calibration | ✅ Validated | Posterior-predictive coverage (p ∈ \{0.05, 0.50, 0.95\}) |
+| PIT calibration | ⚠ Gated | Requires between-subject variability; unset until mixed-effects NODE lands |
 | Shrinkage | N/A | No random effects parameters (pooled training) |
-| CWRES | ⚠ Limited | Available if posterior-predictive sims present |
+| CWRES | ✅ Pooled | Real population standardized residuals (pooled — no per-subject conditioning) |
+| NPE / AUC-Cmax | ✅ Pooled | Emitted via the canonical `build_predictive_diagnostics` when a Gate 3 policy is present |
 
 <Callout type="warn">
-NODE posterior-predictive simulation is currently a stub; `sample_posterior_predictive()` returns `None`. This means NODE candidates do not emit CWRES or NPE diagnostics yet, which impacts Gate 1 pass rates. Laplace random-effects sampling is a Phase 3 completion item.
+Pooled posterior-predictive diagnostics — **NPE**, **AUC/Cmax bioequivalence**, and real **pooled CWRES** — now ship: they are point/structural-fit metrics that are valid without random effects. **VPC, NPDE, and PIT calibration stay unset**: a pooled predictive distribution (structural PRED + residual only) under-covers real between-subject variability and would mislead, so those population diagnostics are gated behind mixed-effects NODE (input-layer random effects). `sample_posterior_predictive()` remains reserved for that BSV path.
 </Callout>
 
 ## Functional Distillation & Interpretability
 
-After NODE training converges, the learned neural sub-function can be **distilled** into interpretable parametric surrogates:
+Functional distillation is a **closed loop**: a converged NODE proposes structure, that structure is
+approximated by a classical surrogate, sealed as an auditable artifact, and — if faithful — re-fit through
+the classical backend so it can be *ranked* against other classical models. This is how a black-box NODE
+turns into a governed, potentially submission-eligible classical candidate.
 
-### Post-Hoc Surrogate Fitting
+### The distillation loop
 
-The trained NODE module's input-output mapping is approximated by a classical parametric function:
+1. **Fit a parametric surrogate** to the learned elimination sub-function over the observed support —
+   currently a first-order (`Linear`, CL/V) or saturable (`MichaelisMenten`, Vmax/Km) form, chosen by fit.
+2. **Quantify fidelity** as AUC/Cmax geometric-mean-ratio bioequivalence (80–125%) between the NODE and its
+   surrogate, plus a surrogate R².
+3. **Seal a `DistillationReport`** to `distillation/<candidate_id>.json` in the reproducibility bundle
+   (a normal digest-participating artifact) and project it into RO-Crate.
+4. **Emit a classical spec** with `surrogate_to_formular()` — a real `DSLSpec` (`FirstOrder`/`OneCmt` +
+   `Linear`/`MichaelisMenten`) carrying provenance (source NODE run, surrogate family, fidelity GMRs) in its
+   fingerprint-excluded `metadata`.
+5. **Promote into Gate 3** — when the distillation clears fidelity, the orchestrator re-fits the emitted
+   spec through the nlmixr2 backend so it enters the *same* Gate 1/2/3 pipeline as any classical candidate
+   (within-classical BIC/NLPD-comparable, gaining IIV + standard errors from the fresh fit). A source-NODE →
+   distilled candidate-lineage edge is recorded, and the report's `promoted` flag is set.
 
 ```python
-# After training
-learned_function = lambda x: node_weights.apply(x)
-
-# Fit a Michaelis–Menten surrogate to the learned function
-def mmenten(x, params):
-    Vmax, Km = params
-    return Vmax * x / (Km + x)
-
-# Minimize: integral of (learned_function(x) - mmenten(x, params))²
-optimal_params = fit_surrogate(learned_function, mmenten, x_range=[0, 100])
+# Sealed report (bundle/models.py) — read from any run bundle
+report = DistillationReport.model_validate_json(
+    (bundle_dir / "distillation" / f"{candidate_id}.json").read_text()
+)
+report.surrogate.surrogate_type   # "linear" | "michaelis_menten"
+report.fidelity.overall_pass      # AUC & Cmax both within 80–125%
+report.promoted, report.promoted_model_id  # re-fit as a classical Gate-3 candidate?
 ```
 
-This produces:
-- **Fitted Vmax, Km** that mimic the learned function
-- **Fidelity score**: MSE between learned and surrogate on held-out points
-- **Visual comparison**: Plot both curves for reviewer inspection
+**Fail-soft:** a faithful surrogate that is unidentifiable on re-fit (singular Ω, non-convergence) is
+recorded as a failed candidate (`gate_failed="distillation_refit"`) — the run never crashes.
 
-The distilled parameters live in the `DiagnosticBundle.diagnostic_plots` and credibility report so reviewers can understand what the network learned.
+**Known caveat:** promotion ranking is currently *in-sample*, consistent with the rest of the pipeline and
+the cross-paradigm circularity ADR. A held-out-subject split for the promoted candidate is the tracked
+hardening follow-up, since discovery and ranking sharing data biases metrics toward the discovered structure.
 
 ### Functional Visualization
 

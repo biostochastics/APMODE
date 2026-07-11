@@ -52,6 +52,8 @@ A typical bundle is organized as:
 │   └── {candidate_id}_folds.json          # LORO-CV fold assignments
 ├── credibility/
 │   └── {candidate_id}_credibility.json    # ICH M15 credibility assessment
+├── distillation/                          # (NODE runs with functional distillation)
+│   └── {candidate_id}.json                # Surrogate + fidelity + promotion status
 ├── agentic_trace/                         # (Agentic runs only, --agentic flag)
 │   ├── {iteration_id}_input.json          # LLM prompt context
 │   ├── {iteration_id}_output.json         # LLM response + parsed transforms
